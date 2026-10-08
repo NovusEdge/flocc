@@ -154,9 +154,15 @@ issue fits the remaining budget.
 ## Handoff and compaction
 
 A session's state lives outside its context: commits in the worktree, a handoff note in its state
-directory, and the Linear issue. Auto-compaction handles ordinary growth. The `PreCompact` hook
-writes the handoff note, and past 60% context the supervisor restarts the session fresh from it.
-The `SessionStart` hook loads the issue, the peer list and the latest handoff note.
+directory, and the Linear issue. Auto-compaction handles ordinary growth. Past 60% context the
+supervisor types an instruction into the session asking for a handoff note, waits for the agent to
+signal that the note is written, and restarts the session fresh from it. A hook cannot write the
+note itself, because only the model knows what it was in the middle of. The `SessionStart` hook
+loads the issue, the peer list and the latest handoff note, so they come back after a restart or a
+compaction.
+
+An interactive session does not exit when it finishes; it waits for input. Each phase therefore
+ends with the agent running `linear-agents done`, which the supervisor picks up.
 
 ## Access
 
