@@ -190,8 +190,9 @@ the service: `urllib` for Linear GraphQL and ntfy, `sqlite3` in WAL mode with a 
 
 Verified on CLI 2.1.293 on 2026-10-09: a script-started tmux session with `--remote-control` runs
 its initial prompt and connects after a one-time folder-trust prompt; local sessions message each
-other; `--strict-mcp-config` with an empty config hides claude.ai connectors in print mode.
+other; `--strict-mcp-config` with an empty config hides claude.ai connectors in print mode; a
+session in a new worktree under an already-trusted folder gets no folder-trust prompt. Worktrees
+therefore live under one root that is trusted once by hand during setup.
 
-Unverified: `--strict-mcp-config` in interactive mode; whether the folder-trust prompt can be
-pre-accepted for new worktrees so no one has to answer it; the exact Linear behavior for actions
-taken with my own key; ntfy priority 5 getting through Do Not Disturb on my phone.
+Unverified: `--strict-mcp-config` in interactive mode; the exact Linear behavior for actions taken
+with my own key; ntfy priority 5 getting through Do Not Disturb on my phone.

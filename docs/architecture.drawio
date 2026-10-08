@@ -1,112 +1,107 @@
 <mxfile host="app.diagrams.net">
-  <diagram id="arch" name="Poller architecture">
-    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="800" math="0" shadow="0">
+  <diagram id="arch" name="linear-agents">
+    <mxGraphModel dx="1300" dy="850" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1280" pageHeight="860" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
 
-        <mxCell id="host" value="My machine or VM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;align=left;spacingLeft=10;fontStyle=1;arcSize=3;" vertex="1" parent="1">
-          <mxGeometry x="260" y="120" width="640" height="560" as="geometry" />
+        <mxCell id="vm" value="Dedicated VM (the sandbox)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;align=left;spacingLeft=10;fontStyle=1;arcSize=2;" vertex="1" parent="1">
+          <mxGeometry x="240" y="120" width="760" height="600" as="geometry" />
         </mxCell>
-        <mxCell id="container" value="Reference dev container, non-root user" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;align=left;spacingLeft=10;fontStyle=1;arcSize=4;" vertex="1" parent="1">
-          <mxGeometry x="560" y="160" width="320" height="300" as="geometry" />
+        <mxCell id="svc" value="linear-agents service (Python, one run per tick)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;arcSize=4;" vertex="1" parent="1">
+          <mxGeometry x="270" y="240" width="260" height="240" as="geometry" />
         </mxCell>
-
-        <mxCell id="linear" value="&lt;b&gt;Linear&lt;/b&gt;&lt;br&gt;NF team issues&lt;br&gt;assigned to me,&lt;br&gt;label &lt;code&gt;claude&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
-          <mxGeometry x="40" y="300" width="170" height="110" as="geometry" />
-        </mxCell>
-        <mxCell id="anthropic" value="&lt;b&gt;My claude.ai subscription&lt;/b&gt;&lt;br&gt;Claude Code login on this machine" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="610" y="20" width="220" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="github" value="&lt;b&gt;GitHub&lt;/b&gt;&lt;br&gt;fine-grained token&lt;br&gt;draft PR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
-          <mxGeometry x="960" y="530" width="170" height="90" as="geometry" />
+        <mxCell id="sess" value="Agent sessions: interactive Claude Code in tmux, one per issue" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;align=left;spacingLeft=8;fontStyle=1;arcSize=4;" vertex="1" parent="1">
+          <mxGeometry x="580" y="160" width="390" height="320" as="geometry" />
         </mxCell>
 
-        <mxCell id="timer" value="&lt;b&gt;systemd timer&lt;/b&gt;&lt;br&gt;every 3 min" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;" vertex="1" parent="1">
-          <mxGeometry x="290" y="160" width="140" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="poller" value="&lt;b&gt;Poller script&lt;/b&gt;&lt;div style=&quot;text-align:left&quot;&gt;1. find ready issues&lt;br&gt;2. skip + comment if no&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;acceptance criteria&lt;br&gt;3. move to In Progress&lt;br&gt;4. map label/project to repo&lt;br&gt;5. git worktree add, ./setup&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;" vertex="1" parent="1">
-          <mxGeometry x="290" y="260" width="220" height="150" as="geometry" />
-        </mxCell>
-        <mxCell id="worktree" value="&lt;b&gt;git worktree&lt;/b&gt;&lt;br&gt;one per issue" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;size=8;fillColor=#ffffff;strokeColor=#666666;" vertex="1" parent="1">
-          <mxGeometry x="330" y="460" width="140" height="70" as="geometry" />
+        <mxCell id="timer" value="&lt;b&gt;systemd timer&lt;/b&gt;&lt;br&gt;every 3 min, under flock" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="300" y="160" width="200" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="tester" value="&lt;b&gt;Session 1: tester&lt;/b&gt;&lt;br&gt;&lt;code&gt;claude -p&lt;/code&gt;, auto mode&lt;br&gt;commits tests that pass only&lt;br&gt;on correct behavior" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" vertex="1" parent="1">
-          <mxGeometry x="590" y="200" width="260" height="70" as="geometry" />
+        <mxCell id="poller" value="&lt;b&gt;Poller&lt;/b&gt;: pick + admit (usage, cap, claims, deps)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="285" y="275" width="230" height="34" as="geometry" />
         </mxCell>
-        <mxCell id="impl" value="&lt;b&gt;Session 2: implementer&lt;/b&gt;&lt;br&gt;fresh &lt;code&gt;claude -p&lt;/code&gt;&lt;br&gt;implements until they pass" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;" vertex="1" parent="1">
-          <mxGeometry x="590" y="320" width="260" height="70" as="geometry" />
+        <mxCell id="launcher" value="&lt;b&gt;Launcher&lt;/b&gt;: worktree, ./setup, clean env" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="285" y="315" width="230" height="34" as="geometry" />
         </mxCell>
-        <mxCell id="caps" value="--max-turns 60, --max-budget-usd 6 (untested)" style="text;html=1;fontSize=10;fontColor=#b46504;align=center;" vertex="1" parent="1">
-          <mxGeometry x="590" y="410" width="260" height="30" as="geometry" />
+        <mxCell id="supervisor" value="&lt;b&gt;Supervisor&lt;/b&gt;: handoff restarts, wall clock, cleanup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="285" y="355" width="230" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="publisher" value="&lt;b&gt;Publisher&lt;/b&gt;: just check, test guard, draft PR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="285" y="395" width="230" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="notifier" value="&lt;b&gt;Notifier&lt;/b&gt;: 4-tier rubric, dedupe, digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="285" y="435" width="230" height="34" as="geometry" />
         </mxCell>
 
-        <mxCell id="publish" value="&lt;b&gt;Script publishes, not the agent&lt;/b&gt;&lt;div style=&quot;text-align:left&quot;&gt;just check&lt;br&gt;name branch, push&lt;br&gt;gh pr create --draft, Fixes NF-123&lt;br&gt;comment PR link on the issue&lt;br&gt;design question: comment, end run&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;" vertex="1" parent="1">
-          <mxGeometry x="590" y="500" width="260" height="140" as="geometry" />
+        <mxCell id="s1" value="&lt;b&gt;NF-123&lt;/b&gt; &lt;code&gt;claude --remote-control NF-123&lt;/code&gt;&lt;br&gt;tester session, then implementer session&lt;br&gt;plugin: skills (tester, implementer, escalate, coordinate)&lt;br&gt;hooks: SessionStart loads issue + handoff, PreCompact writes handoff&lt;br&gt;status line writes usage + context to state dir" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="600" y="200" width="350" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="s2" value="&lt;b&gt;NF-124&lt;/b&gt; same shape, own worktree" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="600" y="380" width="350" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="e1" value="starts" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="timer" target="poller">
+        <mxCell id="ledger" value="&lt;b&gt;Claims ledger&lt;/b&gt;&lt;br&gt;SQLite, WAL&lt;br&gt;issue, session, paths, deps, state" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;size=8;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="300" y="540" width="200" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="wt" value="&lt;b&gt;Worktrees&lt;/b&gt; under one trusted root&lt;br&gt;pre-commit hook checks claimed paths&lt;br&gt;state dir: handoff notes, escalations, usage" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;size=8;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="620" y="540" width="310" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="linear" value="&lt;b&gt;Linear&lt;/b&gt;&lt;br&gt;issues labelled claude&lt;br&gt;escalation / needs-decision&lt;br&gt;digest issue" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="30" y="300" width="170" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="app" value="&lt;b&gt;Claude app / claude.ai/code&lt;/b&gt;&lt;br&gt;Remote Control: watch, steer,&lt;br&gt;push when action is required" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="640" y="20" width="230" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="ntfy" value="&lt;b&gt;ntfy&lt;/b&gt;&lt;br&gt;tier 1 and 2 pushes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="30" y="560" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="github" value="&lt;b&gt;GitHub&lt;/b&gt;&lt;br&gt;draft PRs, CI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="390" width="160" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-timer" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="timer" target="svc">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e2" value="personal API key&lt;br&gt;read + update" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;startArrow=block;fontSize=10;" edge="1" parent="1" source="poller" target="linear">
+        <mxCell id="e-linear" value="personal API key" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;startArrow=block;fontSize=10;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="poller" target="linear">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="poller" target="worktree">
+        <mxCell id="e-launch" value="start in clean env" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="launcher" target="s1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e4" value="mounted" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="worktree" target="tester">
+        <mxCell id="e-ledger" value="claims" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;startArrow=block;fontSize=10;" edge="1" parent="1" source="svc" target="ledger">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-msg" value="SendMessage" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;startArrow=block;fontSize=10;" edge="1" parent="1" source="s1" target="s2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-commit" value="commit" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="sess" target="wt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-hook" value="pre-commit check" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;dashed=1;" edge="1" parent="1" source="wt" target="ledger">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-rc" value="Remote Control" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;startArrow=block;fontSize=10;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="sess" target="app">
           <mxGeometry relative="1" as="geometry">
-            <Array as="points"><mxPoint x="540" y="495" /><mxPoint x="540" y="235" /></Array>
+            <Array as="points"><mxPoint x="775" y="120" /><mxPoint x="755" y="120" /></Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e5" value="then" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="tester" target="impl">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e6" value="signed-in session" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="container" target="anthropic">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e7" value="exits" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="impl" target="publish">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e8" value="push, draft PR" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="publish" target="github">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e9" value="PR link or question" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;exitX=0.5;exitY=1;entryX=0.5;entryY=1;" edge="1" parent="1" source="publish" target="linear">
+        <mxCell id="e-pr" value="push, draft PR (write token)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;exitX=1;exitY=0.5;entryX=0.25;entryY=1;" edge="1" parent="1" source="publisher" target="github">
           <mxGeometry relative="1" as="geometry">
-            <Array as="points"><mxPoint x="720" y="720" /><mxPoint x="125" y="720" /></Array>
+            <Array as="points"><mxPoint x="560" y="412" /><mxPoint x="560" y="690" /><mxPoint x="1100" y="690" /></Array>
           </mxGeometry>
         </mxCell>
+        <mxCell id="e-gh" value="gh, read-only token" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;dashed=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="sess" target="github">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ntfy" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;exitX=0;exitY=0.5;entryX=0.5;entryY=0;" edge="1" parent="1" source="notifier" target="ntfy">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
 
-        <mxCell id="open-auth" value="Open: subscription use on company&lt;br&gt;repos needs the company's OK." style="shape=note;whiteSpace=wrap;html=1;size=12;dashed=1;fillColor=#fff2cc;strokeColor=#d79b00;fontColor=#b46504;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="860" y="20" width="200" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="open-lock" value="Open: lock so two runs&lt;br&gt;cannot overlap (flock)" style="shape=note;whiteSpace=wrap;html=1;size=12;dashed=1;fillColor=#fff2cc;strokeColor=#d79b00;fontColor=#b46504;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="40" y="150" width="170" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="open-map" value="Open: label/project to repo mapping;&lt;br&gt;recovery of issues stuck In Progress" style="shape=note;whiteSpace=wrap;html=1;size=12;dashed=1;fillColor=#fff2cc;strokeColor=#d79b00;fontColor=#b46504;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="20" y="440" width="220" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="open-tests" value="Open: reject implementer&lt;br&gt;changes to test files" style="shape=note;whiteSpace=wrap;html=1;size=12;dashed=1;fillColor=#fff2cc;strokeColor=#d79b00;fontColor=#b46504;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="920" y="330" width="170" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="open-parallel" value="Open: several issues at once?&lt;br&gt;One container per worktree, capped;&lt;br&gt;all share one subscription's limits" style="shape=note;whiteSpace=wrap;html=1;size=12;dashed=1;fillColor=#fff2cc;strokeColor=#d79b00;fontColor=#b46504;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="920" y="170" width="200" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="n5" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;" edge="1" parent="1" source="open-parallel" target="container">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="n1" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;" edge="1" parent="1" source="open-auth" target="anthropic">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="n2" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;" edge="1" parent="1" source="open-lock" target="timer">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="n3" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;" edge="1" parent="1" source="open-map" target="poller">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="n4" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;" edge="1" parent="1" source="open-tests" target="publish">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="later" value="Later: Docker per session, task splitting, calendar free/busy, more integrations, fit-to-budget estimates" style="shape=note;whiteSpace=wrap;html=1;size=12;dashed=1;fillColor=#fff2cc;strokeColor=#d79b00;fontColor=#b46504;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="240" y="750" width="560" height="40" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
