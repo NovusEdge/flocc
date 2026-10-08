@@ -61,15 +61,16 @@ Pro does not [S1][S2]. Current limit numbers were not found; `/usage` shows mine
 Needs no Linear admin and loads the full repo setup. Costs a short script to maintain.
 
 1. A Linear personal API key limited to the NF team, and a fine-grained GitHub token [L4].
-2. Auth: on Max, a Console key in its own workspace with a spend limit [S2]; on Pro,
-   `claude setup-token` [C2]. For company repos, see Before building.
+2. Auth: Claude Code signed in with my claude.ai subscription, no API key. In the container
+   that means `claude setup-token` [C2]. For company repos, see Before building.
 3. A systemd timer runs the script every 3 minutes. It finds issues assigned to me with the
    `claude` label that are not started and have the agent-ready acceptance criteria, moves
    each to In Progress, maps the label or project to a repo, runs `git worktree add` and
    `./setup`. An issue without acceptance criteria gets a comment and is skipped.
 4. In the reference dev container, as a non-root user:
    `claude -p --permission-mode auto --permission-prompts none --max-turns 60 --max-budget-usd 6` [C3],
-   twice: a tester session that commits failing tests first, then a fresh implementer session.
+   twice: a tester session that first commits tests which pass only on correct behavior, then
+   a fresh implementer session.
    The caps are suggested values, not tested.
 5. The script, not the agent, runs `just check`, names the branch, pushes, runs
    `gh pr create --draft` with `Fixes NF-123` and the labels, and comments the PR link on the
