@@ -156,6 +156,30 @@ def test_publish_that_keeps_failing_blocks(rt):
     assert "linear-agents release --keep-worktree NF-1" in esc.action
 
 
+def test_publish_failures_count_only_in_a_row(rt):
+    results = ["fail", "fail", PublishResult("check_failed", "E1 boom"), "fail", "fail", "fail"]
+
+    def scripted(c, t, s):
+        r = results.pop(0)
+        if r == "fail":
+            raise subprocess.CalledProcessError(1, ["git", "push"])
+        return r
+
+    rt.publish_fn = scripted
+    add(rt, phase="impl", tester_sha="sha-tests")
+    for _ in range(3):
+        done(rt)
+        supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+    for _ in range(2):
+        done(rt)
+        supervise(rt, current(rt))
+        assert current(rt).state == "running" and rt.notifier.sent == []
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+
+
 def test_fix_session_keeps_the_check_output_across_restarts(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
     add(rt, phase="impl", tester_sha="sha-tests")

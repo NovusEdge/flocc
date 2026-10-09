@@ -124,6 +124,8 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
         _publish_failed(rt, claim, exc)
         return
+    # Failures count only in a row: the fix phase's publish, or a rerun's, starts from zero.
+    ledger.meta_set(rt.con, f"publish_failures:{key}", "0")
     if result.status == "opened":
         rt.linear.comment(issue.id, f"Draft PR: {result.url}")
         ledger.add_digest(rt.con, key, f"draft PR ready: {result.url}", rt.now())
