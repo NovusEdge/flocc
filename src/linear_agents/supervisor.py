@@ -7,7 +7,7 @@ from linear_agents.agentblock import settings_from_json
 from linear_agents.context import phase_prompt, state_dir
 from linear_agents.escalation import Escalation, scoped
 from linear_agents.ledger import Claim
-from linear_agents.sessions import claude_argv, clean_env, session_name
+from linear_agents.sessions import claude_argv, clean_env, session_name, trust_folders
 from linear_agents.usage import context_pct, latest_usage, read_status
 
 HANDOFF_ASK = (
@@ -52,6 +52,9 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
     markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
     for leftover in (*_MARKERS, "status.json"):
         (d / leftover).unlink(missing_ok=True)
+    # Both keys: for a worktree, trust may be keyed on the main checkout's root instead.
+    repo = rt.cfg.repos.get(claim.repo)
+    trust_folders(rt.cfg.claude_json, [claim.worktree, *([repo.path] if repo else [])])
     try:
         rt.sessions.start(name, Path(claim.worktree), argv)
     except BaseException:

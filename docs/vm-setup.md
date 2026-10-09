@@ -22,9 +22,10 @@ outside its home is writable to it, such as a Homebrew prefix your own `PATH` us
    with it. Do not set `ANTHROPIC_API_KEY` anywhere.
 3. In `/config`: turn on "Push when actions required", turn off "Push when Claude decides".
    Leave extra usage off.
-4. Create `worktree_root` and trust it once: `cd ~/agents/worktrees && claude`, accept the folder
-   trust prompt, accept "Enable Remote Control" if asked, exit. Worktrees created under it start
-   without the prompt.
+4. Create `worktree_root`, then run `cd ~/agents/worktrees && claude` once and accept "Enable
+   Remote Control" if asked. A worktree is its own git repo and does not inherit folder trust from
+   this directory, so the launcher marks each worktree and its main checkout as trusted in
+   `~/.claude.json` before starting a session.
 5. Linear: a personal API key limited to the team, saved to `linear_key_file` (mode 600). Create
    the labels `claude`, `escalation` and `needs-decision`, and a pinned digest issue whose key goes
    in `digest_issue`. Create one label per mapped repo, named exactly as its `[repos.<name>]` key

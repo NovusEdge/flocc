@@ -223,6 +223,21 @@ def test_dead_session_restarts_once_then_blocks(rt):
     assert rt.notifier.sent[-1].waiting is True
 
 
+def test_launch_trusts_the_worktree_and_its_checkout(rt):
+    cj = rt.cfg.claude_json
+    cj.write_text(json.dumps({"userID": "u", "projects": {"/other": {"allowedTools": ["x"]}}}))
+    cj.chmod(0o600)
+    add(rt)
+    supervise(rt, current(rt))
+    assert rt.sessions.started[0][0] == "NF-1-test"
+    data = json.loads(cj.read_text())
+    checkout = str(rt.cfg.repos["backend"].path)
+    assert data["projects"]["/wt/NF-1"]["hasTrustDialogAccepted"] is True
+    assert data["projects"][checkout]["hasTrustDialogAccepted"] is True
+    assert data["userID"] == "u" and data["projects"]["/other"] == {"allowedTools": ["x"]}
+    assert cj.stat().st_mode & 0o777 == 0o600
+
+
 def test_launch_fails_without_agent_token(rt):
     add(rt)
     rt.cfg.agent_gh_token_file.write_text("")
