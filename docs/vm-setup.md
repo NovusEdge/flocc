@@ -1,6 +1,19 @@
 # VM setup
 
-One-time steps on the VM, in order.
+One-time steps on the VM, in order. The service and its agents run as a dedicated user, so
+sessions cannot read your own account's browser profiles, keys or logins. Create it from your own
+account:
+
+```bash
+sudo useradd --create-home --shell /bin/bash linear-agents
+sudo chmod 700 /home/linear-agents
+sudo loginctl enable-linger linear-agents
+```
+
+It gets no password, no groups and no sudo. Run every step below as `linear-agents`
+(`sudo -iu linear-agents`, or `ssh linear-agents@<vm>` over Tailscale SSH). Check that nothing
+outside its home is writable to it, such as a Homebrew prefix your own `PATH` uses:
+`find / -xdev -writable -not -path '/proc/*' -not -path '/home/linear-agents/*' 2>/dev/null`.
 
 1. Install `git`, `gh`, `tmux`, `claude` (2.1.293 or later) and this repo; run `./setup`, then
    `uv tool install --editable .` so `linear-agents` is on `PATH` at `~/.local/bin`.
@@ -35,8 +48,10 @@ One-time steps on the VM, in order.
       ~/.config/systemd/user/
    systemctl --user daemon-reload
    systemctl --user enable --now linear-agents-tmux.service linear-agents.timer
-   loginctl enable-linger $USER
    ```
+
+   Lingering was enabled when the user was created. Over `sudo -iu`, `systemctl --user` needs
+   `XDG_RUNTIME_DIR=/run/user/$(id -u)`.
 
 Watch it with `journalctl --user -u linear-agents -f`, and attach to a session with
 `tmux -L linear-agents attach -t NF-123`.

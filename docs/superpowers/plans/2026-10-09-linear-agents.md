@@ -22,7 +22,8 @@ written by `linear-agents` subcommands the plugin's skills tell them to run.
 
 - Agents run only as interactive Claude Code sessions on the owner's subscription; never set or
   pass `ANTHROPIC_API_KEY`.
-- The machine is trusted and agents share the owner's Unix user. "Agents never push, open PRs or
+- The service runs as a dedicated `linear-agents` Unix user, apart from the owner's account, and
+  agents share that user. "Agents never push, open PRs or
   change Linear" is behavioural (prompt, skills, hook, a read-only token in `GH_TOKEN`), not an
   enforced boundary.
 - The session command is `/usr/bin/env -i` with exactly `HOME`, `USER`, `PATH`, `TERM`, `LANG`
