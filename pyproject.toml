@@ -17,6 +17,7 @@ python-preference = "only-managed"
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+extend-exclude = ["docs", ".superpowers"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
