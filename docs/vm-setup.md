@@ -92,7 +92,8 @@ every eval's graders succeed. Fix the failing skill and rerun before going on.
    because `--strict-mcp-config` is unverified in interactive sessions. If any connector shows up,
    stop the rollout: `systemctl --user stop linear-agents.timer`, kill the session, and do not
    proceed, since it could write to Linear through the connector. Record the result in the spec's
-   "Verified and unverified" section.
+   "Verified and unverified" section. Add a Linear MCP server to the `linear-agents` user's own
+   Claude config only after this passes, and run this step again after each Claude Code upgrade.
 4. In the app, confirm the tester session is steerable. Check `ListAgents` from a second session
    and note whether `--name` changed the listed name; record the answer in the spec.
 5. Confirm lookup by human key resolves. Pass: the tick in step 2 found and claimed the issue by
