@@ -130,8 +130,8 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     # Failures count only in a row: the fix phase's publish, or a rerun's, starts from zero.
     ledger.meta_set(rt.con, f"publish_failures:{key}", "0")
     if result.status == "opened":
-        rt.linear.comment(issue.id, f"Draft PR: {result.url}")
-        ledger.add_digest(rt.con, key, f"draft PR ready: {result.url}", rt.now())
+        rt.linear.comment(issue.id, f"PR for review: {result.url}")
+        ledger.add_digest(rt.con, key, f"PR ready for review: {result.url}", rt.now())
         ledger.update_claim(rt.con, key, state="done")
     elif result.status == "check_failed" and claim.fix_attempts == 0:
         extra = f"The check failed with:\n\n{result.detail}"

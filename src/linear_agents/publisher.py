@@ -94,7 +94,7 @@ def publish(
             "gh",
             "pr",
             "create",
-            "--draft",
+            *(["--draft"] if repo.draft else []),
             "--head",
             claim.branch,
             "--base",

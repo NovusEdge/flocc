@@ -20,6 +20,8 @@ class RepoConfig:
     path: Path
     base_branch: str = "main"
     check: str = "just check"
+    # GitHub Free organizations cannot open draft PRs on private repos.
+    draft: bool = True
 
 
 # No claude_config_dir: sessions must share the owner's Claude Code login and
@@ -59,12 +61,9 @@ def default_config_path() -> Path:
 
 def load(path: Path) -> Config:
     raw = tomllib.loads(path.read_text())
+    # Unpacked so a misspelt repo key fails like a misspelt top-level one.
     repos = {
-        name: RepoConfig(
-            path=Path(r["path"]).expanduser(),
-            base_branch=r.get("base_branch", "main"),
-            check=r.get("check", "just check"),
-        )
+        name: RepoConfig(path=Path(r.pop("path")).expanduser(), **r)
         for name, r in raw.pop("repos", {}).items()
     }
     if not repos:

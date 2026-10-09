@@ -104,7 +104,9 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
    `linear-agents release NF-…` (step 8) accepts the same key. The Linear query is
    `issue(id: "NF-1")`; a "not found" or schema error means the key lookup in `linear.py` is
    wrong, so fix it and add the real response as a fixture.
-6. Keep running `linear-agents tick` until a draft PR exists and Linear has the PR comment.
+6. Keep running `linear-agents tick` until a PR exists and Linear has the PR comment. It is a
+   draft unless the repo sets `draft = false`, which a private repo of a GitHub Free
+   organization needs.
 7. Exercise escalation: in a session, run
 
    ```bash
