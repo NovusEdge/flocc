@@ -10,6 +10,12 @@ from linear_agents.worktree import git
 from tests.paths import EXAMPLE
 
 
+@pytest.fixture(autouse=True)
+def no_token_check(monkeypatch):
+    # The tick's token check calls api.github.com; test_tokens.py covers it with fakes.
+    monkeypatch.setattr("linear_agents.tick.check_tokens", lambda rt: None)
+
+
 @pytest.fixture
 def tmp_cfg(tmp_path):
     for name in ("state", "wt"):

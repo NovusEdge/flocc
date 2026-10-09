@@ -15,6 +15,7 @@ from linear_agents.publisher import publish
 from linear_agents.runtime import Runtime
 from linear_agents.sessions import Sessions
 from linear_agents.supervisor import supervise
+from linear_agents.tokens import check_tokens
 from linear_agents.worktree import git
 
 FAILS_BEFORE_PAGE = 5
@@ -153,6 +154,8 @@ def tick(cfg: Config, config_path: Path) -> int:
         failed |= route_escalations(rt)
         failed |= forward_comments(rt)
         poll(rt)
+        # Before the digest, so a warning written today goes out with today's digest.
+        check_tokens(rt)
         maybe_digest(rt)
         if failed:
             raise IssueLinearErrors(failed)
