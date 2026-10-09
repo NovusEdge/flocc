@@ -1,0 +1,6 @@
+{"viewer": {"assignedIssues": {
+  "nodes": [{"id": "u1", "identifier": "NF-1", "title": "One", "description": "d1",
+    "url": "https://linear.app/x/issue/NF-1", "state": {"type": "unstarted"},
+    "labels": {"nodes": [{"name": "claude"}, {"name": "backend"}]},
+    "project": null, "team": {"id": "t1"}}],
+  "pageInfo": {"hasNextPage": true, "endCursor": "c1"}}}}
