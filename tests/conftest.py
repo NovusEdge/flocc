@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 
 from linear_agents.config import load
+from linear_agents.worktree import git
 from tests.paths import EXAMPLE
 
 
@@ -22,6 +23,24 @@ def tmp_cfg(tmp_path):
         ledger_path=tmp_path / "l.sqlite",
         agent_gh_token_file=token,
     )
+
+
+@pytest.fixture
+def origin(tmp_path):
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True)
+    src = tmp_path / "src"
+    subprocess.run(["git", "clone", "-q", bare, src], check=True, capture_output=True)
+    for k, v in (("user.name", "t"), ("user.email", "t@t")):
+        git("config", k, v, cwd=src)
+    (src / "a.txt").write_text("a\n")
+    (src / ".gitignore").write_text(".setup-ran\n")
+    (src / "setup").write_text("#!/bin/sh\ntouch .setup-ran\n")
+    (src / "setup").chmod(0o755)
+    git("add", ".", cwd=src)
+    git("commit", "-qm", "init", cwd=src)
+    git("push", "-q", "origin", "main", cwd=src)
+    return src
 
 
 @pytest.fixture

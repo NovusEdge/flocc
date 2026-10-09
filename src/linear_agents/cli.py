@@ -5,7 +5,8 @@ import sys
 import time
 from pathlib import Path
 
-from linear_agents import usage
+from linear_agents import ledger, usage
+from linear_agents.config import default_config_path, load
 from linear_agents.escalation import Escalation, validate
 
 
@@ -52,7 +53,61 @@ def cmd_escalate(args) -> int:
     return 0
 
 
-COMMANDS = {"statusline": cmd_statusline, "escalate": cmd_escalate}
+def _ledger(args):
+    env = os.environ.get("LINEAR_AGENTS_LEDGER")
+    if env:
+        return ledger.connect(env)
+    path = Path(args.config) if args.config else default_config_path()
+    return ledger.connect(load(path).ledger_path)
+
+
+def cmd_hook(args) -> int:
+    from linear_agents.worktree import git
+
+    top = Path.cwd()
+    top = Path(git("rev-parse", "--show-toplevel", cwd=top))
+    con = _ledger(args)
+    mine = ledger.claim_for_worktree(con, str(top))
+    if mine is None:
+        return 0
+    staged = git("diff", "--cached", "--name-only", cwd=top).splitlines()
+    clash = ledger.file_conflicts(staged, ledger.live_claims(con), exclude=mine.issue_key)
+    if not clash:
+        return 0
+    for name, owner in clash.items():
+        print(
+            f"linear-agents: {name} is claimed by {owner}; message that session or escalate",
+            file=sys.stderr,
+        )
+    return 1
+
+
+def cmd_claim(args) -> int:
+    key = _state_dir().name
+    con = _ledger(args)
+    with ledger.transaction(con):
+        mine = ledger.get_claim(con, key)
+        if mine is None:
+            print(f"claim: no live claim for {key}", file=sys.stderr)
+            return 1
+        clash = ledger.conflicting_claims(args.globs, ledger.live_claims(con), exclude=key)
+        if not clash:
+            paths = mine.paths + [g for g in args.globs if g not in mine.paths]
+            con.execute("UPDATE claims SET paths = ? WHERE issue_key = ?", (json.dumps(paths), key))
+    if clash:
+        for glob, owner in clash.items():
+            print(f"claim: {glob} overlaps {owner}'s claim", file=sys.stderr)
+        return 1
+    print("claimed")
+    return 0
+
+
+COMMANDS = {
+    "statusline": cmd_statusline,
+    "escalate": cmd_escalate,
+    "hook": cmd_hook,
+    "claim": cmd_claim,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +124,10 @@ def build_parser() -> argparse.ArgumentParser:
     esc.add_argument("--deadline-min", type=int)
     esc.add_argument("--waiting", action="store_true")
     esc.add_argument("--global", dest="is_global", action="store_true")
+    hook = sub.add_parser("hook")
+    hook.add_argument("name", choices=["pre-commit"])
+    claim = sub.add_parser("claim")
+    claim.add_argument("globs", nargs="+")
     return parser
 
 
