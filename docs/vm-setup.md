@@ -48,10 +48,15 @@ outside its home is writable to it, such as a Homebrew prefix your own `PATH` us
    cp deploy/linear-agents.{service,timer} deploy/linear-agents-tmux.service \
       ~/.config/systemd/user/
    systemctl --user daemon-reload
-   systemctl --user enable --now linear-agents-tmux.service linear-agents.timer
+   systemctl --user enable --now linear-agents-tmux.service
+   linear-agents doctor
+   systemctl --user enable --now linear-agents.timer
    ```
 
-   Lingering was enabled when the user was created. Over `sudo -iu`, `systemctl --user` needs
+   Enable the timer only once `linear-agents doctor` reports no FAIL line. It checks the config,
+   the Linear key, labels and digest issue, each repo's fetch, both GitHub tokens' expiry and
+   access (the agent token must not be able to push), the Claude login and version, and the tmux
+   server, and changes nothing. Lingering was enabled when the user was created. Over `sudo -iu`, `systemctl --user` needs
    `XDG_RUNTIME_DIR=/run/user/$(id -u)`.
 
 Watch it with `journalctl --user -u linear-agents -f`, and attach to a session with
