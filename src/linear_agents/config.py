@@ -36,7 +36,8 @@ class Config:
     agent_gh_token_file: Path
     publish_gh_token_file: Path
     ntfy_url: str
-    digest_issue: str | None = None
+    # Required: tier 3 reports, wall-clock stops among them, reach the owner only through it.
+    digest_issue: str
     digest_hour: int = 18
     session_cap: int = 2
     five_hour_max_pct: float = 60.0
@@ -65,6 +66,8 @@ def load(path: Path) -> Config:
     }
     if not repos:
         raise ValueError(f"{path}: no [repos.<name>] tables")
+    if not raw.get("digest_issue"):
+        raise ValueError(f"{path}: digest_issue is required, the key of the pinned digest issue")
     for key in _PATH_KEYS:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()

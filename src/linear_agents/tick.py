@@ -8,7 +8,7 @@ from pathlib import Path
 
 from linear_agents import ledger
 from linear_agents.config import Config
-from linear_agents.escalation import Escalation, Notifier
+from linear_agents.escalation import Escalation, Notifier, ntfy_push
 from linear_agents.linear import Linear, LinearError, http_transport
 from linear_agents.poller import forward_comments, maybe_digest, poll, route_escalations
 from linear_agents.publisher import publish
@@ -82,16 +82,43 @@ def tick_lock(path: Path):
         yield True
 
 
-def _page_after_repeats(rt, counter: str, cause: str, what: str, exc: Exception, action: str):
-    fails = int(ledger.meta_get(rt.con, counter) or 0) + 1
-    ledger.meta_set(rt.con, counter, str(fails))
+def _page_after_repeats(con, notifier, counter, cause, what, exc: Exception, action: str):
+    fails = int(ledger.meta_get(con, counter) or 0) + 1
+    ledger.meta_set(con, counter, str(fails))
     if fails >= FAILS_BEFORE_PAGE:
         summary = f"{what} has failed {fails} ticks in a row: {exc}"
-        rt.notifier.send(Escalation(1, cause, summary, action, scope="global"), None, None)
+        notifier.send(Escalation(1, cause, summary, action, scope="global"), None, None)
+
+
+def _page_unbuilt(cfg: Config, exc: Exception) -> None:
+    # The page must not need what failed. A global tier 1 with no team only pushes, so the
+    # notifier gets no Linear client; without a ledger to count in, the journal is all there is.
+    try:
+        con = ledger.connect(cfg.ledger_path)
+    except Exception as err:  # noqa: BLE001
+        print(f"tick: failure not counted, the ledger did not open: {err}", file=sys.stderr)
+        return
+    _page_tick_failure(con, Notifier(cfg, con, None, now=time.time, push=ntfy_push), exc)
+
+
+def _page_tick_failure(con, notifier, exc: Exception) -> None:
+    _page_after_repeats(
+        con,
+        notifier,
+        "tick_failures",
+        "tick-failing",
+        "The tick",
+        exc,
+        "Read journalctl --user -u linear-agents",
+    )
 
 
 def tick(cfg: Config, config_path: Path) -> int:
-    rt = build_runtime(cfg, config_path)
+    try:
+        rt = build_runtime(cfg, config_path)
+    except Exception as exc:
+        _page_unbuilt(cfg, exc)
+        raise
     linear_exc: LinearError | None = None
     try:
         for claim in ledger.live_claims(rt.con):
@@ -129,7 +156,8 @@ def tick(cfg: Config, config_path: Path) -> int:
     except LinearError as exc:
         print(f"linear: {exc}", file=sys.stderr)
         _page_after_repeats(
-            rt,
+            rt.con,
+            rt.notifier,
             "linear_failures",
             "linear-api",
             "Linear",
@@ -140,13 +168,6 @@ def tick(cfg: Config, config_path: Path) -> int:
     except Exception as exc:
         # Re-raised so the unit still fails, but a tmux server that is down fails every tick
         # and nothing else pages.
-        _page_after_repeats(
-            rt,
-            "tick_failures",
-            "tick-failing",
-            "The tick",
-            exc,
-            "Read journalctl --user -u linear-agents",
-        )
+        _page_tick_failure(rt.con, rt.notifier, exc)
         raise
     return 0

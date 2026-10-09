@@ -175,24 +175,25 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     rt.linear.start(issue)
 
 
-def _new_lines(path: Path, offset: int) -> tuple[list[str], int]:
+def _new_lines(path: Path, offset: int) -> list[bytes]:
     # Only complete lines; a line still being written is picked up next tick.
     try:
         new = path.read_bytes()[offset:]
     except FileNotFoundError:
-        return [], 0
-    end = new.rfind(b"\n") + 1
-    return new[:end].decode().splitlines(), end
+        return []
+    return new.split(b"\n")[:-1]
 
 
 def route_escalations(rt) -> None:
     for claim in ledger.live_claims(rt.con):
         path = state_dir(rt.cfg, claim.issue_key) / "escalations.jsonl"
-        lines, end = _new_lines(path, claim.escalation_offset)
-        if not end:
+        lines = _new_lines(path, claim.escalation_offset)
+        if not lines:
             continue
         issue = rt.linear.issue(claim.issue_key)
-        for raw in lines:
+        offset = claim.escalation_offset
+        for line in lines:
+            raw = line.decode(errors="replace")
             try:
                 esc = Escalation.from_json(raw)
             except (ValueError, TypeError):
@@ -200,9 +201,9 @@ def route_escalations(rt) -> None:
                     3, "malformed-escalation", f"Unreadable escalation line: {raw[:200]}"
                 )
             rt.notifier.send(scoped(esc, claim.issue_key), issue, issue.team_id)
-        ledger.update_claim(
-            rt.con, claim.issue_key, escalation_offset=claim.escalation_offset + end
-        )
+            # Per line: a failure on a later one must not send this one again next tick.
+            offset += len(line) + 1
+            ledger.update_claim(rt.con, claim.issue_key, escalation_offset=offset)
 
 
 def forward_comments(rt) -> None:
@@ -216,9 +217,13 @@ def forward_comments(rt) -> None:
         for comment in replies:
             # The service's own comments carry BOT_PREFIX, and teammates comment on NF issues
             # too; only the owner's replies go to the session.
-            if comment.mine and not comment.body.startswith(BOT_PREFIX) and rt.sessions.alive(name):
+            if comment.mine and not comment.body.startswith(BOT_PREFIX):
+                # A dead session is relaunched by the next tick's supervisor, which delivers
+                # this reply and the ones after it.
+                if not rt.sessions.alive(name):
+                    break
                 rt.sessions.send(name, f"The owner replied on Linear: {comment.body}")
-        ledger.update_claim(rt.con, claim.issue_key, last_comment_at=replies[-1].created_at)
+            ledger.update_claim(rt.con, claim.issue_key, last_comment_at=comment.created_at)
 
 
 def _local_hour_and_date(now: float) -> tuple[int, str]:
@@ -227,8 +232,6 @@ def _local_hour_and_date(now: float) -> tuple[int, str]:
 
 
 def maybe_digest(rt) -> None:
-    if not rt.cfg.digest_issue:
-        return
     hour, today = _local_hour_and_date(rt.now())
     if hour < rt.cfg.digest_hour or ledger.meta_get(rt.con, "digest_date") == today:
         return
