@@ -136,6 +136,52 @@ def cmd_handoff_ready(args) -> int:
     return 0
 
 
+def _config(args):
+    path = Path(args.config) if args.config else default_config_path()
+    return load(path), path
+
+
+def _lock_path(cfg):
+    return cfg.ledger_path.with_suffix(".lock")
+
+
+def cmd_tick(args) -> int:
+    from linear_agents.tick import tick, tick_lock
+
+    cfg, path = _config(args)
+    with tick_lock(_lock_path(cfg)) as held:
+        if not held:
+            print("tick: another tick is running; skipped", file=sys.stderr)
+            return 0
+        return tick(cfg, path)
+
+
+def cmd_release(args) -> int:
+    from linear_agents.sessions import session_name
+    from linear_agents.tick import build_runtime, tick_lock
+    from linear_agents.worktree import git
+
+    cfg, path = _config(args)
+    with tick_lock(_lock_path(cfg)) as held:
+        if not held:
+            print("release: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        rt = build_runtime(cfg, path)
+        claim = ledger.get_claim(rt.con, args.key)
+        if claim is None:
+            print(f"release: no claim for {args.key}", file=sys.stderr)
+            return 1
+        rt.sessions.kill(session_name(claim.issue_key, claim.phase))
+        if not args.keep_worktree:
+            git("worktree", "remove", "--force", claim.worktree, cwd=cfg.repos[claim.repo].path)
+        # Back to Todo so the next poll picks it up again; the rerun continues on the kept
+        # branch (Task 9).
+        rt.linear.unstart(rt.linear.issue(args.key))
+        ledger.delete_claim(rt.con, args.key)
+    print(f"released {args.key}: back in Todo, branch {claim.branch} kept")
+    return 0
+
+
 COMMANDS = {
     "statusline": cmd_statusline,
     "escalate": cmd_escalate,
@@ -144,6 +190,8 @@ COMMANDS = {
     "context": cmd_context,
     "done": cmd_done,
     "handoff-ready": cmd_handoff_ready,
+    "tick": cmd_tick,
+    "release": cmd_release,
 }
 
 
@@ -169,6 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     done = sub.add_parser("done")
     done.add_argument("--summary", required=True)
     sub.add_parser("handoff-ready")
+    sub.add_parser("tick")
+    rel = sub.add_parser("release")
+    rel.add_argument("key")
+    rel.add_argument("--keep-worktree", action="store_true")
     return parser
 
 
