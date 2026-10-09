@@ -41,6 +41,11 @@ One-time steps on the VM, in order.
 Watch it with `journalctl --user -u linear-agents -f`, and attach to a session with
 `tmux -L linear-agents attach -t NF-123`.
 
+## Upgrading
+
+`digest_issue` is now required. A config without it fails to load, which fails every tick and the
+agents' pre-commit hook, so commits in running sessions are refused. Add it before upgrading.
+
 ## Smoke test
 
 Run this once by hand before trusting the timer with real issues. It uses your accounts, so no
