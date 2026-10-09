@@ -35,6 +35,27 @@ def test_expired_window_counts_as_zero(tmp_path):
     assert u.five_hour_pct == 0 and u.weekly_pct == 0
 
 
+def test_unreadable_status_is_skipped(tmp_path):
+    (tmp_path / "NF-1" / "status.json").mkdir(parents=True)
+    usage.write_status(tmp_path / "NF-2", status(20, 30))
+    u = usage.latest_usage(tmp_path, now=300)
+    assert u is not None and u.five_hour_pct == 20
+
+
+def test_status_deleted_mid_scan_is_skipped(tmp_path, monkeypatch):
+    usage.write_status(tmp_path / "NF-1", status(20, 30))
+    gone = tmp_path / "NF-1" / "status.json"
+    real_read = Path.read_text
+
+    def read_text(self, *a, **kw):
+        if self == gone:
+            self.unlink()
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert usage.latest_usage(tmp_path, now=300) is None
+
+
 def test_no_files_is_none(tmp_path):
     assert usage.latest_usage(tmp_path, now=0) is None
 

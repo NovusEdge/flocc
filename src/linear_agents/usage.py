@@ -37,10 +37,11 @@ def window_pct(window: dict | None, now: float) -> float:
 def latest_usage(state_root: Path, now: float) -> Usage | None:
     best: tuple[float, dict] | None = None
     for path in state_root.glob("*/status.json"):
-        mtime = path.stat().st_mtime
+        # Each launch deletes the previous session's status file, so it can vanish mid-scan.
         try:
+            mtime = path.stat().st_mtime
             data = json.loads(path.read_text())
-        except ValueError:
+        except (OSError, ValueError):
             continue
         if "rate_limits" in data and (best is None or mtime > best[0]):
             best = (mtime, data)
