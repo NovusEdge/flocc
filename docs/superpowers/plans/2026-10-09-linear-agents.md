@@ -257,10 +257,14 @@ git commit -s -m "Scaffold the linear-agents package and tooling"
 ### Task 1: Configuration
 
 **Files:**
-- Create: `src/linear_agents/config.py`, `deploy/config.example.toml`, `tests/test_config.py`
+- Create: `src/linear_agents/config.py`, `deploy/config.example.toml`, `tests/__init__.py`,
+  `tests/paths.py`, `tests/test_config.py`
 
 **Interfaces:**
 - Produces:
+  - `tests.paths.EXAMPLE`: the path of `deploy/config.example.toml`, which every later test that
+    needs the example config imports instead of rebuilding the path; `tests/__init__.py` (empty)
+    makes `tests.*` importable
   - `RepoConfig(path: Path, base_branch: str = "main", check: str = "just check")`
   - `Config` dataclass with fields listed below. There is no `claude_config_dir`: sessions must use
     the same Claude Code config as the owner's own login and folder trust, so `CLAUDE_CONFIG_DIR`
@@ -296,15 +300,21 @@ url = "https://mcp.sentry.dev/mcp"
 
 - [ ] **Step 2: Write the failing tests**
 
-`tests/test_config.py`:
+`tests/__init__.py`: empty.
+
+`tests/paths.py`:
 ```python
 from pathlib import Path
 
+EXAMPLE = Path(__file__).parent.parent / "deploy" / "config.example.toml"
+```
+
+`tests/test_config.py`:
+```python
 import pytest
 
 from linear_agents.config import load
-
-EXAMPLE = Path(__file__).parent.parent / "deploy" / "config.example.toml"
+from tests.paths import EXAMPLE
 
 
 def test_example_loads_with_defaults():
@@ -418,7 +428,8 @@ Expected: 3 passed
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/linear_agents/config.py deploy/config.example.toml tests/test_config.py
+git add src/linear_agents/config.py deploy/config.example.toml tests/__init__.py tests/paths.py \
+  tests/test_config.py
 git commit -s -m "Load the service configuration from TOML"
 ```
 
@@ -660,7 +671,8 @@ git commit -s -m "Parse the per-issue agent block and acceptance criteria"
   - `conflicting_claims(paths, claims, exclude=None) -> dict[str, str]` (glob → owning issue key)
   - `file_conflicts(files, claims, exclude) -> dict[str, str]` (file → owning issue key; a file
     is claimed when it or a directory above it matches a glob)
-  - `alert_seen(con, cause, within_s, now) -> bool`, `record_alert(con, cause, tier, issue_key, now)`
+  - `alert_seen(con, cause, within_s, now) -> bool`, `record_alert(con, cause, tier, issue_key, now)`,
+    `clear_alert(con, cause)`
   - `add_digest(con, issue_key, line, now)`,
     `pending_digest(con) -> list[tuple[int, str|None, str]]`, `clear_digest(con, upto_id)`
   - `add_usage(con, issue_key, phase, event, five_hour_pct, weekly_pct, now)`,
@@ -724,7 +736,7 @@ def test_globs_overlap_cases(a, b, overlap):
     assert ledger.globs_overlap(b, a) is overlap
 
 
-def test_conflicts_exclude_self(con):
+def test_conflicts_exclude_self():
     mine, other = make("NF-1", ("src/a/**",)), make("NF-2", ("src/a/x.py",))
     assert ledger.conflicting_claims(["src/a/**"], [mine, other], exclude="NF-1") == {
         "src/a/**": "NF-2"
@@ -746,6 +758,8 @@ def test_alert_dedupe_window(con):
     ledger.record_alert(con, "setup-broken", 1, None, now=1000)
     assert ledger.alert_seen(con, "setup-broken", within_s=86400, now=2000)
     assert not ledger.alert_seen(con, "setup-broken", within_s=86400, now=1000 + 86401)
+    ledger.clear_alert(con, "setup-broken")
+    assert not ledger.alert_seen(con, "setup-broken", within_s=86400, now=2000)
 
 
 def test_digest_cleared_only_up_to_what_was_posted(con):
@@ -981,6 +995,11 @@ def record_alert(con, cause: str, tier: int, issue_key: str | None, now: float) 
         )
 
 
+def clear_alert(con, cause: str) -> None:
+    with transaction(con):
+        con.execute("DELETE FROM alerts WHERE cause = ?", (cause,))
+
+
 def add_digest(con, issue_key: str | None, line: str, now: float) -> None:
     with transaction(con):
         con.execute(
@@ -1116,6 +1135,10 @@ def load(name):
     return json.loads((FIX / name).read_text())
 
 
+def page2_issue():
+    return Linear(FakePost(load("ready_page2.json"))).ready_issues("NF", "claude")[0]
+
+
 def test_ready_issues_paginates():
     post = FakePost(load("ready_page1.json"), load("ready_page2.json"))
     issues = Linear(post).ready_issues("NF", "claude")
@@ -1137,8 +1160,7 @@ def test_start_picks_lowest_started_state():
             {"id": "s2", "position": 2.0}, {"id": "s1", "position": 1.0}]}}},
         {"issueUpdate": {"success": True}},
     )
-    issue = Linear(FakePost(load("ready_page2.json"))).ready_issues("NF", "claude")[0]
-    Linear(post).start(issue)
+    Linear(post).start(page2_issue())
     assert post.calls[0][1]["type"] == "started"
     assert post.calls[1][1] == {"id": "u2", "stateId": "s1"}
 
@@ -1148,8 +1170,7 @@ def test_unstart_moves_to_an_unstarted_state():
         {"team": {"states": {"nodes": [{"id": "todo", "position": 0.0}]}}},
         {"issueUpdate": {"success": True}},
     )
-    issue = Linear(FakePost(load("ready_page2.json"))).ready_issues("NF", "claude")[0]
-    Linear(post).unstart(issue)
+    Linear(post).unstart(page2_issue())
     assert post.calls[0][1]["type"] == "unstarted"
     assert post.calls[1][1] == {"id": "u2", "stateId": "todo"}
 
@@ -1160,8 +1181,7 @@ def test_add_label_skips_other_teams_labels():
                                    {"id": "ours", "team": {"id": "t1"}}]}},
         {"issueAddLabel": {"success": True}},
     )
-    issue = Linear(FakePost(load("ready_page2.json"))).ready_issues("NF", "claude")[0]
-    Linear(post).add_label(issue, "needs-decision")
+    Linear(post).add_label(page2_issue(), "needs-decision")
     assert post.calls[1][1]["label"] == "ours"
 
 
@@ -1176,9 +1196,8 @@ def test_comments_mark_the_owners():
 
 def test_add_label_missing_label_raises():
     post = FakePost({"issueLabels": {"nodes": []}})
-    issue = Linear(FakePost(load("ready_page2.json"))).ready_issues("NF", "claude")[0]
     with pytest.raises(LinearError, match="needs-decision"):
-        Linear(post).add_label(issue, "needs-decision")
+        Linear(post).add_label(page2_issue(), "needs-decision")
 
 
 def test_http_transport_raises_on_graphql_errors(monkeypatch):
@@ -1416,14 +1435,18 @@ git commit -s -m "Add the Linear GraphQL client"
   - CLI `linear-agents statusline`: reads the status JSON on stdin, writes it to
     `$LINEAR_AGENTS_STATE/status.json`, prints `NF-123 · ctx 34% · 5h 12% · wk 40%`
 
-- [ ] **Step 1: Capture a real status line sample**
+- [ ] **Step 1: Write a synthetic status line sample**
 
-On the VM, start any interactive `claude` session with
-`--settings '{"statusLine":{"type":"command","command":"tee /tmp/status-sample.json >/dev/null; echo ok"}}'`,
-send one prompt, exit, then copy `/tmp/status-sample.json` to `tests/fixtures/status.json`.
-Confirm it contains `rate_limits.five_hour.used_percentage`, `rate_limits.seven_day.used_percentage`,
-their `resets_at`, and a context-usage percentage. If the context field is not
-`context_window.used_percentage`, change `_CONTEXT_PATH` in Step 3 to the real path.
+`tests/fixtures/status.json`, built from the fields the status line documents. Task 15 replaces it
+with a capture from a live session and reruns these tests; if the real field names differ, the
+parser here changes then.
+```json
+{"session_id": "s", "model": {"id": "claude-opus-5-5"},
+ "rate_limits": {
+   "five_hour": {"used_percentage": 12.0, "resets_at": 4000000000},
+   "seven_day": {"used_percentage": 40.0, "resets_at": 4000000000}},
+ "context_window": {"used_percentage": 34.0}}
+```
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1482,7 +1505,12 @@ def test_statusline_cli(tmp_path, monkeypatch, capsys):
     assert usage.read_status(tmp_path / "NF-7")["context_window"]["used_percentage"] == 34
 ```
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Run to verify they fail**
+
+Run: `uv run pytest tests/test_usage.py -q`
+Expected: FAIL, `ImportError: cannot import name 'usage' from 'linear_agents'`
+
+- [ ] **Step 4: Implement**
 
 `src/linear_agents/usage.py`:
 ```python
@@ -1601,12 +1629,12 @@ def main(argv: list[str] | None = None) -> int:
     return COMMANDS[args.command](args)
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 5: Run tests**
 
 Run: `uv run pytest tests/test_usage.py tests/test_cli.py -q`
 Expected: all passed
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/linear_agents/usage.py src/linear_agents/cli.py tests/test_usage.py tests/fixtures/status.json
@@ -1629,15 +1657,14 @@ git commit -s -m "Record session status and read subscription usage"
 
 `tests/test_admission.py`:
 ```python
-from pathlib import Path
-
 from linear_agents.admission import admit
 from linear_agents.agentblock import IssueSettings
 from linear_agents.config import load
 from linear_agents.usage import Usage
+from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
-CFG = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
+CFG = load(EXAMPLE)
 OK = Usage(10, 10, observed_at=1000)
 
 
@@ -1677,8 +1704,6 @@ def test_path_conflict():
     d = run(settings=s, live=[make("NF-1", ("src/billing/**",))])
     assert not d.ok and "NF-1" in d.reason
 ```
-
-Add an empty `tests/__init__.py` so `tests.test_ledger` imports.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -1744,7 +1769,7 @@ Expected: all passed
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/linear_agents/admission.py tests/__init__.py tests/test_admission.py
+git add src/linear_agents/admission.py tests/test_admission.py
 git commit -s -m "Decide whether an issue may start"
 ```
 
@@ -1768,6 +1793,8 @@ git commit -s -m "Decide whether an issue may start"
     `digest`, `log`. A cause seen in the last 24 hours loses only its push (and, for a global
     cause, the shared issue); the label and comment on the issue always happen.
   - `scoped(esc, issue_key) -> Escalation`: prefixes a non-global cause with the issue key
+  - A global cause gets one shared Linear issue for good: its URL is kept in ledger meta under
+    `shared-issue:<cause>`, and `create-issue` is skipped once that key exists
   - `ntfy_push(url, title, message, priority, click=None, opener=urllib.request.urlopen)`
   - `class Notifier(cfg, con, linear, now, push=ntfy_push)` with
     `send(esc, issue: Issue | None, team_id: str | None)`
@@ -1780,7 +1807,6 @@ git commit -s -m "Decide whether an issue may start"
 `tests/test_escalation.py`:
 ```python
 import json
-from pathlib import Path
 
 import pytest
 
@@ -1789,8 +1815,9 @@ from linear_agents.cli import main
 from linear_agents.config import load
 from linear_agents.escalation import Escalation, Notifier, ntfy_push, route, scoped, validate
 from linear_agents.linear import Issue
+from tests.paths import EXAMPLE
 
-CFG = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
+CFG = load(EXAMPLE)
 ISSUE = Issue("u1", "NF-1", "T", "", "https://l/NF-1", "started", (), None, "t1")
 
 
@@ -1868,6 +1895,27 @@ def test_failed_action_is_not_recorded_as_seen(tmp_path):
     with pytest.raises(RuntimeError):
         n.send(Escalation(2, "NF-1:x", "s", "a", waiting=True), ISSUE, "t1")
     assert not ledger.alert_seen(con, "NF-1:x", within_s=86400, now=1000.0)
+
+
+def test_global_cause_gets_one_shared_issue(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    clock = {"now": 1000.0}
+
+    class Shared:
+        def __init__(self):
+            self.created = []
+
+        def create_issue(self, team_id, title, description):
+            self.created.append(title)
+            return "https://l/ESC-1"
+
+    linear = Shared()
+    n = Notifier(CFG, con, linear, now=lambda: clock["now"], push=lambda *a, **k: None)
+    esc = Escalation(1, "setup-broken", "setup fails", "fix ./setup", scope="global")
+    n.send(esc, None, "t1")
+    clock["now"] += 25 * 3600
+    n.send(esc, None, "t1")
+    assert linear.created == ["Escalation: setup-broken"]
 
 
 def test_ntfy_keeps_unicode_out_of_headers():
@@ -2019,7 +2067,11 @@ class Notifier:
             elif action == "comment" and issue:
                 self.linear.comment(issue.id, _text(esc))
             elif action == "create-issue" and team_id:
-                self.linear.create_issue(team_id, f"Escalation: {esc.cause}", _text(esc))
+                # The spec wants one shared issue per cross-cutting cause, not one per 24 hours.
+                shared = f"shared-issue:{esc.cause}"
+                if ledger.meta_get(self.con, shared) is None:
+                    url = self.linear.create_issue(team_id, f"Escalation: {esc.cause}", _text(esc))
+                    ledger.meta_set(self.con, shared, url)
             elif action == "digest":
                 ledger.add_digest(self.con, esc.issue_key, esc.summary, now)
             else:
@@ -2117,13 +2169,11 @@ import shutil
 import subprocess
 import time
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
 from linear_agents.config import load
-
-EXAMPLE = Path(__file__).parent.parent / "deploy" / "config.example.toml"
+from tests.paths import EXAMPLE
 
 
 @pytest.fixture
@@ -2161,20 +2211,23 @@ def tmux_server():
 `tests/test_sessions.py`:
 ```python
 import json
+import shutil
 import subprocess
 import time
-from pathlib import Path
 
 import pytest
 
 from linear_agents.agentblock import IssueSettings
 from linear_agents.config import load
 from linear_agents.sessions import Sessions, claude_argv, clean_env, session_name
+from tests.paths import EXAMPLE
 
-CFG = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
+CFG = load(EXAMPLE)
 
 
 def test_clean_env_keeps_only_the_allowlist(monkeypatch):
+    for key in ("HOME", "USER", "PATH"):
+        monkeypatch.setenv(key, "/x")
     for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CONFIG_DIR"):
         monkeypatch.setenv(key, "x")
     env = clean_env({"LINEAR_AGENTS_STATE": "/s"})
@@ -2220,6 +2273,7 @@ def test_real_tmux_lifecycle(tmux_server, tmp_path):
     assert (tmp_path / "out.txt").read_text().startswith("hello")
 
 
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux not installed")
 def test_no_server_is_an_error_not_a_new_server(tmp_path):
     s = Sessions(socket=f"la-none-{time.time_ns()}")
     with pytest.raises(subprocess.CalledProcessError):
@@ -2332,7 +2386,7 @@ WantedBy=default.target
 - [ ] **Step 4: Run tests**
 
 Run: `uv run pytest tests/test_sessions.py -q`
-Expected: all passed (the real tmux test skips where tmux is not installed)
+Expected: all passed (the two tmux tests skip where tmux is not installed)
 
 - [ ] **Step 5: Commit**
 
@@ -2392,12 +2446,12 @@ def origin(tmp_path):
 `tests/test_worktree.py`:
 ```python
 import subprocess
-from pathlib import Path
 
 from linear_agents import ledger
 from linear_agents.cli import main
 from linear_agents.config import RepoConfig
 from linear_agents.worktree import changed_files, git, install_hook, prepare_worktree
+from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
 
@@ -2426,8 +2480,7 @@ def test_hook_blocks_files_claimed_by_others(origin, tmp_path):
     ledger.insert_claim(con, make("NF-3", (), worktree=str(path)))
     ledger.insert_claim(con, make("NF-4", ("src/billing/**",)))
     cfg = tmp_path / "c.toml"
-    example = (Path(__file__).parent.parent / "deploy" / "config.example.toml").read_text()
-    cfg.write_text(example.replace(
+    cfg.write_text(EXAMPLE.read_text().replace(
         'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"', f'ledger_path = "{db}"'))
     exe = subprocess.run(["which", "linear-agents"], capture_output=True, text=True).stdout.strip()
     install_hook(path, tmp_path / "hooks", exe, cfg)
@@ -2677,7 +2730,8 @@ def test_phase_prompts_name_the_skill():
     assert "tester skill" in phase_prompt("test", "NF-1")
     assert "handoff.md" in phase_prompt("test", "NF-1")
     assert "implementer skill" in phase_prompt("impl", "NF-1")
-    assert "just check failed" in phase_prompt("fix", "NF-1", extra="just check failed: E1")
+    fix = phase_prompt("fix", "NF-1", extra="E1 boom")
+    assert "check failed" in fix and fix.endswith("E1 boom")
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -2949,6 +3003,7 @@ git commit -s -m "Publish finished work as a draft PR after the test-file guard"
 **Files:**
 - Create: `src/linear_agents/supervisor.py`, `src/linear_agents/runtime.py`,
   `tests/fakes.py`, `tests/test_supervisor.py`, `tests/bin/claude`, `tests/test_process.py`
+- Modify: `src/linear_agents/linear.py` (add `Linear.issue`), `tests/test_linear.py`
 
 **Interfaces:**
 - Consumes: everything above.
@@ -2988,6 +3043,15 @@ state `blocked`. The claim keeps its paths until `linear-agents release` (Task 1
 the issue to Todo.
 
 - [ ] **Step 1: Write the fakes and failing tests**
+
+Append to `tests/test_linear.py`, for the `Linear.issue(key)` method the supervisor needs:
+```python
+def test_issue_by_key():
+    node = load("ready_page2.json")["viewer"]["assignedIssues"]["nodes"][0]
+    post = FakePost({"issue": node})
+    assert Linear(post).issue("NF-2").key == "NF-2"
+    assert post.calls[0][1] == {"id": "NF-2"}
+```
 
 `tests/fakes.py`:
 ```python
@@ -3296,8 +3360,9 @@ through to the pane.
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `uv run pytest tests/test_supervisor.py -q`
-Expected: FAIL, module not found
+Run: `uv run pytest tests/test_supervisor.py tests/test_linear.py -q`
+Expected: FAIL: module not found for the supervisor tests, and `AttributeError: 'Linear' object
+has no attribute 'issue'` for `test_issue_by_key`
 
 - [ ] **Step 3: Implement**
 
@@ -3459,20 +3524,12 @@ def supervise(rt, claim: Claim) -> None:
         requested.touch()
 ```
 
-`Linear` needs an `issue(key) -> Issue` method for the supervisor; add to `linear.py`:
+Add to the `Linear` class in `linear.py`:
 ```python
     def issue(self, key: str) -> Issue:
         data = self._post(f"query($id: String!) {{ issue(id: $id) {{ {_ISSUE_FIELDS} }} }}",
                           {"id": key})
         return _issue(data["issue"])
-```
-with a test in `tests/test_linear.py`:
-```python
-def test_issue_by_key():
-    node = load("ready_page2.json")["viewer"]["assignedIssues"]["nodes"][0]
-    post = FakePost({"issue": node})
-    assert Linear(post).issue("NF-2").key == "NF-2"
-    assert post.calls[0][1] == {"id": "NF-2"}
 ```
 
 - [ ] **Step 4: Run tests**
@@ -3521,7 +3578,6 @@ git commit -s -m "Supervise sessions through phases, handoffs, crashes and limit
 ```python
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import pytest
 
@@ -3533,9 +3589,10 @@ from linear_agents.poller import forward_comments, maybe_digest, poll, repo_for,
 from linear_agents.runtime import Runtime
 from linear_agents.tick import tick_lock
 from tests.fakes import FakeNotifier, FakeSessions
+from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
-EXAMPLE = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
+CFG = load(EXAMPLE)
 GOOD = "Do it.\n\n## Acceptance criteria\n\n- works\n"
 DEPENDS = "```agent\ndepends_on: [NF-404]\n```\n\n" + GOOD
 
@@ -3597,10 +3654,10 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
 
 
 def test_repo_for_prefers_labels_then_project():
-    assert repo_for(issue(), EXAMPLE) == "backend"
+    assert repo_for(issue(), CFG) == "backend"
     proj = Issue("i", "NF-1", "t", "", "u", "unstarted", ("claude",), "backend", "t1")
-    assert repo_for(proj, EXAMPLE) == "backend"
-    assert repo_for(issue(labels=("claude",)), EXAMPLE) is None
+    assert repo_for(proj, CFG) == "backend"
+    assert repo_for(issue(labels=("claude",)), CFG) is None
 
 
 def test_poll_launches_tester(rt):
@@ -3639,7 +3696,7 @@ def test_poll_comments_once_then_admits_after_fix(rt):
     rt.linear.ready = [issue(desc="no criteria")]
     poll(rt)
     poll(rt)
-    assert len(rt.linear.comments) == 1 and "acceptance criteria" in rt.linear.comments[0][1]
+    assert len(rt.linear.comments) == 1 and "Acceptance criteria" in rt.linear.comments[0][1]
     rt.linear.ready = [issue()]
     poll(rt)
     assert ledger.get_claim(rt.con, "NF-9") is not None
@@ -3751,11 +3808,6 @@ def _comment_once(rt, issue: Issue, cause: str, text: str) -> None:
     ledger.record_alert(rt.con, cause, 3, issue.key, rt.now())
 
 
-def _clear_once(rt, cause: str) -> None:
-    with ledger.transaction(rt.con):
-        rt.con.execute("DELETE FROM alerts WHERE cause = ?", (cause,))
-
-
 def poll(rt) -> None:
     cfg = rt.cfg
     for issue in rt.linear.ready_issues(cfg.team_key, cfg.trigger_label):
@@ -3789,7 +3841,7 @@ def poll(rt) -> None:
                           f" {', '.join(settings.depends_on)}: {exc}.")
             continue
         for cause in ("no-repo", "no-criteria", "bad-deps"):
-            _clear_once(rt, f"{issue.key}:{cause}")
+            ledger.clear_alert(rt.con, f"{issue.key}:{cause}")
         live = ledger.live_claims(rt.con)
         usage = latest_usage(cfg.state_root, rt.now())
         decision = admit(issue.key, settings, live, usage, deps, cfg, rt.now())
@@ -4288,7 +4340,8 @@ git commit -s -m "Add the agent plugin: skills, SessionStart hook and escalation
 
 **Files:**
 - Create: `docs/vm-setup.md`
-- Modify: `README.md` (point to the spec, plan and setup doc)
+- Modify: `README.md` (point to the spec, plan and setup doc), `tests/fixtures/status.json`
+  (replaced by a live capture in smoke step 9)
 
 - [ ] **Step 1: Write the setup doc**
 
@@ -4355,6 +4408,12 @@ Watch it with `journalctl --user -u linear-agents -f`, and attach to a session w
 8. Exercise a rerun: block a second issue (kill its session twice, one tick apart), then run
    `linear-agents release NF-…`. Expect it back in Todo, and the next tick to restart it on the
    kept branch.
+9. Replace the synthetic status line sample from Task 5: copy a live session's
+   `<state_root>/NF-…/status.json` over `tests/fixtures/status.json` and run
+   `uv run pytest tests/test_usage.py -q`. If it fails, the real field paths differ from
+   `rate_limits.five_hour/seven_day.used_percentage`, `resets_at` or
+   `context_window.used_percentage`: fix `_CONTEXT_PATH` or `latest_usage` in `usage.py`, rerun,
+   and commit the fixture with the fix.
 
 - [ ] **Step 3: Update the README**
 
@@ -4370,6 +4429,6 @@ sections below are the original research.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/vm-setup.md README.md
+git add docs/vm-setup.md README.md tests/fixtures/status.json
 git commit -s -m "Document VM setup and the end-to-end smoke test"
 ```

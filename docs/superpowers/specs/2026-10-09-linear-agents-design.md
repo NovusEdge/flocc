@@ -113,7 +113,7 @@ Later layers override earlier ones.
 
 | Layer | Location | Holds |
 |---|---|---|
-| Defaults | `~/.config/linear-agents/config.toml` | Poll interval (3 min), session cap, usage thresholds (60% of 5-hour, 50% of weekly), label or project to repo map, ntfy topic, digest time |
+| Defaults | `~/.config/linear-agents/config.toml` | Session cap, usage thresholds (60% of 5-hour, 50% of weekly), label or project to repo map, ntfy topic, digest time. The poll interval (3 min) is the systemd timer's `OnUnitActiveSec`, not a config value. |
 | Per issue | An `agent` fenced block in the issue description | `model`, `effort`, `wall_clock`, `paths`, `depends_on`, `mcp` |
 | Live | Remote Control | Anything said to the running session |
 
@@ -127,7 +127,8 @@ mcp: [sentry]
 ```
 
 An issue with no `paths` claims nothing up front. Its agent claims paths as it learns them by
-writing to its state directory, and the pre-commit hook enforces whatever is claimed at commit time.
+running `linear-agents claim`, which records them in the ledger, and the pre-commit hook enforces
+whatever is claimed at commit time.
 
 ## Coordination
 
@@ -206,7 +207,8 @@ the service: `urllib` for Linear GraphQL and ntfy, `sqlite3` in WAL mode with a 
 - Unit tests: admission, ledger claims and conflicts, `agent` block parsing, escalation routing
   and dedupe, Linear responses from saved GraphQL fixtures.
 - Process tests: a fake `claude` binary that writes a handoff note, exits, crashes or hangs on
-  command, covering the launcher, supervisor and publisher without using the subscription.
+  command, covering the launcher and supervisor without using the subscription. The publisher is
+  tested against a real throwaway origin.
 - Pre-commit hook: a throwaway git repo with two competing claims.
 - Plugin: `claude plugin eval` cases for the escalation rubric, chiefly to catch over-asking.
 - End to end, by hand: one real issue in a test Linear team against a scratch repo on the VM.
