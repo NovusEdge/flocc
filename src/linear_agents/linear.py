@@ -98,6 +98,12 @@ class Linear:
                 return out
             after = page["pageInfo"]["endCursor"]
 
+    def issue(self, key: str) -> Issue:
+        data = self._post(
+            f"query($id: String!) {{ issue(id: $id) {{ {_ISSUE_FIELDS} }} }}", {"id": key}
+        )
+        return _issue(data["issue"])
+
     def state_types(self, keys) -> dict[str, str]:
         query = "query($id: String!) { issue(id: $id) { identifier state { type } } }"
         out = {}

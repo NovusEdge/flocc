@@ -128,3 +128,10 @@ def test_http_transport_raises_on_graphql_errors(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: Resp())
     with pytest.raises(LinearError, match="RATELIMITED"):
         http_transport("k")("query { viewer { id } }", {})
+
+
+def test_issue_by_key():
+    node = load("ready_page2.json")["viewer"]["assignedIssues"]["nodes"][0]
+    post = FakePost({"issue": node})
+    assert Linear(post).issue("NF-2").key == "NF-2"
+    assert post.calls[0][1] == {"id": "NF-2"}
