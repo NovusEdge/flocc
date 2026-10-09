@@ -5,11 +5,12 @@
 **Goal:** A Python service on one VM that turns Linear issues labelled `claude` into draft PRs by
 running one Remote Control Claude Code session per issue, with claims, escalation and usage limits.
 
-**Architecture:** One CLI, `linear-agents`, runs `tick` from a systemd timer under `flock`. A tick
-supervises live sessions, forwards Linear replies, routes escalations, admits new issues and posts
-the daily digest. Agent sessions are interactive `claude` processes in a private tmux server; they
-talk back to the service only through files in their state directory, written by `linear-agents`
-subcommands the plugin's skills tell them to run.
+**Architecture:** One CLI, `linear-agents`, runs `tick` from a systemd timer; the tick holds an
+`flock` itself. A tick supervises live sessions, forwards Linear replies, routes escalations,
+admits new issues and posts the daily digest. Agent sessions are interactive `claude` processes in
+a private tmux server, which a separate lingering systemd user service runs so that sessions
+outlive each tick. They talk back to the service only through files in their state directory,
+written by `linear-agents` subcommands the plugin's skills tell them to run.
 
 **Tech Stack:** Python ≥3.13 on uv, standard library only at runtime (`urllib`, `sqlite3`,
 `subprocess`, `tomllib`). Dev: ruff, pyrefly, pytest, mise, just. External: `git`, `gh`, `tmux`,
@@ -21,8 +22,17 @@ subcommands the plugin's skills tell them to run.
 
 - Agents run only as interactive Claude Code sessions on the owner's subscription; never set or
   pass `ANTHROPIC_API_KEY`.
-- Sessions start with an empty environment plus `HOME`, `USER`, `PATH`, `TERM`, `LANG`,
-  `CLAUDE_CONFIG_DIR`, `GH_TOKEN` (the read-only agent token) and the `LINEAR_AGENTS_*` variables.
+- The machine is trusted and agents share the owner's Unix user. "Agents never push, open PRs or
+  change Linear" is behavioural (prompt, skills, hook, a read-only token in `GH_TOKEN`), not an
+  enforced boundary.
+- The session command is `/usr/bin/env -i` with exactly `HOME`, `USER`, `PATH`, `TERM`, `LANG`
+  and the `LINEAR_AGENTS_*` variables, then a wrapper that reads `GH_TOKEN` from the agent token
+  file. `CLAUDE_CONFIG_DIR` is never set, so sessions use the same `~/.claude.json` as the owner's
+  own login and folder trust. A launch fails when the token file is missing or empty.
+- `claude` and `linear-agents` are resolved to absolute paths once per tick; a missing one fails
+  the tick.
+- State changes in the ledger come after the side effects they record, so a failed Linear, git or
+  tmux call is retried by the next tick. Marker files are deleted only once handled.
 - Agents never push, open PRs or change Linear; only the service does.
 - Defaults: poll every 3 minutes, session cap 2, admit only below 60% of the 5-hour window and 50%
   of the weekly limit, restart a session past 60% context.
@@ -48,6 +58,12 @@ subcommands the plugin's skills tell them to run.
    not. Pinned in Task 3 (`test_globs_overlap_cases`).
 5. The first tick ever, with no status file yet: the service must still start one session.
    Pinned in Task 6 (`test_unknown_usage_admits_only_when_idle`).
+6. A Linear call failing halfway through a transition: the claim must stay where it was, so the
+   next tick repeats the transition rather than losing the escalation. Pinned in Task 12
+   (`test_linear_error_in_block_retries_next_tick`).
+7. A rerun of a released issue: files left in its state directory by the previous claim must not
+   count as the new claim's escalations or markers. Pinned in Task 13
+   (`test_rerun_ignores_files_from_the_previous_claim`).
 
 ---
 
@@ -59,25 +75,29 @@ src/linear_agents/
   cli.py          argparse entry point; one function per subcommand
   config.py       Config, RepoConfig, load()
   agentblock.py   IssueSettings, parse_settings(), has_acceptance_criteria()
-  ledger.py       SQLite schema, Claim, claims and alerts queries, glob overlap
+  ledger.py       SQLite schema, Claim, claims, alerts, digest and usage queries, glob overlap
   linear.py       GraphQL transport and the Linear operations the service needs
   usage.py        status file read/write, Usage, latest_usage(), context_pct()
   admission.py    Decision, admit()
-  escalation.py   Escalation, route(), Notifier (ntfy, Linear, digest, dedupe)
+  escalation.py   Escalation, route(), scoped(), Notifier (ntfy, Linear, digest, dedupe)
   sessions.py     Sessions (tmux), clean_env(), claude_argv()
   worktree.py     prepare_worktree(), install_hook(), git helpers
   context.py      state paths, context.md and prompt builders
   publisher.py    PublishResult, publish()
-  supervisor.py   supervise()
-  poller.py       poll(), forward_comments(), maybe_digest()
-  tick.py         Runtime, tick()
+  runtime.py      Runtime
+  supervisor.py   launch(), supervise()
+  poller.py       poll(), route_escalations(), forward_comments(), maybe_digest()
+  tick.py         build_runtime(), tick_lock(), tick()
 plugin/
   .claude-plugin/plugin.json
   hooks/hooks.json
   skills/{tester,implementer,escalate,coordinate,handoff}/SKILL.md
   evals/escalate-*/prompt.md, graders/*.md
-deploy/linear-agents.service, deploy/linear-agents.timer, deploy/config.example.toml
+deploy/linear-agents.service, deploy/linear-agents.timer, deploy/linear-agents-tmux.service,
+deploy/config.example.toml
 docs/vm-setup.md
+tests/conftest.py   tmp_cfg, tmux_server and origin fixtures
+tests/bin/claude    fake claude for process tests
 tests/...
 ```
 
@@ -174,6 +194,9 @@ __pycache__/
 plugin/evals/results/
 ```
 
+`src/linear_agents/__init__.py`: empty. The build backend needs the package to exist before
+`uv sync` can install the project.
+
 - [ ] **Step 2: Write the failing test**
 
 `tests/test_cli.py`:
@@ -189,11 +212,9 @@ def test_unknown_subcommand_exits_nonzero(capsys):
 - [ ] **Step 3: Run it to verify it fails**
 
 Run: `uv sync && uv run pytest tests/test_cli.py -q`
-Expected: FAIL with `ModuleNotFoundError: No module named 'linear_agents'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'linear_agents.cli'`
 
 - [ ] **Step 4: Write the CLI skeleton**
-
-`src/linear_agents/__init__.py`: empty.
 
 `src/linear_agents/cli.py`:
 ```python
@@ -241,7 +262,9 @@ git commit -s -m "Scaffold the linear-agents package and tooling"
 **Interfaces:**
 - Produces:
   - `RepoConfig(path: Path, base_branch: str = "main", check: str = "just check")`
-  - `Config` dataclass with fields listed below
+  - `Config` dataclass with fields listed below. There is no `claude_config_dir`: sessions must use
+    the same Claude Code config as the owner's own login and folder trust, so `CLAUDE_CONFIG_DIR`
+    stays unset.
   - `load(path: Path) -> Config`
   - `default_config_path() -> Path` (`$LINEAR_AGENTS_CONFIG` or
     `~/.config/linear-agents/config.toml`)
@@ -260,7 +283,6 @@ linear_key_file = "~/.config/linear-agents/linear.key"
 agent_gh_token_file = "~/.config/linear-agents/gh-agent.token"
 publish_gh_token_file = "~/.config/linear-agents/gh-publish.token"
 ntfy_url = "https://ntfy.sh/replace-with-a-long-random-topic"
-claude_config_dir = "~/.claude"
 digest_issue = "NF-1"
 
 [repos.backend]
@@ -332,7 +354,6 @@ _PATH_KEYS = (
     "linear_key_file",
     "agent_gh_token_file",
     "publish_gh_token_file",
-    "claude_config_dir",
 )
 
 
@@ -356,7 +377,6 @@ class Config:
     agent_gh_token_file: Path
     publish_gh_token_file: Path
     ntfy_url: str
-    claude_config_dir: Path | None = None
     digest_issue: str | None = None
     digest_hour: int = 18
     session_cap: int = 2
@@ -638,9 +658,13 @@ git commit -s -m "Parse the per-issue agent block and acceptance criteria"
     `delete_claim(con, key)`, `claim_for_worktree(con, path) -> Claim | None`
   - `globs_overlap(a: str, b: str) -> bool`
   - `conflicting_claims(paths, claims, exclude=None) -> dict[str, str]` (glob → owning issue key)
-  - `file_conflicts(files, claims, exclude) -> dict[str, str]` (file → owning issue key)
+  - `file_conflicts(files, claims, exclude) -> dict[str, str]` (file → owning issue key; a file
+    is claimed when it or a directory above it matches a glob)
   - `alert_seen(con, cause, within_s, now) -> bool`, `record_alert(con, cause, tier, issue_key, now)`
-  - `add_digest(con, issue_key, line, now)`, `take_digest(con) -> list[tuple[str|None, str]]`
+  - `add_digest(con, issue_key, line, now)`,
+    `pending_digest(con) -> list[tuple[int, str|None, str]]`, `clear_digest(con, upto_id)`
+  - `add_usage(con, issue_key, phase, event, five_hour_pct, weekly_pct, now)`,
+    `usage_for(con, issue_key) -> list[tuple[str, str, float, float]]`
   - `meta_get(con, key) -> str | None`, `meta_set(con, key, value)`
 
 - [ ] **Step 1: Write the failing tests**
@@ -710,6 +734,13 @@ def test_conflicts_exclude_self(con):
     }
 
 
+def test_file_under_a_claimed_directory_conflicts():
+    prefix = make("NF-2", ("src/b*",))
+    assert ledger.file_conflicts(["src/billing/tax.py", "src/a.py"], [prefix], exclude="NF-1") == {
+        "src/billing/tax.py": "NF-2"
+    }
+
+
 def test_alert_dedupe_window(con):
     assert not ledger.alert_seen(con, "setup-broken", within_s=86400, now=1000)
     ledger.record_alert(con, "setup-broken", 1, None, now=1000)
@@ -717,10 +748,19 @@ def test_alert_dedupe_window(con):
     assert not ledger.alert_seen(con, "setup-broken", within_s=86400, now=1000 + 86401)
 
 
-def test_digest_take_empties(con):
+def test_digest_cleared_only_up_to_what_was_posted(con):
     ledger.add_digest(con, "NF-1", "PR opened", now=1)
-    assert ledger.take_digest(con) == [("NF-1", "PR opened")]
-    assert ledger.take_digest(con) == []
+    rows = ledger.pending_digest(con)
+    ledger.add_digest(con, "NF-2", "later", now=2)
+    ledger.clear_digest(con, rows[-1][0])
+    assert [r[1:] for r in ledger.pending_digest(con)] == [("NF-2", "later")]
+
+
+def test_usage_log(con):
+    ledger.add_usage(con, "NF-1", "test", "start", 10.0, 20.0, now=1)
+    ledger.add_usage(con, "NF-1", "test", "end", 14.0, 21.0, now=2)
+    assert ledger.usage_for(con, "NF-1") == [("test", "start", 10.0, 20.0),
+                                             ("test", "end", 14.0, 21.0)]
 
 
 def test_two_connections_share_state(tmp_path):
@@ -777,6 +817,15 @@ CREATE TABLE IF NOT EXISTS digest (
   at REAL NOT NULL,
   issue_key TEXT,
   line TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_log (
+  id INTEGER PRIMARY KEY,
+  issue_key TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  event TEXT NOT NULL,
+  at REAL NOT NULL,
+  five_hour_pct REAL NOT NULL,
+  weekly_pct REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -906,8 +955,13 @@ def file_conflicts(files, claims, exclude: str | None) -> dict[str, str]:
     out: dict[str, str] = {}
     for name in files:
         path = PurePosixPath(name)
+        # A directory match claims everything under it, so `src/b*` covers src/billing/tax.py as
+        # globs_overlap already assumes at admission.
+        candidates = (path, *path.parents[:-1])
         for claim in claims:
-            if claim.issue_key != exclude and any(path.full_match(g) for g in claim.paths):
+            if claim.issue_key != exclude and any(
+                p.full_match(g) for g in claim.paths for p in candidates
+            ):
                 out[name] = claim.issue_key
                 break
     return out
@@ -934,11 +988,33 @@ def add_digest(con, issue_key: str | None, line: str, now: float) -> None:
         )
 
 
-def take_digest(con) -> list[tuple[str | None, str]]:
+def pending_digest(con) -> list[tuple[int, str | None, str]]:
+    rows = con.execute("SELECT id, issue_key, line FROM digest ORDER BY id").fetchall()
+    return [(r["id"], r["issue_key"], r["line"]) for r in rows]
+
+
+def clear_digest(con, upto_id: int) -> None:
     with transaction(con):
-        rows = con.execute("SELECT issue_key, line FROM digest ORDER BY id").fetchall()
-        con.execute("DELETE FROM digest")
-    return [(r["issue_key"], r["line"]) for r in rows]
+        con.execute("DELETE FROM digest WHERE id <= ?", (upto_id,))
+
+
+def add_usage(con, issue_key: str, phase: str, event: str, five_hour_pct: float,
+              weekly_pct: float, now: float) -> None:
+    with transaction(con):
+        con.execute(
+            "INSERT INTO usage_log (issue_key, phase, event, at, five_hour_pct, weekly_pct)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (issue_key, phase, event, now, five_hour_pct, weekly_pct),
+        )
+
+
+def usage_for(con, issue_key: str) -> list[tuple[str, str, float, float]]:
+    rows = con.execute(
+        "SELECT phase, event, five_hour_pct, weekly_pct FROM usage_log WHERE issue_key = ?"
+        " ORDER BY id",
+        (issue_key,),
+    )
+    return [(r["phase"], r["event"], r["five_hour_pct"], r["weekly_pct"]) for r in rows]
 
 
 def meta_get(con, key: str) -> str | None:
@@ -981,11 +1057,12 @@ git commit -s -m "Add the SQLite claims ledger with path conflict checks"
   - `LinearError(RuntimeError)`
   - `Issue(id, key, title, description, url, state_type, labels: tuple[str,...],
     project: str | None, team_id: str)`
-  - `Comment(id, body, created_at)`
+  - `Comment(id, body, created_at, mine: bool = False)` (`mine`: written by the key's owner)
   - `BOT_PREFIX = "🤖 linear-agents:"`
   - `class Linear(post: Transport)` with `ready_issues(team_key, label) -> list[Issue]`,
-    `state_types(keys) -> dict[str, str]`, `start(issue: Issue)`,
-    `comment(issue_id, text)` (prefixes `BOT_PREFIX`), `add_label(issue: Issue, name)`,
+    `state_types(keys) -> dict[str, str]`, `start(issue: Issue)`, `unstart(issue: Issue)`,
+    `comment(issue_id, text)` (prefixes `BOT_PREFIX`), `add_label(issue: Issue, name)` (a label
+    of the issue's team or a workspace label),
     `comments_since(issue_id, after_iso: str | None) -> list[Comment]`,
     `create_issue(team_id, title, description) -> str` (returns the issue URL)
 
@@ -1062,7 +1139,39 @@ def test_start_picks_lowest_started_state():
     )
     issue = Linear(FakePost(load("ready_page2.json"))).ready_issues("NF", "claude")[0]
     Linear(post).start(issue)
+    assert post.calls[0][1]["type"] == "started"
     assert post.calls[1][1] == {"id": "u2", "stateId": "s1"}
+
+
+def test_unstart_moves_to_an_unstarted_state():
+    post = FakePost(
+        {"team": {"states": {"nodes": [{"id": "todo", "position": 0.0}]}}},
+        {"issueUpdate": {"success": True}},
+    )
+    issue = Linear(FakePost(load("ready_page2.json"))).ready_issues("NF", "claude")[0]
+    Linear(post).unstart(issue)
+    assert post.calls[0][1]["type"] == "unstarted"
+    assert post.calls[1][1] == {"id": "u2", "stateId": "todo"}
+
+
+def test_add_label_skips_other_teams_labels():
+    post = FakePost(
+        {"issueLabels": {"nodes": [{"id": "theirs", "team": {"id": "t9"}},
+                                   {"id": "ours", "team": {"id": "t1"}}]}},
+        {"issueAddLabel": {"success": True}},
+    )
+    issue = Linear(FakePost(load("ready_page2.json"))).ready_issues("NF", "claude")[0]
+    Linear(post).add_label(issue, "needs-decision")
+    assert post.calls[1][1]["label"] == "ours"
+
+
+def test_comments_mark_the_owners():
+    post = FakePost({"issue": {"comments": {"nodes": [
+        {"id": "c2", "body": "b", "createdAt": "2026-10-09T10:05:00Z", "user": None},
+        {"id": "c1", "body": "a", "createdAt": "2026-10-09T10:00:00Z", "user": {"isMe": True}},
+    ]}}})
+    comments = Linear(post).comments_since("u1", None)
+    assert [(c.id, c.mine) for c in comments] == [("c1", True), ("c2", False)]
 
 
 def test_add_label_missing_label_raises():
@@ -1135,6 +1244,7 @@ class Comment:
     id: str
     body: str
     created_at: str
+    mine: bool = False
 
 
 def http_transport(api_key: str) -> Transport:
@@ -1205,13 +1315,19 @@ class Linear:
         return out
 
     def start(self, issue: Issue) -> None:
+        self._move(issue, "started")
+
+    def unstart(self, issue: Issue) -> None:
+        self._move(issue, "unstarted")
+
+    def _move(self, issue: Issue, state_type: str) -> None:
         states = self._post(
-            """query($team: String!) { team(id: $team) {
-                 states(filter: { type: { eq: "started" } }) { nodes { id position } } } }""",
-            {"team": issue.team_id},
+            """query($team: String!, $type: String!) { team(id: $team) {
+                 states(filter: { type: { eq: $type } }) { nodes { id position } } } }""",
+            {"team": issue.team_id, "type": state_type},
         )["team"]["states"]["nodes"]
         if not states:
-            raise LinearError(f"team of {issue.key} has no started state")
+            raise LinearError(f"team of {issue.key} has no {state_type} state")
         first = min(states, key=lambda s: s["position"])
         self._post(
             "mutation($id: String!, $stateId: String!) {"
@@ -1228,26 +1344,32 @@ class Linear:
 
     def add_label(self, issue: Issue, name: str) -> None:
         nodes = self._post(
-            "query($name: String!) { issueLabels(filter: { name: { eq: $name } }) { nodes { id } } }",
+            "query($name: String!) { issueLabels(filter: { name: { eq: $name } }) {"
+            " nodes { id team { id } } } }",
             {"name": name},
         )["issueLabels"]["nodes"]
-        if not nodes:
+        # Names repeat across teams, and a label of another team cannot go on this issue.
+        usable = [n for n in nodes if n["team"] is None or n["team"]["id"] == issue.team_id]
+        if not usable:
             raise LinearError(f"label {name!r} does not exist; create it in Linear (vm-setup.md)")
         self._post(
             "mutation($id: String!, $label: String!) {"
             " issueAddLabel(id: $id, labelId: $label) { success } }",
-            {"id": issue.id, "label": nodes[0]["id"]},
+            {"id": issue.id, "label": usable[0]["id"]},
         )
 
     def comments_since(self, issue_id: str, after_iso: str | None) -> list[Comment]:
         data = self._post(
             """query($id: String!, $after: DateTimeOrDuration) { issue(id: $id) {
                  comments(first: 50, filter: { createdAt: { gt: $after } }) {
-                   nodes { id body createdAt } } } }""",
+                   nodes { id body createdAt user { isMe } } } } }""",
             {"id": issue_id, "after": after_iso or "1970-01-01T00:00:00Z"},
         )
         nodes = data["issue"]["comments"]["nodes"]
-        comments = [Comment(n["id"], n["body"], n["createdAt"]) for n in nodes]
+        comments = [
+            Comment(n["id"], n["body"], n["createdAt"], bool((n.get("user") or {}).get("isMe")))
+            for n in nodes
+        ]
         return sorted(comments, key=lambda c: c.created_at)
 
     def create_issue(self, team_id: str, title: str, description: str) -> str:
@@ -1260,8 +1382,9 @@ class Linear:
         return data["issueCreate"]["issue"]["url"]
 ```
 
-`issueAddLabel` and the `DateTimeOrDuration` comment filter are taken from Linear's schema as of
-2026-10; the smoke test in Task 15 is where they are first exercised against the real API.
+`issueAddLabel`, the `DateTimeOrDuration` comment filter and `User.isMe` are taken from Linear's
+schema as of 2026-10; the smoke test in Task 15 is where they are first exercised against the real
+API.
 
 - [ ] **Step 5: Run tests**
 
@@ -1642,7 +1765,9 @@ git commit -s -m "Decide whether an issue may start"
   - `validate(esc) -> None` (raises `ValueError`)
   - `route(esc, seen_recently: bool) -> list[str]`, actions from
     `ntfy:5`, `ntfy:3`, `label:escalation`, `label:needs-decision`, `comment`, `create-issue`,
-    `digest`, `log`
+    `digest`, `log`. A cause seen in the last 24 hours loses only its push (and, for a global
+    cause, the shared issue); the label and comment on the issue always happen.
+  - `scoped(esc, issue_key) -> Escalation`: prefixes a non-global cause with the issue key
   - `ntfy_push(url, title, message, priority, click=None, opener=urllib.request.urlopen)`
   - `class Notifier(cfg, con, linear, now, push=ntfy_push)` with
     `send(esc, issue: Issue | None, team_id: str | None)`
@@ -1662,7 +1787,7 @@ import pytest
 from linear_agents import ledger
 from linear_agents.cli import main
 from linear_agents.config import load
-from linear_agents.escalation import Escalation, Notifier, ntfy_push, route, validate
+from linear_agents.escalation import Escalation, Notifier, ntfy_push, route, scoped, validate
 from linear_agents.linear import Issue
 
 CFG = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
@@ -1686,8 +1811,18 @@ def test_route(esc, expected):
     assert route(esc, seen_recently=False) == expected
 
 
-def test_repeat_cause_is_only_logged():
-    assert route(Escalation(1, "c", "s", "a"), seen_recently=True) == ["log"]
+def test_repeat_cause_drops_only_the_push():
+    assert route(Escalation(1, "c", "s", "a"), seen_recently=True) == [
+        "label:escalation", "comment"]
+    assert route(Escalation(2, "c", "s", "a", waiting=True), seen_recently=True) == [
+        "label:needs-decision", "comment"]
+    assert route(Escalation(1, "c", "s", "a", scope="global"), seen_recently=True) == ["log"]
+
+
+def test_scoped_prefixes_issue_causes_only():
+    esc = Escalation(2, "schema", "s", "a", default="d", deadline_min=5)
+    assert scoped(esc, "NF-1").cause == "NF-1:schema"
+    assert scoped(Escalation(1, "setup", "s", "a", scope="global"), "NF-1").cause == "setup"
 
 
 @pytest.mark.parametrize(
@@ -1719,7 +1854,20 @@ def test_notifier_dedupes_by_cause(tmp_path):
     n.send(esc, ISSUE, "t1")
     n.send(esc, ISSUE, "t1")
     assert len(pushes) == 1
-    assert [c[0] for c in linear.calls] == ["add_label", "comment"]
+    assert [c[0] for c in linear.calls] == ["add_label", "comment", "add_label", "comment"]
+
+
+def test_failed_action_is_not_recorded_as_seen(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+
+    class Down:
+        def add_label(self, *a):
+            raise RuntimeError("linear down")
+
+    n = Notifier(CFG, con, Down(), now=lambda: 1000.0, push=lambda *a, **k: None)
+    with pytest.raises(RuntimeError):
+        n.send(Escalation(2, "NF-1:x", "s", "a", waiting=True), ISSUE, "t1")
+    assert not ledger.alert_seen(con, "NF-1:x", within_s=86400, now=1000.0)
 
 
 def test_ntfy_keeps_unicode_out_of_headers():
@@ -1772,7 +1920,7 @@ import json
 import sys
 import urllib.request
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 from linear_agents import ledger
 from linear_agents.linear import Issue
@@ -1809,17 +1957,26 @@ def validate(esc: Escalation) -> None:
         raise ValueError("a tier 2 escalation needs --default and --deadline-min, or --waiting")
 
 
+def scoped(esc: Escalation, issue_key: str) -> Escalation:
+    # Agents pick causes like "schema" that recur across issues; only a global cause is shared.
+    if esc.scope == "global":
+        return esc
+    return replace(esc, cause=f"{issue_key}:{esc.cause}", issue_key=issue_key)
+
+
 def route(esc: Escalation, seen_recently: bool) -> list[str]:
-    if seen_recently or esc.tier == 4:
+    # Dedupe holds back the push only. The label and comment always land on the issue, so a
+    # repeated cause still reaches Linear.
+    if esc.tier == 4:
         return ["log"]
+    if esc.tier == 1 and esc.scope == "global":
+        return ["log"] if seen_recently else ["ntfy:5", "create-issue"]
     if esc.tier == 1:
-        if esc.scope == "global":
-            return ["ntfy:5", "create-issue"]
-        return ["ntfy:5", "label:escalation", "comment"]
+        return ([] if seen_recently else ["ntfy:5"]) + ["label:escalation", "comment"]
     if esc.tier == 2:
-        actions = ["label:needs-decision", "comment"]
         # Push only when the agent has stopped; with a default it keeps working.
-        return actions + (["ntfy:3"] if esc.waiting else [])
+        push = esc.waiting and not seen_recently
+        return ["label:needs-decision", "comment"] + (["ntfy:3"] if push else [])
     return ["digest"]
 
 
@@ -1852,8 +2009,6 @@ class Notifier:
         now = self.now()
         seen = ledger.alert_seen(self.con, esc.cause, DEDUPE_S, now)
         actions = route(esc, seen)
-        if esc.tier <= 2:
-            ledger.record_alert(self.con, esc.cause, esc.tier, esc.issue_key, now)
         title = f"{esc.issue_key or 'linear-agents'} T{esc.tier}"
         for action in actions:
             if action.startswith("ntfy:"):
@@ -1870,6 +2025,10 @@ class Notifier:
             else:
                 print(f"[T{esc.tier}] {esc.issue_key or '-'} {esc.cause}: {esc.summary}",
                       file=sys.stderr)
+        # Recorded after the actions: a send that failed halfway is retried by the next tick
+        # instead of being taken for a cause already handled.
+        if esc.tier <= 2:
+            ledger.record_alert(self.con, esc.cause, esc.tier, esc.issue_key, now)
 ```
 
 In `cli.py` add:
@@ -1931,25 +2090,77 @@ git commit -s -m "Route escalations by tier with per-cause dedupe"
 ### Task 8: Sessions in tmux
 
 **Files:**
-- Create: `src/linear_agents/sessions.py`, `tests/test_sessions.py`
+- Create: `src/linear_agents/sessions.py`, `tests/conftest.py`, `tests/test_sessions.py`,
+  `deploy/linear-agents-tmux.service`
 
 **Interfaces:**
 - Consumes: `Config`, `IssueSettings`
 - Produces:
   - `SOCKET = "linear-agents"`
-  - `clean_env(cfg) -> dict[str, str]`
-  - `claude_argv(cfg, name, settings, prompt, exe) -> list[str]`
-  - `class Sessions(socket=SOCKET, runner=subprocess.run)` with
-    `start(name, cwd, argv, env, extra_env)`, `alive(name) -> bool`, `kill(name)`,
-    `send(name, text)`
+  - `clean_env(extra: dict | None = None) -> dict[str, str]`: `HOME`, `USER`, `PATH`, `TERM`,
+    `LANG` from the current environment, plus `extra`
+  - `claude_argv(cfg, name, settings, prompt, env, claude_exe, exe) -> list[str]`: the pane
+    command, `/usr/bin/env -i <env> /bin/sh -c <wrapper> <token file> <claude_exe> <prompt> ...`
+  - `class Sessions(socket=SOCKET, runner=subprocess.run)` with `start(name, cwd, argv)`,
+    `alive(name) -> bool`, `kill(name)`, `send(name, text)`; every call uses `tmux -N`, so it
+    never starts a server
   - `session_name(issue_key, phase) -> str` (`NF-1-test` for the tester, `NF-1` otherwise)
+  - Fixtures in `tests/conftest.py`: `tmp_cfg` (the example config with the state root, worktree
+    root, ledger and agent token file under `tmp_path`), `tmux_server` (a private `tmux -D`
+    server, its socket name yielded)
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the fixtures and the failing tests**
+
+`tests/conftest.py`:
+```python
+import shutil
+import subprocess
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from linear_agents.config import load
+
+EXAMPLE = Path(__file__).parent.parent / "deploy" / "config.example.toml"
+
+
+@pytest.fixture
+def tmp_cfg(tmp_path):
+    for name in ("state", "wt"):
+        (tmp_path / name).mkdir()
+    token = tmp_path / "gh-agent.token"
+    token.write_text("t\n")
+    return replace(
+        load(EXAMPLE),
+        state_root=tmp_path / "state",
+        worktree_root=tmp_path / "wt",
+        ledger_path=tmp_path / "l.sqlite",
+        agent_gh_token_file=token,
+    )
+
+
+@pytest.fixture
+def tmux_server():
+    if not shutil.which("tmux"):
+        pytest.skip("tmux not installed")
+    socket = f"la-test-{time.time_ns()}"
+    proc = subprocess.Popen(["tmux", "-L", socket, "-D"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(50):
+        probe = ["tmux", "-N", "-L", socket, "start-server"]
+        if subprocess.run(probe, capture_output=True).returncode == 0:
+            break
+        time.sleep(0.1)
+    yield socket
+    subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
+    proc.wait(5)
+```
 
 `tests/test_sessions.py`:
 ```python
 import json
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -1963,32 +2174,33 @@ from linear_agents.sessions import Sessions, claude_argv, clean_env, session_nam
 CFG = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
 
 
-def test_clean_env_drops_claude_and_api_vars(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc")
-    monkeypatch.setenv("CLAUDECODE", "1")
-    env = clean_env(CFG)
-    assert not any(k.startswith(("ANTHROPIC", "CLAUDECODE", "CLAUDE_CODE")) for k in env)
-    assert env["CLAUDE_CONFIG_DIR"] == str(CFG.claude_config_dir)
-    assert "PATH" in env and "HOME" in env
+def test_clean_env_keeps_only_the_allowlist(monkeypatch):
+    for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CONFIG_DIR"):
+        monkeypatch.setenv(key, "x")
+    env = clean_env({"LINEAR_AGENTS_STATE": "/s"})
+    assert env.keys() == {"HOME", "USER", "PATH", "TERM", "LANG", "LINEAR_AGENTS_STATE"}
 
 
-def test_argv_prompt_first_and_mcp_config_last():
+def test_argv_wraps_claude_in_a_clean_env():
     s = IssueSettings(model="opus", effort="high", mcp=("sentry",))
-    argv = claude_argv(CFG, "NF-1", s, "do the thing", exe="/usr/bin/linear-agents")
-    assert argv[:2] == ["claude", "do the thing"]
+    argv = claude_argv(CFG, "NF-1", s, "do the thing", env={"HOME": "/h", "X": "1"},
+                       claude_exe="/opt/claude", exe="/opt/linear-agents")
+    assert argv[:4] == ["/usr/bin/env", "-i", "HOME=/h", "X=1"]
+    i = argv.index("/opt/claude")
+    assert argv[i - 1] == str(CFG.agent_gh_token_file) and argv[i + 1] == "do the thing"
     assert argv[-2] == "--mcp-config"
     assert json.loads(argv[-1]) == {"mcpServers": {"sentry": CFG.mcp_servers["sentry"]}}
     assert argv[argv.index("--remote-control") + 1] == "NF-1"
     assert argv[argv.index("--model") + 1] == "opus"
     settings = json.loads(argv[argv.index("--settings") + 1])
-    assert settings["statusLine"]["command"] == "/usr/bin/linear-agents statusline"
+    assert settings["statusLine"]["command"] == "/opt/linear-agents statusline"
     assert "--strict-mcp-config" in argv
 
 
 def test_unknown_mcp_server_raises():
     with pytest.raises(KeyError, match="nope"):
-        claude_argv(CFG, "NF-1", IssueSettings(mcp=("nope",)), "p", exe="x")
+        claude_argv(CFG, "NF-1", IssueSettings(mcp=("nope",)), "p", env={}, claude_exe="c",
+                    exe="x")
 
 
 def test_session_names():
@@ -1997,20 +2209,21 @@ def test_session_names():
     assert session_name("NF-1", "fix") == "NF-1"
 
 
-@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux not installed")
-def test_real_tmux_lifecycle(tmp_path):
-    s = Sessions(socket=f"la-test-{time.time_ns()}")
-    try:
-        s.start("NF-12", tmp_path, ["sh", "-c", "cat > out.txt"], env=clean_env(CFG),
-                extra_env={"X": "1"})
-        assert s.alive("NF-12") and not s.alive("NF-1")
-        s.send("NF-12", "hello")
-        time.sleep(0.5)
-        s.kill("NF-12")
-        assert not s.alive("NF-12")
-        assert (tmp_path / "out.txt").read_text().startswith("hello")
-    finally:
-        subprocess.run(["tmux", "-L", s.socket, "kill-server"], capture_output=True)
+def test_real_tmux_lifecycle(tmux_server, tmp_path):
+    s = Sessions(socket=tmux_server)
+    s.start("NF-12", tmp_path, ["sh", "-c", "cat > out.txt"])
+    assert s.alive("NF-12") and not s.alive("NF-1")
+    s.send("NF-12", "hello")
+    time.sleep(0.5)
+    s.kill("NF-12")
+    assert not s.alive("NF-12")
+    assert (tmp_path / "out.txt").read_text().startswith("hello")
+
+
+def test_no_server_is_an_error_not_a_new_server(tmp_path):
+    s = Sessions(socket=f"la-none-{time.time_ns()}")
+    with pytest.raises(subprocess.CalledProcessError):
+        s.start("NF-1", tmp_path, ["true"])
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -2032,30 +2245,37 @@ from linear_agents.config import Config
 
 SOCKET = "linear-agents"
 _KEEP = ("HOME", "USER", "PATH", "LANG", "TERM")
+# $0 is the token file. Reading it inside the pane keeps the token off the tmux and ps command
+# lines, and a missing file stops the session instead of leaving gh to find other credentials.
+_WRAPPER = 'GH_TOKEN=$(cat "$0") || exit 1; export GH_TOKEN; exec "$@"'
 
 
-def clean_env(cfg: Config) -> dict[str, str]:
+def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     # A session started from inside another Claude Code session inherits its messaging socket,
-    # session ID and task list, and ANTHROPIC_API_KEY would switch billing to the API.
+    # session ID and task list, ANTHROPIC_API_KEY would switch billing to the API, and
+    # CLAUDE_CONFIG_DIR would move ~/.claude.json away from the login and folder trust.
     env = {k: os.environ[k] for k in _KEEP if k in os.environ}
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("LANG", "C.UTF-8")
-    if cfg.claude_config_dir:
-        env["CLAUDE_CONFIG_DIR"] = str(cfg.claude_config_dir)
-    return env
+    return {**env, **(extra or {})}
 
 
 def session_name(issue_key: str, phase: str) -> str:
     return f"{issue_key}-test" if phase == "test" else issue_key
 
 
-def claude_argv(cfg: Config, name: str, settings: IssueSettings, prompt: str, exe: str) -> list[str]:
+def claude_argv(cfg: Config, name: str, settings: IssueSettings, prompt: str,
+                env: dict[str, str], claude_exe: str, exe: str) -> list[str]:
     servers = {s: cfg.mcp_servers[s] for s in settings.mcp}
     session_settings = {
         "statusLine": {"type": "command", "command": f"{exe} statusline"},
         "autoContinueAtUsageLimit": True,
     }
-    argv = ["claude", prompt, "--remote-control", name, "--name", name,
+    # The pane would otherwise inherit the tmux server's environment, which is whatever the
+    # process that started the server had.
+    argv = ["/usr/bin/env", "-i", *(f"{k}={v}" for k, v in env.items()),
+            "/bin/sh", "-c", _WRAPPER, str(cfg.agent_gh_token_file),
+            claude_exe, prompt, "--remote-control", name, "--name", name,
             "--plugin-dir", str(cfg.plugin_dir),
             "--settings", json.dumps(session_settings),
             "--permission-mode", "auto", "--strict-mcp-config"]
@@ -2073,16 +2293,15 @@ class Sessions:
         self.socket = socket
         self._run = runner
 
-    def _tmux(self, *args: str, env=None, check=True):
-        return self._run(["tmux", "-L", self.socket, *args], env=env, check=check,
+    def _tmux(self, *args: str, check=True):
+        # -N: the server belongs to linear-agents-tmux.service. A server started from here
+        # would live in the tick's cgroup, which systemd kills when the oneshot tick exits.
+        return self._run(["tmux", "-N", "-L", self.socket, *args], check=check,
                          capture_output=True, text=True)
 
-    def start(self, name: str, cwd: Path, argv: list[str], env: dict, extra_env: dict) -> None:
-        cmd = ["new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", str(cwd)]
-        for key, value in extra_env.items():
-            cmd += ["-e", f"{key}={value}"]
-        # env applies when this call starts the tmux server; -e covers per-session values.
-        self._tmux(*cmd, *argv, env=env)
+    def start(self, name: str, cwd: Path, argv: list[str]) -> None:
+        self._tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", str(cwd),
+                   *argv)
 
     def alive(self, name: str) -> bool:
         return self._tmux("has-session", "-t", f"={name}", check=False).returncode == 0
@@ -2095,15 +2314,31 @@ class Sessions:
         self._tmux("send-keys", "-t", f"={name}:", "Enter")
 ```
 
+`deploy/linear-agents-tmux.service` (a user unit, installed in Task 15):
+```ini
+[Unit]
+Description=tmux server for linear-agents sessions
+
+[Service]
+# -D keeps tmux in the foreground for systemd and turns exit-empty off, so the server outlives
+# its sessions. Ticks connect with -N and never start a server of their own.
+ExecStart=/usr/bin/tmux -L linear-agents -D
+ExecStop=/usr/bin/tmux -L linear-agents kill-server
+
+[Install]
+WantedBy=default.target
+```
+
 - [ ] **Step 4: Run tests**
 
 Run: `uv run pytest tests/test_sessions.py -q`
-Expected: all passed (the tmux test runs where tmux is installed)
+Expected: all passed (the real tmux test skips where tmux is not installed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/linear_agents/sessions.py tests/test_sessions.py
+git add src/linear_agents/sessions.py tests/conftest.py tests/test_sessions.py \
+  deploy/linear-agents-tmux.service
 git commit -s -m "Start and control agent sessions in a private tmux server"
 ```
 
@@ -2113,51 +2348,57 @@ git commit -s -m "Start and control agent sessions in a private tmux server"
 
 **Files:**
 - Create: `src/linear_agents/worktree.py`, `tests/test_worktree.py`
-- Modify: `src/linear_agents/cli.py` (add `hook`, `claim`)
+- Modify: `src/linear_agents/cli.py` (add `hook`, `claim`), `tests/conftest.py` (add `origin`)
 
 **Interfaces:**
 - Consumes: `RepoConfig`, `ledger`
 - Produces:
   - `git(*args, cwd) -> str`
   - `prepare_worktree(repo: RepoConfig, worktree_root: Path, key: str) -> tuple[Path, str, str]`
-    (path, branch, base_sha; runs `./setup` when present)
+    (path, branch, base_sha; reuses the key's worktree or branch when an earlier run left them;
+    runs `./setup` when present)
   - `install_hook(worktree: Path, hooks_dir: Path, exe: str, config_path: Path)`
   - `changed_files(worktree, a, b) -> set[str]`
   - CLI `linear-agents hook pre-commit`: exits 1 listing staged files another live claim owns
   - CLI `linear-agents claim GLOB...`: adds globs to the current issue's claim or exits 1 naming
     the owner
+  - Fixture `origin` in `tests/conftest.py`: a clone of a bare origin with one commit holding
+    `a.txt`, an executable `setup` that creates `.setup-ran`, and a `.gitignore` for it
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the fixture and the failing tests**
 
-`tests/test_worktree.py`:
+Add to `tests/conftest.py`, with `from linear_agents.worktree import git` joining the imports at
+the top. The fixture lives here rather than in a test module because importing a fixture into
+another module trips ruff's F811 where it is used as a parameter.
 ```python
-import subprocess
-from pathlib import Path
-
-import pytest
-
-from linear_agents import ledger
-from linear_agents.cli import main
-from linear_agents.config import RepoConfig
-from linear_agents.worktree import changed_files, git, install_hook, prepare_worktree
-from tests.test_ledger import make
-
-
 @pytest.fixture
 def origin(tmp_path):
     bare = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True)
     src = tmp_path / "src"
-    subprocess.run(["git", "clone", "-q", bare, src], check=True)
+    subprocess.run(["git", "clone", "-q", bare, src], check=True, capture_output=True)
     for k, v in (("user.name", "t"), ("user.email", "t@t")):
         git("config", k, v, cwd=src)
     (src / "a.txt").write_text("a\n")
+    (src / ".gitignore").write_text(".setup-ran\n")
     (src / "setup").write_text("#!/bin/sh\ntouch .setup-ran\n")
     (src / "setup").chmod(0o755)
     git("add", ".", cwd=src)
     git("commit", "-qm", "init", cwd=src)
     git("push", "-q", "origin", "main", cwd=src)
     return src
+```
+
+`tests/test_worktree.py`:
+```python
+import subprocess
+from pathlib import Path
+
+from linear_agents import ledger
+from linear_agents.cli import main
+from linear_agents.config import RepoConfig
+from linear_agents.worktree import changed_files, git, install_hook, prepare_worktree
+from tests.test_ledger import make
 
 
 def test_prepare_worktree(origin, tmp_path):
@@ -2167,7 +2408,18 @@ def test_prepare_worktree(origin, tmp_path):
     assert git("rev-parse", "HEAD", cwd=path) == base
 
 
-def test_hook_blocks_files_claimed_by_others(origin, tmp_path, monkeypatch):
+def test_prepare_reuses_a_kept_worktree_or_branch(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    (path / "t.txt").write_text("t\n")
+    git("add", "t.txt", cwd=path)
+    git("commit", "-qm", "earlier run", cwd=path)
+    head = git("rev-parse", "HEAD", cwd=path)
+    assert prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")[2] == head
+    git("worktree", "remove", "--force", str(path), cwd=origin)
+    assert prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")[2] == head
+
+
+def test_hook_blocks_files_claimed_by_others(origin, tmp_path):
     path, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     db = tmp_path / "l.sqlite"
     con = ledger.connect(db)
@@ -2230,8 +2482,19 @@ def prepare_worktree(repo: RepoConfig, worktree_root: Path, key: str) -> tuple[P
     path = worktree_root / key
     worktree_root.mkdir(parents=True, exist_ok=True)
     git("fetch", "-q", "origin", repo.base_branch, cwd=repo.path)
-    git("worktree", "add", "-q", "-b", branch, str(path), f"origin/{repo.base_branch}",
-        cwd=repo.path)
+    listed = git("worktree", "list", "--porcelain", cwd=repo.path).splitlines()
+    # A released run leaves its branch, and with --keep-worktree its worktree; a rerun continues
+    # on them, where `worktree add -b` would fail.
+    if f"worktree {path}" not in listed:
+        has_branch = subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"], cwd=repo.path,
+            capture_output=True,
+        ).returncode == 0
+        if has_branch:
+            git("worktree", "add", "-q", str(path), branch, cwd=repo.path)
+        else:
+            git("worktree", "add", "-q", "-b", branch, str(path), f"origin/{repo.base_branch}",
+                cwd=repo.path)
     base = git("rev-parse", "HEAD", cwd=path)
     if (path / "setup").exists():
         subprocess.run(["./setup"], cwd=path, check=True, capture_output=True, text=True)
@@ -2335,7 +2598,8 @@ hook test finds with `which` because `uv run` puts it on `PATH`)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/linear_agents/worktree.py src/linear_agents/cli.py tests/test_worktree.py
+git add src/linear_agents/worktree.py src/linear_agents/cli.py tests/conftest.py \
+  tests/test_worktree.py
 git commit -s -m "Create worktrees with a claim-checking pre-commit hook"
 ```
 
@@ -2348,14 +2612,15 @@ git commit -s -m "Create worktrees with a claim-checking pre-commit hook"
 - Modify: `src/linear_agents/cli.py` (add `context`, `done`, `handoff-ready`)
 
 **Interfaces:**
-- Consumes: `Issue`, `Claim`, `Config`
+- Consumes: `Issue`, `Claim`, `Config`, the ledger opener `_ledger` from Task 9
 - Produces:
   - `state_dir(cfg, key) -> Path`
-  - `write_context(cfg, issue: Issue, claim: Claim, peers: list[str])` → `<state>/context.md`
+  - `write_context(cfg, issue: Issue, claim: Claim)` → `<state>/context.md`
   - `phase_prompt(phase: str, issue_key: str, extra: str = "") -> str`
   - Files in a state dir: `context.md`, `status.json`, `escalations.jsonl`, `done.json`,
     `handoff.md`, `handoff-ready`, `handoff-requested`
-  - CLI `linear-agents context` prints `context.md` plus `handoff.md` when present
+  - CLI `linear-agents context` prints `context.md`, the current peers in the same repo read from
+    the ledger, and `handoff.md` when present
   - CLI `linear-agents done --summary S` writes `done.json`
   - CLI `linear-agents handoff-ready` creates `handoff-ready` after checking `handoff.md` exists
 
@@ -2364,35 +2629,39 @@ git commit -s -m "Create worktrees with a claim-checking pre-commit hook"
 `tests/test_context.py`:
 ```python
 import json
-from pathlib import Path
+from dataclasses import replace
 
+from linear_agents import ledger
 from linear_agents.cli import main
-from linear_agents.config import load
 from linear_agents.context import phase_prompt, state_dir, write_context
 from linear_agents.linear import Issue
 from tests.test_ledger import make
 
-CFG = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
 ISSUE = Issue("u1", "NF-1", "Fix rounding", "Round half-even.", "https://l/NF-1", "started",
               (), None, "t1")
 
 
-def test_context_lists_issue_peers_and_commands(tmp_path, monkeypatch):
-    cfg = CFG.__class__(**{**CFG.__dict__, "state_root": tmp_path})
-    write_context(cfg, ISSUE, make("NF-1"), peers=["NF-2"])
-    text = (state_dir(cfg, "NF-1") / "context.md").read_text()
-    for needle in ("Fix rounding", "Round half-even.", "NF-2", "linear-agents done",
-                   "linear-agents escalate", "linear-agents claim"):
+def test_context_lists_issue_and_commands(tmp_cfg):
+    write_context(tmp_cfg, ISSUE, make("NF-1"))
+    text = (state_dir(tmp_cfg, "NF-1") / "context.md").read_text()
+    for needle in ("Fix rounding", "Round half-even.", "linear-agents done",
+                   "linear-agents escalate", "linear-agents claim", "linear-agents context"):
         assert needle in text
 
 
-def test_context_cli_appends_handoff(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
-    (tmp_path / "context.md").write_text("CTX")
-    (tmp_path / "handoff.md").write_text("NOTE")
+def test_context_cli_prints_context_live_peers_and_handoff(tmp_cfg, monkeypatch, capsys):
+    con = ledger.connect(tmp_cfg.ledger_path)
+    for claim in (make("NF-1"), make("NF-2", ("x/**",)), replace(make("NF-3"), repo="web")):
+        ledger.insert_claim(con, claim)
+    state = state_dir(tmp_cfg, "NF-1")
+    state.mkdir()
+    (state / "context.md").write_text("CTX")
+    (state / "handoff.md").write_text("NOTE")
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(state))
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_cfg.ledger_path))
     assert main(["context"]) == 0
     out = capsys.readouterr().out
-    assert "CTX" in out and "NOTE" in out
+    assert "CTX" in out and "NOTE" in out and "NF-2-test" in out and "NF-3" not in out
 
 
 def test_done_and_handoff_ready(tmp_path, monkeypatch):
@@ -2406,6 +2675,7 @@ def test_done_and_handoff_ready(tmp_path, monkeypatch):
 
 def test_phase_prompts_name_the_skill():
     assert "tester skill" in phase_prompt("test", "NF-1")
+    assert "handoff.md" in phase_prompt("test", "NF-1")
     assert "implementer skill" in phase_prompt("impl", "NF-1")
     assert "just check failed" in phase_prompt("fix", "NF-1", extra="just check failed: E1")
 ```
@@ -2428,6 +2698,7 @@ from linear_agents.linear import Issue
 _COMMANDS = """## Commands
 
 - `linear-agents claim '<glob>'` before editing files outside your claimed paths.
+- `linear-agents context` to see this text again with the current peer list.
 - `linear-agents escalate ...` when you need the owner; see the escalate skill.
 - `linear-agents done --summary '<one paragraph>'` when this phase is finished.
 - `linear-agents handoff-ready` after writing handoff.md when asked to hand off.
@@ -2438,16 +2709,13 @@ def state_dir(cfg: Config, key: str) -> Path:
     return cfg.state_root / key
 
 
-def write_context(cfg: Config, issue: Issue, claim: Claim, peers: list[str]) -> None:
+def write_context(cfg: Config, issue: Issue, claim: Claim) -> None:
     d = state_dir(cfg, issue.key)
     d.mkdir(parents=True, exist_ok=True)
-    peer_text = ", ".join(peers) if peers else "none"
     paths = ", ".join(claim.paths) if claim.paths else "none yet"
     (d / "context.md").write_text(
         f"# {issue.key}: {issue.title}\n\n{issue.url}\n\n{issue.description}\n\n"
-        f"## Claim\n\nBranch `{claim.branch}`. Claimed paths: {paths}.\n\n"
-        f"## Peers in this repo\n\n{peer_text}. ListAgents shows them under generated names;"
-        " match on the tmux session name it lists. Message no other session.\n\n"
+        f"## Claim\n\nBranch `{claim.branch}`. Claimed paths when the issue started: {paths}.\n\n"
         f"Your state directory is {d}; write handoff.md there.\n\n{_COMMANDS}"
     )
 
@@ -2455,7 +2723,8 @@ def write_context(cfg: Config, issue: Issue, claim: Claim, peers: list[str]) -> 
 def phase_prompt(phase: str, issue_key: str, extra: str = "") -> str:
     if phase == "test":
         body = (f"You are the tester for {issue_key}. Follow the tester skill: write tests that"
-                " pass only on correct behavior, commit them, then run linear-agents done.")
+                " pass only on correct behavior, commit them, write handoff.md for the"
+                " implementer, then run linear-agents done.")
     elif phase == "impl":
         body = (f"You are the implementer for {issue_key}. Follow the implementer skill: make the"
                 " committed tests pass without changing them, then run linear-agents done.")
@@ -2468,11 +2737,22 @@ def phase_prompt(phase: str, issue_key: str, extra: str = "") -> str:
 In `cli.py`:
 ```python
 def cmd_context(args) -> int:
+    from linear_agents.sessions import session_name
+
     state = _state_dir()
-    for name in ("context.md", "handoff.md"):
-        path = state / name
-        if path.exists():
-            print(path.read_text())
+    context = state / "context.md"
+    if context.exists():
+        print(context.read_text())
+    # Peers come from the live ledger, so a session sees issues admitted after it started.
+    live = ledger.live_claims(_ledger(args))
+    mine = next((c for c in live if c.issue_key == state.name), None)
+    peers = [c for c in live if mine and c.repo == mine.repo and c.issue_key != state.name]
+    names = ", ".join(session_name(c.issue_key, c.phase) for c in peers) or "none"
+    print(f"## Peers in this repo\n\n{names}. ListAgents shows them under generated names; match"
+          " on the tmux session name it lists. Message no other session.\n")
+    handoff = state / "handoff.md"
+    if handoff.exists():
+        print(handoff.read_text())
     return 0
 
 
@@ -2519,7 +2799,7 @@ git commit -s -m "Write session context and add the agent-side commands"
   - `PublishResult(status: str, detail: str = "", url: str = "")` with status
     `opened | check_failed | tests_touched`
   - `publish(claim, repo: RepoConfig, title: str, summary: str, token: str, runner=subprocess.run)
-    -> PublishResult`
+    -> PublishResult`; a retried publish reuses the PR already open for the branch
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2531,14 +2811,11 @@ from linear_agents.config import RepoConfig
 from linear_agents.publisher import publish
 from linear_agents.worktree import git, prepare_worktree
 from tests.test_ledger import make
-from tests.test_worktree import origin  # noqa: F401  (fixture)
 
 
 def setup_claim(origin, tmp_path, check="true"):
     repo = RepoConfig(origin, check=check)
     path, branch, base = prepare_worktree(repo, tmp_path / "wt", "NF-5")
-    for k, v in (("user.name", "t"), ("user.email", "t@t")):
-        git("config", k, v, cwd=path)
     (path / "test_x.py").write_text("assert True\n")
     git("add", ".", cwd=path)
     git("commit", "-qm", "tests", cwd=path)
@@ -2549,14 +2826,16 @@ def setup_claim(origin, tmp_path, check="true"):
 
 
 class Gh:
-    def __init__(self):
+    def __init__(self, existing=""):
         self.calls = []
+        self.existing = existing
 
     def __call__(self, argv, **kw):
-        if argv[0] == "gh":
-            self.calls.append(argv)
-            return subprocess.CompletedProcess(argv, 0, "https://github.com/o/r/pull/9\n", "")
-        return subprocess.run(argv, **kw)
+        if argv[0] != "gh":
+            return subprocess.run(argv, **kw)
+        self.calls.append(argv)
+        out = "https://github.com/o/r/pull/9\n" if argv[2] == "create" else self.existing
+        return subprocess.CompletedProcess(argv, 0, out, "")
 
 
 def test_opens_draft_pr(origin, tmp_path):
@@ -2567,9 +2846,17 @@ def test_opens_draft_pr(origin, tmp_path):
     gh = Gh()
     result = publish(claim, repo, "Fix rounding", "Did it.", token="t", runner=gh)
     assert result.status == "opened" and result.url.endswith("/pull/9")
-    pr = gh.calls[0]
-    assert "--draft" in pr and "Fixes NF-5" in pr[pr.index("--body") + 1]
+    pr = gh.calls[-1]
+    assert pr[:3] == ["gh", "pr", "create"] and "--draft" in pr
+    assert "Fixes NF-5" in pr[pr.index("--body") + 1]
     assert git("ls-remote", "origin", claim.branch, cwd=path)
+
+
+def test_retry_reuses_the_open_pr(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    gh = Gh(existing="https://github.com/o/r/pull/9\n")
+    result = publish(claim, repo, "t", "s", token="t", runner=gh)
+    assert result.url.endswith("/pull/9") and not any(c[2] == "create" for c in gh.calls)
 
 
 def test_rejects_changed_tests(origin, tmp_path):
@@ -2630,6 +2917,12 @@ def publish(claim: Claim, repo: RepoConfig, title: str, summary: str, token: str
             "credential.helper=!gh auth git-credential",
             "push", "-q", "-u", "origin", claim.branch],
            cwd=wt, env=env, check=True, capture_output=True, text=True)
+    # A publish retried after a later step failed finds the PR it already opened.
+    existing = runner(["gh", "pr", "list", "--head", claim.branch, "--state", "open",
+                       "--json", "url", "--jq", ".[0].url // empty"],
+                      cwd=wt, env=env, check=True, capture_output=True, text=True)
+    if existing.stdout.strip():
+        return PublishResult("opened", url=existing.stdout.strip())
     pr = runner(["gh", "pr", "create", "--draft", "--head", claim.branch,
                  "--base", repo.base_branch, "--title", f"{claim.issue_key}: {title}",
                  "--body", f"Fixes {claim.issue_key}\n\n{summary}"],
@@ -2655,32 +2948,44 @@ git commit -s -m "Publish finished work as a draft PR after the test-file guard"
 
 **Files:**
 - Create: `src/linear_agents/supervisor.py`, `src/linear_agents/runtime.py`,
-  `tests/fakes.py`, `tests/test_supervisor.py`
+  `tests/fakes.py`, `tests/test_supervisor.py`, `tests/bin/claude`, `tests/test_process.py`
 
 **Interfaces:**
 - Consumes: everything above.
 - Produces:
   - `Runtime` dataclass (in `runtime.py`): `cfg, con, linear, sessions, notifier, now, exe,
-    config_path, publish_fn, git_head`
-  - `launch(rt, claim, issue: Issue | None, phase, extra="")` starts the session for a phase
+    claude_exe, config_path, publish_fn, git_head` (`exe` and `claude_exe` absolute paths)
+  - `LaunchError(RuntimeError)`
+  - `launch(rt, claim, phase, extra="")` deletes the previous session's `done.json`,
+    `handoff-ready`, `handoff-requested` and `status.json`, starts the session for a phase and
+    logs a usage snapshot. It raises `LaunchError` before starting anything when the agent token
+    file is missing or empty.
   - `supervise(rt, claim)` runs one claim through the rules below
 
-Rules, in order, for a `running` claim:
-1. `done.json` exists → kill session, delete the file. Phase `test`: if HEAD equals `base_sha`,
-   block with a tier 2 escalation (`<key>:no-tests`); else store `tester_sha`, switch to `impl`,
-   reset `restarts`, launch. Phase `impl` or `fix`: call `publish_fn`; `opened` → state `done`,
-   comment the PR link, add a digest line; `check_failed` → if `fix_attempts == 0` set phase `fix`,
-   increment `fix_attempts`, launch with the failure output, else block with tier 2; `tests_touched`
-   → block with tier 2.
-2. `handoff-ready` exists → kill, delete it and `handoff-requested`, relaunch the same phase.
-3. Session not alive → if `restarts >= 1` block with tier 2 `<key>:crash` (waiting); else increment
-   `restarts` and relaunch.
-4. Over `wall_clock_s` since `started_at` → kill, state `timed_out`, digest line.
-5. Context at or above `context_restart_pct` and no `handoff-requested` → send the handoff
-   instruction and create `handoff-requested`.
+Each rule changes the ledger after its side effects (kill, launch, publish, Linear, notify), and
+only `launch` deletes marker files, so an exception leaves the claim and its markers as they were
+and the next tick repeats the rule.
 
-"Block" means state `blocked`, `needs-decision` label (through the tier 2 escalation) and the
-session killed; the claim keeps its paths until `linear-agents release` (Task 13).
+Rules, in order, for a `running` claim:
+1. `done.json` exists → kill session, log a usage snapshot. Phase `test`: if HEAD equals
+   `base_sha`, block with a tier 2 escalation (`<key>:no-tests`); else launch `impl`, then store
+   `tester_sha`, switch to `impl`, reset `restarts`. Phase `impl` or `fix`: call `publish_fn`;
+   `opened` → comment the PR link, add a digest line, then state `done`; `check_failed` → if
+   `fix_attempts == 0` launch `fix` with the failure output, then set phase `fix` and
+   `fix_attempts`; else block with tier 2; `tests_touched` → block with tier 2. `done.json` stays
+   until the next launch deletes it; a blocked or finished claim is not supervised again.
+2. `handoff-ready` exists → kill, relaunch the same phase.
+3. Session not alive → if `restarts >= 1` block with tier 2 `<key>:crash` (waiting); else relaunch,
+   then increment `restarts`.
+4. Over `wall_clock_s` since `started_at` → kill, digest line, usage snapshot, then state
+   `timed_out`.
+5. Context at or above `context_restart_pct` and no `handoff-requested` → send the handoff
+   instruction and create `handoff-requested`. The status file is deleted at each launch, so the
+   number is always the current session's.
+
+"Block" means the session killed, the tier 2 escalation sent (which adds `needs-decision`), then
+state `blocked`. The claim keeps its paths until `linear-agents release` (Task 13), which returns
+the issue to Todo.
 
 - [ ] **Step 1: Write the fakes and failing tests**
 
@@ -2700,8 +3005,8 @@ class FakeSessions:
     sent: list = field(default_factory=list)
     killed: list = field(default_factory=list)
 
-    def start(self, name, cwd, argv, env, extra_env):
-        self.started.append((name, argv, extra_env))
+    def start(self, name, cwd, argv):
+        self.started.append((name, argv))
         self.alive_names.add(name)
 
     def alive(self, name):
@@ -2737,32 +3042,27 @@ class FakeLinear:
 `tests/test_supervisor.py`:
 ```python
 import json
-from pathlib import Path
 
 import pytest
 
 from linear_agents import ledger
-from linear_agents.config import load
 from linear_agents.context import state_dir
+from linear_agents.linear import LinearError
 from linear_agents.publisher import PublishResult
 from linear_agents.runtime import Runtime
-from linear_agents.supervisor import supervise
+from linear_agents.supervisor import LaunchError, supervise
 from linear_agents.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
 
-EXAMPLE = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
-
 
 @pytest.fixture
-def rt(tmp_path):
-    cfg = EXAMPLE.__class__(**{**EXAMPLE.__dict__, "state_root": tmp_path / "state"})
-    con = ledger.connect(tmp_path / "l.sqlite")
+def rt(tmp_cfg, tmp_path):
     clock = {"now": 100.0}
     runtime = Runtime(
-        cfg=cfg, con=con, linear=FakeLinear(), sessions=FakeSessions(),
-        notifier=FakeNotifier(), now=lambda: clock["now"], exe="linear-agents",
-        config_path=tmp_path / "c.toml",
+        cfg=tmp_cfg, con=ledger.connect(tmp_cfg.ledger_path), linear=FakeLinear(),
+        sessions=FakeSessions(), notifier=FakeNotifier(), now=lambda: clock["now"],
+        exe="/opt/linear-agents", claude_exe="/opt/claude", config_path=tmp_path / "c.toml",
         publish_fn=lambda claim, title, summary: PublishResult("opened", url="https://pr/1"),
         git_head=lambda path: "sha-tests",
     )
@@ -2777,12 +3077,17 @@ def add(rt, **kw):
         setattr(c, k, v)
     ledger.insert_claim(rt.con, c)
     state_dir(rt.cfg, "NF-1").mkdir(parents=True, exist_ok=True)
-    (state_dir(rt.cfg, "NF-1") / "context.md").write_text("ctx")
     return c
 
 
 def done(rt, summary="ok"):
     (state_dir(rt.cfg, "NF-1") / "done.json").write_text(json.dumps({"summary": summary}))
+
+
+def usage_status(ctx=10.0):
+    window = {"used_percentage": 20.0, "resets_at": 4_000_000_000}
+    return {"rate_limits": {"five_hour": window, "seven_day": window},
+            "context_window": {"used_percentage": ctx}}
 
 
 def test_tester_done_starts_implementer(rt):
@@ -2793,6 +3098,19 @@ def test_tester_done_starts_implementer(rt):
     c = ledger.get_claim(rt.con, "NF-1")
     assert c.phase == "impl" and c.tester_sha == "sha-tests"
     assert rt.sessions.killed == ["NF-1-test"] and rt.sessions.started[0][0] == "NF-1"
+    assert not (state_dir(rt.cfg, "NF-1") / "done.json").exists()
+    supervise(rt, c)
+    assert len(rt.sessions.started) == 1
+
+
+def test_usage_snapshots_per_phase(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    write_status(state_dir(rt.cfg, "NF-1"), usage_status())
+    done(rt)
+    supervise(rt, ledger.get_claim(rt.con, "NF-1"))
+    events = [(phase, event) for phase, event, _, _ in ledger.usage_for(rt.con, "NF-1")]
+    assert events == [("test", "end"), ("impl", "start")]
 
 
 def test_tester_without_commits_blocks(rt):
@@ -2819,7 +3137,7 @@ def test_check_failure_gets_one_fix_then_blocks(rt):
     supervise(rt, ledger.get_claim(rt.con, "NF-1"))
     c = ledger.get_claim(rt.con, "NF-1")
     assert c.phase == "fix" and c.fix_attempts == 1
-    assert "E1 boom" in rt.sessions.started[-1][1][1]
+    assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
     done(rt)
     supervise(rt, ledger.get_claim(rt.con, "NF-1"))
     assert ledger.get_claim(rt.con, "NF-1").state == "blocked"
@@ -2835,6 +3153,33 @@ def test_dead_session_restarts_once_then_blocks(rt):
     assert rt.notifier.sent[-1].waiting is True
 
 
+def test_launch_fails_without_agent_token(rt):
+    add(rt)
+    rt.cfg.agent_gh_token_file.write_text("")
+    with pytest.raises(LaunchError):
+        supervise(rt, ledger.get_claim(rt.con, "NF-1"))
+    assert rt.sessions.started == [] and ledger.get_claim(rt.con, "NF-1").restarts == 0
+
+
+def test_linear_error_in_block_retries_next_tick(rt):
+    add(rt)
+    rt.git_head = lambda path: "sha-base"
+    done(rt)
+    calls = []
+
+    def flaky(esc, issue, team_id):
+        calls.append(esc)
+        if len(calls) == 1:
+            raise LinearError("timeout")
+
+    rt.notifier.send = flaky
+    with pytest.raises(LinearError):
+        supervise(rt, ledger.get_claim(rt.con, "NF-1"))
+    assert ledger.get_claim(rt.con, "NF-1").state == "running"
+    supervise(rt, ledger.get_claim(rt.con, "NF-1"))
+    assert ledger.get_claim(rt.con, "NF-1").state == "blocked" and len(calls) == 2
+
+
 def test_wall_clock(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
@@ -2846,22 +3191,108 @@ def test_wall_clock(rt):
 def test_high_context_requests_handoff_once(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
-    write_status(state_dir(rt.cfg, "NF-1"), {"context_window": {"used_percentage": 70}})
+    write_status(state_dir(rt.cfg, "NF-1"), usage_status(ctx=70))
     supervise(rt, ledger.get_claim(rt.con, "NF-1"))
     supervise(rt, ledger.get_claim(rt.con, "NF-1"))
     assert len(rt.sessions.sent) == 1 and "handoff" in rt.sessions.sent[0][1]
 
 
-def test_handoff_ready_restarts_same_phase(rt):
+def test_handoff_ready_restarts_same_phase_with_a_clean_slate(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
     d = state_dir(rt.cfg, "NF-1")
+    write_status(d, usage_status(ctx=70))
     (d / "handoff-ready").touch()
     (d / "handoff-requested").touch()
     supervise(rt, ledger.get_claim(rt.con, "NF-1"))
     assert rt.sessions.killed == ["NF-1-test"] and rt.sessions.started[0][0] == "NF-1-test"
-    assert not (d / "handoff-ready").exists() and not (d / "handoff-requested").exists()
+    for name in ("handoff-ready", "handoff-requested", "status.json"):
+        assert not (d / name).exists()
+    supervise(rt, ledger.get_claim(rt.con, "NF-1"))
+    assert rt.sessions.sent == [], "the old session's 70% must not ask the new one to hand off"
 ```
+
+`tests/bin/claude` (mode 755), the stand-in for `claude` in process tests. It ignores its
+arguments; the test picks its behavior through a file in the state directory, because the pane's
+`env -i` strips any variable the test could set:
+```sh
+#!/bin/sh
+# Stands in for claude in tests/test_process.py.
+mode=$(cat "$LINEAR_AGENTS_STATE/fake-mode" 2>/dev/null || echo done)
+case "$mode" in
+  done)
+    git commit -q --allow-empty -m "fake tests"
+    linear-agents done --summary "fake $LINEAR_AGENTS_PHASE" ;;
+  handoff)
+    echo "fake note" > "$LINEAR_AGENTS_STATE/handoff.md"
+    linear-agents handoff-ready ;;
+  crash)
+    exit 3 ;;
+esac
+exec sleep 600
+```
+
+`tests/test_process.py`:
+```python
+import shutil
+import time
+from pathlib import Path
+
+from linear_agents import ledger
+from linear_agents.config import RepoConfig
+from linear_agents.context import state_dir
+from linear_agents.publisher import PublishResult
+from linear_agents.runtime import Runtime
+from linear_agents.sessions import Sessions
+from linear_agents.supervisor import launch, supervise
+from linear_agents.worktree import git, prepare_worktree
+from tests.fakes import FakeLinear, FakeNotifier
+from tests.test_ledger import make
+
+FAKE = Path(__file__).parent / "bin" / "claude"
+
+
+def wait_for(check, timeout=10.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if check():
+            return
+        time.sleep(0.1)
+    raise AssertionError("timed out")
+
+
+def test_fake_claude_through_tmux(tmp_cfg, tmux_server, origin, tmp_path):
+    path, branch, base = prepare_worktree(RepoConfig(origin), tmp_cfg.worktree_root, "NF-1")
+    c = make("NF-1", worktree=str(path))
+    c.branch, c.base_sha = branch, base
+    rt = Runtime(cfg=tmp_cfg, con=ledger.connect(tmp_cfg.ledger_path), linear=FakeLinear(),
+                 sessions=Sessions(socket=tmux_server), notifier=FakeNotifier(), now=time.time,
+                 exe=shutil.which("linear-agents"), claude_exe=str(FAKE),
+                 config_path=tmp_path / "c.toml",
+                 publish_fn=lambda *a: PublishResult("opened", url="u"),
+                 git_head=lambda p: git("rev-parse", "HEAD", cwd=Path(p)))
+    ledger.insert_claim(rt.con, c)
+    state = state_dir(tmp_cfg, "NF-1")
+    state.mkdir()
+    (state / "fake-mode").write_text("handoff")
+    launch(rt, c, "test")
+    wait_for(lambda: (state / "handoff-ready").exists())
+    (state / "fake-mode").write_text("crash")
+    supervise(rt, ledger.get_claim(rt.con, "NF-1"))  # handoff: relaunched, and this one crashes
+    assert not (state / "handoff-ready").exists()
+    wait_for(lambda: not rt.sessions.alive("NF-1-test"))
+    (state / "fake-mode").write_text("done")
+    supervise(rt, ledger.get_claim(rt.con, "NF-1"))  # dead: the one restart
+    assert ledger.get_claim(rt.con, "NF-1").restarts == 1
+    wait_for(lambda: (state / "done.json").exists())
+    supervise(rt, ledger.get_claim(rt.con, "NF-1"))
+    c = ledger.get_claim(rt.con, "NF-1")
+    assert c.phase == "impl" and c.tester_sha != base and rt.sessions.alive("NF-1")
+```
+The test drives every path of the fake through the real wrapper, `env -i` and tmux: the handoff
+restart, a crash restart (`restarts` goes to 1), and a tester that commits and runs the real
+`linear-agents done`. `uv run` puts the venv's `linear-agents` on `PATH`, which `clean_env` passes
+through to the pane.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -2889,6 +3320,7 @@ class Runtime:
     notifier: object
     now: Callable[[], float]
     exe: str
+    claude_exe: str
     config_path: Path
     publish_fn: Callable
     git_head: Callable[[str], str]
@@ -2905,7 +3337,7 @@ from linear_agents.context import phase_prompt, state_dir
 from linear_agents.escalation import Escalation
 from linear_agents.ledger import Claim
 from linear_agents.sessions import claude_argv, clean_env, session_name
-from linear_agents.usage import context_pct, read_status
+from linear_agents.usage import context_pct, latest_usage, read_status
 
 HANDOFF_ASK = (
     "Your context is past {pct:.0f}%. Follow the handoff skill now: write handoff.md in your state"
@@ -2913,53 +3345,72 @@ HANDOFF_ASK = (
 )
 
 
+_PER_SESSION = ("done.json", "handoff-ready", "handoff-requested", "status.json")
+
+
+class LaunchError(RuntimeError):
+    pass
+
+
+def _record_usage(rt, key: str, phase: str, event: str) -> None:
+    u = latest_usage(rt.cfg.state_root, rt.now())
+    if u is not None:
+        ledger.add_usage(rt.con, key, phase, event, u.five_hour_pct, u.weekly_pct, rt.now())
+
+
 def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
+    token = rt.cfg.agent_gh_token_file
+    if not token.exists() or not token.read_text().strip():
+        raise LaunchError(f"{token} is missing or empty; agents get their GitHub token from it")
+    d = state_dir(rt.cfg, claim.issue_key)
+    _record_usage(rt, claim.issue_key, phase, "start")
+    # The previous session's markers would be taken for the new one's, and its context reading
+    # would ask the new session to hand off at once.
+    for leftover in _PER_SESSION:
+        (d / leftover).unlink(missing_ok=True)
     name = session_name(claim.issue_key, phase)
-    settings = settings_from_json(claim.settings_json)
-    prompt = phase_prompt(phase, claim.issue_key, extra)
-    argv = claude_argv(rt.cfg, name, settings, prompt, rt.exe)
-    token = rt.cfg.agent_gh_token_file.read_text().strip() if rt.cfg.agent_gh_token_file.exists() \
-        else ""
-    extra_env = {
-        "GH_TOKEN": token,
-        "LINEAR_AGENTS_STATE": str(state_dir(rt.cfg, claim.issue_key)),
+    env = clean_env({
+        "LINEAR_AGENTS_STATE": str(d),
         "LINEAR_AGENTS_CONFIG": str(rt.config_path),
         "LINEAR_AGENTS_PHASE": phase,
-    }
-    rt.sessions.start(name, Path(claim.worktree), argv, clean_env(rt.cfg), extra_env)
+    })
+    settings = settings_from_json(claim.settings_json)
+    prompt = phase_prompt(phase, claim.issue_key, extra)
+    argv = claude_argv(rt.cfg, name, settings, prompt, env, rt.claude_exe, rt.exe)
+    rt.sessions.start(name, Path(claim.worktree), argv)
 
 
 def _block(rt, claim: Claim, cause: str, summary: str, action: str) -> None:
     rt.sessions.kill(session_name(claim.issue_key, claim.phase))
-    ledger.update_claim(rt.con, claim.issue_key, state="blocked")
     esc = Escalation(2, f"{claim.issue_key}:{cause}", summary, action,
                      issue_key=claim.issue_key, waiting=True)
     rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
+    ledger.update_claim(rt.con, claim.issue_key, state="blocked")
 
 
 def _finish_phase(rt, claim: Claim, summary: str) -> None:
     key = claim.issue_key
+    _record_usage(rt, key, claim.phase, "end")
     if claim.phase == "test":
         head = rt.git_head(claim.worktree)
         if head == claim.base_sha:
             _block(rt, claim, "no-tests", "The tester finished without committing tests.",
-                   "Add detail to the acceptance criteria, then run linear-agents release")
+                   f"Add detail to the acceptance criteria, then run linear-agents release {key}")
             return
+        launch(rt, claim, "impl")
         ledger.update_claim(rt.con, key, tester_sha=head, phase="impl", restarts=0,
                             started_at=rt.now())
-        launch(rt, ledger.get_claim(rt.con, key), "impl")
         return
     issue = rt.linear.issue(key)
     result = rt.publish_fn(claim, issue.title, summary)
     if result.status == "opened":
-        ledger.update_claim(rt.con, key, state="done")
         rt.linear.comment(issue.id, f"Draft PR: {result.url}")
         ledger.add_digest(rt.con, key, f"draft PR ready: {result.url}", rt.now())
+        ledger.update_claim(rt.con, key, state="done")
     elif result.status == "check_failed" and claim.fix_attempts == 0:
+        launch(rt, claim, "fix", extra=f"The check failed with:\n\n{result.detail}")
         ledger.update_claim(rt.con, key, phase="fix", fix_attempts=1, restarts=0,
                             started_at=rt.now())
-        launch(rt, ledger.get_claim(rt.con, key), "fix",
-               extra=f"The check failed with:\n\n{result.detail}")
     elif result.status == "check_failed":
         _block(rt, claim, "check-failed", f"The check still fails after one fix:\n{result.detail}",
                "Look at the branch and say how to proceed")
@@ -2970,34 +3421,35 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
 
 
 def supervise(rt, claim: Claim) -> None:
-    d = state_dir(rt.cfg, claim.issue_key)
-    name = session_name(claim.issue_key, claim.phase)
+    key = claim.issue_key
+    d = state_dir(rt.cfg, key)
+    name = session_name(key, claim.phase)
     done = d / "done.json"
     if done.exists():
-        summary = json.loads(done.read_text()).get("summary", "")
-        done.unlink()
+        try:
+            summary = json.loads(done.read_text()).get("summary", "")
+        except ValueError:  # still being written; the next tick reads it whole
+            return
         rt.sessions.kill(name)
         _finish_phase(rt, claim, summary)
         return
     if (d / "handoff-ready").exists():
         rt.sessions.kill(name)
-        (d / "handoff-ready").unlink()
-        (d / "handoff-requested").unlink(missing_ok=True)
         launch(rt, claim, claim.phase)
         return
     if not rt.sessions.alive(name):
         if claim.restarts >= 1:
             _block(rt, claim, "crash", "The session died twice.",
-                   "Check the worktree and run linear-agents release, or restart by hand")
+                   f"Check the worktree, then run linear-agents release --keep-worktree {key}")
             return
-        ledger.update_claim(rt.con, claim.issue_key, restarts=claim.restarts + 1)
         launch(rt, claim, claim.phase)
+        ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
     if rt.now() - claim.started_at > claim.wall_clock_s:
         rt.sessions.kill(name)
-        ledger.update_claim(rt.con, claim.issue_key, state="timed_out")
-        ledger.add_digest(rt.con, claim.issue_key, f"stopped at the wall-clock limit ({name})",
-                          rt.now())
+        ledger.add_digest(rt.con, key, f"stopped at the wall-clock limit ({name})", rt.now())
+        _record_usage(rt, key, claim.phase, "end")
+        ledger.update_claim(rt.con, key, state="timed_out")
         return
     status = read_status(d) or {}
     pct = context_pct(status)
@@ -3025,14 +3477,16 @@ def test_issue_by_key():
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest tests/test_supervisor.py tests/test_linear.py -q`
-Expected: all passed
+Run: `chmod 755 tests/bin/claude && uv run pytest tests/test_supervisor.py tests/test_linear.py
+tests/test_process.py -q`
+Expected: all passed (the process test skips without tmux)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/linear_agents/runtime.py src/linear_agents/supervisor.py src/linear_agents/linear.py \
-  tests/fakes.py tests/test_supervisor.py tests/test_linear.py
+  tests/fakes.py tests/test_supervisor.py tests/test_linear.py tests/bin/claude \
+  tests/test_process.py
 git commit -s -m "Supervise sessions through phases, handoffs, crashes and limits"
 ```
 
@@ -3049,11 +3503,17 @@ git commit -s -m "Supervise sessions through phases, handoffs, crashes and limit
 - Consumes: everything above.
 - Produces:
   - `repo_for(issue, cfg) -> str | None` (first label, then project, that names a configured repo)
-  - `poll(rt)`: admits and launches ready issues
-  - `route_escalations(rt)`: reads new lines from each live claim's `escalations.jsonl`
-  - `forward_comments(rt)`: sends the owner's new comments to running sessions
-  - `maybe_digest(rt)`: posts the digest once a day after `digest_hour`
-  - `tick(cfg, config_path)`; CLI `linear-agents tick`, `linear-agents release KEY`
+  - `poll(rt)`: admits and launches ready issues; an issue whose `depends_on` cannot be read is
+    held with one comment, and the rest of the poll goes on
+  - `route_escalations(rt)`: reads new lines from each live claim's `escalations.jsonl` and sends
+    them with issue-scoped causes
+  - `forward_comments(rt)`: sends the owner's own new comments to running sessions
+  - `maybe_digest(rt)`: posts the digest once a day after `digest_hour`, and clears only the
+    rows it posted
+  - `build_runtime(cfg, config_path) -> Runtime` (fails when `claude` or `linear-agents` is not
+    on `PATH`), `tick_lock(path)` (context manager yielding whether it got the lock),
+    `tick(cfg, config_path) -> int`; CLI `linear-agents tick`,
+    `linear-agents release KEY [--keep-worktree]` (back to Todo, branch kept)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3068,14 +3528,16 @@ import pytest
 from linear_agents import ledger
 from linear_agents.config import load
 from linear_agents.context import state_dir
-from linear_agents.linear import BOT_PREFIX, Comment, Issue
+from linear_agents.linear import BOT_PREFIX, Comment, Issue, LinearError
 from linear_agents.poller import forward_comments, maybe_digest, poll, repo_for, route_escalations
 from linear_agents.runtime import Runtime
+from linear_agents.tick import tick_lock
 from tests.fakes import FakeNotifier, FakeSessions
 from tests.test_ledger import make
 
 EXAMPLE = load(Path(__file__).parent.parent / "deploy" / "config.example.toml")
 GOOD = "Do it.\n\n## Acceptance criteria\n\n- works\n"
+DEPENDS = "```agent\ndepends_on: [NF-404]\n```\n\n" + GOOD
 
 
 def issue(key="NF-9", desc=GOOD, labels=("claude", "backend")):
@@ -3089,17 +3551,22 @@ class PollLinear:
     comments: list = field(default_factory=list)
     started: list = field(default_factory=list)
     replies: dict = field(default_factory=dict)
+    comment_fails: bool = False
 
     def ready_issues(self, team, label):
         return self.ready
 
     def state_types(self, keys):
+        if "NF-404" in keys:
+            raise LinearError("Entity not found: Issue")
         return {k: "completed" for k in keys}
 
     def start(self, i):
         self.started.append(i.key)
 
     def comment(self, issue_id, text):
+        if self.comment_fails:
+            raise LinearError("down")
         self.comments.append((issue_id, text))
 
     def comments_since(self, issue_id, after):
@@ -3110,23 +3577,21 @@ class PollLinear:
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    cfg = EXAMPLE.__class__(**{**EXAMPLE.__dict__, "state_root": tmp_path / "s",
-                               "worktree_root": tmp_path / "wt"})
+def rt(tmp_cfg, tmp_path, monkeypatch):
     prepared = []
 
     def fake_prepare(repo, root, key):
         path = root / key
-        path.mkdir(parents=True)
+        path.mkdir(parents=True, exist_ok=True)
         prepared.append(key)
         return path, f"agent/{key.lower()}", "sha0"
 
     monkeypatch.setattr("linear_agents.poller.prepare_worktree", fake_prepare)
     monkeypatch.setattr("linear_agents.poller.install_hook", lambda *a: None)
-    r = Runtime(cfg=cfg, con=ledger.connect(tmp_path / "l.sqlite"), linear=PollLinear([]),
+    r = Runtime(cfg=tmp_cfg, con=ledger.connect(tmp_cfg.ledger_path), linear=PollLinear([]),
                 sessions=FakeSessions(), notifier=FakeNotifier(), now=lambda: 1000.0,
-                exe="linear-agents", config_path=tmp_path / "c.toml",
-                publish_fn=None, git_head=lambda p: "sha0")
+                exe="/opt/linear-agents", claude_exe="/opt/claude",
+                config_path=tmp_path / "c.toml", publish_fn=None, git_head=lambda p: "sha0")
     r.prepared = prepared
     return r
 
@@ -3143,8 +3608,31 @@ def test_poll_launches_tester(rt):
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
     assert c.phase == "test" and c.state == "running" and c.base_sha == "sha0"
+    assert c.last_comment_at == "1970-01-01T00:16:40+00:00"
     assert rt.linear.started == ["NF-9"] and rt.sessions.started[0][0] == "NF-9-test"
     assert (state_dir(rt.cfg, "NF-9") / "context.md").exists()
+
+
+def test_unreadable_dependency_holds_only_that_issue(rt):
+    rt.linear.ready = [issue("NF-8", desc=DEPENDS), issue()]
+    poll(rt)
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-8") is None
+    assert ledger.get_claim(rt.con, "NF-9") is not None
+    assert len(rt.linear.comments) == 1 and "NF-404" in rt.linear.comments[0][1]
+
+
+def test_rerun_ignores_files_from_the_previous_claim(rt):
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir()
+    old = json.dumps({"tier": 2, "cause": "x", "summary": "s", "action": "a", "waiting": True})
+    (d / "escalations.jsonl").write_text(old + "\n")
+    (d / "done.json").write_text(json.dumps({"summary": "the previous claim's"}))
+    rt.linear.ready = [issue()]
+    poll(rt)
+    route_escalations(rt)
+    assert rt.notifier.sent == []
+    assert not (d / "done.json").exists()
 
 
 def test_poll_comments_once_then_admits_after_fix(rt):
@@ -3168,13 +3656,14 @@ def test_poll_respects_cap(rt):
 def test_forward_only_owner_comments(rt):
     ledger.insert_claim(rt.con, make("NF-1", ()))
     rt.linear.replies = {"id-NF-1": [
-        Comment("c1", f"{BOT_PREFIX} question", "2026-10-09T10:00:00Z"),
-        Comment("c2", "use option B", "2026-10-09T10:05:00Z"),
+        Comment("c1", f"{BOT_PREFIX} question", "2026-10-09T10:00:00Z", mine=True),
+        Comment("c2", "use option B", "2026-10-09T10:05:00Z", mine=True),
+        Comment("c3", "a teammate's aside", "2026-10-09T10:06:00Z", mine=False),
     ]}
     rt.sessions.alive_names.add("NF-1-test")
     forward_comments(rt)
     assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
-    assert ledger.get_claim(rt.con, "NF-1").last_comment_at == "2026-10-09T10:05:00Z"
+    assert ledger.get_claim(rt.con, "NF-1").last_comment_at == "2026-10-09T10:06:00Z"
 
 
 def test_route_escalations_reads_only_new_lines(rt):
@@ -3185,7 +3674,7 @@ def test_route_escalations_reads_only_new_lines(rt):
     (d / "escalations.jsonl").write_text(line + "\nnot json\n")
     route_escalations(rt)
     route_escalations(rt)
-    assert [e.cause for e in rt.notifier.sent] == ["c", "NF-1:malformed-escalation"]
+    assert [e.cause for e in rt.notifier.sent] == ["NF-1:c", "NF-1:malformed-escalation"]
 
 
 def test_digest_posts_once_per_day(rt, monkeypatch):
@@ -3194,6 +3683,24 @@ def test_digest_posts_once_per_day(rt, monkeypatch):
     maybe_digest(rt)
     maybe_digest(rt)
     assert len(rt.linear.comments) == 1 and "draft PR ready" in rt.linear.comments[0][1]
+
+
+def test_digest_is_kept_when_posting_fails(rt, monkeypatch):
+    ledger.add_digest(rt.con, "NF-1", "draft PR ready", 1)
+    monkeypatch.setattr("linear_agents.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
+    rt.linear.comment_fails = True
+    with pytest.raises(LinearError):
+        maybe_digest(rt)
+    assert len(ledger.pending_digest(rt.con)) == 1
+    assert ledger.meta_get(rt.con, "digest_date") is None
+
+
+def test_tick_lock_is_exclusive(tmp_path):
+    with tick_lock(tmp_path / "t.lock") as first:
+        with tick_lock(tmp_path / "t.lock") as second:
+            assert first and not second
+    with tick_lock(tmp_path / "t.lock") as again:
+        assert again
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -3207,6 +3714,8 @@ Expected: FAIL, module not found
 ```python
 import sys
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 
 from linear_agents import ledger
 from linear_agents.admission import admit
@@ -3217,9 +3726,9 @@ from linear_agents.agentblock import (
     settings_to_json,
 )
 from linear_agents.context import state_dir, write_context
-from linear_agents.escalation import Escalation
+from linear_agents.escalation import Escalation, scoped
 from linear_agents.ledger import Claim
-from linear_agents.linear import BOT_PREFIX, Issue
+from linear_agents.linear import BOT_PREFIX, Issue, LinearError
 from linear_agents.sessions import session_name
 from linear_agents.supervisor import launch
 from linear_agents.usage import latest_usage
@@ -3271,19 +3780,30 @@ def poll(rt) -> None:
         except BlockError as exc:
             _comment_once(rt, issue, f"{issue.key}:bad-block:{exc}", f"Skipping: {exc}.")
             continue
-        for cause in ("no-repo", "no-criteria"):
+        try:
+            deps = rt.linear.state_types(settings.depends_on) if settings.depends_on else {}
+        except LinearError as exc:
+            # A mistyped or deleted key fails the lookup; hold this issue, not the whole tick.
+            _comment_once(rt, issue, f"{issue.key}:bad-deps",
+                          f"Skipping: could not read depends_on"
+                          f" {', '.join(settings.depends_on)}: {exc}.")
+            continue
+        for cause in ("no-repo", "no-criteria", "bad-deps"):
             _clear_once(rt, f"{issue.key}:{cause}")
-        deps = rt.linear.state_types(settings.depends_on) if settings.depends_on else {}
         live = ledger.live_claims(rt.con)
         usage = latest_usage(cfg.state_root, rt.now())
         decision = admit(issue.key, settings, live, usage, deps, cfg, rt.now())
         if not decision.ok:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)
             continue
-        _start(rt, issue, repo, settings, live)
+        _start(rt, issue, repo, settings)
 
 
-def _start(rt, issue: Issue, repo: str, settings, live: list[Claim]) -> None:
+def _size(path: Path) -> int:
+    return path.stat().st_size if path.exists() else 0
+
+
+def _start(rt, issue: Issue, repo: str, settings) -> None:
     cfg = rt.cfg
     try:
         path, branch, base = prepare_worktree(cfg.repos[repo], cfg.worktree_root, issue.key)
@@ -3300,34 +3820,42 @@ def _start(rt, issue: Issue, repo: str, settings, live: list[Claim]) -> None:
         depends_on=list(settings.depends_on), settings_json=settings_to_json(settings),
         started_at=rt.now(), wall_clock_s=settings.wall_clock_s or cfg.default_wall_clock_s,
         base_sha=base,
+        # Comments written before the claim are not replies to it.
+        last_comment_at=datetime.fromtimestamp(rt.now(), UTC).isoformat(),
+        # A released issue's state directory keeps the previous claim's escalations; start past
+        # them. launch() deletes its old markers.
+        escalation_offset=_size(d / "escalations.jsonl"),
     )
     ledger.insert_claim(rt.con, claim)
     rt.linear.start(issue)
-    peers = [session_name(c.issue_key, c.phase) for c in live if c.repo == repo]
-    write_context(cfg, issue, claim, peers)
+    write_context(cfg, issue, claim)
     launch(rt, claim, "test")
+
+
+def _new_lines(path: Path, offset: int) -> tuple[list[str], int]:
+    # Only complete lines; a line still being written is picked up next tick.
+    try:
+        new = path.read_bytes()[offset:]
+    except FileNotFoundError:
+        return [], 0
+    end = new.rfind(b"\n") + 1
+    return new[:end].decode().splitlines(), end
 
 
 def route_escalations(rt) -> None:
     for claim in ledger.live_claims(rt.con):
         path = state_dir(rt.cfg, claim.issue_key) / "escalations.jsonl"
-        if not path.exists():
+        lines, end = _new_lines(path, claim.escalation_offset)
+        if not end:
             continue
-        data = path.read_bytes()
-        new = data[claim.escalation_offset:]
-        if not new:
-            continue
-        # Only complete lines; a line still being written is picked up next tick.
-        end = new.rfind(b"\n") + 1
         issue = rt.linear.issue(claim.issue_key)
-        for raw in new[:end].decode().splitlines():
+        for raw in lines:
             try:
                 esc = Escalation.from_json(raw)
             except (ValueError, TypeError):
-                esc = Escalation(3, f"{claim.issue_key}:malformed-escalation",
-                                 f"Unreadable escalation line: {raw[:200]}",
-                                 issue_key=claim.issue_key)
-            rt.notifier.send(esc, issue, issue.team_id)
+                esc = Escalation(3, "malformed-escalation",
+                                 f"Unreadable escalation line: {raw[:200]}")
+            rt.notifier.send(scoped(esc, claim.issue_key), issue, issue.team_id)
         ledger.update_claim(rt.con, claim.issue_key,
                             escalation_offset=claim.escalation_offset + end)
 
@@ -3341,7 +3869,9 @@ def forward_comments(rt) -> None:
             continue
         name = session_name(claim.issue_key, claim.phase)
         for comment in replies:
-            if not comment.body.startswith(BOT_PREFIX) and rt.sessions.alive(name):
+            # The service's own comments carry BOT_PREFIX, and teammates comment on NF issues
+            # too; only the owner's replies go to the session.
+            if comment.mine and not comment.body.startswith(BOT_PREFIX) and rt.sessions.alive(name):
                 rt.sessions.send(name, f"The owner replied on Linear: {comment.body}")
         ledger.update_claim(rt.con, claim.issue_key, last_comment_at=replies[-1].created_at)
 
@@ -3357,21 +3887,23 @@ def maybe_digest(rt) -> None:
     hour, today = _local_hour_and_date(rt.now())
     if hour < rt.cfg.digest_hour or ledger.meta_get(rt.con, "digest_date") == today:
         return
-    rows = ledger.take_digest(rt.con)
+    rows = ledger.pending_digest(rt.con)
+    if rows:
+        body = "\n".join(f"- {key or 'service'}: {line}" for _, key, line in rows)
+        digest = rt.linear.issue(rt.cfg.digest_issue)
+        rt.linear.comment(digest.id, f"Digest for {today}\n\n{body}")
+        ledger.clear_digest(rt.con, rows[-1][0])
     ledger.meta_set(rt.con, "digest_date", today)
-    if not rows:
-        return
-    body = "\n".join(f"- {key or 'service'}: {line}" for key, line in rows)
-    digest = rt.linear.issue(rt.cfg.digest_issue)
-    rt.linear.comment(digest.id, f"Digest for {today}\n\n{body}")
 ```
 
 `src/linear_agents/tick.py`:
 ```python
+import fcntl
 import shutil
 import sys
 import time
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 
 from linear_agents import ledger
@@ -3388,6 +3920,14 @@ from linear_agents.worktree import git
 LINEAR_FAILS_BEFORE_PAGE = 5
 
 
+def _which(name: str) -> str:
+    # The pane's PATH is the tick's, and the unit's PATH is systemd's unless the unit sets one.
+    path = shutil.which(name)
+    if path is None:
+        raise RuntimeError(f"{name} is not on PATH; set Environment=PATH in the unit")
+    return path
+
+
 def build_runtime(cfg: Config, config_path: Path) -> Runtime:
     con = ledger.connect(cfg.ledger_path)
     linear = Linear(http_transport(cfg.linear_key_file.read_text().strip()))
@@ -3398,9 +3938,23 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         return publish(claim, cfg.repos[claim.repo], title, summary, token)
 
     return Runtime(cfg=cfg, con=con, linear=linear, sessions=Sessions(), notifier=notifier,
-                   now=time.time, exe=shutil.which("linear-agents") or "linear-agents",
+                   now=time.time, exe=_which("linear-agents"), claude_exe=_which("claude"),
                    config_path=config_path, publish_fn=publish_fn,
                    git_head=lambda path: git("rev-parse", "HEAD", cwd=Path(path)))
+
+
+@contextmanager
+def tick_lock(path: Path):
+    # Taken here rather than by flock(1) in the unit, so a tick run by hand cannot overlap the
+    # timer's.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
 
 
 def tick(cfg: Config, config_path: Path) -> int:
@@ -3443,29 +3997,44 @@ def _config(args):
     return load(path), path
 
 
+def _lock_path(cfg):
+    return cfg.ledger_path.with_suffix(".lock")
+
+
 def cmd_tick(args) -> int:
-    from linear_agents.tick import tick
+    from linear_agents.tick import tick, tick_lock
 
     cfg, path = _config(args)
-    return tick(cfg, path)
+    with tick_lock(_lock_path(cfg)) as held:
+        if not held:
+            print("tick: another tick is running; skipped", file=sys.stderr)
+            return 0
+        return tick(cfg, path)
 
 
 def cmd_release(args) -> int:
-    from linear_agents.context import state_dir
-    from linear_agents.sessions import Sessions, session_name
+    from linear_agents.sessions import session_name
+    from linear_agents.tick import build_runtime, tick_lock
     from linear_agents.worktree import git
 
-    cfg, _ = _config(args)
-    con = ledger.connect(cfg.ledger_path)
-    claim = ledger.get_claim(con, args.key)
-    if claim is None:
-        print(f"release: no claim for {args.key}", file=sys.stderr)
-        return 1
-    Sessions().kill(session_name(claim.issue_key, claim.phase))
-    if not args.keep_worktree:
-        git("worktree", "remove", "--force", claim.worktree, cwd=cfg.repos[claim.repo].path)
-    ledger.delete_claim(con, args.key)
-    print(f"released {args.key}; its branch {claim.branch} is kept")
+    cfg, path = _config(args)
+    with tick_lock(_lock_path(cfg)) as held:
+        if not held:
+            print("release: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        rt = build_runtime(cfg, path)
+        claim = ledger.get_claim(rt.con, args.key)
+        if claim is None:
+            print(f"release: no claim for {args.key}", file=sys.stderr)
+            return 1
+        rt.sessions.kill(session_name(claim.issue_key, claim.phase))
+        if not args.keep_worktree:
+            git("worktree", "remove", "--force", claim.worktree, cwd=cfg.repos[claim.repo].path)
+        # Back to Todo so the next poll picks it up again; the rerun continues on the kept
+        # branch (Task 9).
+        rt.linear.unstart(rt.linear.issue(args.key))
+        ledger.delete_claim(rt.con, args.key)
+    print(f"released {args.key}: back in Todo, branch {claim.branch} kept")
     return 0
 ```
 Parsers: `sub.add_parser("tick")`; `rel = sub.add_parser("release")`, `rel.add_argument("key")`,
@@ -3480,8 +4049,12 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# -n: a tick still running when the timer fires again is skipped, not queued.
-ExecStart=/usr/bin/flock -n %t/linear-agents.lock %h/.local/bin/linear-agents tick
+# The user manager's PATH lacks ~/.local/bin, where claude and linear-agents live, and the
+# sessions and the repo's check inherit this PATH. Add any other tool directories the repos need.
+Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+# The tick takes its own lock. Sessions live in linear-agents-tmux.service, outside this unit's
+# cgroup, so they survive the end of each tick.
+ExecStart=%h/.local/bin/linear-agents tick
 ```
 
 `deploy/linear-agents.timer`:
@@ -3567,6 +4140,9 @@ Write tests for the issue's acceptance criteria and nothing else.
 - Commit them on the issue branch with a message naming the criteria they cover.
 - Claim any path you edit outside your claimed paths first: `linear-agents claim '<glob>'`.
 - Do not write implementation code.
+- Write `handoff.md` in your state directory for the implementer, a fresh session that starts
+  from it: which test covers which criterion, how to run them, the commit hash, and anything about
+  the code you learned that the implementer would otherwise rediscover.
 - Finish with `linear-agents done --summary '<which criteria each test covers>'`.
 ```
 
@@ -3620,8 +4196,9 @@ name: coordinate
 description: Use when another linear-agents session might be affected by what you found or are about to change
 ---
 
-Your peers are listed in your context under "Peers in this repo". Use `ListAgents` and pick the
-entries whose tmux session name matches a peer; ignore every other session on the machine.
+Run `linear-agents context` for the current list under "Peers in this repo"; it changes as
+issues start and finish. Use `ListAgents` and pick the entries whose tmux session name matches a
+peer; ignore every other session on the machine.
 
 Message a peer with `SendMessage` when:
 
@@ -3723,8 +4300,9 @@ One-time steps on the VM, in order.
 
 1. Install `git`, `gh`, `tmux`, `claude` (2.1.293 or later) and this repo; run `./setup`, then
    `uv tool install --editable .` so `linear-agents` is on `PATH` at `~/.local/bin`.
-2. Sign Claude Code in with the subscription (`claude`, then `/login`). Do not set
-   `ANTHROPIC_API_KEY` anywhere.
+2. Sign Claude Code in with the subscription (`claude`, then `/login`), with `CLAUDE_CONFIG_DIR`
+   unset as the sessions have it; set, it moves `.claude.json` and the login and folder trust go
+   with it. Do not set `ANTHROPIC_API_KEY` anywhere.
 3. In `/config`: turn on "Push when actions required", turn off "Push when Claude decides".
    Leave extra usage off.
 4. Create `worktree_root` and trust it once: `cd ~/agents/worktrees && claude`, accept the folder
@@ -3735,14 +4313,17 @@ One-time steps on the VM, in order.
    in `digest_issue`.
 6. GitHub: a read-only fine-grained token (contents, pull requests, checks, issues: read) in
    `agent_gh_token_file`, and a token with contents and pull requests write on the mapped repos in
-   `publish_gh_token_file`. Both mode 600.
+   `publish_gh_token_file`. Both mode 600. A session does not start without the read-only one.
 7. ntfy: install the app, subscribe to a long random topic, put its URL in `ntfy_url`. Send a
    priority 5 test (`curl -H 'Priority: 5' -d test <url>`) with Do Not Disturb on, to see whether it
    gets through.
-8. Copy `deploy/config.example.toml` to `~/.config/linear-agents/config.toml` and edit it.
-9. `cp deploy/linear-agents.{service,timer} ~/.config/systemd/user/`,
-   `systemctl --user daemon-reload`, `systemctl --user enable --now linear-agents.timer`, and
-   `loginctl enable-linger $USER` so it runs without a login session.
+8. Copy `deploy/config.example.toml` to `~/.config/linear-agents/config.toml` and edit it. If the
+   mapped repos need tools outside `~/.local/bin`, the mise shims and the system directories, add
+   them to `Environment=PATH` in `deploy/linear-agents.service`.
+9. `cp deploy/linear-agents.{service,timer} deploy/linear-agents-tmux.service
+   ~/.config/systemd/user/`, `systemctl --user daemon-reload`,
+   `systemctl --user enable --now linear-agents-tmux.service linear-agents.timer`, and
+   `loginctl enable-linger $USER` so both run without a login session.
 
 Watch it with `journalctl --user -u linear-agents -f`, and attach to a session with
 `tmux -L linear-agents attach -t NF-123`.
@@ -3754,16 +4335,26 @@ Watch it with `journalctl --user -u linear-agents -f`, and attach to a session w
    config, and create one issue in a test Linear team: labelled `claude` and the repo's label,
    assigned to you, in Todo, with an `## Acceptance criteria` list and
    `` ```agent `` block `wall_clock: 30m`.
-2. Run `linear-agents tick` by hand. Expect: the issue moves to In Progress, `NF-…-test` appears
-   in `tmux -L linear-agents ls` and in the Claude app.
-3. In the app, confirm the tester session is steerable; check `ListAgents` from a second session
+2. Run `linear-agents tick` by hand; it takes the same lock as the timer's ticks. Expect: the
+   issue moves to In Progress, `NF-…-test` appears in `tmux -L linear-agents ls` and in the
+   Claude app.
+3. Before anything else, check the tester session's tools. In the app, have it run `/mcp` and
+   list its tools: expect no claude.ai connectors, Linear in particular, since
+   `--strict-mcp-config` is unverified in interactive sessions. If a connector shows up, stop the
+   timer and kill the session: it could write to Linear through it. Record the result in the
+   spec's "Verified and unverified" section.
+4. In the app, confirm the tester session is steerable; check `ListAgents` from a second session
    and note whether `--name` changed the listed name (record the answer in the spec).
-4. Keep running `linear-agents tick` until a draft PR exists and Linear has the PR comment.
-5. Exercise escalation: in a session, run
+5. Keep running `linear-agents tick` until a draft PR exists and Linear has the PR comment.
+6. Exercise escalation: in a session, run
    `linear-agents escalate --tier 1 --cause smoke --summary test --action ignore`; tick; expect one
-   ntfy push and the `escalation` label; repeat the command and tick; expect no second push.
-6. Confirm `issueAddLabel` and the `comments_since` filter worked; if either failed, fix
+   ntfy push and the `escalation` label; repeat the command and tick; expect a second comment and
+   no second push.
+7. Confirm `issueAddLabel`, `User.isMe` and the `comments_since` filter worked; if any failed, fix
    `linear.py` and add the real response as a fixture.
+8. Exercise a rerun: block a second issue (kill its session twice, one tick apart), then run
+   `linear-agents release NF-…`. Expect it back in Todo, and the next tick to restart it on the
+   kept branch.
 
 - [ ] **Step 3: Update the README**
 

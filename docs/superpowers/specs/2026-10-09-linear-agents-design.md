@@ -28,6 +28,8 @@ It is a personal tool on one VM, not team infrastructure.
 - Integrations beyond Linear, GitHub and ntfy (calendar free/busy, claude.ai connectors).
 - Agents judging whether their task fits the remaining usage.
 - Codex or any CLI other than Claude Code.
+- Running agents as a separate Unix user, so the Linear key and GitHub write token are out of
+  their reach. Revisit before running anywhere an agent reading either would matter.
 
 ## Constraints
 
@@ -42,8 +44,9 @@ It is a personal tool on one VM, not team infrastructure.
 
 ## Architecture
 
-One Python program on a systemd timer, run under `flock` so two runs never overlap, plus one
-interactive Claude Code session per issue in tmux on the same VM.
+One Python program on a systemd timer, holding an `flock` so two runs never overlap, plus one
+interactive Claude Code session per issue in tmux on the same VM. The tmux server runs under its
+own lingering systemd user service, so sessions outlive each run of the program.
 
 | Part | Owns |
 |---|---|
@@ -76,16 +79,16 @@ They never push, open PRs, or change Linear.
    An issue without criteria gets one comment and is skipped until it changes.
 2. **Admit.** Start only if usage is below the thresholds, fewer than the session cap are running,
    the issue's claimed paths do not overlap a live claim, and its `depends_on` issues are done.
-3. **Prepare.** Move the issue to In Progress, write the claim, `git worktree add`, run `./setup`,
-   install the pre-commit hook.
+3. **Prepare.** `git worktree add` (reusing the branch of an earlier run of the issue), run
+   `./setup`, install the pre-commit hook. Then write the claim and move the issue to In Progress.
 4. **Tester session.** Writes tests that pass only on correct behavior, commits them, writes a
    handoff note, exits.
 5. **Implementer session.** A fresh session works from the issue and the handoff note until the
    tests pass. Past 60% context it writes a handoff note and the supervisor restarts it under the
    same Remote Control name.
-6. **Publish.** `just check`; reject the run if the implementer changed files the tester
-   committed; push; `gh pr create --draft` with `Fixes NF-123`; comment the PR link on the issue;
-   release the claim.
+6. **Publish.** Reject the run if the implementer changed files the tester committed; `just check`;
+   push; `gh pr create --draft` with `Fixes NF-123`, or reuse the open PR on a retry; comment the PR
+   link on the issue; release the claim.
 
 The session name is the issue key (`NF-123`); the tester and implementer use `NF-123-test` and
 `NF-123`.
@@ -99,6 +102,10 @@ The session name is the issue key (`NF-123`); the tester and implementer use `NF
 | `just check` fails | One fresh implementer session with the failure output; on a second failure, `needs-decision` |
 | Usage limit hit mid-run | The session waits for the reset; nothing new is admitted until usage is below the thresholds |
 | Agent needs a decision | It escalates with a default and a deadline and continues on the default, unless the decision is irreversible, in which case it waits |
+| A Linear, git or tmux call fails partway through a step | The claim's state changes only after the step's side effects succeed, so the next run repeats the step |
+
+A blocked or timed-out issue keeps its claim until I run `linear-agents release NF-123`, which
+moves it back to Todo; the next run picks it up again and continues on the kept branch.
 
 ## Configuration
 
@@ -125,11 +132,13 @@ writing to its state directory, and the pre-commit hook enforces whatever is cla
 ## Coordination
 
 - Duplicate work: an issue has at most one live claim; the poller skips claimed issues.
-- Overlapping edits: claimed paths are checked at admission and again by the pre-commit hook.
-- Dependencies: `depends_on` holds an issue until the issues it names are done in Linear.
+- Overlapping edits: claimed paths are checked at admission and again by the pre-commit hook. A
+  file is claimed when it or a directory above it matches a claimed glob.
+- Dependencies: `depends_on` holds an issue until the issues it names are done in Linear. An issue
+  whose `depends_on` cannot be read is held with one comment.
 - Discoveries: agents message peers with `SendMessage`. `ListAgents` shows auto-generated names and
-  every Claude session on the machine, so the launcher passes each agent the names of its peers in
-  the same repo, and the `coordinate` skill limits messages to those names.
+  every Claude session on the machine, so `linear-agents context` lists each agent's current peers
+  in the same repo from the ledger, and the `coordinate` skill limits messages to those names.
 
 ## Escalation
 
@@ -140,16 +149,18 @@ writing to its state directory, and the pre-commit hook enforces whatever is cla
 | 3. Digest | Reversible decisions made alone, draft PRs ready, failed or capped runs | One daily comment on a pinned digest issue | None |
 | 4. Log only | Retries that succeeded, lint-level noise | None | None |
 
-Rules: every push names one action; one push per cause; silence means the stated default applies
-at its deadline. I answer a tier 2 question in a Linear comment, which the poller forwards to the
-session, or directly through Remote Control.
+Rules: every push names one action; one push per cause in 24 hours, while the label and comment
+still land on each issue; an agent's cause is scoped to its issue unless it marks the cause as
+shared across issues; silence means the stated default applies at its deadline. I answer a tier 2
+question in a Linear comment, which the poller forwards to the session, or directly through Remote
+Control. Only my own comments are forwarded, and only those written after the issue started.
 
 ## Usage limits
 
 Each session's status line command writes its `rate_limits` and context numbers to its state
 directory. The poller reads the newest values and admits no new issue at or above the thresholds.
-Extra usage stays off. Per-issue usage is recorded so a later version can estimate whether an
-issue fits the remaining budget.
+Extra usage stays off. The usage at the start and end of each phase is recorded per issue, so a
+later version can estimate whether an issue fits the remaining budget.
 
 ## Handoff and compaction
 
@@ -162,7 +173,9 @@ loads the issue, the peer list and the latest handoff note, so they come back af
 compaction.
 
 An interactive session does not exit when it finishes; it waits for input. Each phase therefore
-ends with the agent running `linear-agents done`, which the supervisor picks up.
+ends with the agent running `linear-agents done`, which the supervisor picks up. Each launch
+deletes the previous session's markers and status file, so the new session is never mistaken for
+one that has already finished or filled its context.
 
 ## Access
 
@@ -171,9 +184,15 @@ ends with the agent running `linear-agents done`, which the supervisor picks up.
 | Service | Personal API key, limited to the NF team | Fine-grained token with write to the mapped repos | None |
 | Agents | None; the issue text arrives in the prompt | Read-only fine-grained token for `gh` | Only servers named in the issue's `mcp` list, via `--strict-mcp-config` |
 
-The launcher starts sessions with an empty environment plus `HOME`, `USER`, `PATH`, `TERM`, `LANG`,
-`CLAUDE_CONFIG_DIR` and the agent's GitHub token. A session started from inside another Claude Code
-session otherwise inherits its messaging socket, session ID and task list.
+The machine is trusted, and agents run as my own Unix user, so they could read the Linear key and
+the write token. The agent column is therefore behavioural, kept by the prompt, the skills, the
+pre-commit hook and a read-only token in `GH_TOKEN`; it is not an enforced boundary.
+
+The launcher starts each session through `env -i` with only `HOME`, `USER`, `PATH`, `TERM`,
+`LANG` and the `LINEAR_AGENTS_*` variables, then reads the agent's GitHub token from its file into
+`GH_TOKEN`; a launch fails when that file is missing. A session started from inside another Claude
+Code session would otherwise inherit its messaging socket, session ID and task list.
+`CLAUDE_CONFIG_DIR` stays unset, so sessions share my login and folder trust.
 
 ## Stack
 
@@ -200,5 +219,11 @@ other; `--strict-mcp-config` with an empty config hides claude.ai connectors in 
 session in a new worktree under an already-trusted folder gets no folder-trust prompt. Worktrees
 therefore live under one root that is trusted once by hand during setup.
 
-Unverified: `--strict-mcp-config` in interactive mode; the exact Linear behavior for actions taken
-with my own key; ntfy priority 5 getting through Do Not Disturb on my phone.
+Also verified on CLI 2.1.293: with `CLAUDE_CONFIG_DIR` set, Claude Code keeps its global config in
+`$CLAUDE_CONFIG_DIR/.claude.json` instead of `~/.claude.json`, so login and folder trust must be
+done with the same setting the sessions use, which is unset. Verified with tmux 3.7: `tmux -D`
+keeps a server running with no sessions, and `-N` makes a client fail rather than start a server.
+
+Unverified: `--strict-mcp-config` in interactive mode (the smoke test checks it before the
+first real issue); the exact Linear behavior for actions taken with my own key; ntfy priority 5
+getting through Do Not Disturb on my phone.
