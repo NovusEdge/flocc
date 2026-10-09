@@ -13,7 +13,7 @@ from linear_agents.agentblock import (
     settings_to_json,
 )
 from linear_agents.context import state_dir, write_context
-from linear_agents.escalation import Escalation, scoped
+from linear_agents.escalation import DEDUPE_S, Escalation, scoped
 from linear_agents.ledger import Claim
 from linear_agents.linear import BOT_PREFIX, Issue, LinearError
 from linear_agents.sessions import session_name
@@ -98,14 +98,23 @@ def _size(path: Path) -> int:
 
 def _start(rt, issue: Issue, repo: str, settings) -> None:
     cfg = rt.cfg
+    cause = f"{issue.key}:prepare"
     try:
         path, branch, base = prepare_worktree(cfg.repos[repo], cfg.worktree_root, issue.key)
     except (subprocess.CalledProcessError, OSError) as exc:  # nothing is claimed yet
+        # A tier 2 escalation labels and comments every time it is sent, and a broken ./setup
+        # fails on every poll.
+        if ledger.alert_seen(rt.con, cause, DEDUPE_S, rt.now()):
+            return
+        stderr = getattr(exc, "stderr", None) or ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        detail = f"\n\n{stderr.strip()[-1500:]}" if stderr.strip() else ""
         rt.notifier.send(
             Escalation(
                 2,
-                f"{issue.key}:prepare",
-                f"Preparing the worktree failed: {exc}",
+                cause,
+                f"Preparing the worktree failed: {exc}{detail}",
                 "Fix the repo or ./setup",
                 issue_key=issue.key,
                 waiting=True,
@@ -113,7 +122,11 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
             issue,
             issue.team_id,
         )
+        # The notifier records a cause only when it pushes.
+        ledger.record_alert(rt.con, cause, 2, issue.key, rt.now())
         return
+    # Cleared here, not with the other causes in poll(): those run before every prepare attempt.
+    ledger.clear_alert(rt.con, cause)
     d = state_dir(cfg, issue.key)
     install_hook(path, d / "hooks", rt.exe, rt.config_path)
     claim = Claim(
@@ -137,9 +150,15 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         escalation_offset=_size(d / "escalations.jsonl"),
     )
     ledger.insert_claim(rt.con, claim)
-    rt.linear.start(issue)
     write_context(cfg, issue, claim)
-    launch(rt, claim, "test")
+    try:
+        launch(rt, claim, "test")
+    except BaseException:
+        # A claim without a session would be relaunched by every tick and never count a restart,
+        # and an In Progress issue would not be polled again. Leave it in Todo, unclaimed.
+        ledger.delete_claim(rt.con, issue.key)
+        raise
+    rt.linear.start(issue)
 
 
 def _new_lines(path: Path, offset: int) -> tuple[list[str], int]:

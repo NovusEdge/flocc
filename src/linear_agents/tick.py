@@ -28,7 +28,16 @@ def _which(name: str) -> str:
     return path
 
 
+def _require_token(path: Path) -> None:
+    # launch() needs it too, but failing there comes after a claim is made; every ready issue
+    # would be claimed and dropped again each tick.
+    if not path.exists() or not path.read_text().strip():
+        raise RuntimeError(f"{path} is missing or empty; agents get their GitHub token from it")
+
+
 def build_runtime(cfg: Config, config_path: Path) -> Runtime:
+    exe, claude_exe = _which("linear-agents"), _which("claude")
+    _require_token(cfg.agent_gh_token_file)
     con = ledger.connect(cfg.ledger_path)
     linear = Linear(http_transport(cfg.linear_key_file.read_text().strip()))
     notifier = Notifier(cfg, con, linear, now=time.time)
@@ -44,8 +53,8 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         sessions=Sessions(),
         notifier=notifier,
         now=time.time,
-        exe=_which("linear-agents"),
-        claude_exe=_which("claude"),
+        exe=exe,
+        claude_exe=claude_exe,
         config_path=config_path,
         publish_fn=publish_fn,
         git_head=lambda path: git("rev-parse", "HEAD", cwd=Path(path)),

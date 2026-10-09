@@ -1,15 +1,18 @@
 import json
-from dataclasses import dataclass, field
+import subprocess
+from dataclasses import dataclass, field, replace
 
 import pytest
 
 from linear_agents import ledger
 from linear_agents.config import load
 from linear_agents.context import state_dir
+from linear_agents.escalation import Notifier
 from linear_agents.linear import BOT_PREFIX, Comment, Issue, LinearError
 from linear_agents.poller import forward_comments, maybe_digest, poll, repo_for, route_escalations
 from linear_agents.runtime import Runtime
-from linear_agents.tick import tick_lock
+from linear_agents.supervisor import LaunchError
+from linear_agents.tick import tick, tick_lock
 from tests.fakes import FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -54,6 +57,9 @@ class PollLinear:
 
     def issue(self, key):
         return issue(key)
+
+    def add_label(self, i, name):
+        pass
 
 
 @pytest.fixture
@@ -188,3 +194,40 @@ def test_tick_lock_is_exclusive(tmp_path):
         assert first and not second
     with tick_lock(tmp_path / "t.lock") as again:
         assert again
+
+
+def test_launch_failure_leaves_the_issue_unclaimed(rt):
+    rt.cfg.agent_gh_token_file.unlink()
+    rt.linear.ready = [issue()]
+    with pytest.raises(LaunchError):
+        poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None and rt.linear.started == []
+
+
+def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
+    def failing(repo, root, key):
+        raise subprocess.CalledProcessError(1, ["./setup"], stderr="setup: npm is missing\n")
+
+    monkeypatch.setattr("linear_agents.poller.prepare_worktree", failing)
+    rt.notifier = Notifier(rt.cfg, rt.con, rt.linear, rt.now, push=lambda *a: None)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    poll(rt)
+    assert len(rt.linear.comments) == 1 and "setup: npm is missing" in rt.linear.comments[0][1]
+
+
+def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monkeypatch):
+    for name in ("linear.key", "gh-publish.token"):
+        (tmp_path / name).write_text("k\n")
+    cfg = replace(
+        tmp_cfg,
+        linear_key_file=tmp_path / "linear.key",
+        publish_gh_token_file=tmp_path / "gh-publish.token",
+    )
+    cfg.agent_gh_token_file.unlink()
+    monkeypatch.setattr("linear_agents.tick._which", lambda name: f"/opt/{name}")
+    transports = []
+    monkeypatch.setattr("linear_agents.tick.http_transport", transports.append)
+    with pytest.raises(RuntimeError, match="gh-agent.token"):
+        tick(cfg, tmp_path / "c.toml")
+    assert transports == [] and not cfg.ledger_path.exists()
