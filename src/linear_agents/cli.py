@@ -98,11 +98,52 @@ def cmd_claim(args) -> int:
     return 0
 
 
+def cmd_context(args) -> int:
+    from linear_agents.sessions import session_name
+
+    state = _state_dir()
+    context = state / "context.md"
+    if context.exists():
+        print(context.read_text())
+    # Peers come from the live ledger, so a session sees issues admitted after it started.
+    live = ledger.live_claims(_ledger(args))
+    mine = next((c for c in live if c.issue_key == state.name), None)
+    peers = [c for c in live if mine and c.repo == mine.repo and c.issue_key != state.name]
+    names = ", ".join(session_name(c.issue_key, c.phase) for c in peers) or "none"
+    print(
+        f"## Peers in this repo\n\n{names}. ListAgents shows them under generated names; match"
+        " on the tmux session name it lists. Message no other session.\n"
+    )
+    handoff = state / "handoff.md"
+    if handoff.exists():
+        print(handoff.read_text())
+    return 0
+
+
+def cmd_done(args) -> int:
+    state = _state_dir()
+    (state / "done.json").write_text(json.dumps({"summary": args.summary, "at": time.time()}))
+    print("phase marked done; the service takes over on its next run")
+    return 0
+
+
+def cmd_handoff_ready(args) -> int:
+    state = _state_dir()
+    if not (state / "handoff.md").exists():
+        print(f"handoff-ready: write {state / 'handoff.md'} first", file=sys.stderr)
+        return 1
+    (state / "handoff-ready").touch()
+    return 0
+
+
 COMMANDS = {
     "statusline": cmd_statusline,
     "escalate": cmd_escalate,
     "hook": cmd_hook,
     "claim": cmd_claim,
+    "context": cmd_context,
+    "done": cmd_done,
+    "handoff-ready": cmd_handoff_ready,
 }
 
 
@@ -124,6 +165,10 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("name", choices=["pre-commit"])
     claim = sub.add_parser("claim")
     claim.add_argument("globs", nargs="+")
+    sub.add_parser("context")
+    done = sub.add_parser("done")
+    done.add_argument("--summary", required=True)
+    sub.add_parser("handoff-ready")
     return parser
 
 
