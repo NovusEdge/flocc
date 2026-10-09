@@ -1,5 +1,8 @@
 import shutil
 import subprocess
+import time
+
+import pytest
 
 from linear_agents import ledger
 from linear_agents.cli import main
@@ -37,6 +40,26 @@ def test_prepare_recovers_a_worktree_whose_directory_was_deleted(origin, tmp_pat
     again, again_branch, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     assert (again, again_branch, base) == (path, branch, head)
     assert (path / "t.txt").exists()
+
+
+def test_setup_that_outlives_its_timeout_fails(origin, tmp_path):
+    (origin / "setup").write_text("#!/bin/sh\necho installing\nsleep 30\n")
+    git("commit", "-qam", "slow setup", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired) as exc:
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3", setup_timeout_s=0.5)
+    assert time.monotonic() - start < 10
+    assert "installing" in str(exc.value.stderr)
+
+
+def test_failed_setup_carries_its_output(origin, tmp_path):
+    (origin / "setup").write_text("#!/bin/sh\necho npm is missing >&2\nexit 3\n")
+    git("commit", "-qam", "broken setup", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert "npm is missing" in exc.value.stderr
 
 
 def test_hook_blocks_files_claimed_by_others(origin, tmp_path):

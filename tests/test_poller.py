@@ -64,7 +64,7 @@ class PollLinear:
 
 @pytest.fixture
 def rt(tmp_cfg, tmp_path, monkeypatch):
-    def fake_prepare(repo, root, key):
+    def fake_prepare(repo, root, key, setup_timeout_s):
         path = root / key
         path.mkdir(parents=True, exist_ok=True)
         return path, f"agent/{key.lower()}", "sha0"
@@ -232,7 +232,7 @@ def test_launch_failure_leaves_the_issue_unclaimed(rt):
 
 
 def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
-    def failing(repo, root, key):
+    def failing(repo, root, key, setup_timeout_s):
         raise subprocess.CalledProcessError(1, ["./setup"], stderr="setup: npm is missing\n")
 
     monkeypatch.setattr("linear_agents.poller.prepare_worktree", failing)

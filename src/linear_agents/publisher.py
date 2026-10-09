@@ -1,13 +1,12 @@
 import os
 import shlex
-import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from linear_agents.config import RepoConfig
 from linear_agents.ledger import Claim
-from linear_agents.worktree import changed_files
+from linear_agents.worktree import changed_files, git, run_bounded
 
 _TAIL = 3000
 
@@ -17,26 +16,6 @@ class PublishResult:
     status: str
     detail: str = ""
     url: str = ""
-
-
-def _run_check(argv: list[str], cwd: Path, timeout_s: float) -> tuple[int | None, str]:
-    # Its own process group, so a timeout kills the test runner the check started too; killing
-    # only the direct child would leave it running and holding the output pipe open.
-    proc = subprocess.Popen(
-        argv,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-    )
-    try:
-        out, _ = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        out, _ = proc.communicate()
-        return None, out
-    return proc.returncode, out
 
 
 def publish(
@@ -55,7 +34,13 @@ def publish(
     touched = changed_files(wt, claim.tester_sha, "HEAD") & tester_files
     if touched:
         return PublishResult("tests_touched", ", ".join(sorted(touched)))
-    code, out = _run_check(shlex.split(repo.check), wt, check_timeout_s)
+    # Only commits are pushed, and the guard above compares commits only; a check on the working
+    # tree would pass on files the PR leaves out.
+    dirty = git("status", "--porcelain", cwd=wt)
+    if dirty:
+        detail = f"Uncommitted changes; commit them or remove them, then finish again:\n{dirty}"
+        return PublishResult("check_failed", detail[:_TAIL])
+    code, out = run_bounded(shlex.split(repo.check), wt, check_timeout_s)
     if code is None:
         detail = f"`{repo.check}` timed out after {check_timeout_s}s\n\n{out[-_TAIL:]}"
         return PublishResult("check_failed", detail.strip())

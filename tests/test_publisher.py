@@ -61,6 +61,15 @@ def test_rejects_changed_tests(origin, tmp_path):
     assert result.status == "tests_touched" and "test_x.py" in result.detail
 
 
+def test_uncommitted_changes_fail_before_the_check(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path, check="sh -c 'echo ran > ran.txt'")
+    (path / "impl.py").write_text("x = 1\n")
+    gh = Gh()
+    result = publish(claim, repo, "t", "s", token="t", runner=gh)
+    assert result.status == "check_failed" and "impl.py" in result.detail
+    assert not (path / "ran.txt").exists() and gh.calls == []
+
+
 def test_check_that_outlives_its_timeout_fails(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'sleep 30; echo late'")
     start = time.monotonic()

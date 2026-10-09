@@ -1,3 +1,5 @@
+import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -9,7 +11,30 @@ def git(*args: str, cwd: Path) -> str:
     return out.stdout.strip()
 
 
-def prepare_worktree(repo: RepoConfig, worktree_root: Path, key: str) -> tuple[Path, str, str]:
+def run_bounded(argv: list[str], cwd: Path, timeout_s: float) -> tuple[int | None, str]:
+    """Runs argv with stdout and stderr merged; the code is None when it timed out."""
+    # Its own process group, so a timeout kills the test runner or installer it started too;
+    # killing only the direct child would leave it running and holding the output pipe open.
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        out, _ = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
+        return None, out
+    return proc.returncode, out
+
+
+def prepare_worktree(
+    repo: RepoConfig, worktree_root: Path, key: str, setup_timeout_s: float = 900
+) -> tuple[Path, str, str]:
     branch = f"agent/{key.lower()}"
     worktree_root.mkdir(parents=True, exist_ok=True)
     # Resolved because git reports symlink-free paths: the stored claim path is compared with
@@ -47,7 +72,12 @@ def prepare_worktree(repo: RepoConfig, worktree_root: Path, key: str) -> tuple[P
             )
     base = git("rev-parse", "HEAD", cwd=path)
     if (path / "setup").exists():
-        subprocess.run(["./setup"], cwd=path, check=True, capture_output=True, text=True)
+        # It runs under the tick lock, which every later tick waits on.
+        code, out = run_bounded(["./setup"], path, setup_timeout_s)
+        if code is None:
+            raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr=out)
+        if code != 0:
+            raise subprocess.CalledProcessError(code, ["./setup"], stderr=out)
     return path, branch, base
 
 
