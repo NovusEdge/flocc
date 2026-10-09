@@ -1,6 +1,19 @@
 # VM setup
 
-One-time steps on the VM, in order.
+One-time steps on the VM, in order. The service and its agents run as a dedicated user, so
+sessions cannot read your own account's browser profiles, keys or logins. Create it from your own
+account:
+
+```bash
+sudo useradd --create-home --shell /bin/bash linear-agents
+sudo chmod 700 /home/linear-agents
+sudo loginctl enable-linger linear-agents
+```
+
+It gets no password, no groups and no sudo. Run every step below as `linear-agents`
+(`sudo -iu linear-agents`, or `ssh linear-agents@<vm>` over Tailscale SSH). Check that nothing
+outside its home is writable to it, such as a Homebrew prefix your own `PATH` uses:
+`find / -xdev -writable -not -path '/proc/*' -not -path '/home/linear-agents/*' 2>/dev/null`.
 
 1. Install `git`, `gh`, `tmux`, `claude` (2.1.293 or later) and this repo; run `./setup`, then
    `uv tool install --editable .` so `linear-agents` is on `PATH` at `~/.local/bin`.
@@ -35,8 +48,10 @@ One-time steps on the VM, in order.
       ~/.config/systemd/user/
    systemctl --user daemon-reload
    systemctl --user enable --now linear-agents-tmux.service linear-agents.timer
-   loginctl enable-linger $USER
    ```
+
+   Lingering was enabled when the user was created. Over `sudo -iu`, `systemctl --user` needs
+   `XDG_RUNTIME_DIR=/run/user/$(id -u)`.
 
 Watch it with `journalctl --user -u linear-agents -f`, and attach to a session with
 `tmux -L linear-agents attach -t NF-123`.
@@ -57,11 +72,13 @@ Run the escalation evals in `plugin/evals/` (`escalate-irreversible`, `escalate-
 `escalate-shared-cause`) before the first real issue:
 
 ```bash
-claude plugin eval plugin
+claude plugin eval plugin --trust-plugin --no-publish --ablation none -j 3 \
+  --allow-tools "Bash(linear-agents escalate:*)"
 ```
 
 If that invocation is rejected, `claude plugin eval --help` shows the current arguments. Pass means
-every eval's graders succeed. Fix the failing skill and rerun before going on.
+every eval's graders succeed. The sandbox usually cannot run `linear-agents`, so the graders judge
+the escalation the agent chose, and step 7 below exercises the real command. Fix the failing skill and rerun before going on.
 
 ### Steps
 
@@ -77,7 +94,8 @@ every eval's graders succeed. Fix the failing skill and rerun before going on.
    because `--strict-mcp-config` is unverified in interactive sessions. If any connector shows up,
    stop the rollout: `systemctl --user stop linear-agents.timer`, kill the session, and do not
    proceed, since it could write to Linear through the connector. Record the result in the spec's
-   "Verified and unverified" section.
+   "Verified and unverified" section. Add a Linear MCP server to the `linear-agents` user's own
+   Claude config only after this passes, and run this step again after each Claude Code upgrade.
 4. In the app, confirm the tester session is steerable. Check `ListAgents` from a second session
    and note whether `--name` changed the listed name; record the answer in the spec.
 5. Confirm lookup by human key resolves. Pass: the tick in step 2 found and claimed the issue by

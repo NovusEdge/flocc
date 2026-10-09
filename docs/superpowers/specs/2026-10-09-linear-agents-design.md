@@ -28,8 +28,9 @@ It is a personal tool on one VM, not team infrastructure.
 - Integrations beyond Linear, GitHub and ntfy (calendar free/busy, claude.ai connectors).
 - Agents judging whether their task fits the remaining usage.
 - Codex or any CLI other than Claude Code.
-- Running agents as a separate Unix user, so the Linear key and GitHub write token are out of
-  their reach. Revisit before running anywhere an agent reading either would matter.
+- Running agents as a Unix user apart from the service's, so the Linear key and GitHub write
+  token are out of their reach. Revisit before running anywhere an agent reading either would
+  matter.
 
 ## Constraints
 
@@ -185,9 +186,11 @@ one that has already finished or filled its context.
 | Service | Personal API key, limited to the NF team | Fine-grained token with write to the mapped repos | None |
 | Agents | None; the issue text arrives in the prompt | Read-only fine-grained token for `gh` | Only servers named in the issue's `mcp` list, via `--strict-mcp-config` |
 
-The machine is trusted, and agents run as my own Unix user, so they could read the Linear key and
-the write token. The agent column is therefore behavioural, kept by the prompt, the skills, the
-pre-commit hook and a read-only token in `GH_TOKEN`; it is not an enforced boundary.
+The service and its agents run as a dedicated `linear-agents` Unix user with no sudo and no
+groups, so my own account, its home and its logins are out of their reach. Agents share that user
+with the service, so they could read the Linear key and the write token. The agent column is
+therefore behavioural, kept by the prompt, the skills, the pre-commit hook and a read-only token in
+`GH_TOKEN`; it is not an enforced boundary.
 
 The launcher starts each session through `env -i` with only `HOME`, `USER`, `PATH`, `TERM`,
 `LANG` and the `LINEAR_AGENTS_*` variables, then reads the agent's GitHub token from its file into
