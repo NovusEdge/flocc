@@ -14,7 +14,9 @@ One-time steps on the VM, in order.
    without the prompt.
 5. Linear: a personal API key limited to the team, saved to `linear_key_file` (mode 600). Create
    the labels `claude`, `escalation` and `needs-decision`, and a pinned digest issue whose key goes
-   in `digest_issue`.
+   in `digest_issue`. Create one label per mapped repo, named exactly as its `[repos.<name>]` key
+   in `config.toml`: an issue is matched to a repo by that label (or by a project of that name),
+   and an issue with neither is skipped.
 6. GitHub: a read-only fine-grained token (contents, pull requests, checks, issues: read) in
    `agent_gh_token_file`, and a token with contents and pull requests write on the mapped repos in
    `publish_gh_token_file`. Both mode 600. A session does not start without the read-only one.

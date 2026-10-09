@@ -1,7 +1,7 @@
 [Unit]
 Description=linear-agents tick
-After=network-online.target
-Wants=network-online.target
+After=network-online.target linear-agents-tmux.service
+Wants=network-online.target linear-agents-tmux.service
 
 [Service]
 Type=oneshot
