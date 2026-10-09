@@ -19,6 +19,9 @@ line-length = 100
 target-version = "py313"
 extend-exclude = ["docs", ".superpowers"]
 
+[tool.pyrefly]
+search-path = [".", "src"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

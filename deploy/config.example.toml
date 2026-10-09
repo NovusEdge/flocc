@@ -1,0 +1,19 @@
+team_key = "NF"
+trigger_label = "claude"
+state_root = "~/.local/state/linear-agents"
+worktree_root = "~/agents/worktrees"
+plugin_dir = "~/agents/linear-agents/plugin"
+ledger_path = "~/.local/state/linear-agents/ledger.sqlite"
+linear_key_file = "~/.config/linear-agents/linear.key"
+agent_gh_token_file = "~/.config/linear-agents/gh-agent.token"
+publish_gh_token_file = "~/.config/linear-agents/gh-publish.token"
+ntfy_url = "https://ntfy.sh/replace-with-a-long-random-topic"
+digest_issue = "NF-1"
+
+[repos.backend]
+path = "~/src/backend"
+base_branch = "main"
+
+[mcp_servers.sentry]
+type = "http"
+url = "https://mcp.sentry.dev/mcp"
