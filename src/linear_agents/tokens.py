@@ -34,6 +34,40 @@ def token_expiry(token: str, opener=urllib.request.urlopen) -> float | None:
     return datetime.strptime(header, "%Y-%m-%d %H:%M:%S %Z").replace(tzinfo=UTC).timestamp()
 
 
+def can_write_contents(token: str, slug: str, opener=urllib.request.urlopen) -> bool:
+    """Whether the token may push to the repo, asked without changing anything."""
+    # A ref at the all-zero SHA can never be created. GitHub checks permission before the
+    # object, so 422 means the write itself was allowed. A refusal is 403, or 404 when the token
+    # can read the repo but not write it, the same answer as for a repo it cannot see.
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    url = f"https://api.github.com/repos/{slug}"
+    req = urllib.request.Request(
+        f"{url}/git/refs",
+        data=b'{"ref": "refs/heads/linear-agents-doctor-probe", "sha": "' + b"0" * 40 + b'"}',
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with opener(req, timeout=10):
+            pass
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            return False
+        if exc.code == 422:
+            return True
+        if exc.code != 404:
+            raise
+    else:
+        raise RuntimeError(f"GitHub accepted a ref at the zero SHA in {slug}")
+    try:
+        with opener(urllib.request.Request(url, headers=headers), timeout=10):
+            return False
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise LookupError(f"{slug} is not visible to this token") from exc
+        raise
+
+
 def _page(rt, name: str, path, summary: str) -> None:
     action = f"Make a new {name} token and write it to {path}"
     esc = Escalation(1, f"gh-token-{name}", summary, action, scope="global")

@@ -109,6 +109,30 @@ def test_comments_mark_the_owners():
     assert [(c.id, c.mine) for c in comments] == [("c1", True), ("c2", False)]
 
 
+def test_missing_labels_counts_team_and_workspace_labels():
+    post = FakePost(
+        {
+            "teams": {"nodes": [{"id": "t1"}]},
+            "issueLabels": {
+                "nodes": [
+                    {"name": "claude", "team": {"key": "NF"}},
+                    {"name": "escalation", "team": None},
+                    {"name": "backend", "team": {"key": "ORG"}},
+                ]
+            },
+        }
+    )
+    missing = Linear(post).missing_labels("NF", ["claude", "escalation", "backend"])
+    assert missing == ["backend"]
+    assert post.calls[0][1] == {"key": "NF", "names": ["claude", "escalation", "backend"]}
+
+
+def test_missing_labels_on_an_unknown_team_raises():
+    post = FakePost({"teams": {"nodes": []}, "issueLabels": {"nodes": []}})
+    with pytest.raises(LinearError, match="team NF"):
+        Linear(post).missing_labels("NF", ["claude"])
+
+
 def test_add_label_missing_label_raises():
     post = FakePost({"issueLabels": {"nodes": []}})
     with pytest.raises(LinearError, match="needs-decision"):

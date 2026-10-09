@@ -191,6 +191,18 @@ def cmd_release(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    from linear_agents.doctor import run_doctor
+
+    try:
+        cfg, path = _config(args)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"FAIL  config: {exc}")
+        return 1
+    print(f"ok    config: {path}")
+    return run_doctor(cfg)
+
+
 COMMANDS = {
     "statusline": cmd_statusline,
     "escalate": cmd_escalate,
@@ -201,6 +213,7 @@ COMMANDS = {
     "handoff-ready": cmd_handoff_ready,
     "tick": cmd_tick,
     "release": cmd_release,
+    "doctor": cmd_doctor,
 }
 
 
@@ -230,6 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     rel = sub.add_parser("release")
     rel.add_argument("key")
     rel.add_argument("--keep-worktree", action="store_true")
+    sub.add_parser("doctor")
     return parser
 
 
