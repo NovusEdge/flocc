@@ -94,7 +94,9 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
    `` ```agent `` block containing `wall_clock: 30m`.
 2. Run `linear-agents tick` by hand; it takes the same lock as the timer's ticks. Pass: the issue
    moves to In Progress, and `NF-…-test` appears in `tmux -L linear-agents ls` and in the Claude
-   app.
+   app. A tick run from a shell leaves behind any process a timed-out check daemonized; under
+   the timer, or with `systemctl --user start linear-agents.service`, systemd kills it when the
+   tick ends.
 3. Before anything else, check the tester session's tools. In the app, run `/mcp` in the first
    launched session and list its tools. Pass: no claude.ai connectors, Linear in particular,
    because `--strict-mcp-config` is unverified in interactive sessions. If any connector shows up,
