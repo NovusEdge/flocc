@@ -19,10 +19,7 @@ def cmd_statusline(args) -> int:
     payload = json.load(sys.stdin)
     state = _state_dir()
     usage.write_status(state, payload)
-    limits = payload.get("rate_limits", {})
-    now = time.time()
-    five = usage.window_pct(limits.get("five_hour"), now)
-    week = usage.window_pct(limits.get("seven_day"), now)
+    five, week = usage.limit_pcts(payload, time.time())
     ctx = usage.context_pct(payload)
     print(f"{state.name} · ctx {_pct(ctx)} · 5h {_pct(five)} · wk {_pct(week)}")
     return 0

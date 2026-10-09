@@ -59,6 +59,17 @@ def test_unreadable_window_is_unknown_usage(tmp_path, monkeypatch, capsys, windo
     assert "5h ?" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("limits", [None, [], "x", {"five_hour": "x", "seven_day": None}])
+def test_non_object_limits_are_unknown_usage(tmp_path, monkeypatch, capsys, limits):
+    data = {**status(20, 30), "rate_limits": limits}
+    usage.write_status(tmp_path / "NF-1", data)
+    assert usage.latest_usage(tmp_path, now=300) is None
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "NF-1"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
+    assert main(["statusline"]) == 0
+    assert "5h ?" in capsys.readouterr().out
+
+
 def test_unreadable_status_is_skipped(tmp_path):
     (tmp_path / "NF-1" / "status.json").mkdir(parents=True)
     usage.write_status(tmp_path / "NF-2", status(20, 30))
