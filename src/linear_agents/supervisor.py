@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 from linear_agents import ledger
@@ -14,6 +15,8 @@ HANDOFF_ASK = (
     " directory, then run linear-agents handoff-ready. A fresh session will continue from it."
 )
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
+FIX_CONTEXT = "check-failure.md"
+PUBLISH_TRIES = 3
 
 
 class LaunchError(RuntimeError):
@@ -66,6 +69,34 @@ def _block(rt, claim: Claim, cause: str, summary: str, action: str) -> None:
     ledger.update_claim(rt.con, claim.issue_key, state="blocked")
 
 
+def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
+    # done.json stays, so every tick retries the whole publish, check included, under the tick
+    # lock; a push that is rejected for good would hold the lock that long forever.
+    key = claim.issue_key
+    counter = f"publish_failures:{key}"
+    fails = int(ledger.meta_get(rt.con, counter) or 0) + 1
+    detail = (getattr(exc, "stderr", None) or "").strip()
+    print(f"{key}: publish failed ({fails}/{PUBLISH_TRIES}): {exc} {detail}", file=sys.stderr)
+    if fails < PUBLISH_TRIES:
+        ledger.meta_set(rt.con, counter, str(fails))
+        return
+    _block(
+        rt,
+        claim,
+        "publish-failed",
+        f"Publishing failed {fails} times in a row: {exc}\n{detail[-1500:]}".strip(),
+        f"Fix the push or the gh token, then run linear-agents release --keep-worktree {key}",
+    )
+    ledger.meta_set(rt.con, counter, "0")
+
+
+def _relaunch(rt, claim: Claim) -> None:
+    # The check output reaches a fix session only through its prompt; a restart needs it again.
+    path = state_dir(rt.cfg, claim.issue_key) / FIX_CONTEXT
+    extra = path.read_text() if claim.phase == "fix" and path.exists() else ""
+    launch(rt, claim, claim.phase, extra=extra)
+
+
 def _finish_phase(rt, claim: Claim, summary: str) -> None:
     key = claim.issue_key
     _record_usage(rt, key, claim.phase, "end")
@@ -88,13 +119,19 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         )
         return
     issue = rt.linear.issue(key)
-    result = rt.publish_fn(claim, issue.title, summary)
+    try:
+        result = rt.publish_fn(claim, issue.title, summary)
+    except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
+        _publish_failed(rt, claim, exc)
+        return
     if result.status == "opened":
         rt.linear.comment(issue.id, f"Draft PR: {result.url}")
         ledger.add_digest(rt.con, key, f"draft PR ready: {result.url}", rt.now())
         ledger.update_claim(rt.con, key, state="done")
     elif result.status == "check_failed" and claim.fix_attempts == 0:
-        launch(rt, claim, "fix", extra=f"The check failed with:\n\n{result.detail}")
+        extra = f"The check failed with:\n\n{result.detail}"
+        (state_dir(rt.cfg, key) / FIX_CONTEXT).write_text(extra)
+        launch(rt, claim, "fix", extra=extra)
         ledger.update_claim(
             rt.con, key, phase="fix", fix_attempts=1, restarts=0, started_at=rt.now()
         )
@@ -132,7 +169,7 @@ def supervise(rt, claim: Claim) -> None:
         return
     if (d / "handoff-ready").exists():
         rt.sessions.kill(name)
-        launch(rt, claim, claim.phase)
+        _relaunch(rt, claim)
         return
     if not rt.sessions.alive(name):
         if claim.restarts >= 1:
@@ -144,12 +181,13 @@ def supervise(rt, claim: Claim) -> None:
                 f"Check the worktree, then run linear-agents release --keep-worktree {key}",
             )
             return
-        launch(rt, claim, claim.phase)
+        _relaunch(rt, claim)
         ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
     if rt.now() - claim.started_at > claim.wall_clock_s:
         rt.sessions.kill(name)
-        ledger.add_digest(rt.con, key, f"stopped at the wall-clock limit ({name})", rt.now())
+        line = f"stopped at the wall-clock limit ({name}); rerun with linear-agents release {key}"
+        ledger.add_digest(rt.con, key, line, rt.now())
         _record_usage(rt, key, claim.phase, "end")
         ledger.update_claim(rt.con, key, state="timed_out")
         return

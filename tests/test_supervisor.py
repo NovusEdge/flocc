@@ -139,6 +139,37 @@ def test_check_failure_gets_one_fix_then_blocks(rt):
     assert "linear-agents release --keep-worktree NF-1" in rt.notifier.sent[-1].action
 
 
+def test_publish_that_keeps_failing_blocks(rt):
+    def rejected(c, t, s):
+        raise subprocess.CalledProcessError(1, ["git", "push"], stderr="rejected: non-fast-forward")
+
+    rt.publish_fn = rejected
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    for _ in range(2):
+        supervise(rt, current(rt))
+        assert current(rt).state == "running" and rt.notifier.sent == []
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    [esc] = rt.notifier.sent
+    assert esc.cause == "NF-1:publish-failed" and "non-fast-forward" in esc.summary
+    assert "linear-agents release --keep-worktree NF-1" in esc.action
+
+
+def test_fix_session_keeps_the_check_output_across_restarts(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    (state_dir(rt.cfg, "NF-1") / "handoff-ready").touch()
+    supervise(rt, current(rt))
+    assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
+    rt.sessions.alive_names.clear()
+    supervise(rt, current(rt))
+    assert len(rt.sessions.started) == 3
+    assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
+
+
 def test_touched_tests_block_names_release(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("tests_touched", "test_x.py")
     add(rt, phase="impl", tester_sha="sha-tests")
@@ -201,6 +232,8 @@ def test_wall_clock(rt):
     rt.now = lambda: 100.0 + 3601
     supervise(rt, current(rt))
     assert current(rt).state == "timed_out"
+    [(_, key, line)] = ledger.pending_digest(rt.con)
+    assert key == "NF-1" and "linear-agents release NF-1" in line
 
 
 def test_high_context_requests_handoff_once(rt):
