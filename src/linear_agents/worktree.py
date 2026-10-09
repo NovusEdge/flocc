@@ -36,7 +36,8 @@ def run_bounded(argv: list[str], cwd: Path, timeout_s: float) -> tuple[int | Non
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         # A descendant that left the group (setsid, a daemonizing server) survives the kill and
-        # keeps the pipe open; an unbounded read would wait on it under the tick lock.
+        # keeps the pipe open; an unbounded read would wait on it under the tick lock. It stays in
+        # the tick unit's cgroup, which systemd kills when the oneshot tick exits.
         try:
             out, _ = proc.communicate(timeout=_DRAIN_S)
         except subprocess.TimeoutExpired as exc:
