@@ -202,6 +202,10 @@ justfile with `fmt`, `lint`, `test` and `check`, and a `./setup` script. Standar
 the service: `urllib` for Linear GraphQL and ntfy, `sqlite3` in WAL mode with a busy timeout and
 `BEGIN IMMEDIATE` writes, `subprocess` for `git`, `gh` and `tmux`.
 
+A mapped repo provides its check command (`just check` by default) and may provide `./setup`.
+Everything either one writes must be gitignored: a worktree that is not clean after `./setup` fails
+prepare, and one that is not clean at publish fails the check.
+
 ## Testing
 
 - Unit tests: admission, ledger claims and conflicts, `agent` block parsing, escalation routing

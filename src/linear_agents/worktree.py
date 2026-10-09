@@ -6,6 +6,11 @@ from pathlib import Path
 from linear_agents.config import RepoConfig
 
 
+# A SubprocessError so the poller's prepare-failure handling covers it.
+class DirtyWorktree(subprocess.SubprocessError):
+    pass
+
+
 def git(*args: str, cwd: Path) -> str:
     out = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
     return out.stdout.strip()
@@ -78,6 +83,11 @@ def prepare_worktree(
             raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr=out)
         if code != 0:
             raise subprocess.CalledProcessError(code, ["./setup"], stderr=out)
+    # Publish refuses a dirty worktree, so a setup that leaves files git sees would fail every
+    # run at the end, after the sessions have spent their usage.
+    dirty = git("status", "--porcelain", cwd=path)
+    if dirty:
+        raise DirtyWorktree(f"the worktree is not clean after ./setup; gitignore these:\n{dirty}")
     return path, branch, base
 
 

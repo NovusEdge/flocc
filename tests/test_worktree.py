@@ -62,6 +62,14 @@ def test_failed_setup_carries_its_output(origin, tmp_path):
     assert "npm is missing" in exc.value.stderr
 
 
+def test_setup_that_leaves_untracked_files_fails(origin, tmp_path):
+    (origin / "setup").write_text("#!/bin/sh\ntouch .setup-ran build.log\n")
+    git("commit", "-qam", "noisy setup", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    with pytest.raises(subprocess.SubprocessError, match="build.log"):
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+
+
 def test_hook_blocks_files_claimed_by_others(origin, tmp_path):
     _check_hook_blocks(origin, tmp_path, tmp_path / "wt")
 

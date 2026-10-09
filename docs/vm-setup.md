@@ -23,7 +23,9 @@ One-time steps on the VM, in order.
 7. ntfy: install the app, subscribe to a long random topic, put its URL in `ntfy_url`. Send a
    priority 5 test (`curl -H 'Priority: 5' -d test <url>`) with Do Not Disturb on, to see whether it
    gets through.
-8. Copy `deploy/config.example.toml` to `~/.config/linear-agents/config.toml` and edit it. If the
+8. Copy `deploy/config.example.toml` to `~/.config/linear-agents/config.toml` and edit it. In each
+   mapped repo, gitignore everything `./setup` and the check write, or every issue fails at
+   prepare. If the
    mapped repos need tools outside `~/.local/bin`, the mise shims and the system directories, add
    them to `Environment=PATH` in `deploy/linear-agents.service`.
 9. Install and start the units, and let them run without a login session:
