@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from linear_agents import usage
+from linear_agents.escalation import Escalation, validate
 
 
 def _state_dir() -> Path:
@@ -26,7 +27,32 @@ def cmd_statusline(args) -> int:
     return 0
 
 
-COMMANDS = {"statusline": cmd_statusline}
+def cmd_escalate(args) -> int:
+    state = _state_dir()
+    esc = Escalation(
+        tier=args.tier,
+        cause=args.cause,
+        summary=args.summary,
+        action=args.action or "",
+        issue_key=state.name,
+        default=args.default,
+        deadline_min=args.deadline_min,
+        waiting=args.waiting,
+        scope="global" if args.is_global else "issue",
+    )
+    try:
+        validate(esc)
+    except ValueError as exc:
+        print(f"escalate: {exc}", file=sys.stderr)
+        return 2
+    state.mkdir(parents=True, exist_ok=True)
+    with (state / "escalations.jsonl").open("a") as f:
+        f.write(esc.to_json() + "\n")
+    print("recorded; the service routes it on its next run")
+    return 0
+
+
+COMMANDS = {"statusline": cmd_statusline, "escalate": cmd_escalate}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +60,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=None)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("statusline")
+    esc = sub.add_parser("escalate")
+    esc.add_argument("--tier", type=int, required=True)
+    esc.add_argument("--cause", required=True)
+    esc.add_argument("--summary", required=True)
+    esc.add_argument("--action")
+    esc.add_argument("--default")
+    esc.add_argument("--deadline-min", type=int)
+    esc.add_argument("--waiting", action="store_true")
+    esc.add_argument("--global", dest="is_global", action="store_true")
     return parser
 
 
