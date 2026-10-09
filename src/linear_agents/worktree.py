@@ -11,9 +11,14 @@ def git(*args: str, cwd: Path) -> str:
 
 def prepare_worktree(repo: RepoConfig, worktree_root: Path, key: str) -> tuple[Path, str, str]:
     branch = f"agent/{key.lower()}"
-    path = worktree_root / key
     worktree_root.mkdir(parents=True, exist_ok=True)
+    # Resolved because git reports symlink-free paths: the stored claim path is compared with
+    # `rev-parse --show-toplevel` by the pre-commit hook, and with `worktree list` below.
+    path = worktree_root.resolve() / key
     git("fetch", "-q", "origin", repo.base_branch, cwd=repo.path)
+    # Drops registrations whose directory was deleted without `worktree remove`, which would
+    # otherwise look live below and leave no directory to run in.
+    git("worktree", "prune", cwd=repo.path)
     listed = git("worktree", "list", "--porcelain", cwd=repo.path).splitlines()
     # A released run leaves its branch, and with --keep-worktree its worktree; a rerun continues
     # on them, where `worktree add -b` would fail.

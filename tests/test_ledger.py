@@ -87,6 +87,19 @@ def test_digest_cleared_only_up_to_what_was_posted(con):
     assert [r[1:] for r in ledger.pending_digest(con)] == [("NF-2", "later")]
 
 
+def test_add_paths_extends_a_claim_or_reports_the_owner(con):
+    ledger.insert_claim(con, make("NF-1", ("a/**",)))
+    ledger.insert_claim(con, make("NF-2", ("src/billing/**",)))
+    assert ledger.add_paths(con, "NF-1", ["docs/**", "a/**"]) == {}
+    claim = ledger.get_claim(con, "NF-1")
+    assert claim and claim.paths == ["a/**", "docs/**"]
+    assert ledger.add_paths(con, "NF-1", ["src/b*", "x/**"]) == {"src/b*": "NF-2"}
+    claim = ledger.get_claim(con, "NF-1")
+    assert claim and claim.paths == ["a/**", "docs/**"]
+    with pytest.raises(KeyError):
+        ledger.add_paths(con, "NF-9", ["z/**"])
+
+
 def test_usage_log(con):
     ledger.add_usage(con, "NF-1", "test", "start", 10.0, 20.0, now=1)
     ledger.add_usage(con, "NF-1", "test", "end", 14.0, 21.0, now=2)

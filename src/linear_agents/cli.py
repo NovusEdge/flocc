@@ -85,15 +85,11 @@ def cmd_hook(args) -> int:
 def cmd_claim(args) -> int:
     key = _state_dir().name
     con = _ledger(args)
-    with ledger.transaction(con):
-        mine = ledger.get_claim(con, key)
-        if mine is None:
-            print(f"claim: no live claim for {key}", file=sys.stderr)
-            return 1
-        clash = ledger.conflicting_claims(args.globs, ledger.live_claims(con), exclude=key)
-        if not clash:
-            paths = mine.paths + [g for g in args.globs if g not in mine.paths]
-            con.execute("UPDATE claims SET paths = ? WHERE issue_key = ?", (json.dumps(paths), key))
+    try:
+        clash = ledger.add_paths(con, key, args.globs)
+    except KeyError:
+        print(f"claim: no live claim for {key}", file=sys.stderr)
+        return 1
     if clash:
         for glob, owner in clash.items():
             print(f"claim: {glob} overlaps {owner}'s claim", file=sys.stderr)

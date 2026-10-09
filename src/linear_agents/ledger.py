@@ -144,6 +144,20 @@ def update_claim(con: sqlite3.Connection, key: str, **values) -> None:
         con.execute(f"UPDATE claims SET {sets} WHERE issue_key = :_key", {**data, "_key": key})
 
 
+def add_paths(con: sqlite3.Connection, key: str, globs: list[str]) -> dict[str, str]:
+    """Adds globs to the claim unless another live claim overlaps; returns the clashes."""
+    # Read, check and write share one transaction so two agents claiming at once cannot both win.
+    with transaction(con):
+        mine = get_claim(con, key)
+        if mine is None:
+            raise KeyError(key)
+        clash = conflicting_claims(globs, live_claims(con), exclude=key)
+        if not clash:
+            paths = mine.paths + [g for g in globs if g not in mine.paths]
+            con.execute("UPDATE claims SET paths = ? WHERE issue_key = ?", (json.dumps(paths), key))
+    return clash
+
+
 def delete_claim(con: sqlite3.Connection, key: str) -> None:
     with transaction(con):
         con.execute("DELETE FROM claims WHERE issue_key = ?", (key,))

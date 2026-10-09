@@ -27,8 +27,32 @@ def test_prepare_reuses_a_kept_worktree_or_branch(origin, tmp_path):
     assert prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")[2] == head
 
 
+def test_prepare_recovers_a_worktree_whose_directory_was_deleted(origin, tmp_path):
+    path, branch, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    (path / "t.txt").write_text("t\n")
+    git("add", "t.txt", cwd=path)
+    git("commit", "-qm", "earlier run", cwd=path)
+    head = git("rev-parse", "HEAD", cwd=path)
+    shutil.rmtree(path)
+    again, again_branch, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert (again, again_branch, base) == (path, branch, head)
+    assert (path / "t.txt").exists()
+
+
 def test_hook_blocks_files_claimed_by_others(origin, tmp_path):
-    path, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    _check_hook_blocks(origin, tmp_path, tmp_path / "wt")
+
+
+def test_hook_blocks_when_worktree_root_is_a_symlink(origin, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    _check_hook_blocks(origin, tmp_path, link / "wt")
+
+
+def _check_hook_blocks(origin, tmp_path, root):
+    path, _, base = prepare_worktree(RepoConfig(origin), root, "NF-3")
     db = tmp_path / "l.sqlite"
     con = ledger.connect(db)
     ledger.insert_claim(con, make("NF-3", (), worktree=str(path)))
