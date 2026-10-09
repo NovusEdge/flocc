@@ -72,11 +72,13 @@ Run the escalation evals in `plugin/evals/` (`escalate-irreversible`, `escalate-
 `escalate-shared-cause`) before the first real issue:
 
 ```bash
-claude plugin eval plugin
+claude plugin eval plugin --trust-plugin --no-publish --ablation none -j 3 \
+  --allow-tools "Bash(linear-agents escalate:*)"
 ```
 
 If that invocation is rejected, `claude plugin eval --help` shows the current arguments. Pass means
-every eval's graders succeed. Fix the failing skill and rerun before going on.
+every eval's graders succeed. The sandbox usually cannot run `linear-agents`, so the graders judge
+the escalation the agent chose, and step 7 below exercises the real command. Fix the failing skill and rerun before going on.
 
 ### Steps
 
