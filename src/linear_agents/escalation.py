@@ -92,11 +92,11 @@ class Notifier:
         seen = ledger.alert_seen(self.con, esc.cause, DEDUPE_S, now)
         actions = route(esc, seen)
         title = f"{esc.issue_key or 'linear-agents'} T{esc.tier}"
+        pushes = [a for a in actions if a.startswith("ntfy:")]
         for action in actions:
-            if action.startswith("ntfy:"):
-                click = issue.url if issue else None
-                self.push(self.cfg.ntfy_url, title, _text(esc), int(action[5:]), click)
-            elif action.startswith("label:") and issue:
+            if action in pushes:
+                continue
+            if action.startswith("label:") and issue:
                 self.linear.add_label(issue, action[6:])
             elif action == "comment" and issue:
                 self.linear.comment(issue.id, _text(esc))
@@ -113,7 +113,15 @@ class Notifier:
                     f"[T{esc.tier}] {esc.issue_key or '-'} {esc.cause}: {esc.summary}",
                     file=sys.stderr,
                 )
-        # Recorded after the actions: a send that failed halfway is retried by the next tick
-        # instead of being taken for a cause already handled.
-        if esc.tier <= 2:
+        # The push goes after the Linear actions: a Linear failure raises before anything is
+        # sent or recorded, so the retry tick pushes once. A push failure must not undo them.
+        for action in pushes:
+            click = issue.url if issue else None
+            try:
+                self.push(self.cfg.ntfy_url, title, _text(esc), int(action[5:]), click)
+            except OSError as exc:
+                print(f"ntfy push failed for {esc.cause}: {exc}", file=sys.stderr)
+        # Only a push opens the 24 h window; recording suppressed repeats would push it out
+        # forever for a cause that recurs more often than daily.
+        if pushes:
             ledger.record_alert(self.con, esc.cause, esc.tier, esc.issue_key, now)

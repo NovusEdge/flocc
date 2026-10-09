@@ -165,3 +165,55 @@ def test_escalate_cli_rejects_tier2_without_default(tmp_path, monkeypatch, capsy
     monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
     rc = main(["escalate", "--tier", "2", "--cause", "x", "--summary", "s", "--action", "a"])
     assert rc == 2 and "default" in capsys.readouterr().err
+
+
+def test_dedupe_window_starts_at_the_last_push(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    clock = {"now": 0.0}
+    pushes = []
+    n = Notifier(
+        CFG, con, Recorder(), now=lambda: clock["now"], push=lambda *a, **k: pushes.append(a)
+    )
+    esc = Escalation(1, "NF-1:x", "s", "a", issue_key="NF-1")
+    for hours in (0, 12, 25):
+        clock["now"] = hours * 3600.0
+        n.send(esc, ISSUE, "t1")
+    assert len(pushes) == 2
+
+
+def test_push_failure_still_lands_linear_actions(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    linear = Recorder()
+
+    def down(*a, **k):
+        raise OSError("ntfy down")
+
+    n = Notifier(CFG, con, linear, now=lambda: 1000.0, push=down)
+    n.send(Escalation(1, "NF-1:x", "s", "a", issue_key="NF-1"), ISSUE, "t1")
+    assert [c[0] for c in linear.calls] == ["add_label", "comment"]
+
+
+def test_linear_failure_sends_no_push_and_retry_pushes_once(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    pushes = []
+
+    class Flaky:
+        fail = True
+
+        def add_label(self, *a):
+            if self.fail:
+                raise RuntimeError("linear down")
+
+        def comment(self, *a):
+            pass
+
+    linear = Flaky()
+    n = Notifier(CFG, con, linear, now=lambda: 1000.0, push=lambda *a, **k: pushes.append(a))
+    esc = Escalation(1, "NF-1:x", "s", "a", issue_key="NF-1")
+    with pytest.raises(RuntimeError):
+        n.send(esc, ISSUE, "t1")
+    assert pushes == []
+    assert not ledger.alert_seen(con, "NF-1:x", within_s=86400, now=1000.0)
+    linear.fail = False
+    n.send(esc, ISSUE, "t1")
+    assert len(pushes) == 1
