@@ -1,4 +1,5 @@
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -127,6 +128,32 @@ def test_http_transport_raises_on_graphql_errors(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: Resp())
     with pytest.raises(LinearError, match="RATELIMITED"):
+        http_transport("k")("query { viewer { id } }", {})
+
+
+class Garbage:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return b"<html>bad gateway</html>"
+
+
+def refuse(req, timeout):
+    raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+
+def time_out(req, timeout):
+    raise TimeoutError("timed out")
+
+
+@pytest.mark.parametrize("urlopen", [refuse, time_out, lambda req, timeout: Garbage()])
+def test_http_transport_wraps_network_failures(monkeypatch, urlopen):
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    with pytest.raises(LinearError):
         http_transport("k")("query { viewer { id } }", {})
 
 

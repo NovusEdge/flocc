@@ -17,7 +17,7 @@ from linear_agents.sessions import Sessions
 from linear_agents.supervisor import supervise
 from linear_agents.worktree import git
 
-LINEAR_FAILS_BEFORE_PAGE = 5
+FAILS_BEFORE_PAGE = 5
 
 
 def _which(name: str) -> str:
@@ -75,16 +75,28 @@ def tick_lock(path: Path):
         yield True
 
 
+def _page_after_repeats(rt, counter: str, cause: str, what: str, exc: Exception, action: str):
+    fails = int(ledger.meta_get(rt.con, counter) or 0) + 1
+    ledger.meta_set(rt.con, counter, str(fails))
+    if fails >= FAILS_BEFORE_PAGE:
+        summary = f"{what} has failed {fails} ticks in a row: {exc}"
+        rt.notifier.send(Escalation(1, cause, summary, action, scope="global"), None, None)
+
+
 def tick(cfg: Config, config_path: Path) -> int:
     rt = build_runtime(cfg, config_path)
+    linear_exc: LinearError | None = None
     try:
         for claim in ledger.live_claims(rt.con):
             if claim.state != "running":
                 continue
             try:
                 supervise(rt, claim)
-            except LinearError:
-                raise
+            except LinearError as exc:
+                # A deleted issue fails only its own claim; the tick still counts as a Linear
+                # failure once the other claims are done.
+                print(f"{claim.issue_key}: linear: {exc}", file=sys.stderr)
+                linear_exc = exc
             except Exception:  # noqa: BLE001 - one issue's failure must not stop the others
                 traceback.print_exc()
                 rt.notifier.send(
@@ -103,22 +115,31 @@ def tick(cfg: Config, config_path: Path) -> int:
         forward_comments(rt)
         poll(rt)
         maybe_digest(rt)
+        if linear_exc is not None:
+            raise linear_exc
         ledger.meta_set(rt.con, "linear_failures", "0")
+        ledger.meta_set(rt.con, "tick_failures", "0")
     except LinearError as exc:
-        fails = int(ledger.meta_get(rt.con, "linear_failures") or 0) + 1
-        ledger.meta_set(rt.con, "linear_failures", str(fails))
         print(f"linear: {exc}", file=sys.stderr)
-        if fails >= LINEAR_FAILS_BEFORE_PAGE:
-            rt.notifier.send(
-                Escalation(
-                    1,
-                    "linear-api",
-                    f"Linear has failed {fails} ticks in a row: {exc}",
-                    "Check the API key and Linear status",
-                    scope="global",
-                ),
-                None,
-                None,
-            )
+        _page_after_repeats(
+            rt,
+            "linear_failures",
+            "linear-api",
+            "Linear",
+            exc,
+            "Check the API key and Linear status",
+        )
         return 1
+    except Exception as exc:
+        # Re-raised so the unit still fails, but a tmux server that is down fails every tick
+        # and nothing else pages.
+        _page_after_repeats(
+            rt,
+            "tick_failures",
+            "tick-failing",
+            "The tick",
+            exc,
+            "Read journalctl --user -u linear-agents",
+        )
+        raise
     return 0

@@ -55,6 +55,10 @@ def http_transport(api_key: str) -> Transport:
                 body = json.loads(exc.read())
             except ValueError:
                 raise LinearError(f"HTTP {exc.code}") from exc
+        # Connection failures, timeouts and a 200 that is not JSON: the tick counts only
+        # LinearError toward the linear-api page.
+        except (OSError, ValueError) as exc:
+            raise LinearError(f"request failed: {exc}") from exc
         if body.get("errors"):
             raise LinearError("; ".join(e.get("message", "?") for e in body["errors"]))
         return body["data"]

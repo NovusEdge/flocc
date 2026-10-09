@@ -243,6 +243,44 @@ def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
     assert len(rt.linear.comments) == 1 and "setup: npm is missing" in rt.linear.comments[0][1]
 
 
+def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
+    monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
+
+    def tmux_down(rt):
+        raise RuntimeError("tmux: no server running")
+
+    monkeypatch.setattr("linear_agents.tick.poll", tmux_down)
+    for _ in range(4):
+        with pytest.raises(RuntimeError):
+            tick(rt.cfg, tmp_path / "c.toml")
+    assert rt.notifier.sent == []
+    with pytest.raises(RuntimeError):
+        tick(rt.cfg, tmp_path / "c.toml")
+    [esc] = rt.notifier.sent
+    assert (esc.tier, esc.scope) == (1, "global") and "tmux: no server" in esc.summary
+    monkeypatch.setattr("linear_agents.tick.poll", lambda rt: None)
+    assert tick(rt.cfg, tmp_path / "c.toml") == 0
+    assert ledger.meta_get(rt.con, "tick_failures") == "0"
+
+
+def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkeypatch):
+    for key in ("NF-1", "NF-2"):
+        ledger.insert_claim(rt.con, make(key, ()))
+    supervised, polled = [], []
+
+    def supervise(rt, claim):
+        if claim.issue_key == "NF-1":
+            raise LinearError("Entity not found: Issue")
+        supervised.append(claim.issue_key)
+
+    monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("linear_agents.tick.supervise", supervise)
+    monkeypatch.setattr("linear_agents.tick.poll", polled.append)
+    assert tick(rt.cfg, tmp_path / "c.toml") == 1
+    assert supervised == ["NF-2"] and polled == [rt]
+    assert ledger.meta_get(rt.con, "linear_failures") == "1"
+
+
 def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monkeypatch):
     for name in ("linear.key", "gh-publish.token"):
         (tmp_path / name).write_text("k\n")
