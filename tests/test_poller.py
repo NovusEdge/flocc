@@ -35,6 +35,7 @@ class PollLinear:
     started: list = field(default_factory=list)
     replies: dict = field(default_factory=dict)
     comment_fails: bool = False
+    deleted: tuple = ()
 
     def ready_issues(self, team, label):
         return self.ready
@@ -53,9 +54,13 @@ class PollLinear:
         self.comments.append((issue_id, text))
 
     def comments_since(self, issue_id, after):
+        if issue_id.removeprefix("id-") in self.deleted:
+            raise LinearError("Entity not found: Issue")
         return self.replies.get(issue_id, [])
 
     def issue(self, key):
+        if key in self.deleted:
+            raise LinearError("Entity not found: Issue")
         return issue(key)
 
     def add_label(self, i, name):
@@ -353,6 +358,29 @@ def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkey
     assert tick(rt.cfg, tmp_path / "c.toml") == 1
     assert supervised == ["NF-2"] and polled == [rt]
     assert ledger.meta_get(rt.con, "linear_failures") == "1"
+
+
+def test_tick_with_a_deleted_issue_still_polls_and_pages_naming_it(rt, tmp_path, monkeypatch):
+    for key in ("NF-1", "NF-2"):
+        ledger.insert_claim(rt.con, make(key, ()))
+        d = state_dir(rt.cfg, key)
+        d.mkdir(parents=True)
+        esc = {"tier": 3, "cause": "note", "summary": "s", "action": "a"}
+        (d / "escalations.jsonl").write_text(json.dumps(esc) + "\n")
+    rt.linear.deleted = ("NF-1",)
+    rt.sessions.alive_names = {"NF-1-test", "NF-2-test"}
+    rt.linear.replies = {"id-NF-2": [Comment("c1", "go", "2026-10-09T10:00:00Z", mine=True)]}
+    polled = []
+    monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("linear_agents.tick.supervise", lambda rt, claim: None)
+    monkeypatch.setattr("linear_agents.tick.poll", polled.append)
+    for _ in range(5):
+        assert tick(rt.cfg, tmp_path / "c.toml") == 1
+    assert len(polled) == 5
+    assert [e.cause for e in rt.notifier.sent[:1]] == ["NF-2:note"]
+    assert rt.sessions.sent[0] == ("NF-2-test", "The owner replied on Linear: go")
+    [page] = [e for e in rt.notifier.sent if e.tier == 1]
+    assert "NF-1" in page.summary and "linear-agents release NF-1" in page.action
 
 
 def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monkeypatch):

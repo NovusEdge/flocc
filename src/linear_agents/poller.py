@@ -184,13 +184,19 @@ def _new_lines(path: Path, offset: int) -> list[bytes]:
     return new.split(b"\n")[:-1]
 
 
-def route_escalations(rt) -> None:
+def route_escalations(rt) -> dict[str, LinearError]:
+    """Returns the Linear failures by issue key; one deleted issue must not stop the others."""
+    failed = {}
     for claim in ledger.live_claims(rt.con):
         path = state_dir(rt.cfg, claim.issue_key) / "escalations.jsonl"
         lines = _new_lines(path, claim.escalation_offset)
         if not lines:
             continue
-        issue = rt.linear.issue(claim.issue_key)
+        try:
+            issue = rt.linear.issue(claim.issue_key)
+        except LinearError as exc:
+            failed[claim.issue_key] = exc
+            continue
         offset = claim.escalation_offset
         for line in lines:
             raw = line.decode(errors="replace")
@@ -204,13 +210,20 @@ def route_escalations(rt) -> None:
             # Per line: a failure on a later one must not send this one again next tick.
             offset += len(line) + 1
             ledger.update_claim(rt.con, claim.issue_key, escalation_offset=offset)
+    return failed
 
 
-def forward_comments(rt) -> None:
+def forward_comments(rt) -> dict[str, LinearError]:
+    """Returns the Linear failures by issue key, like route_escalations."""
+    failed = {}
     for claim in ledger.live_claims(rt.con):
         if claim.state != "running":
             continue
-        replies = rt.linear.comments_since(claim.issue_id, claim.last_comment_at)
+        try:
+            replies = rt.linear.comments_since(claim.issue_id, claim.last_comment_at)
+        except LinearError as exc:
+            failed[claim.issue_key] = exc
+            continue
         if not replies:
             continue
         name = session_name(claim.issue_key, claim.phase)
@@ -224,6 +237,7 @@ def forward_comments(rt) -> None:
                     break
                 rt.sessions.send(name, f"The owner replied on Linear: {comment.body}")
             ledger.update_claim(rt.con, claim.issue_key, last_comment_at=comment.created_at)
+    return failed
 
 
 def _local_hour_and_date(now: float) -> tuple[int, str]:
