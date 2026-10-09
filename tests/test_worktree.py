@@ -7,7 +7,14 @@ import pytest
 from linear_agents import ledger
 from linear_agents.cli import main
 from linear_agents.config import RepoConfig
-from linear_agents.worktree import changed_files, contains, git, install_hook, prepare_worktree
+from linear_agents.worktree import (
+    changed_files,
+    contains,
+    git,
+    install_hook,
+    prepare_worktree,
+    run_bounded,
+)
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
@@ -51,6 +58,16 @@ def test_setup_that_outlives_its_timeout_fails(origin, tmp_path):
         prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3", setup_timeout_s=0.5)
     assert time.monotonic() - start < 10
     assert "installing" in str(exc.value.stderr)
+
+
+@pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid")
+def test_timeout_returns_while_an_escaped_child_holds_the_output(tmp_path):
+    start = time.monotonic()
+    code, out = run_bounded(
+        ["sh", "-c", "echo started; setsid sleep 20 & sleep 30"], tmp_path, timeout_s=0.5
+    )
+    assert time.monotonic() - start < 10
+    assert code is None and "started" in out
 
 
 def test_failed_setup_carries_its_output(origin, tmp_path):

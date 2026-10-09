@@ -6,6 +6,7 @@ from pathlib import Path
 from linear_agents.config import RepoConfig
 
 _LISTED = 20
+_DRAIN_S = 5
 
 
 # A SubprocessError so the poller's prepare-failure handling covers it.
@@ -34,7 +35,16 @@ def run_bounded(argv: list[str], cwd: Path, timeout_s: float) -> tuple[int | Non
         out, _ = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
-        out, _ = proc.communicate()
+        # A descendant that left the group (setsid, a daemonizing server) survives the kill and
+        # keeps the pipe open; an unbounded read would wait on it under the tick lock.
+        try:
+            out, _ = proc.communicate(timeout=_DRAIN_S)
+        except subprocess.TimeoutExpired as exc:
+            assert proc.stdout is not None
+            proc.stdout.close()
+            proc.wait()
+            # Raw bytes even in text mode.
+            out = (exc.output or b"").decode(errors="replace")
         return None, out
     return proc.returncode, out
 
