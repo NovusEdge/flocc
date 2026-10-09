@@ -133,7 +133,10 @@ def test_rerun_ignores_files_from_the_previous_claim(rt):
 
 def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
-    monkeypatch.setattr("linear_agents.poller.contains", lambda path, sha: sha == "sha-tests")
+    monkeypatch.setattr(
+        "linear_agents.poller.contains",
+        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+    )
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
     (d / "handoff.md").write_text("the previous claim's notes")
@@ -149,13 +152,24 @@ def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeyp
 
 def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
-    monkeypatch.setattr("linear_agents.poller.contains", lambda path, sha: False)
+    monkeypatch.setattr("linear_agents.poller.contains", lambda path, sha, ref="HEAD": False)
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
     assert c is not None
     assert (c.phase, c.base_sha, c.tester_sha) == ("test", "sha0", None)
     assert rt.sessions.started[0][0] == "NF-9-test"
+
+
+def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch):
+    ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
+    monkeypatch.setattr("linear_agents.poller.contains", lambda path, sha, ref="HEAD": True)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None
+    assert (c.phase, c.base_sha, c.tester_sha) == ("test", "sha0", None)
+    assert ledger.remembered_tests(rt.con, "NF-9") is None
 
 
 def test_poll_comments_once_then_admits_after_fix(rt):

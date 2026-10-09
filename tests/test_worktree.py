@@ -162,6 +162,7 @@ def test_contains(origin, tmp_path):
     git("commit", "-qm", "tests", cwd=path)
     tests = git("rev-parse", "HEAD", cwd=path)
     assert contains(path, base) and contains(path, tests)
+    assert contains(path, base, "origin/main") and not contains(path, tests, "origin/main")
     git("reset", "-q", "--hard", base, cwd=path)
     assert not contains(path, tests)
     assert not contains(path, "0" * 40)

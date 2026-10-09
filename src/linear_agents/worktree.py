@@ -132,9 +132,9 @@ def install_hook(worktree: Path, hooks_dir: Path, exe: str, config_path: Path) -
     git("config", "--worktree", "core.hooksPath", str(hooks_dir), cwd=worktree)
 
 
-def contains(worktree: Path, sha: str) -> bool:
+def contains(worktree: Path, sha: str, ref: str = "HEAD") -> bool:
     out = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", sha, "HEAD"],
+        ["git", "merge-base", "--is-ancestor", sha, ref],
         cwd=worktree,
         capture_output=True,
         check=False,
