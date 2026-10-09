@@ -7,7 +7,7 @@ import pytest
 
 from linear_agents.agentblock import IssueSettings
 from linear_agents.config import load
-from linear_agents.sessions import Sessions, claude_argv, clean_env, session_name
+from linear_agents.sessions import Sessions, claude_argv, clean_env, session_name, trust_folders
 from tests.paths import EXAMPLE
 
 CFG = load(EXAMPLE)
@@ -48,6 +48,23 @@ def test_argv_wraps_claude_in_a_clean_env():
 def test_unknown_mcp_server_raises():
     with pytest.raises(KeyError, match="nope"):
         claude_argv(CFG, "NF-1", IssueSettings(mcp=("nope",)), "p", env={}, claude_exe="c", exe="x")
+
+
+def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
+    cj = tmp_path / ".claude.json"
+    cj.write_text(json.dumps({"projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}}}))
+    before = cj.stat()
+    trust_folders(cj, ["/wt/NF-1"])
+    after = cj.stat()
+    assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+
+
+def test_unreadable_claude_json_is_not_overwritten(tmp_path):
+    cj = tmp_path / ".claude.json"
+    cj.write_text("{half written")
+    with pytest.raises(ValueError):
+        trust_folders(cj, ["/wt/NF-1"])
+    assert cj.read_text() == "{half written"
 
 
 def test_session_names():

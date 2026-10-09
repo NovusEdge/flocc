@@ -11,6 +11,7 @@ _PATH_KEYS = (
     "linear_key_file",
     "agent_gh_token_file",
     "publish_gh_token_file",
+    "claude_json",
 )
 
 
@@ -47,6 +48,8 @@ class Config:
     check_timeout_s: int = 1800
     setup_timeout_s: int = 900
     mcp_servers: dict[str, dict] = field(default_factory=dict)
+    # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
+    claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
 
 
 def default_config_path() -> Path:
