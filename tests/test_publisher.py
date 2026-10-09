@@ -1,5 +1,6 @@
 import subprocess
 import time
+from dataclasses import replace
 
 from linear_agents.config import RepoConfig
 from linear_agents.publisher import publish
@@ -44,6 +45,14 @@ def test_opens_draft_pr(origin, tmp_path):
     assert pr[:3] == ["gh", "pr", "create"] and "--draft" in pr
     assert "Fixes NF-5" in pr[pr.index("--body") + 1]
     assert git("ls-remote", "origin", claim.branch, cwd=path)
+
+
+def test_repo_without_drafts_opens_a_ready_pr(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    gh = Gh()
+    publish(claim, replace(repo, draft=False), "t", "s", token="t", runner=gh)
+    pr = gh.calls[-1]
+    assert pr[:3] == ["gh", "pr", "create"] and "--draft" not in pr
 
 
 def test_retry_reuses_the_open_pr(origin, tmp_path):
