@@ -1,0 +1,5 @@
+{"session_id": "s", "model": {"id": "claude-opus-5-5"},
+ "rate_limits": {
+   "five_hour": {"used_percentage": 12.0, "resets_at": 4000000000},
+   "seven_day": {"used_percentage": 40.0, "resets_at": 4000000000}},
+ "context_window": {"used_percentage": 34.0}}

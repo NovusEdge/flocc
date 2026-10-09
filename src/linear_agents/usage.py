@@ -1,0 +1,65 @@
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+_CONTEXT_PATH = ("context_window", "used_percentage")
+
+
+@dataclass(frozen=True)
+class Usage:
+    five_hour_pct: float
+    weekly_pct: float
+    observed_at: float
+
+
+def write_status(state_dir: Path, payload: dict) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    tmp = state_dir / "status.json.tmp"
+    tmp.write_text(json.dumps(payload))
+    os.replace(tmp, state_dir / "status.json")
+
+
+def read_status(state_dir: Path) -> dict | None:
+    try:
+        return json.loads((state_dir / "status.json").read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def window_pct(window: dict | None, now: float) -> float:
+    # Claude Code drops a window once resets_at passes, but a stale file still holds it.
+    if not window or window.get("resets_at", 0) <= now:
+        return 0.0
+    return float(window.get("used_percentage", 0.0))
+
+
+def latest_usage(state_root: Path, now: float) -> Usage | None:
+    best: tuple[float, dict] | None = None
+    for path in state_root.glob("*/status.json"):
+        mtime = path.stat().st_mtime
+        try:
+            data = json.loads(path.read_text())
+        except ValueError:
+            continue
+        if "rate_limits" in data and (best is None or mtime > best[0]):
+            best = (mtime, data)
+    if best is None:
+        return None
+    limits = best[1]["rate_limits"]
+    return Usage(
+        five_hour_pct=window_pct(limits.get("five_hour"), now),
+        weekly_pct=window_pct(limits.get("seven_day"), now),
+        observed_at=best[0],
+    )
+
+
+def context_pct(status: dict) -> float | None:
+    node: object = status
+    for key in _CONTEXT_PATH:
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    if not isinstance(node, int | float):
+        return None
+    return float(node)
