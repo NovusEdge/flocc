@@ -26,15 +26,16 @@ def admit(
     running = [c for c in live if c.state == "running"]
     if len(running) >= cfg.session_cap:
         return Decision(False, f"session cap {cfg.session_cap} reached")
-    # Usage is only readable from a live session's status line, so with nothing running the
-    # first session has to start blind.
-    if usage is None or now - usage.observed_at > STALE_USAGE_S:
-        if running:
-            return Decision(False, "usage unknown while sessions are running")
-    elif usage.five_hour_pct >= cfg.five_hour_max_pct:
+    # Usage within a window only grows, and latest_usage zeroes a window whose reset has passed,
+    # so a stale reading over a limit still holds.
+    if usage is not None and usage.five_hour_pct >= cfg.five_hour_max_pct:
         return Decision(False, f"5-hour usage {usage.five_hour_pct:.0f}%")
-    elif usage.weekly_pct >= cfg.weekly_max_pct:
+    if usage is not None and usage.weekly_pct >= cfg.weekly_max_pct:
         return Decision(False, f"weekly usage {usage.weekly_pct:.0f}%")
+    # Usage is only readable from a live session's status line, so with nothing running the
+    # first session has to start on a stale reading or none.
+    if (usage is None or now - usage.observed_at > STALE_USAGE_S) and running:
+        return Decision(False, "usage unknown while sessions are running")
     waiting = [d for d in settings.depends_on if dep_states.get(d) != "completed"]
     if waiting:
         return Decision(False, f"waiting on {', '.join(waiting)}")
