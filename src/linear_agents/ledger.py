@@ -276,6 +276,11 @@ def remembered_tests(con, issue_key: str) -> tuple[str, str] | None:
     return base_sha, tester_sha
 
 
+def forget_tests(con, issue_key: str) -> None:
+    with transaction(con):
+        con.execute("DELETE FROM meta WHERE key = ?", (f"tests:{issue_key}",))
+
+
 def meta_set(con, key: str, value: str) -> None:
     with transaction(con):
         con.execute(

@@ -33,6 +33,12 @@ def test_unknown_usage_admits_only_when_idle():
     assert not run(usage=None, live=[make("NF-1", ())]).ok
     stale = Usage(10, 10, observed_at=0)
     assert not run(usage=stale, live=[make("NF-1", ())], now=10_000).ok
+    assert run(usage=stale, now=10_000).ok
+
+
+def test_stale_reading_over_a_limit_holds_when_idle():
+    d = run(usage=Usage(10, 95, observed_at=0), now=10_000)
+    assert not d.ok and "weekly" in d.reason
 
 
 def test_dependencies_must_be_completed():

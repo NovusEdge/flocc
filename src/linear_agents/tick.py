@@ -20,6 +20,12 @@ from linear_agents.worktree import git
 FAILS_BEFORE_PAGE = 5
 
 
+class IssueLinearErrors(LinearError):
+    def __init__(self, failed: dict[str, LinearError]):
+        self.keys = sorted(failed)
+        super().__init__("; ".join(f"{k}: {failed[k]}" for k in self.keys))
+
+
 def _which(name: str) -> str:
     # The pane's PATH is the tick's, and the unit's PATH is systemd's unless the unit sets one.
     path = shutil.which(name)
@@ -119,7 +125,9 @@ def tick(cfg: Config, config_path: Path) -> int:
     except Exception as exc:
         _page_unbuilt(cfg, exc)
         raise
-    linear_exc: LinearError | None = None
+    # A deleted issue fails only its own claim; the tick still counts as a Linear failure once
+    # the other claims, the poll and the digest are done.
+    failed: dict[str, LinearError] = {}
     try:
         for claim in ledger.live_claims(rt.con):
             if claim.state != "running":
@@ -127,10 +135,7 @@ def tick(cfg: Config, config_path: Path) -> int:
             try:
                 supervise(rt, claim)
             except LinearError as exc:
-                # A deleted issue fails only its own claim; the tick still counts as a Linear
-                # failure once the other claims are done.
-                print(f"{claim.issue_key}: linear: {exc}", file=sys.stderr)
-                linear_exc = exc
+                failed[claim.issue_key] = exc
             except Exception:  # noqa: BLE001 - one issue's failure must not stop the others
                 traceback.print_exc()
                 rt.notifier.send(
@@ -145,24 +150,22 @@ def tick(cfg: Config, config_path: Path) -> int:
                     None,
                     None,
                 )
-        route_escalations(rt)
-        forward_comments(rt)
+        failed |= route_escalations(rt)
+        failed |= forward_comments(rt)
         poll(rt)
         maybe_digest(rt)
-        if linear_exc is not None:
-            raise linear_exc
+        if failed:
+            raise IssueLinearErrors(failed)
         ledger.meta_set(rt.con, "linear_failures", "0")
         ledger.meta_set(rt.con, "tick_failures", "0")
     except LinearError as exc:
         print(f"linear: {exc}", file=sys.stderr)
+        action = "Check the API key and Linear status"
+        if isinstance(exc, IssueLinearErrors):
+            commands = ", ".join(f"linear-agents release {k}" for k in exc.keys)
+            action += f"; if an issue was deleted, run {commands}"
         _page_after_repeats(
-            rt.con,
-            rt.notifier,
-            "linear_failures",
-            "linear-api",
-            "Linear",
-            exc,
-            "Check the API key and Linear status",
+            rt.con, rt.notifier, "linear_failures", "linear-api", "Linear", exc, action
         )
         return 1
     except Exception as exc:
