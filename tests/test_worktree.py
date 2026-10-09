@@ -4,7 +4,7 @@ import subprocess
 from linear_agents import ledger
 from linear_agents.cli import main
 from linear_agents.config import RepoConfig
-from linear_agents.worktree import changed_files, git, install_hook, prepare_worktree
+from linear_agents.worktree import changed_files, contains, git, install_hook, prepare_worktree
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
@@ -78,6 +78,42 @@ def _check_hook_blocks(origin, tmp_path, root):
     git("add", "ok.txt", cwd=path)
     git("commit", "-qm", "ok", cwd=path)
     assert changed_files(path, base, "HEAD") == {"ok.txt"}
+
+
+def test_reinstalled_hook_still_chains_to_the_repo_hook_once(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    repo_hook = origin / ".git" / "hooks" / "pre-commit"
+    repo_hook.write_text(f"#!/bin/sh\necho ran >> {tmp_path / 'repo-hook.log'}\n")
+    repo_hook.chmod(0o755)
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        EXAMPLE.read_text().replace(
+            'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"',
+            f'ledger_path = "{tmp_path / "l.sqlite"}"',
+        )
+    )
+    exe = shutil.which("linear-agents")
+    assert exe
+    for _ in range(2):  # a rerun with --keep-worktree installs into the same worktree again
+        install_hook(path, tmp_path / "hooks", exe, cfg)
+    (path / "ok.txt").write_text("fine\n")
+    git("add", "ok.txt", cwd=path)
+    subprocess.run(
+        ["git", "commit", "-qm", "ok"], cwd=path, check=True, capture_output=True, timeout=20
+    )
+    assert (tmp_path / "repo-hook.log").read_text() == "ran\n"
+
+
+def test_contains(origin, tmp_path):
+    path, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    (path / "t.txt").write_text("t\n")
+    git("add", "t.txt", cwd=path)
+    git("commit", "-qm", "tests", cwd=path)
+    tests = git("rev-parse", "HEAD", cwd=path)
+    assert contains(path, base) and contains(path, tests)
+    git("reset", "-q", "--hard", base, cwd=path)
+    assert not contains(path, tests)
+    assert not contains(path, "0" * 40)
 
 
 def test_claim_cli(tmp_path, monkeypatch, capsys):
