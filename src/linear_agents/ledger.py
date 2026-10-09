@@ -262,6 +262,20 @@ def meta_get(con, key: str) -> str | None:
     return row["value"] if row else None
 
 
+# In meta, not on the claim: release deletes the claim, and a rerun on the kept branch needs the
+# tester commit to resume at the implementer with the tests_touched guard intact.
+def remember_tests(con, issue_key: str, base_sha: str, tester_sha: str) -> None:
+    meta_set(con, f"tests:{issue_key}", json.dumps([base_sha, tester_sha]))
+
+
+def remembered_tests(con, issue_key: str) -> tuple[str, str] | None:
+    raw = meta_get(con, f"tests:{issue_key}")
+    if raw is None:
+        return None
+    base_sha, tester_sha = json.loads(raw)
+    return base_sha, tester_sha
+
+
 def meta_set(con, key: str, value: str) -> None:
     with transaction(con):
         con.execute(

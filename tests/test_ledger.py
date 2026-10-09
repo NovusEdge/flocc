@@ -113,3 +113,12 @@ def test_two_connections_share_state(tmp_path):
     a, b = ledger.connect(tmp_path / "l.sqlite"), ledger.connect(tmp_path / "l.sqlite")
     ledger.insert_claim(a, make())
     assert ledger.get_claim(b, "NF-1") is not None
+
+
+def test_remembered_tests_outlive_the_claim(con):
+    assert ledger.remembered_tests(con, "NF-1") is None
+    ledger.insert_claim(con, make())
+    ledger.remember_tests(con, "NF-1", "sha-base", "sha-tests")
+    ledger.delete_claim(con, "NF-1")
+    assert ledger.remembered_tests(con, "NF-1") == ("sha-base", "sha-tests")
+    assert ledger.remembered_tests(con, "NF-2") is None

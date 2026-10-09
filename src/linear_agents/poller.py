@@ -19,7 +19,7 @@ from linear_agents.linear import BOT_PREFIX, Issue, LinearError
 from linear_agents.sessions import session_name
 from linear_agents.supervisor import launch
 from linear_agents.usage import latest_usage
-from linear_agents.worktree import install_hook, prepare_worktree
+from linear_agents.worktree import contains, install_hook, prepare_worktree
 
 COMMENT_ONCE_S = 365 * 24 * 3600
 
@@ -129,13 +129,24 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     ledger.clear_alert(rt.con, cause)
     d = state_dir(cfg, issue.key)
     install_hook(path, d / "hooks", rt.exe, rt.config_path)
+    # The previous claim's notes would be read as this session's handoff, and would satisfy
+    # handoff-ready before the new session wrote its own. Kept for the owner.
+    if (d / "handoff.md").exists():
+        (d / "handoff.md").replace(d / "handoff.prev.md")
+    # A rerun on a kept branch that already holds the tester's commit resumes at the
+    # implementer: a fresh tester would block on adding nothing, and the guard would lose the
+    # first run's tests.
+    phase, tester_sha = "test", None
+    remembered = ledger.remembered_tests(rt.con, issue.key)
+    if remembered and contains(path, remembered[1]):
+        (base, tester_sha), phase = remembered, "impl"
     claim = Claim(
         issue_key=issue.key,
         issue_id=issue.id,
         repo=repo,
         worktree=str(path),
         branch=branch,
-        phase="test",
+        phase=phase,
         state="running",
         paths=list(settings.paths),
         depends_on=list(settings.depends_on),
@@ -143,6 +154,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         started_at=rt.now(),
         wall_clock_s=settings.wall_clock_s or cfg.default_wall_clock_s,
         base_sha=base,
+        tester_sha=tester_sha,
         # Comments written before the claim are not replies to it.
         last_comment_at=datetime.fromtimestamp(rt.now(), UTC).isoformat(),
         # A released issue's state directory keeps the previous claim's escalations; start past
@@ -152,7 +164,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     ledger.insert_claim(rt.con, claim)
     write_context(cfg, issue, claim)
     try:
-        launch(rt, claim, "test")
+        launch(rt, claim, phase)
     except BaseException:
         # A claim without a session would be relaunched by every tick and never count a restart,
         # and an In Progress issue would not be polled again. Leave it in Todo, unclaimed.

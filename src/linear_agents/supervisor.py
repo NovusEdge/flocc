@@ -33,11 +33,6 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
     d = state_dir(rt.cfg, claim.issue_key)
     # Before the deletes below: the outgoing session's status file is the freshest usage reading.
     _record_usage(rt, claim.issue_key, phase, "start")
-    # The previous session's markers would be taken for the new one's, and its context reading
-    # would ask the new session to hand off at once.
-    markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
-    for leftover in (*_MARKERS, "status.json"):
-        (d / leftover).unlink(missing_ok=True)
     name = session_name(claim.issue_key, phase)
     env = clean_env(
         {
@@ -49,6 +44,11 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
     settings = settings_from_json(claim.settings_json)
     prompt = phase_prompt(phase, claim.issue_key, extra)
     argv = claude_argv(rt.cfg, name, settings, prompt, env, rt.claude_exe, rt.exe)
+    # After everything above that can raise. The previous session's markers would be taken for
+    # the new one's, and its context reading would ask the new session to hand off at once.
+    markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
+    for leftover in (*_MARKERS, "status.json"):
+        (d / leftover).unlink(missing_ok=True)
     try:
         rt.sessions.start(name, Path(claim.worktree), argv)
     except BaseException:
@@ -80,6 +80,8 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
                 f"Add detail to the acceptance criteria, then run linear-agents release {key}",
             )
             return
+        if claim.base_sha is not None:
+            ledger.remember_tests(rt.con, key, claim.base_sha, head)
         launch(rt, claim, "impl")
         ledger.update_claim(
             rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=rt.now()
@@ -102,7 +104,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             claim,
             "check-failed",
             f"The check still fails after one fix:\n{result.detail}",
-            "Look at the branch and say how to proceed",
+            f"Fix the branch or the issue, then run linear-agents release --keep-worktree {key}",
         )
     else:
         _block(
@@ -110,7 +112,8 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             claim,
             "tests-touched",
             f"The implementer changed the tester's files: {result.detail}",
-            "Decide whether the test change is legitimate",
+            "If the test change is wrong, revert it on the branch, then run"
+            f" linear-agents release --keep-worktree {key}",
         )
 
 

@@ -72,6 +72,7 @@ def test_tester_done_starts_implementer(rt):
     assert not (state_dir(rt.cfg, "NF-1") / "done.json").exists()
     supervise(rt, c)
     assert len(rt.sessions.started) == 1
+    assert ledger.remembered_tests(rt.con, "NF-1") == ("sha-base", "sha-tests")
 
 
 def test_failed_start_puts_the_markers_back(rt):
@@ -135,6 +136,26 @@ def test_check_failure_gets_one_fix_then_blocks(rt):
     done(rt)
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
+    assert "linear-agents release --keep-worktree NF-1" in rt.notifier.sent[-1].action
+
+
+def test_touched_tests_block_names_release(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("tests_touched", "test_x.py")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    assert "linear-agents release" in rt.notifier.sent[-1].action
+
+
+def test_unbuildable_launch_keeps_the_markers(rt):
+    add(rt, settings_json="{not json")
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt)
+    with pytest.raises(ValueError):
+        supervise(rt, current(rt))
+    assert (state_dir(rt.cfg, "NF-1") / "done.json").exists()
+    assert current(rt).phase == "test"
 
 
 def test_dead_session_restarts_once_then_blocks(rt):
