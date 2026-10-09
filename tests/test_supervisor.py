@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import pytest
 
@@ -71,6 +72,29 @@ def test_tester_done_starts_implementer(rt):
     assert not (state_dir(rt.cfg, "NF-1") / "done.json").exists()
     supervise(rt, c)
     assert len(rt.sessions.started) == 1
+
+
+def test_failed_start_puts_the_markers_back(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt, "tests written")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "handoff-requested").touch()
+    before = (d / "done.json").read_text()
+    working = rt.sessions.start
+
+    def down(name, cwd, argv):
+        raise subprocess.CalledProcessError(1, ["tmux"])
+
+    rt.sessions.start = down
+    with pytest.raises(subprocess.CalledProcessError):
+        supervise(rt, current(rt))
+    assert (d / "done.json").read_text() == before and (d / "handoff-requested").exists()
+    c = current(rt)
+    assert c.phase == "test" and c.restarts == 0
+    rt.sessions.start = working
+    supervise(rt, current(rt))
+    assert current(rt).phase == "impl" and rt.sessions.started[0][0] == "NF-1"
 
 
 def test_usage_snapshots_per_phase(rt):

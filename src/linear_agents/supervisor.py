@@ -13,7 +13,7 @@ HANDOFF_ASK = (
     "Your context is past {pct:.0f}%. Follow the handoff skill now: write handoff.md in your state"
     " directory, then run linear-agents handoff-ready. A fresh session will continue from it."
 )
-_PER_SESSION = ("done.json", "handoff-ready", "handoff-requested", "status.json")
+_MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 
 
 class LaunchError(RuntimeError):
@@ -35,7 +35,8 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
     _record_usage(rt, claim.issue_key, phase, "start")
     # The previous session's markers would be taken for the new one's, and its context reading
     # would ask the new session to hand off at once.
-    for leftover in _PER_SESSION:
+    markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
+    for leftover in (*_MARKERS, "status.json"):
         (d / leftover).unlink(missing_ok=True)
     name = session_name(claim.issue_key, phase)
     env = clean_env(
@@ -48,7 +49,14 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
     settings = settings_from_json(claim.settings_json)
     prompt = phase_prompt(phase, claim.issue_key, extra)
     argv = claude_argv(rt.cfg, name, settings, prompt, env, rt.claude_exe, rt.exe)
-    rt.sessions.start(name, Path(claim.worktree), argv)
+    try:
+        rt.sessions.start(name, Path(claim.worktree), argv)
+    except BaseException:
+        # Without its marker the next tick would take the step for a crash instead of repeating
+        # it: a tester rerun on its own commits, or a fix started without the check output.
+        for n, content in markers.items():
+            (d / n).write_bytes(content)
+        raise
 
 
 def _block(rt, claim: Claim, cause: str, summary: str, action: str) -> None:
