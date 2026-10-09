@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+cd "$(dirname "$0")"
+if ! command -v mise >/dev/null 2>&1; then
+  curl -fsSL https://mise.run | sh
+fi
+PATH="$HOME/.local/bin:$PATH"
+export PATH
+mise trust --quiet
+mise install
+mise exec -- uv sync --locked

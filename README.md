@@ -56,6 +56,12 @@ Pro does not [S1][S2]. Current limit numbers were not found; `/usage` shows mine
 | Repo rules | AGENTS.md, hooks and plugins load unless `--bare` [C1] | Through the action's inputs | CLAUDE.md loads; plugins declared in the repo do not; `gh pr` is blocked [C7] |
 | Reliability | Machine must stay on | Good | Preview [C5] |
 
+## Current design
+
+The design is in `docs/superpowers/specs/2026-10-09-linear-agents-design.md`, the build plan in
+`docs/superpowers/plans/2026-10-09-linear-agents.md`, and VM setup in `docs/vm-setup.md`. The
+sections below are the original research.
+
 ## Recommended: a poller with headless Claude Code in a container
 
 Needs no Linear admin and loads the full repo setup. Costs a short script to maintain.
