@@ -2,9 +2,10 @@ import json
 import re
 from dataclasses import asdict, dataclass
 
+_OPEN = re.compile(r"^```agent[ \t]*$", re.MULTILINE)
 _BLOCK = re.compile(r"^```agent[ \t]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
 _CRITERIA = re.compile(
-    r"^(?:#{1,6}[ \t]*|\*\*)acceptance criteria(?:\*\*)?[ \t]*:?[ \t]*\n"
+    r"^(?:#{1,6}[ \t]*|\*\*)acceptance criteria[ \t]*:?(?:\*\*)?[ \t]*:?[ \t]*\n"
     r"(?:[ \t]*\n)*[ \t]*(?:[-*]|\d+\.)[ \t]+\S",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -31,8 +32,12 @@ def _normalise(text: str | None) -> str:
 
 
 def parse_settings(description: str | None) -> IssueSettings:
-    match = _BLOCK.search(_normalise(description))
+    text = _normalise(description)
+    match = _BLOCK.search(text)
     if not match:
+        # Silently running with defaults would drop the paths and depends_on the owner wrote.
+        if _OPEN.search(text):
+            raise BlockError("agent block: no closing ``` fence")
         return IssueSettings()
     values: dict[str, str] = {}
     for n, line in enumerate(match.group(1).splitlines(), 1):

@@ -1,5 +1,6 @@
 import os
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +19,34 @@ class PublishResult:
     url: str = ""
 
 
+def _run_check(argv: list[str], cwd: Path, timeout_s: float) -> tuple[int | None, str]:
+    # Its own process group, so a timeout kills the test runner the check started too; killing
+    # only the direct child would leave it running and holding the output pipe open.
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        out, _ = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
+        return None, out
+    return proc.returncode, out
+
+
 def publish(
-    claim: Claim, repo: RepoConfig, title: str, summary: str, token: str, runner=subprocess.run
+    claim: Claim,
+    repo: RepoConfig,
+    title: str,
+    summary: str,
+    token: str,
+    runner=subprocess.run,
+    check_timeout_s: float = 1800,
 ) -> PublishResult:
     wt = Path(claim.worktree)
     if claim.base_sha is None or claim.tester_sha is None:
@@ -28,9 +55,12 @@ def publish(
     touched = changed_files(wt, claim.tester_sha, "HEAD") & tester_files
     if touched:
         return PublishResult("tests_touched", ", ".join(sorted(touched)))
-    check = runner(shlex.split(repo.check), cwd=wt, capture_output=True, text=True)
-    if check.returncode != 0:
-        return PublishResult("check_failed", (check.stdout + check.stderr)[-_TAIL:])
+    code, out = _run_check(shlex.split(repo.check), wt, check_timeout_s)
+    if code is None:
+        detail = f"`{repo.check}` timed out after {check_timeout_s}s\n\n{out[-_TAIL:]}"
+        return PublishResult("check_failed", detail.strip())
+    if code != 0:
+        return PublishResult("check_failed", out[-_TAIL:])
     env = {**os.environ, "GH_TOKEN": token}
     runner(
         [

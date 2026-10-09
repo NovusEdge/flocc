@@ -9,6 +9,7 @@ agent_gh_token_file = "~/.config/linear-agents/gh-agent.token"
 publish_gh_token_file = "~/.config/linear-agents/gh-publish.token"
 ntfy_url = "https://ntfy.sh/replace-with-a-long-random-topic"
 digest_issue = "NF-1"
+check_timeout_s = 1800
 
 [repos.backend]
 path = "~/src/backend"

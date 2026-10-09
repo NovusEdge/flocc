@@ -44,7 +44,14 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
     token = cfg.publish_gh_token_file.read_text().strip()
 
     def publish_fn(claim, title, summary):
-        return publish(claim, cfg.repos[claim.repo], title, summary, token)
+        return publish(
+            claim,
+            cfg.repos[claim.repo],
+            title,
+            summary,
+            token,
+            check_timeout_s=cfg.check_timeout_s,
+        )
 
     return Runtime(
         cfg=cfg,

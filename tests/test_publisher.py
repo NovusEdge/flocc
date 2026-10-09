@@ -1,4 +1,5 @@
 import subprocess
+import time
 
 from linear_agents.config import RepoConfig
 from linear_agents.publisher import publish
@@ -58,6 +59,14 @@ def test_rejects_changed_tests(origin, tmp_path):
     git("commit", "-qam", "weaken", cwd=path)
     result = publish(claim, repo, "t", "s", token="t", runner=Gh())
     assert result.status == "tests_touched" and "test_x.py" in result.detail
+
+
+def test_check_that_outlives_its_timeout_fails(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'sleep 30; echo late'")
+    start = time.monotonic()
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), check_timeout_s=0.5)
+    assert result.status == "check_failed" and "timed out after 0.5" in result.detail
+    assert time.monotonic() - start < 10
 
 
 def test_failed_check(origin, tmp_path):

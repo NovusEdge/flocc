@@ -56,12 +56,18 @@ def test_bad_blocks(line, msg):
         parse_settings(f"```agent\n{line}\n```\n")
 
 
+def test_unclosed_block_is_an_error():
+    with pytest.raises(BlockError, match="closing"):
+        parse_settings("```agent\nmodel: opus\n\n## Acceptance criteria\n\n- works\n")
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [
         (FULL, True),
         ("## Acceptance Criteria\n\n1. works\n", True),
         ("**Acceptance criteria**\n- works\n", True),
+        ("**Acceptance criteria:**\n- works\n", True),
         ("## Acceptance criteria\n\nTBD\n", False),
         ("acceptance criteria are obvious", False),
         (None, False),

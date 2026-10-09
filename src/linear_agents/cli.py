@@ -24,9 +24,12 @@ def cmd_statusline(args) -> int:
     five = usage.window_pct(limits.get("five_hour"), now)
     week = usage.window_pct(limits.get("seven_day"), now)
     ctx = usage.context_pct(payload)
-    ctx_text = f"{ctx:.0f}%" if ctx is not None else "?"
-    print(f"{state.name} · ctx {ctx_text} · 5h {five:.0f}% · wk {week:.0f}%")
+    print(f"{state.name} · ctx {_pct(ctx)} · 5h {_pct(five)} · wk {_pct(week)}")
     return 0
+
+
+def _pct(value: float | None) -> str:
+    return "?" if value is None else f"{value:.0f}%"
 
 
 def cmd_escalate(args) -> int:

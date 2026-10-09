@@ -27,11 +27,18 @@ def read_status(state_dir: Path) -> dict | None:
         return None
 
 
-def window_pct(window: dict | None, now: float) -> float:
+def window_pct(window: dict | None, now: float) -> float | None:
     # Claude Code drops a window once resets_at passes, but a stale file still holds it.
-    if not window or window.get("resets_at", 0) <= now:
+    if not window:
         return 0.0
-    return float(window.get("used_percentage", 0.0))
+    resets, used = window.get("resets_at"), window.get("used_percentage")
+    if not isinstance(resets, int | float):
+        return None
+    if resets <= now:
+        return 0.0
+    if not isinstance(used, int | float):
+        return None
+    return float(used)
 
 
 def latest_usage(state_root: Path, now: float) -> Usage | None:
@@ -48,11 +55,12 @@ def latest_usage(state_root: Path, now: float) -> Usage | None:
     if best is None:
         return None
     limits = best[1]["rate_limits"]
-    return Usage(
-        five_hour_pct=window_pct(limits.get("five_hour"), now),
-        weekly_pct=window_pct(limits.get("seven_day"), now),
-        observed_at=best[0],
-    )
+    five = window_pct(limits.get("five_hour"), now)
+    week = window_pct(limits.get("seven_day"), now)
+    # Not 0%: admission would start sessions on a reading it cannot interpret.
+    if five is None or week is None:
+        return None
+    return Usage(five_hour_pct=five, weekly_pct=week, observed_at=best[0])
 
 
 def context_pct(status: dict) -> float | None:

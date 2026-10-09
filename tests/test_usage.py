@@ -1,6 +1,9 @@
+import io
 import json
 import os
 from pathlib import Path
+
+import pytest
 
 from linear_agents import usage
 from linear_agents.cli import main
@@ -33,6 +36,27 @@ def test_expired_window_counts_as_zero(tmp_path):
     u = usage.latest_usage(tmp_path, now=2000)
     assert u is not None
     assert u.five_hour_pct == 0 and u.weekly_pct == 0
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        {"used_percentage": None, "resets_at": 4_000_000_000},
+        {"used_percentage": "lots", "resets_at": 4_000_000_000},
+        {"used_percentage": 20},
+        {"used_percentage": 20, "resets_at": None},
+        {"used_percentage": 20, "resets_at": "tomorrow"},
+    ],
+)
+def test_unreadable_window_is_unknown_usage(tmp_path, monkeypatch, capsys, window):
+    data = status(20, 30)
+    data["rate_limits"]["five_hour"] = window
+    usage.write_status(tmp_path / "NF-1", data)
+    assert usage.latest_usage(tmp_path, now=300) is None
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "NF-1"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
+    assert main(["statusline"]) == 0
+    assert "5h ?" in capsys.readouterr().out
 
 
 def test_unreadable_status_is_skipped(tmp_path):
