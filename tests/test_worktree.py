@@ -63,11 +63,31 @@ def test_failed_setup_carries_its_output(origin, tmp_path):
 
 
 def test_setup_that_leaves_untracked_files_fails(origin, tmp_path):
-    (origin / "setup").write_text("#!/bin/sh\ntouch .setup-ran build.log\n")
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    (path / "notes.txt").write_text("leftover work\n")
+    (path / "setup").write_text("#!/bin/sh\ntouch .setup-ran build.log\n")
+    with pytest.raises(subprocess.SubprocessError) as exc:
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert "build.log" in str(exc.value) and "notes.txt" not in str(exc.value)
+
+
+def test_kept_worktree_with_uncommitted_work_prepares(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    (path / "notes.txt").write_text("leftover work\n")
+    (path / "a.txt").write_text("changed\n")
+    assert prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")[0] == path
+
+
+def test_many_files_left_by_setup_are_listed_capped(origin, tmp_path):
+    (origin / "setup").write_text(
+        "#!/bin/sh\ntouch .setup-ran\nfor i in $(seq 100); do touch f$i; done\n"
+    )
     git("commit", "-qam", "noisy setup", cwd=origin)
     git("push", "-q", "origin", "main", cwd=origin)
-    with pytest.raises(subprocess.SubprocessError, match="build.log"):
+    with pytest.raises(subprocess.SubprocessError) as exc:
         prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    message = str(exc.value)
+    assert message.count("?? f") == 20 and "80 more" in message
 
 
 def test_hook_blocks_files_claimed_by_others(origin, tmp_path):

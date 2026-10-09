@@ -5,6 +5,8 @@ from pathlib import Path
 
 from linear_agents.config import RepoConfig
 
+_LISTED = 20
+
 
 # A SubprocessError so the poller's prepare-failure handling covers it.
 class DirtyWorktree(subprocess.SubprocessError):
@@ -77,18 +79,30 @@ def prepare_worktree(
             )
     base = git("rev-parse", "HEAD", cwd=path)
     if (path / "setup").exists():
+        # A kept worktree may hold the previous run's uncommitted work; only what setup adds counts.
+        before = _status(path)
         # It runs under the tick lock, which every later tick waits on.
         code, out = run_bounded(["./setup"], path, setup_timeout_s)
         if code is None:
             raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr=out)
         if code != 0:
             raise subprocess.CalledProcessError(code, ["./setup"], stderr=out)
-    # Publish refuses a dirty worktree, so a setup that leaves files git sees would fail every
-    # run at the end, after the sessions have spent their usage.
-    dirty = git("status", "--porcelain", cwd=path)
-    if dirty:
-        raise DirtyWorktree(f"the worktree is not clean after ./setup; gitignore these:\n{dirty}")
+        # Publish refuses a dirty worktree, so a setup that leaves files git sees would fail every
+        # run at the end, after the sessions have spent their usage.
+        added = [line for line in _status(path) if line not in before]
+        if added:
+            listed = "\n".join(added[:_LISTED])
+            more = f"\n... and {len(added) - _LISTED} more" if len(added) > _LISTED else ""
+            raise DirtyWorktree(f"./setup left files git sees; gitignore them:\n{listed}{more}")
     return path, branch, base
+
+
+def _status(path: Path) -> list[str]:
+    # Not git(): its strip() would eat the first line's leading status column.
+    out = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=path, check=True, capture_output=True, text=True
+    )
+    return out.stdout.splitlines()
 
 
 def install_hook(worktree: Path, hooks_dir: Path, exe: str, config_path: Path) -> None:
