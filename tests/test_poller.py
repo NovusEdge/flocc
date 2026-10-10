@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 from linear_agents import ledger
-from linear_agents.config import load
+from linear_agents.config import RepoConfig, load
 from linear_agents.context import state_dir
 from linear_agents.escalation import Notifier
 from linear_agents.linear import BOT_PREFIX, Comment, Issue, LinearError
@@ -20,6 +20,7 @@ from linear_agents.poller import (
 from linear_agents.runtime import Runtime
 from linear_agents.supervisor import LaunchError
 from linear_agents.tick import tick, tick_lock
+from linear_agents.worktree import prepare_worktree
 from tests.fakes import FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -563,7 +564,7 @@ def finished(rt, key, state="done"):
 def test_reap_removes_worktrees_of_closed_issues_only(rt, monkeypatch, state_type, removed):
     wt = finished(rt, "NF-5", state="timed_out")
     rt.linear.state_types = lambda keys: {k: state_type for k in keys}
-    monkeypatch.setattr("linear_agents.poller.has_tracked_changes", lambda path: False)
+    monkeypatch.setattr("linear_agents.poller.has_uncommitted_changes", lambda path: False)
     calls = []
     monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
@@ -630,9 +631,44 @@ def test_reap_keeps_a_timed_out_worktree_with_uncommitted_changes(
 ):
     finished(rt, "NF-5", state=claim_state)
     rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
-    monkeypatch.setattr("linear_agents.poller.has_tracked_changes", lambda path: dirty)
+    monkeypatch.setattr("linear_agents.poller.has_uncommitted_changes", lambda path: dirty)
     calls = []
     monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert bool(calls) is removed
     assert ("uncommitted" in capsys.readouterr().err) is (not removed)
+    reap_worktrees(rt)
+    assert "uncommitted" not in capsys.readouterr().err
+
+
+def test_reap_keeps_a_timed_out_worktree_holding_only_an_untracked_file(origin, rt):
+    path, _, _ = prepare_worktree(RepoConfig(origin), rt.cfg.worktree_root, "NF-5")
+    (path / "new.py").write_text("work\n")
+    ledger.insert_claim(rt.con, make("NF-5", state="timed_out", worktree=str(path)))
+    rt.cfg.repos["backend"] = RepoConfig(origin)
+    rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
+    reap_worktrees(rt)
+    assert (path / "new.py").exists()
+    ledger.update_claim(rt.con, "NF-5", state="done")
+    reap_worktrees(rt)
+    assert not path.exists()
+
+
+def test_reap_clears_caches_a_killed_setup_left(rt):
+    stale = rt.cfg.worktree_root / ".uv-cache-NF-1"
+    (stale / "wheels").mkdir(parents=True)
+    reap_worktrees(rt)
+    assert not stale.exists()
+
+
+def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monkeypatch):
+    finished(rt, "NF-5")
+
+    def wrong(keys):
+        raise LinearError("Team not found")
+
+    rt.linear.state_types = wrong
+    calls = []
+    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    reap_worktrees(rt)
+    assert calls == []

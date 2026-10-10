@@ -118,12 +118,16 @@ Three things limit it:
   fails or times out. Every setup therefore downloads its packages fresh, and the venv keeps its own
   files. The cache is on the worktree's filesystem so uv can still link instead of copy.
 - `min_free_disk_gb` (default 2.0) holds new starts while the disk holding `worktree_root` has less
-  free space than that. `linear-agents doctor` warns below twice the value and fails below it.
+  free space than that. `linear-agents doctor` warns below twice the value and fails below it, and
+  a doctor FAIL also stops a fresh install from starting the timer.
 - Each tick removes the worktree (not the branch) of a finished run whose Linear issue is
   completed or canceled, or no longer exists. Running and blocked claims, and issues in any other
   state, keep theirs, so a rerun from Todo still reuses it. A timed-out run with uncommitted
-  changes keeps its worktree. A removed worktree is recreated from the kept branch if the issue is
-  rerun.
+  changes, new files included, keeps its worktree. A removed worktree is recreated from the kept
+  branch if the issue is rerun.
+
+The cache change covers uv inside `./setup` only. Sessions still use `~/.cache/uv`, and the npm,
+pnpm, pip and mise caches are not managed.
 
 ## Upgrading
 

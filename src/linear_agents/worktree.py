@@ -144,9 +144,8 @@ def _status(path: Path) -> list[str]:
     return out.stdout.splitlines()
 
 
-def has_tracked_changes(path: Path) -> bool:
-    out = git("status", "--porcelain", "--untracked-files=no", cwd=path)
-    return bool(out)
+def has_uncommitted_changes(path: Path) -> bool:
+    return bool(_status(path))
 
 
 def install_hook(
