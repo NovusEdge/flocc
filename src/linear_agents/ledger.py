@@ -220,6 +220,12 @@ def clear_alert(con, cause: str) -> None:
         con.execute("DELETE FROM alerts WHERE cause = ?", (cause,))
 
 
+def clear_issue_alerts(con, issue_key: str) -> None:
+    prefix = f"{issue_key}:"
+    with transaction(con):
+        con.execute("DELETE FROM alerts WHERE substr(cause, 1, ?) = ?", (len(prefix), prefix))
+
+
 def add_digest(con, issue_key: str | None, line: str, now: float) -> None:
     with transaction(con):
         con.execute(

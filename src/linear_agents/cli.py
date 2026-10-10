@@ -227,10 +227,8 @@ def cmd_run(args) -> int:
 
 
 def cmd_release(args) -> int:
-    from linear_agents.linear import LinearError
-    from linear_agents.sessions import session_name
+    from linear_agents.poller import release_claim
     from linear_agents.tick import build_runtime, tick_lock
-    from linear_agents.worktree import git
 
     cfg, path = _config(args)
     with tick_lock(_lock_path(cfg)) as held:
@@ -242,20 +240,7 @@ def cmd_release(args) -> int:
         if claim is None:
             print(f"release: no claim for {args.key}", file=sys.stderr)
             return 1
-        rt.sessions.kill(session_name(claim.issue_key, claim.phase))
-        # Each step below may already be done or impossible (a deleted issue, a worktree removed
-        # by an earlier release); the claim is cleared regardless, or it blocks every tick.
-        if not args.keep_worktree:
-            try:
-                git("worktree", "remove", "--force", claim.worktree, cwd=cfg.repos[claim.repo].path)
-            except (subprocess.CalledProcessError, OSError, KeyError) as exc:
-                print(f"release: worktree {claim.worktree} not removed: {exc}", file=sys.stderr)
-        # Back to Todo so the next poll picks it up again; the rerun continues on the kept branch.
-        try:
-            rt.linear.unstart(rt.linear.issue(args.key))
-        except LinearError as exc:
-            print(f"release: {args.key} not moved back to Todo: {exc}", file=sys.stderr)
-        ledger.delete_claim(rt.con, args.key)
+        release_claim(rt, claim, keep_worktree=args.keep_worktree)
     print(f"released {args.key}, branch {claim.branch} kept")
     return 0
 

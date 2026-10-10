@@ -35,6 +35,7 @@ class PollLinear:
     started: list = field(default_factory=list)
     replies: dict = field(default_factory=dict)
     comment_fails: bool = False
+    start_fails: bool = False
     deleted: tuple = ()
 
     def ready_issues(self, team, label):
@@ -46,6 +47,8 @@ class PollLinear:
         return {k: "completed" for k in keys}
 
     def start(self, i):
+        if self.start_fails:
+            raise LinearError("down")
         self.started.append(i.key)
 
     def comment(self, issue_id, text):
@@ -172,6 +175,78 @@ def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch)
     assert c is not None
     assert (c.phase, c.base_sha, c.tester_sha) == ("test", "sha0", None)
     assert ledger.remembered_tests(rt.con, "NF-9") is None
+
+
+@pytest.mark.parametrize("state", ["done", "timed_out", "blocked"])
+def test_finished_or_blocked_claim_back_in_todo_is_released_and_rerun(rt, monkeypatch, state):
+    removed = []
+    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: removed.append(a))
+    ledger.insert_claim(rt.con, make("NF-9", state=state))
+    rt.linear.ready = [issue()]
+    poll(rt)
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.state == "running" and c.started_at == 1000.0
+    assert removed == []
+    assert [text for _, text in rt.linear.comments] == [
+        "moved back to Todo; restarting from a fresh claim."
+    ]
+    assert rt.linear.started == ["NF-9"]
+
+
+@pytest.mark.parametrize("phase", ["test", "impl", "review"])
+def test_running_claim_in_todo_is_left_alone(rt, phase):
+    claim = make("NF-9")
+    claim.phase = phase
+    ledger.insert_claim(rt.con, claim)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") == claim
+    assert rt.sessions.killed == [] and rt.sessions.started == []
+    assert rt.linear.comments == [] and rt.linear.started == []
+
+
+def test_rerun_resumes_at_the_implementer_and_clears_the_old_alerts(rt, monkeypatch):
+    monkeypatch.setattr(
+        "linear_agents.poller.contains",
+        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+    )
+    ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
+    ledger.insert_claim(rt.con, make("NF-9", state="blocked"))
+    ledger.record_alert(rt.con, "NF-9:crash", 2, "NF-9", 1.0)
+    ledger.record_alert(rt.con, "NF-90:crash", 2, "NF-90", 1.0)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and (c.phase, c.tester_sha) == ("impl", "sha-tests")
+    assert not ledger.alert_seen(rt.con, "NF-9:crash", 10, 2.0)
+    assert ledger.alert_seen(rt.con, "NF-90:crash", 10, 2.0)
+
+
+def test_failing_rerun_comment_does_not_abort_the_tick(rt, capsys):
+    ledger.insert_claim(rt.con, make("NF-9", state="done"))
+    rt.linear.comment_fails = True
+    rt.linear.ready = [issue(), issue("NF-8")]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is not None
+    assert "NF-8: held" in capsys.readouterr().err
+
+
+def test_rerun_comment_waits_for_the_start(rt):
+    ledger.insert_claim(rt.con, make("NF-9", state="done"))
+    rt.linear.ready = [issue(desc="no criteria")]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    assert all("restarting" not in text for _, text in rt.linear.comments)
+
+
+def test_start_failure_kills_the_session_and_drops_the_claim(rt):
+    rt.linear.start_fails = True
+    rt.linear.ready = [issue()]
+    with pytest.raises(LinearError):
+        poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    assert rt.sessions.killed == ["NF-9-test"]
 
 
 def test_poll_comments_once_then_admits_after_fix(rt):
