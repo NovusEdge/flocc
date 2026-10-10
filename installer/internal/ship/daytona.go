@@ -124,17 +124,38 @@ func (a daytonaAuth) sandboxID(ctx context.Context, client *http.Client, name st
 	return "", fmt.Errorf("no Daytona sandbox named %q in this organization", name)
 }
 
-// Package-level so tests can run the wait without sleeping.
-var (
-	waitSleep   = time.Sleep
-	waitNow     = time.Now
+const (
 	waitEvery   = 5 * time.Second
 	waitTimeout = 5 * time.Minute
 )
 
+// waiter is injected so tests run the wait without sleeping.
+type waiter struct {
+	sleep func(ctx context.Context, d time.Duration) error
+	now   func() time.Time
+	log   io.Writer
+}
+
+func realWaiter(log io.Writer) waiter {
+	return waiter{
+		sleep: func(ctx context.Context, d time.Duration) error {
+			t := time.NewTimer(d)
+			defer t.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-t.C:
+				return nil
+			}
+		},
+		now: time.Now,
+		log: log,
+	}
+}
+
 // waitStarted blocks until the sandbox is started: the SSH gateway drops connections to a sandbox still in CREATING.
-func (a daytonaAuth) waitStarted(ctx context.Context, client *http.Client, id, name string, log io.Writer) error {
-	deadline := waitNow().Add(waitTimeout)
+func (a daytonaAuth) waitStarted(ctx context.Context, client *http.Client, id, name string, w waiter) error {
+	deadline := w.now().Add(waitTimeout)
 	last := ""
 	for {
 		var sb struct{ State string }
@@ -143,25 +164,33 @@ func (a daytonaAuth) waitStarted(ctx context.Context, client *http.Client, id, n
 		}
 		state := strings.ToLower(sb.State)
 		switch {
+		case state == "":
+			return fmt.Errorf("Daytona sandbox %s: the API response has no state field; the API shape may have changed", name)
 		case state == "started":
 			return nil
 		case state == "stopped" || state == "archived":
 			return fmt.Errorf("Daytona sandbox %s is %s; start it with daytona start %s", name, state, name)
+		case state == "destroying":
+			return fmt.Errorf("Daytona sandbox %s is being deleted; create it again with daytona create", name)
+		case state == "destroyed":
+			return fmt.Errorf("Daytona sandbox %s was deleted; create it again with daytona create", name)
 		case state == "error" || strings.HasSuffix(state, "failed"):
 			return fmt.Errorf("Daytona sandbox %s is in state %s", name, state)
 		}
 		if state != last {
-			fmt.Fprintf(log, "ship: waiting for Daytona sandbox %s (state %s)\n", name, state)
+			fmt.Fprintf(w.log, "ship: waiting for Daytona sandbox %s (state %s)\n", name, state)
 			last = state
 		}
-		if !waitNow().Add(waitEvery).Before(deadline) {
+		if !w.now().Add(waitEvery).Before(deadline) {
 			return fmt.Errorf("Daytona sandbox %s did not start within %s (last state %s)", name, waitTimeout, state)
 		}
-		waitSleep(waitEvery)
+		if err := w.sleep(ctx, waitEvery); err != nil {
+			return err
+		}
 	}
 }
 
-func resolveTarget(ctx context.Context, target, daytonaConfig string, client *http.Client) (Dest, error) {
+func resolveTarget(ctx context.Context, target, daytonaConfig string, client *http.Client, w waiter) (Dest, error) {
 	name, ok := strings.CutPrefix(target, "daytona:")
 	if !ok {
 		return Dest{SSH: target}, nil
@@ -174,7 +203,7 @@ func resolveTarget(ctx context.Context, target, daytonaConfig string, client *ht
 	if err != nil {
 		return Dest{}, err
 	}
-	if err := auth.waitStarted(ctx, client, id, name, os.Stderr); err != nil {
+	if err := auth.waitStarted(ctx, client, id, name, w); err != nil {
 		return Dest{}, err
 	}
 	var access struct {

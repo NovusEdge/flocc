@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
 )
@@ -133,7 +134,7 @@ func Main(args []string) int {
 		return 2
 	}
 	home, _ := os.UserHomeDir()
-	dest, err := resolveTarget(ctx, fs.Arg(0), filepath.Join(home, ".config/daytona/config.json"), http.DefaultClient)
+	dest, err := resolveTarget(ctx, fs.Arg(0), filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
 	if err == nil {
 		err = ship(ctx, host.Exec{Log: redact{os.Stderr, dest.Token}}, root, dest, *answersIn, *skip)
 	}

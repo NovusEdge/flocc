@@ -3,6 +3,7 @@ package ship
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -119,7 +120,7 @@ func TestPlanPluginsBundlesPrivateAndSkipsDisabled(t *testing.T) {
 }
 
 func TestResolveTargetPlainIsPassedThrough(t *testing.T) {
-	d, err := resolveTarget(context.Background(), "la-smoke", "/none", nil)
+	d, err := resolveTarget(context.Background(), "la-smoke", "/none", nil, waiter{})
 	if err != nil || d.SSH != "la-smoke" || len(d.Opts) != 0 {
 		t.Fatalf("%+v %v", d, err)
 	}
@@ -139,8 +140,13 @@ func daytonaFake(t *testing.T, states ...string) (cfg string, srv *httptest.Serv
 		case r.Method == "GET" && r.URL.Path == "/api/sandbox/la-smoke":
 			json.NewEncoder(w).Encode(map[string]string{"id": "sb1", "state": states[0]})
 		case r.Method == "GET" && r.URL.Path == "/api/sandbox/sb1":
-			json.NewEncoder(w).Encode(map[string]string{"state": states[min(*polls, len(states)-1)]})
+			st := states[min(*polls, len(states)-1)]
 			*polls++
+			if st == "401" {
+				w.WriteHeader(401)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"state": st})
 		case r.Method == "POST" && r.URL.Path == "/api/sandbox/sb1/ssh-access" && r.URL.Query().Get("expiresInMinutes") == "60":
 			*tokens++
 			json.NewEncoder(w).Encode(map[string]string{"token": "tok", "sshCommand": "ssh tok@ssh.example.test"})
@@ -156,61 +162,97 @@ func daytonaFake(t *testing.T, states ...string) (cfg string, srv *httptest.Serv
 	return cfg, srv, polls, tokens
 }
 
-// fakeClock replaces the wait sleep and clock; the returned count is the sleeps taken.
-func fakeClock(t *testing.T) *int {
-	t.Helper()
-	oldSleep, oldNow := waitSleep, waitNow
-	t.Cleanup(func() { waitSleep, waitNow = oldSleep, oldNow })
+// fakeWaiter has a clock that only the sleep advances; sleeps counts them and progress collects the log.
+func fakeWaiter() (w waiter, sleeps *int, progress *strings.Builder) {
 	var elapsed time.Duration
-	sleeps := new(int)
-	waitSleep = func(d time.Duration) { elapsed += d; *sleeps++ }
-	waitNow = func() time.Time { return time.Unix(0, 0).Add(elapsed) }
-	return sleeps
+	sleeps, progress = new(int), new(strings.Builder)
+	return waiter{
+		sleep: func(ctx context.Context, d time.Duration) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			elapsed += d
+			*sleeps++
+			return nil
+		},
+		now: func() time.Time { return time.Unix(0, 0).Add(elapsed) },
+		log: progress,
+	}, sleeps, progress
 }
 
 func TestResolveTargetDaytonaGetsAToken(t *testing.T) {
-	sleeps := fakeClock(t)
+	w, sleeps, progress := fakeWaiter()
 	cfg, srv, _, tokens := daytonaFake(t, "started")
-	d, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
-	if err != nil || d.SSH != "tok@ssh.example.test" || d.Token != "tok" || *tokens != 1 || *sleeps != 0 {
+	d, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w)
+	if err != nil || d.SSH != "tok@ssh.example.test" || d.Token != "tok" || *tokens != 1 || *sleeps != 0 || progress.Len() != 0 {
 		t.Fatalf("%+v %v", d, err)
 	}
 }
 
 func TestResolveTargetDaytonaWaitsForStarted(t *testing.T) {
-	sleeps := fakeClock(t)
-	cfg, srv, polls, tokens := daytonaFake(t, "CREATING", "creating", "STARTED")
-	if _, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client()); err != nil {
+	w, sleeps, progress := fakeWaiter()
+	cfg, srv, polls, tokens := daytonaFake(t, "CREATING", "creating", "PULLING_SNAPSHOT", "STARTED")
+	if _, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w); err != nil {
 		t.Fatal(err)
 	}
-	if *polls != 3 || *sleeps != 2 || *tokens != 1 {
+	if *polls != 4 || *sleeps != 3 || *tokens != 1 {
 		t.Fatalf("polls %d sleeps %d tokens %d", *polls, *sleeps, *tokens)
 	}
-}
-
-func TestResolveTargetDaytonaStoppedFailsAtOnce(t *testing.T) {
-	sleeps := fakeClock(t)
-	cfg, srv, _, tokens := daytonaFake(t, "STOPPED")
-	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
-	if err == nil || !strings.Contains(err.Error(), "daytona start la-smoke") || *tokens != 0 || *sleeps != 0 {
-		t.Fatalf("%v tokens %d", err, *tokens)
+	want := "ship: waiting for Daytona sandbox la-smoke (state creating)\nship: waiting for Daytona sandbox la-smoke (state pulling_snapshot)\n"
+	if progress.String() != want {
+		t.Fatalf("%q", progress.String())
 	}
 }
 
-func TestResolveTargetDaytonaFailedStateFails(t *testing.T) {
-	fakeClock(t)
-	cfg, srv, _, _ := daytonaFake(t, "build_failed")
-	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
-	if err == nil || !strings.Contains(err.Error(), "build_failed") {
-		t.Fatalf("%v", err)
+func TestResolveTargetDaytonaFailsAtOnce(t *testing.T) {
+	for state, want := range map[string]string{
+		"STOPPED":      "daytona start la-smoke",
+		"archived":     "daytona start la-smoke",
+		"destroying":   "being deleted; create it again with daytona create",
+		"destroyed":    "was deleted; create it again with daytona create",
+		"build_failed": "build_failed",
+		"error":        "state error",
+		"":             "no state field",
+	} {
+		w, sleeps, _ := fakeWaiter()
+		cfg, srv, _, tokens := daytonaFake(t, state)
+		_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w)
+		if err == nil || !strings.Contains(err.Error(), want) || *tokens != 0 || *sleeps != 0 {
+			t.Errorf("%q: %v tokens %d sleeps %d", state, err, *tokens, *sleeps)
+		}
 	}
 }
 
 func TestResolveTargetDaytonaWaitTimesOut(t *testing.T) {
-	fakeClock(t)
+	w, _, progress := fakeWaiter()
+	cfg, srv, polls, tokens := daytonaFake(t, "creating")
+	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w)
+	if err == nil || !strings.Contains(err.Error(), "last state creating") || *tokens != 0 || *polls != 60 {
+		t.Fatalf("%v polls %d", err, *polls)
+	}
+	if strings.Count(progress.String(), "\n") != 1 {
+		t.Fatalf("%q", progress.String())
+	}
+}
+
+func TestResolveTargetDaytonaWaitStopsOnCancel(t *testing.T) {
+	w, _, _ := fakeWaiter()
+	ctx, cancel := context.WithCancel(context.Background())
 	cfg, srv, _, tokens := daytonaFake(t, "creating")
-	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
-	if err == nil || !strings.Contains(err.Error(), "creating") || *tokens != 0 {
+	// Cancel from inside the first sleep so the HTTP calls before it still succeed.
+	real := w.sleep
+	w.sleep = func(c context.Context, d time.Duration) error { cancel(); return real(c, d) }
+	_, err := resolveTarget(ctx, "daytona:la-smoke", cfg, srv.Client(), w)
+	if !errors.Is(err, context.Canceled) || *tokens != 0 {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestResolveTargetDaytonaRefusedLoginWhilePolling(t *testing.T) {
+	w, _, _ := fakeWaiter()
+	cfg, srv, _, tokens := daytonaFake(t, "creating", "401")
+	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w)
+	if err == nil || !strings.Contains(err.Error(), "daytona list to refresh") || *tokens != 0 {
 		t.Fatalf("%v", err)
 	}
 }
