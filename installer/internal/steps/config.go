@@ -131,7 +131,7 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	}
 	var found []answers.Repo
 	if !e.SkipInteractive {
-		repos, maybeEmpty, err := e.discoverRepos(ctx)
+		repos, maybeEmpty, dropped, err := e.discoverRepos(ctx)
 		if err != nil || len(repos) == 0 {
 			why := "The token sees no usable repos."
 			if err != nil {
@@ -140,6 +140,10 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 			e.UI.Note("Could not list the repos the agent token can see", "Enter each repo by URL instead.\n\n"+why)
 		} else {
 			var skipped []string
+			if len(dropped) > 0 {
+				e.UI.Note("Some owners are not listed",
+					"Not listed: repos of "+strings.Join(dropped, ", ")+", which the token can see only publicly. Add any you want by URL.")
+			}
 			found, skipped = MergeRepos(repos, a.Repos)
 			if len(skipped) > 0 {
 				e.UI.Note("Skipped repos whose name another repo already has",

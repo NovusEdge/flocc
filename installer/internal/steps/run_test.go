@@ -23,13 +23,13 @@ func TestRunLoopModeStartsTmuxBeforeDoctor(t *testing.T) {
 	f := host.NewFake().
 		On("tmux -L linear-agents new-session -d -s la-loop sleep infinity", 0, "").
 		On(doctorCmd, 0, "ok    tmux: server on socket linear-agents\n").
-		On("tmux -L linear-agents respawn-pane -k -t =la-loop "+loopCommand("/home/linear-agents"), 0, "")
+		On("tmux -L linear-agents respawn-pane -k -t =la-loop: "+loopCommand("/home/linear-agents"), 0, "")
 	e := testEnv(t, f)
 	e.Mode = Loop
 	if err := (Run{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop " + loopCommand("/home/linear-agents")) {
+	if !f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop: " + loopCommand("/home/linear-agents")) {
 		t.Fatal("never started ticking")
 	}
 	start, doc := -1, -1
@@ -56,7 +56,7 @@ func TestRunStopsOnDoctorFailLines(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "2 FAIL lines") {
 		t.Fatalf("err=%v", err)
 	}
-	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop " + loopCommand("/home/linear-agents")) {
+	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop: " + loopCommand("/home/linear-agents")) {
 		t.Fatal("started ticking despite FAIL lines")
 	}
 }
@@ -71,7 +71,7 @@ func TestRunDeclineIsErrStopped(t *testing.T) {
 	if err := (Run{}).Apply(context.Background(), e); !errors.Is(err, ErrStopped) {
 		t.Fatalf("err=%v", err)
 	}
-	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop " + loopCommand("/home/linear-agents")) {
+	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop: " + loopCommand("/home/linear-agents")) {
 		t.Fatal("started ticking after decline")
 	}
 }
@@ -86,7 +86,7 @@ func TestRunRefusesWhenDoctorDoesNotRun(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "did not run cleanly") {
 		t.Fatalf("err=%v", err)
 	}
-	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop " + loopCommand("/home/linear-agents")) {
+	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop: " + loopCommand("/home/linear-agents")) {
 		t.Fatal("started ticking on a broken doctor")
 	}
 }
