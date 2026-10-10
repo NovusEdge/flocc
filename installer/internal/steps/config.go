@@ -127,7 +127,12 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 		if err != nil || len(repos) == 0 {
 			e.UI.Note("Could not list the repos the agent token can see", "Enter each repo by URL instead.")
 		} else {
-			found = MergeRepos(repos, a.Repos)
+			var skipped []string
+			found, skipped = MergeRepos(repos, a.Repos)
+			if len(skipped) > 0 {
+				e.UI.Note("Skipped repos whose name another repo already has",
+					strings.Join(skipped, "\n")+"\nAdd one by URL and rename it if you want it mapped.")
+			}
 		}
 	}
 	if err := e.UI.ConfigForm(a, found); err != nil {

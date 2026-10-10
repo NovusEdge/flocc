@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"charm.land/huh/v2"
@@ -87,17 +88,17 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo) error {
 	if len(found) > 0 {
 		byURL := map[string]answers.Repo{}
 		opts := make([]huh.Option[string], len(found))
-		urls := make([]string, len(found))
+		urls := answers.Preselected(found, a.ExcludedRepos)
 		for i, r := range found {
 			byURL[r.URL] = r
-			urls[i] = r.URL
-			opts[i] = huh.NewOption(r.Name, r.URL).Selected(true)
+			opts[i] = huh.NewOption(r.Name, r.URL).Selected(slices.Contains(urls, r.URL))
 		}
 		if err := huh.NewForm(huh.NewGroup(huh.NewMultiSelect[string]().
 			Title("Repos agents may work on").Description("Untick to exclude.").
 			Options(opts...).Value(&urls))).Run(); err != nil {
 			return err
 		}
+		a.ExcludedRepos = answers.UpdateExcluded(a.ExcludedRepos, found, urls)
 		a.Repos = nil
 		for _, u := range urls {
 			a.Repos = append(a.Repos, byURL[u])

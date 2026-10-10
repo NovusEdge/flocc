@@ -30,8 +30,16 @@ func TestParseReposReadsConcatenatedPagesAndSkipsArchived(t *testing.T) {
 func TestMergeReposKeepsSavedValuesAndUnseenSavedRepos(t *testing.T) {
 	found := []answers.Repo{{Name: "a", URL: "u/a", BaseBranch: "main"}, {Name: "b", URL: "u/b", BaseBranch: "main"}}
 	saved := []answers.Repo{{Name: "label-a", URL: "u/a", BaseBranch: "dev"}, {Name: "c", URL: "u/c"}, {}}
-	got := MergeRepos(found, saved)
-	if len(got) != 3 || got[0].Name != "label-a" || got[1].Name != "b" || got[2].Name != "c" {
-		t.Fatalf("%+v", got)
+	got, skipped := MergeRepos(found, saved)
+	if len(got) != 3 || got[0].Name != "label-a" || got[1].Name != "b" || got[2].Name != "c" || len(skipped) != 0 {
+		t.Fatalf("%+v %v", got, skipped)
+	}
+}
+
+func TestMergeReposKeepsTheFirstOfTwoReposWithOneName(t *testing.T) {
+	found := []answers.Repo{{Name: "api", URL: "https://github.com/o1/api"}, {Name: "api", URL: "https://github.com/o2/api"}}
+	got, skipped := MergeRepos(found, nil)
+	if len(got) != 1 || got[0].URL != "https://github.com/o1/api" || !slices.Equal(skipped, []string{"https://github.com/o2/api"}) {
+		t.Fatalf("%+v %v", got, skipped)
 	}
 }

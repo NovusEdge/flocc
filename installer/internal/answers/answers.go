@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -32,6 +33,36 @@ func NameFromURL(u string) string {
 	return strings.TrimSuffix(path.Base(strings.TrimSuffix(u, "/")), ".git")
 }
 
+// Preselected is the URLs of found repos whose names are not excluded.
+func Preselected(found []Repo, excluded []string) []string {
+	var urls []string
+	for _, r := range found {
+		if !slices.Contains(excluded, r.Name) {
+			urls = append(urls, r.URL)
+		}
+	}
+	return urls
+}
+
+// UpdateExcluded returns the excluded names after the user ticked chosen URLs among found:
+// unticked found repos join, re-ticked ones leave, names not offered this time stay.
+func UpdateExcluded(excluded []string, found []Repo, chosen []string) []string {
+	offered := map[string]bool{}
+	var out []string
+	for _, r := range found {
+		offered[r.Name] = true
+		if !slices.Contains(chosen, r.URL) {
+			out = append(out, r.Name)
+		}
+	}
+	for _, n := range excluded {
+		if !offered[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 type Secrets struct {
 	LinearKey    string `toml:"linear_key"`
 	AgentToken   string `toml:"agent_token"`
@@ -44,6 +75,9 @@ type Answers struct {
 	DigestIssue string `toml:"digest_issue,omitempty"`
 	NtfyTopic   string `toml:"ntfy_topic,omitempty"`
 	Repos       []Repo `toml:"repos,omitempty"`
+	// Names of discovered repos the user unticked, so a rerun does not tick them again
+	// while repos created since still arrive ticked.
+	ExcludedRepos []string `toml:"excluded_repos,omitempty"`
 	// Read only from an --answers file, for runs without a terminal; Save drops it.
 	Secrets *Secrets `toml:"secrets,omitempty"`
 }
@@ -89,6 +123,9 @@ func (a *Answers) Overlay(o *Answers) {
 	}
 	if len(o.Repos) > 0 {
 		a.Repos = o.Repos
+	}
+	if len(o.ExcludedRepos) > 0 {
+		a.ExcludedRepos = o.ExcludedRepos
 	}
 	if o.Secrets != nil {
 		a.Secrets = o.Secrets

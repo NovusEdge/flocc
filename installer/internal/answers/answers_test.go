@@ -3,9 +3,37 @@ package answers
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestExclusionsRoundTripAndDriveThePreselection(t *testing.T) {
+	found := []Repo{{Name: "a", URL: "u/a"}, {Name: "b", URL: "u/b"}}
+	excluded := UpdateExcluded(nil, found, []string{"u/a"})
+	if !slices.Equal(excluded, []string{"b"}) {
+		t.Fatalf("%v", excluded)
+	}
+	p := filepath.Join(t.TempDir(), "answers.toml")
+	if err := (&Answers{ExcludedRepos: excluded}).Save(p); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &Answers{}
+	o.Overlay(saved)
+	// c was created after the exclusion, so it arrives ticked.
+	later := append(found, Repo{Name: "c", URL: "u/c"})
+	if got := Preselected(later, o.ExcludedRepos); !slices.Equal(got, []string{"u/a", "u/c"}) {
+		t.Fatalf("%v", got)
+	}
+	// Re-ticking b removes it; a name not offered this time stays excluded.
+	if got := UpdateExcluded([]string{"b", "gone"}, found, []string{"u/a", "u/b"}); !slices.Equal(got, []string{"gone"}) {
+		t.Fatalf("%v", got)
+	}
+}
 
 func TestNameFromURL(t *testing.T) {
 	for u, want := range map[string]string{

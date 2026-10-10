@@ -43,25 +43,34 @@ func ParseRepos(b []byte) ([]answers.Repo, error) {
 }
 
 // MergeRepos puts saved answers over discovered repos with the same URL and keeps saved
-// repos the token cannot see, such as ones added by URL.
-func MergeRepos(found, saved []answers.Repo) []answers.Repo {
-	out := make([]answers.Repo, 0, len(found))
-	seen := map[string]bool{}
+// repos the token cannot see, such as ones added by URL. Names become config keys and Linear
+// labels, so of two repos with one name (different owners) the first stays and the second's
+// URL is returned in skipped.
+func MergeRepos(found, saved []answers.Repo) (out []answers.Repo, skipped []string) {
+	urls, names := map[string]bool{}, map[string]bool{}
+	add := func(r answers.Repo) {
+		urls[r.URL] = true
+		if names[r.Name] {
+			skipped = append(skipped, r.URL)
+			return
+		}
+		names[r.Name] = true
+		out = append(out, r)
+	}
 	for _, f := range found {
 		for _, s := range saved {
 			if s.URL == f.URL {
 				f = s
 			}
 		}
-		seen[f.URL] = true
-		out = append(out, f)
+		add(f)
 	}
 	for _, s := range saved {
-		if s.URL != "" && !seen[s.URL] {
-			out = append(out, s)
+		if s.URL != "" && !urls[s.URL] {
+			add(s)
 		}
 	}
-	return out
+	return out, skipped
 }
 
 func (e *Env) discoverRepos(ctx context.Context) ([]answers.Repo, error) {
