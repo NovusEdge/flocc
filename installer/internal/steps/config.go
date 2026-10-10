@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/NovusEdge/linear-agents/deploy"
@@ -99,6 +100,7 @@ func validate(a *answers.Answers) error {
 	if a.TeamKey == "" || a.DigestIssue == "" || len(a.Repos) == 0 {
 		return errors.New("team key, digest issue and at least one repo are required")
 	}
+	names, urls := map[string]bool{}, map[string]bool{}
 	for _, r := range a.Repos {
 		if !repoName.MatchString(r.Name) || r.Name == "." || r.Name == ".." {
 			return fmt.Errorf("repo name %q: use letters, digits, '.', '_' or '-', matching its Linear label", r.Name)
@@ -106,6 +108,12 @@ func validate(a *answers.Answers) error {
 		if !answers.ValidGitHubURL(r.URL) {
 			return fmt.Errorf("repo %s: %q is not an https://github.com/<owner>/<repo> URL", r.Name, r.URL)
 		}
+		// Names are config keys and clone directories, so a repeat would silently replace the first.
+		u := answers.NormalizeURL(r.URL)
+		if names[r.Name] || urls[u] {
+			return fmt.Errorf("repo %s (%s) is mapped twice", r.Name, r.URL)
+		}
+		names[r.Name], urls[u] = true, true
 	}
 	return nil
 }
@@ -123,15 +131,30 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	}
 	var found []answers.Repo
 	if !e.SkipInteractive {
-		repos, err := e.discoverRepos(ctx)
+		repos, maybeEmpty, err := e.discoverRepos(ctx)
 		if err != nil || len(repos) == 0 {
-			e.UI.Note("Could not list the repos the agent token can see", "Enter each repo by URL instead.")
+			why := "The token sees no usable repos."
+			if err != nil {
+				why = err.Error()
+			}
+			e.UI.Note("Could not list the repos the agent token can see", "Enter each repo by URL instead.\n\n"+why)
 		} else {
 			var skipped []string
 			found, skipped = MergeRepos(repos, a.Repos)
 			if len(skipped) > 0 {
 				e.UI.Note("Skipped repos whose name another repo already has",
 					strings.Join(skipped, "\n")+"\nAdd one by URL and rename it if you want it mapped.")
+			}
+			// Left unticked unless already mapped; ticking one in the form removes the exclusion.
+			var empty []string
+			for _, u := range maybeEmpty {
+				if !slices.ContainsFunc(a.Repos, func(r answers.Repo) bool { return answers.SameURL(r.URL, u) }) {
+					a.ExcludedRepos = answers.Exclude(a.ExcludedRepos, u)
+					empty = append(empty, u)
+				}
+			}
+			if len(empty) > 0 {
+				e.UI.Note("These repos may be empty; the clone fails if so", strings.Join(empty, "\n"))
 			}
 		}
 	}

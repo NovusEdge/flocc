@@ -33,34 +33,65 @@ func NameFromURL(u string) string {
 	return strings.TrimSuffix(path.Base(strings.TrimSuffix(u, "/")), ".git")
 }
 
+// NormalizeURL is the form every URL comparison uses: lowercase, no ".git", no trailing
+// slash. GitHub ignores case, and discovery's html_url, saved answers and typed URLs
+// differ in all three. A string that is not a GitHub repo URL is only trimmed.
+func NormalizeURL(u string) string {
+	u = strings.TrimSpace(u)
+	if !ValidGitHubURL(u) {
+		return u
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git"))
+}
+
+// SameURL reports whether a and b name the same repo.
+func SameURL(a, b string) bool { return NormalizeURL(a) == NormalizeURL(b) }
+
+func containsURL(list []string, u string) bool {
+	return slices.ContainsFunc(list, func(x string) bool { return SameURL(x, u) })
+}
+
 // Preselected is the URLs of found repos that are not excluded.
 func Preselected(found []Repo, excluded []string) []string {
 	var urls []string
 	for _, r := range found {
-		if !slices.Contains(excluded, r.URL) {
+		if !containsURL(excluded, r.URL) {
 			urls = append(urls, r.URL)
 		}
 	}
 	return urls
 }
 
-// UpdateExcluded returns the excluded URLs after the user ticked chosen among found:
-// unticked found repos join, re-ticked ones leave, URLs not offered this time stay.
+// UpdateExcluded returns the excluded URLs, normalized, after the user ticked chosen among
+// found: unticked found repos join, re-ticked ones leave, URLs not offered this time stay.
 func UpdateExcluded(excluded []string, found []Repo, chosen []string) []string {
 	offered := map[string]bool{}
 	var out []string
 	for _, r := range found {
-		offered[r.URL] = true
-		if !slices.Contains(chosen, r.URL) {
-			out = append(out, r.URL)
+		offered[NormalizeURL(r.URL)] = true
+		if !containsURL(chosen, r.URL) {
+			out = append(out, NormalizeURL(r.URL))
 		}
 	}
 	for _, u := range excluded {
-		if !offered[u] {
-			out = append(out, u)
+		if !offered[NormalizeURL(u)] {
+			out = append(out, NormalizeURL(u))
 		}
 	}
 	return out
+}
+
+// Include removes u from excluded.
+func Include(excluded []string, u string) []string {
+	return slices.DeleteFunc(slices.Clone(excluded), func(x string) bool { return SameURL(x, u) })
+}
+
+// Exclude adds u to excluded unless it is already there.
+func Exclude(excluded []string, u string) []string {
+	if containsURL(excluded, u) {
+		return excluded
+	}
+	return append(slices.Clone(excluded), NormalizeURL(u))
 }
 
 type Secrets struct {
@@ -76,7 +107,8 @@ type Answers struct {
 	NtfyTopic   string `toml:"ntfy_topic,omitempty"`
 	Repos       []Repo `toml:"repos,omitempty"`
 	// URLs of discovered repos the user unticked, so a rerun does not tick them again
-	// while repos created since still arrive ticked.
+	// while repos created since still arrive ticked. A GitHub rename or transfer changes the
+	// URL, so the repo comes back ticked.
 	ExcludedRepos []string `toml:"excluded_repos,omitempty"`
 	// Read only from an --answers file, for runs without a terminal; Save drops it.
 	Secrets *Secrets `toml:"secrets,omitempty"`

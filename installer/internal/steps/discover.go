@@ -14,23 +14,26 @@ import (
 )
 
 // ParseRepos reads the output of `gh api --paginate`, which is one JSON array per page,
-// concatenated. Archived and disabled repos are dropped, and so are empty ones (size 0, no
-// commits) and any without a default branch: none of them can be cloned and checked out.
-func ParseRepos(b []byte) ([]answers.Repo, error) {
-	var repos []answers.Repo
+// concatenated. Archived and disabled repos and any without a default branch are dropped:
+// none can be cloned and checked out. Repos with size 0 are kept, since the API also reports
+// 0 for small or new repos, but their URLs come back in maybeEmpty so the caller can warn.
+func ParseRepos(b []byte) (repos []answers.Repo, maybeEmpty []string, err error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	for {
 		var page []apiRepo
 		if err := dec.Decode(&page); errors.Is(err, io.EOF) {
-			return repos, nil
+			return repos, maybeEmpty, nil
 		} else if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, r := range page {
-			if r.Archived || r.Disabled || r.Size == 0 || r.DefaultBranch == "" {
+			if r.Archived || r.Disabled || r.DefaultBranch == "" {
 				continue
 			}
 			repos = append(repos, r.repo())
+			if r.Size == 0 {
+				maybeEmpty = append(maybeEmpty, r.HTMLURL)
+			}
 		}
 	}
 }
@@ -67,7 +70,7 @@ func ParseRepoDefaults(b []byte) (base string, draft bool) {
 func MergeRepos(found, saved []answers.Repo) (out []answers.Repo, skipped []string) {
 	urls, names := map[string]bool{}, map[string]bool{}
 	add := func(r answers.Repo) {
-		urls[r.URL] = true
+		urls[answers.NormalizeURL(r.URL)] = true
 		if names[r.Name] {
 			skipped = append(skipped, r.URL)
 			return
@@ -77,14 +80,14 @@ func MergeRepos(found, saved []answers.Repo) (out []answers.Repo, skipped []stri
 	}
 	for _, f := range found {
 		for _, s := range saved {
-			if s.URL == f.URL {
+			if answers.SameURL(s.URL, f.URL) {
 				f = s
 			}
 		}
 		add(f)
 	}
 	for _, s := range saved {
-		if s.URL != "" && !urls[s.URL] {
+		if s.URL != "" && !urls[answers.NormalizeURL(s.URL)] {
 			add(s)
 		}
 	}
@@ -101,10 +104,10 @@ func (e *Env) ghAPI(ctx context.Context, args ...string) (string, error) {
 		Args: append([]string{"api"}, args...)})
 }
 
-func (e *Env) discoverRepos(ctx context.Context) ([]answers.Repo, error) {
+func (e *Env) discoverRepos(ctx context.Context) ([]answers.Repo, []string, error) {
 	out, err := e.ghAPI(ctx, "--paginate", "/user/repos?per_page=100&affiliation=owner,collaborator,organization_member")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return ParseRepos([]byte(out))
 }

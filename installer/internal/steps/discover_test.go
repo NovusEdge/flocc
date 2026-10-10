@@ -15,19 +15,44 @@ func TestParseReposReadsConcatenatedPagesAndSkipsArchived(t *testing.T) {
 {"name":"nobranch","html_url":"https://github.com/o/nobranch","default_branch":null,"size":5},
 {"name":"blank","html_url":"https://github.com/o/blank","default_branch":"","size":5}]
 [{"name":"b","html_url":"https://github.com/o/b","default_branch":"main","private":true,"size":1}]`
-	got, err := ParseRepos([]byte(out))
+	got, maybeEmpty, err := ParseRepos([]byte(out))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []answers.Repo{
 		{Name: "a", URL: "https://github.com/o/a", BaseBranch: "trunk", Check: "just check", Draft: true},
+		{Name: "empty", URL: "https://github.com/o/empty", BaseBranch: "main", Check: "just check", Draft: true},
 		{Name: "b", URL: "https://github.com/o/b", BaseBranch: "main", Check: "just check", Draft: false},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("%+v", got)
 	}
-	if _, err := ParseRepos([]byte(`{"message":"Bad credentials"}`)); err == nil {
+	if !slices.Equal(maybeEmpty, []string{"https://github.com/o/empty"}) {
+		t.Fatalf("%v", maybeEmpty)
+	}
+	if _, _, err := ParseRepos([]byte(`{"message":"Bad credentials"}`)); err == nil {
 		t.Fatal("an error object is not a repo list")
+	}
+}
+
+func TestValidateRejectsDuplicateNamesAndURLs(t *testing.T) {
+	r := func(name, url string) answers.Repo { return answers.Repo{Name: name, URL: url} }
+	for _, repos := range [][]answers.Repo{
+		{r("a", "https://github.com/o/a"), r("a", "https://github.com/p/a")},
+		{r("a", "https://github.com/o/a"), r("b", "https://github.com/O/A.git")},
+	} {
+		if validate(&answers.Answers{TeamKey: "NF", DigestIssue: "NF-1", Repos: repos}) == nil {
+			t.Errorf("%+v passed", repos)
+		}
+	}
+}
+
+func TestMergeReposMatchesURLsAcrossSpellings(t *testing.T) {
+	found := []answers.Repo{{Name: "r", URL: "https://github.com/O/R", BaseBranch: "main"}}
+	saved := []answers.Repo{{Name: "label", URL: "https://github.com/o/r", BaseBranch: "dev"}}
+	got, _ := MergeRepos(found, saved)
+	if len(got) != 1 || got[0].Name != "label" {
+		t.Fatalf("%+v", got)
 	}
 }
 

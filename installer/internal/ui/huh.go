@@ -140,9 +140,10 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(u
 			}
 			a.Repos = append(a.Repos, answers.Repo{BaseBranch: "main", Check: "just check", Draft: true})
 		}
-		if err := editRepo(&a.Repos[i], i, defaults); err != nil {
+		if err := editRepo(a.Repos, i, defaults); err != nil {
 			return err
 		}
+		a.ExcludedRepos = answers.Include(a.ExcludedRepos, a.Repos[i].URL)
 	}
 }
 
@@ -150,7 +151,8 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(u
 // ls-remoted by doctor on each run.
 const maxRepos = 30
 
-func editRepo(r *answers.Repo, i int, defaults func(url string) (string, bool)) error {
+func editRepo(repos []answers.Repo, i int, defaults func(url string) (string, bool)) error {
+	r := &repos[i]
 	prevURL := r.URL
 	if err := huh.NewForm(huh.NewGroup(
 		huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
@@ -159,6 +161,11 @@ func editRepo(r *answers.Repo, i int, defaults func(url string) (string, bool)) 
 				if !answers.ValidGitHubURL(s) {
 					return errors.New("use https://github.com/<owner>/<repo>")
 				}
+				for j, o := range repos {
+					if j != i && answers.SameURL(o.URL, s) {
+						return errors.New("already mapped as " + o.Name)
+					}
+				}
 				return nil
 			}),
 	)).Run(); err != nil {
@@ -166,7 +173,9 @@ func editRepo(r *answers.Repo, i int, defaults func(url string) (string, bool)) 
 	}
 	// A saved name may be a Linear label that differs from the repo name, so keep it while the URL stands.
 	if r.Name == "" || r.URL != prevURL {
+		// Taken before normalizing, which lowercases.
 		r.Name = answers.NameFromURL(r.URL)
+		r.URL = answers.NormalizeURL(r.URL)
 	}
 	if prevURL == "" {
 		r.BaseBranch, r.Draft = defaults(r.URL)
