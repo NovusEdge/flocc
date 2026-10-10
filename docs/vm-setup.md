@@ -55,9 +55,9 @@ daytona stop la-smoke
   system directories, add them to `Environment=PATH` in `deploy/linear-agents.service` and to
   `loopCommand` in `installer/internal/steps/run.go`.
 
-Watch it with `journalctl --user -u linear-agents -f` (systemd mode) or
-`tail -f ~/.local/state/linear-agents/run.log` (loop mode), and attach to a session with
-`tmux -L linear-agents attach -t NF-123`.
+Watch it from the desktop with `just status <target>` (sessions, last log lines, timer),
+`just logs <target>` (the journal in systemd mode, `run.log` in loop mode) and
+`just attach <target> NF-123` (read-only tmux).
 
 ## Upgrading
 
