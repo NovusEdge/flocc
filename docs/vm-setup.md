@@ -42,9 +42,10 @@ daytona stop la-smoke
 
 ## What the installer cannot do
 
-- Linear: the labels `claude`, `escalation`, `needs-decision` and one per mapped repo (named
-  exactly as its `[repos.<name>]` key), and a pinned digest issue, must exist in the team.
-  Doctor checks them.
+- Linear: the labels `claude`, `escalation` and `needs-decision`, and a pinned digest issue,
+  must exist in the team. A label per mapped repo (named exactly as its `[repos.<name>]` key)
+  is optional: a repo without one is mapped but gets no issues. Doctor fails on the first
+  three and warns about missing repo labels.
 - GitHub tokens are made in the browser. The installer shows the permissions each needs next to
   its input.
 - In the Tailscale admin console, disable key expiry for the host; an untagged node's key

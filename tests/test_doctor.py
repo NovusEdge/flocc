@@ -106,8 +106,11 @@ class DoctorLinear:
 
 def test_linear_checks(tmp_cfg):
     assert [r.status for r in doctor.linear_checks(tmp_cfg, DoctorLinear())] == ["ok", "ok"]
-    labels = doctor.linear_checks(tmp_cfg, DoctorLinear(missing=["backend"]))[0]
-    assert labels.status == "fail" and "backend" in labels.detail
+    labels = doctor.linear_checks(tmp_cfg, DoctorLinear(missing=["escalation"]))[0]
+    assert labels.status == "fail" and "escalation" in labels.detail
+    results = doctor.linear_checks(tmp_cfg, DoctorLinear(missing=["backend"]))
+    assert [r.status for r in results] == ["ok", "warn", "ok"]
+    assert "backend" in results[1].detail and "never routed" in results[1].detail
     closed = doctor.linear_checks(tmp_cfg, DoctorLinear(digest_state="completed"))[1]
     assert closed.status == "warn"
     [down] = doctor.linear_checks(tmp_cfg, DoctorLinear(down=True))

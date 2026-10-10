@@ -20,7 +20,9 @@ type UI interface {
 	Text(title, def string) (string, error)
 	// Secret returns "" when the user leaves it empty.
 	Secret(id, title, help string) (string, error)
-	ConfigForm(a *answers.Answers) error
+	// found is every repo the agent token can see, already merged with saved answers;
+	// empty when discovery failed, which falls back to asking for each repo by URL.
+	ConfigForm(a *answers.Answers, found []answers.Repo) error
 	PickRedo(done []string) ([]string, error)
 	Spin(title string, fn func() error) error
 }
@@ -62,7 +64,7 @@ func (s *Scripted) Secret(id, _, _ string) (string, error) {
 	return "", fmt.Errorf("unknown secret %q", id)
 }
 
-func (s *Scripted) ConfigForm(a *answers.Answers) error {
+func (s *Scripted) ConfigForm(a *answers.Answers, _ []answers.Repo) error {
 	if a.TeamKey == "" || a.DigestIssue == "" || len(a.Repos) == 0 {
 		return errors.New("the answers file needs team_key, digest_issue and at least one [[repos]]")
 	}

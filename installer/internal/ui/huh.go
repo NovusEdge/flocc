@@ -75,7 +75,7 @@ func (*Huh) Spin(title string, fn func() error) error {
 	return err
 }
 
-func (*Huh) ConfigForm(a *answers.Answers) error {
+func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo) error {
 	if err := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Linear team key").Value(&a.TeamKey),
 		huh.NewInput().Title("Digest issue key").Description("The pinned issue tier 3 reports go to, such as NF-186.").Value(&a.DigestIssue),
@@ -83,50 +83,75 @@ func (*Huh) ConfigForm(a *answers.Answers) error {
 	)).Run(); err != nil {
 		return err
 	}
-	for i := 0; ; i++ {
+	start := 0
+	if len(found) > 0 {
+		byURL := map[string]answers.Repo{}
+		opts := make([]huh.Option[string], len(found))
+		urls := make([]string, len(found))
+		for i, r := range found {
+			byURL[r.URL] = r
+			urls[i] = r.URL
+			opts[i] = huh.NewOption(r.Name, r.URL).Selected(true)
+		}
+		if err := huh.NewForm(huh.NewGroup(huh.NewMultiSelect[string]().
+			Title("Repos agents may work on").Description("Untick to exclude.").
+			Options(opts...).Value(&urls))).Run(); err != nil {
+			return err
+		}
+		a.Repos = nil
+		for _, u := range urls {
+			a.Repos = append(a.Repos, byURL[u])
+		}
+		start = len(a.Repos)
+	}
+	for i := start; ; i++ {
 		if i == len(a.Repos) {
 			more := false
-			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Map another repo?").Value(&more))).Run(); err != nil || !more {
+			title := "Map another repo?"
+			if len(found) > 0 {
+				title = "Add another repo by URL?"
+			}
+			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(title).Value(&more))).Run(); err != nil || !more {
 				return err
 			}
 			a.Repos = append(a.Repos, answers.Repo{BaseBranch: "main", Check: "just check", Draft: true})
 		}
-		r := &a.Repos[i]
-		prevURL := r.URL
-		if err := huh.NewForm(huh.NewGroup(
-			huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
-			huh.NewInput().Title("GitHub URL").Description("https://github.com/<owner>/<repo>").Value(&r.URL).
-				Validate(func(s string) error {
-					if !answers.ValidGitHubURL(s) {
-						return errors.New("use https://github.com/<owner>/<repo>")
-					}
-					return nil
-				}),
-		)).Run(); err != nil {
-			return err
-		}
-		// A saved name may be a Linear label that differs from the repo name, so keep it while the URL stands.
-		if r.Name == "" || r.URL != prevURL {
-			r.Name = answers.NameFromURL(r.URL)
-		}
-		ok := true
-		if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
-			Title(fmt.Sprintf("Use name %s, base %s, check `%s`, draft PRs %s?", r.Name, r.BaseBranch, r.Check, yesNo(r.Draft))).
-			Description("The name must equal the repo's Linear label.").Value(&ok))).Run(); err != nil {
-			return err
-		}
-		if ok {
-			continue
-		}
-		if err := huh.NewForm(huh.NewGroup(
-			huh.NewInput().Title("Name").Description("Exactly the Linear label that routes issues to it.").Value(&r.Name),
-			huh.NewInput().Title("Base branch").Value(&r.BaseBranch),
-			huh.NewInput().Title("Check command").Value(&r.Check),
-			huh.NewConfirm().Title("Open draft PRs?").Description("Private repos of a GitHub Free organization cannot have drafts.").Value(&r.Draft),
-		)).Run(); err != nil {
+		if err := editRepo(&a.Repos[i], i); err != nil {
 			return err
 		}
 	}
+}
+
+func editRepo(r *answers.Repo, i int) error {
+	prevURL := r.URL
+	if err := huh.NewForm(huh.NewGroup(
+		huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
+		huh.NewInput().Title("GitHub URL").Description("https://github.com/<owner>/<repo>").Value(&r.URL).
+			Validate(func(s string) error {
+				if !answers.ValidGitHubURL(s) {
+					return errors.New("use https://github.com/<owner>/<repo>")
+				}
+				return nil
+			}),
+	)).Run(); err != nil {
+		return err
+	}
+	// A saved name may be a Linear label that differs from the repo name, so keep it while the URL stands.
+	if r.Name == "" || r.URL != prevURL {
+		r.Name = answers.NameFromURL(r.URL)
+	}
+	ok := true
+	if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+		Title(fmt.Sprintf("Use name %s, base %s, check `%s`, draft PRs %s?", r.Name, r.BaseBranch, r.Check, yesNo(r.Draft))).
+		Description("The name must equal the repo's Linear label.").Value(&ok))).Run(); err != nil || ok {
+		return err
+	}
+	return huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Name").Description("Exactly the Linear label that routes issues to it.").Value(&r.Name),
+		huh.NewInput().Title("Base branch").Value(&r.BaseBranch),
+		huh.NewInput().Title("Check command").Value(&r.Check),
+		huh.NewConfirm().Title("Open draft PRs?").Description("Private repos of a GitHub Free organization cannot have drafts.").Value(&r.Draft),
+	)).Run()
 }
 
 func yesNo(b bool) string {

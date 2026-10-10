@@ -134,12 +134,17 @@ def linear_checks(cfg: Config, linear) -> list[Result]:
         missing = linear.missing_labels(cfg.team_key, names)
     except LinearError as exc:
         return [Result("fail", "linear", str(exc))]
-    if missing:
+    required = [n for n in missing if n not in cfg.repos]
+    unrouted = [n for n in missing if n in cfg.repos]
+    if required:
         results = [
-            Result("fail", "linear labels", f"create on {cfg.team_key}: {', '.join(missing)}")
+            Result("fail", "linear labels", f"create on {cfg.team_key}: {', '.join(required)}")
         ]
     else:
-        results = [Result("ok", "linear labels", ", ".join(names))]
+        results = [Result("ok", "linear labels", ", ".join(n for n in names if n not in unrouted))]
+    if unrouted:
+        detail = f"no label on {cfg.team_key} for: {', '.join(unrouted)}; issues for them are never routed"
+        results.append(Result("warn", "repo labels", detail))
     try:
         digest = linear.issue(cfg.digest_issue)
     except LinearError as exc:

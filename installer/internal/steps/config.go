@@ -121,7 +121,16 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	if len(a.Repos) == 0 {
 		a.Repos = []answers.Repo{{BaseBranch: "main", Check: "just check", Draft: true}}
 	}
-	if err := e.UI.ConfigForm(a); err != nil {
+	var found []answers.Repo
+	if !e.SkipInteractive {
+		repos, err := e.discoverRepos(ctx)
+		if err != nil || len(repos) == 0 {
+			e.UI.Note("Could not list the repos the agent token can see", "Enter each repo by URL instead.")
+		} else {
+			found = MergeRepos(repos, a.Repos)
+		}
+	}
+	if err := e.UI.ConfigForm(a, found); err != nil {
 		return err
 	}
 	// Saved before validating, so a typo does not discard everything typed.
