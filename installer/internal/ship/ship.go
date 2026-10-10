@@ -35,7 +35,15 @@ func sshCmd(d Dest, tty bool, remote string) host.Cmd {
 
 func ghPrivate(repo string) (bool, error) {
 	out, err := exec.Command("gh", "repo", "view", repo, "--json", "visibility", "-q", ".visibility").Output()
-	return strings.TrimSpace(string(out)) == "PRIVATE", err
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return false, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+		}
+		return false, err
+	}
+	// Internal repos need the same credentials as private ones, so only PUBLIC ships by reference.
+	return strings.TrimSpace(string(out)) != "PUBLIC", nil
 }
 
 func claudeConfigDir() string {
@@ -47,7 +55,7 @@ func claudeConfigDir() string {
 }
 
 // stageFiles writes the host binary for arch, the bundles and plugins.json into dir.
-func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn string) error {
+func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn, configDir string, private func(string) (bool, error)) error {
 	bin, err := os.ReadFile(filepath.Join(root, "build", "la-setup-linux-"+arch))
 	if err != nil {
 		return fmt.Errorf("%w; run just build-setup", err)
@@ -58,7 +66,7 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn s
 	if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "linear-agents.bundle"), "HEAD"}}); err != nil {
 		return err
 	}
-	plan, err := planPlugins(claudeConfigDir(), ghPrivate)
+	plan, err := planPlugins(configDir, private)
 	if err != nil {
 		return err
 	}
@@ -110,7 +118,7 @@ func Main(args []string) int {
 	root := strings.TrimSpace(rootOut)
 	if *stageOnly != "" {
 		if err := os.MkdirAll(*stageOnly, 0o755); err == nil {
-			err = stageFiles(ctx, r, root, *stageOnly, "amd64", *answersIn)
+			err = stageFiles(ctx, r, root, *stageOnly, "amd64", *answersIn, claudeConfigDir(), ghPrivate)
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ship:", err)
@@ -122,7 +130,12 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: la-setup ship [--skip-interactive] [--answers FILE] <ssh-target|daytona:SANDBOX>")
 		return 2
 	}
-	if err := ship(ctx, root, fs.Arg(0), *answersIn, *skip); err != nil {
+	home, _ := os.UserHomeDir()
+	dest, err := resolveTarget(ctx, fs.Arg(0), filepath.Join(home, ".config/daytona/config.json"), http.DefaultClient)
+	if err == nil {
+		err = ship(ctx, host.Exec{Log: redact{os.Stderr, dest.Token}}, root, dest, *answersIn, *skip)
+	}
+	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return exit.ExitCode() // the host already reported its error
@@ -133,13 +146,17 @@ func Main(args []string) int {
 	return 0
 }
 
-func ship(ctx context.Context, root, target, answersIn string, skip bool) error {
-	home, _ := os.UserHomeDir()
-	dest, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), http.DefaultClient)
-	if err != nil {
+// ship returns errors with the SSH token scrubbed: CmdError text carries the whole command line.
+func ship(ctx context.Context, r host.Runner, root string, dest Dest, answersIn string, skip bool) error {
+	err := shipTo(ctx, r, root, dest, answersIn, skip)
+	var exit *exec.ExitError
+	if err == nil || dest.Token == "" || errors.As(err, &exit) {
 		return err
 	}
-	r := host.Exec{Log: redact{os.Stderr, dest.Token}}
+	return errors.New(strings.ReplaceAll(err.Error(), dest.Token, "<token>"))
+}
+
+func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersIn string, skip bool) error {
 	unameM, err := host.Must(ctx, r, sshCmd(dest, false, "uname -m"))
 	if err != nil {
 		return err
@@ -153,7 +170,7 @@ func ship(ctx context.Context, root, target, answersIn string, skip bool) error 
 		return err
 	}
 	defer os.RemoveAll(dir)
-	if err := stageFiles(ctx, r, root, dir, arch, answersIn); err != nil {
+	if err := stageFiles(ctx, r, root, dir, arch, answersIn, claudeConfigDir(), ghPrivate); err != nil {
 		return err
 	}
 	if _, err := host.Must(ctx, r, sshCmd(dest, false, "rm -rf /tmp/la-setup && mkdir -p /tmp/la-setup")); err != nil {

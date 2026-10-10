@@ -10,7 +10,45 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/NovusEdge/linear-agents/installer/internal/host"
 )
+
+func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
+	dest := Dest{SSH: "tok123@ssh.example.test", Token: "tok123"}
+	f := host.NewFake().On("ssh tok123@ssh.example.test uname -m", 255, "")
+	err := ship(context.Background(), f, t.TempDir(), dest, "", false)
+	if err == nil || strings.Contains(err.Error(), "tok123") || !strings.Contains(err.Error(), "<token>") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
+	root, dir, cfg := t.TempDir(), t.TempDir(), t.TempDir()
+	os.MkdirAll(filepath.Join(root, "build"), 0o755)
+	os.WriteFile(filepath.Join(root, "build", "la-setup-linux-amd64"), []byte("bin"), 0o755)
+	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"x@X": true}})
+	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{
+		"X": map[string]any{"source": map[string]string{"source": "github", "repo": "o/x"}, "installLocation": "/m/X"}})
+	f := host.NewFake().
+		On("git -C "+root+" bundle create "+dir+"/linear-agents.bundle HEAD", 0, "").
+		On("git -C /m/X archive --format=tar -o "+dir+"/mp-X.tar HEAD", 0, "").
+		On("git -C /m/X rev-parse HEAD", 0, "abc\n")
+	err := stageFiles(context.Background(), f, root, dir, "amd64", "", cfg, func(string) (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "plugins.json"))
+	var got struct {
+		Marketplaces []struct{ Name, Archive, Commit string }
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%s: %v", b, err)
+	}
+	if len(got.Marketplaces) != 1 || got.Marketplaces[0].Archive != "mp-X.tar" || got.Marketplaces[0].Commit != "abc" {
+		t.Fatalf("%s", b)
+	}
+}
 
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()
