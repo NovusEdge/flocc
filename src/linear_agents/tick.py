@@ -190,15 +190,25 @@ def run_loop(
     iterations: int | None = None,
 ) -> None:
     """Tick every interval_s on hosts without systemd, where the timer cannot."""
-    log.parent.mkdir(parents=True, exist_ok=True)
     n = 0
     while iterations is None or n < iterations:
         # A subprocess per tick, as under the timer: one that crashes does not end the loop.
-        with log.open("a") as f:
-            f.write(f"--- tick {time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(now()))}Z\n")
-            f.flush()
-            code = run(argv, stdout=f, stderr=subprocess.STDOUT, check=False).returncode
-            f.write(f"--- exit {code}\n")
+        # Neither does an OSError: uv replacing the script mid-upgrade makes the exec fail, and
+        # this loop runs detached, so an escaping error would end it with nobody watching.
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            f = log.open("a")
+        except OSError as exc:
+            print(f"run: log {log} not opened: {exc}", file=sys.stderr)
+        else:
+            with f:
+                f.write(f"--- tick {time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(now()))}Z\n")
+                f.flush()
+                try:
+                    code = run(argv, stdout=f, stderr=subprocess.STDOUT, check=False).returncode
+                    f.write(f"--- exit {code}\n")
+                except OSError as exc:
+                    f.write(f"--- exit error: {exc}\n")
         n += 1
         if iterations is None or n < iterations:
             sleep(interval_s)
