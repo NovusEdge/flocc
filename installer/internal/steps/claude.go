@@ -63,12 +63,19 @@ func mergePushSettings(existing []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if m == nil { // the file held a literal null
+		m = map[string]json.RawMessage{}
+	}
 	for k, v := range pushSettings {
 		b, _ := json.Marshal(v)
 		m[k] = b
 	}
-	out, err := json.MarshalIndent(m, "", "  ")
-	return append(out, '\n'), err
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	err := enc.Encode(m)
+	return buf.Bytes(), err
 }
 
 func pushSettingsApplied(e *Env) bool {
@@ -86,6 +93,9 @@ func pushSettingsApplied(e *Env) bool {
 }
 
 func applyPushSettings(e *Env) error {
+	if pushSettingsApplied(e) {
+		return nil
+	}
 	path := e.HomePath(settingsRel)
 	b, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -98,11 +108,20 @@ func applyPushSettings(e *Env) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, out, 0o600); err != nil {
+	// CreateTemp makes the file 0600, which also tightens a looser existing settings.json.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*.json")
+	if err != nil {
 		return err
 	}
-	// WriteFile keeps the mode of a file that already exists.
-	return os.Chmod(path, 0o600)
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func missingPlugins(e *Env, l plugins.List) []string {

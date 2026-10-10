@@ -109,6 +109,7 @@ func TestMergePushSettings(t *testing.T) {
 	for name, in := range map[string]string{
 		"missing":  "",
 		"blank":    " \n",
+		"null":     "null",
 		"wrong":    `{"inputNeededNotifEnabled":false,"agentPushNotifEnabled":true,"theme":"dark","hooks":{"a":[1]}}`,
 		"preserve": `{"theme":"dark","hooks":{"a":[1]}}`,
 	} {
@@ -123,12 +124,27 @@ func TestMergePushSettings(t *testing.T) {
 		if m["inputNeededNotifEnabled"] != true || m["agentPushNotifEnabled"] != false {
 			t.Fatalf("%s: %s", name, out)
 		}
-		if name != "missing" && name != "blank" && (m["theme"] != "dark" || m["hooks"] == nil) {
+		if name != "missing" && name != "blank" && name != "null" && (m["theme"] != "dark" || m["hooks"] == nil) {
 			t.Fatalf("%s lost keys: %s", name, out)
 		}
 		if !strings.Contains(string(out), "\n  \"") {
 			t.Fatalf("%s not 2-space indented: %s", name, out)
 		}
+	}
+}
+
+func TestClaudeApplyLeavesCorrectSettingsUntouched(t *testing.T) {
+	f := host.NewFake().
+		On(claudeBin+" --version", 0, "2.1.295\n").
+		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
+	e := claudeEnv(t, f, plugins.List{})
+	const body = `{"z":"a<b","inputNeededNotifEnabled":true,"agentPushNotifEnabled":false}`
+	writeSettings(t, e, body)
+	if err := (Claude{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(e.HomePath(".claude/settings.json")); string(b) != body {
+		t.Fatalf("rewrote: %s", b)
 	}
 }
 
