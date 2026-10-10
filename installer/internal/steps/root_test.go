@@ -19,6 +19,11 @@ func testEnv(t *testing.T, f *host.Fake) *Env {
 		Home: "/home/linear-agents", Answers: &answers.Answers{}, Mode: Systemd, Sleep: func(time.Duration) {}}
 }
 
+func scriptedSecrets(e *Env, s *answers.Secrets) {
+	e.Answers.Secrets = s
+	e.UI = &ui.Scripted{A: e.Answers, Out: io.Discard}
+}
+
 func TestPackagesCheckNamesMissingTools(t *testing.T) {
 	f := host.NewFake()
 	for _, tool := range []string{"git", "tmux", "curl", "node"} {
