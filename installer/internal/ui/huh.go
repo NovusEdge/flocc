@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -91,10 +92,34 @@ func (*Huh) ConfigForm(a *answers.Answers) error {
 			a.Repos = append(a.Repos, answers.Repo{BaseBranch: "main", Check: "just check", Draft: true})
 		}
 		r := &a.Repos[i]
+		prevURL := r.URL
 		if err := huh.NewForm(huh.NewGroup(
 			huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
+			huh.NewInput().Title("GitHub URL").Description("https://github.com/<owner>/<repo>").Value(&r.URL).
+				Validate(func(s string) error {
+					if !answers.ValidGitHubURL(s) {
+						return errors.New("use https://github.com/<owner>/<repo>")
+					}
+					return nil
+				}),
+		)).Run(); err != nil {
+			return err
+		}
+		// A saved name may be a Linear label that differs from the repo name, so keep it while the URL stands.
+		if r.Name == "" || r.URL != prevURL {
+			r.Name = answers.NameFromURL(r.URL)
+		}
+		ok := true
+		if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+			Title(fmt.Sprintf("Use name %s, base %s, check `%s`, draft PRs %s?", r.Name, r.BaseBranch, r.Check, yesNo(r.Draft))).
+			Description("The name must equal the repo's Linear label.").Value(&ok))).Run(); err != nil {
+			return err
+		}
+		if ok {
+			continue
+		}
+		if err := huh.NewForm(huh.NewGroup(
 			huh.NewInput().Title("Name").Description("Exactly the Linear label that routes issues to it.").Value(&r.Name),
-			huh.NewInput().Title("GitHub URL").Description("https://github.com/<owner>/<repo>").Value(&r.URL),
 			huh.NewInput().Title("Base branch").Value(&r.BaseBranch),
 			huh.NewInput().Title("Check command").Value(&r.Check),
 			huh.NewConfirm().Title("Open draft PRs?").Description("Private repos of a GitHub Free organization cannot have drafts.").Value(&r.Draft),
@@ -102,4 +127,11 @@ func (*Huh) ConfigForm(a *answers.Answers) error {
 			return err
 		}
 	}
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }

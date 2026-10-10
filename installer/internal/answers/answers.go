@@ -4,7 +4,10 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -15,6 +18,18 @@ type Repo struct {
 	BaseBranch string `toml:"base_branch"`
 	Check      string `toml:"check"`
 	Draft      bool   `toml:"draft"`
+}
+
+var githubURL = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+?(\.git)?/?$`)
+
+func ValidGitHubURL(u string) bool { return githubURL.MatchString(u) }
+
+// NameFromURL is the repo segment of a GitHub URL without ".git"; "" if u is not one.
+func NameFromURL(u string) string {
+	if !ValidGitHubURL(u) {
+		return ""
+	}
+	return strings.TrimSuffix(path.Base(strings.TrimSuffix(u, "/")), ".git")
 }
 
 type Secrets struct {

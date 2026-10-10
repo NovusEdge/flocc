@@ -20,8 +20,7 @@ import (
 const credentialHelper = `!f() { test "$1" = get && printf 'username=x-access-token\npassword=%s\n' "$(cat "$HOME/.config/linear-agents/gh-agent.token")"; }; f`
 
 var (
-	repoName  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-	githubURL = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+?(\.git)?/?$`)
+	repoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
 func RenderConfig(example []byte, a *answers.Answers) ([]byte, error) {
@@ -104,7 +103,7 @@ func validate(a *answers.Answers) error {
 		if !repoName.MatchString(r.Name) {
 			return fmt.Errorf("repo name %q: use letters, digits, '.', '_' or '-', matching its Linear label", r.Name)
 		}
-		if !githubURL.MatchString(r.URL) {
+		if !answers.ValidGitHubURL(r.URL) {
 			return fmt.Errorf("repo %s: %q is not an https://github.com/<owner>/<repo> URL", r.Name, r.URL)
 		}
 	}

@@ -7,6 +7,22 @@ import (
 	"testing"
 )
 
+func TestNameFromURL(t *testing.T) {
+	for u, want := range map[string]string{
+		"https://github.com/o/r":      "r",
+		"https://github.com/o/r.git":  "r",
+		"https://github.com/o/r/":     "r",
+		"https://github.com/o/r.git/": "r",
+		"https://github.com/o":        "",
+		"http://github.com/o/r":       "",
+		"":                            "",
+	} {
+		if got := NameFromURL(u); got != want {
+			t.Errorf("NameFromURL(%q) = %q, want %q", u, got, want)
+		}
+	}
+}
+
 func TestSaveNeverWritesSecretsAndIsMode600(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "sub", "answers.toml")
 	a := &Answers{TeamKey: "NF", Repos: []Repo{{Name: "r", URL: "https://github.com/o/r", BaseBranch: "main", Draft: false, Check: "just check"}},
