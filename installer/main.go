@@ -52,7 +52,18 @@ func handoffArgs(answersIn string, skip bool, dest string) []string {
 	return args
 }
 
-var stageFile = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+// rootStage is where just ship stages the files. The root phase chowns the stage, so it must
+// never be any other directory.
+const rootStage = "/tmp/la-setup"
+
+var stageFile = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func checkStage(dir string) error {
+	if dir != rootStage {
+		return fmt.Errorf("the root phase runs from %s, not %s; just ship stages it there", rootStage, dir)
+	}
+	return nil
+}
 
 // copyScript is what the service user runs to copy the stage into its own home.
 func copyScript(answersIn string) string {
@@ -61,15 +72,20 @@ func copyScript(answersIn string) string {
 		files += " " + filepath.Base(answersIn)
 	}
 	// The test keeps an unmatched glob such as *.tar from failing cp.
-	return `mkdir -p ~/.cache/la-setup && cd /tmp/la-setup && for f in ` + files +
-		`; do if [ -e "$f" ]; then cp "$f" ~/.cache/la-setup/; fi; done`
+	return `mkdir -p ~/.cache/la-setup && cd ` + rootStage + ` && for f in ` + files +
+		`; do if [ -e "$f" ]; then cp -- "$f" ~/.cache/la-setup/; fi; done`
 }
 
 // handoff lets the service user read the stage and copy it itself. Root never writes inside
 // the service home: an agent could plant a symlink there and have root write through it.
 func handoff(ctx context.Context, r host.Runner, stage, answersIn string, args []string) error {
 	if answersIn != "" && !stageFile.MatchString(filepath.Base(answersIn)) {
-		return fmt.Errorf("answers file name %q: use letters, digits, '.', '_' or '-'", filepath.Base(answersIn))
+		return fmt.Errorf("answers file name %q: start with a letter or digit, then use letters, digits, '.', '_' or '-'", filepath.Base(answersIn))
+	}
+	if answersIn != "" {
+		if _, err := os.Stat(filepath.Join(stage, filepath.Base(answersIn))); err != nil {
+			return fmt.Errorf("answers file %s is not in the stage: %w", filepath.Base(answersIn), err)
+		}
 	}
 	for _, c := range []host.Cmd{
 		{Name: "chown", Args: []string{"-R", "root:" + steps.ServiceUser, stage}},
@@ -104,6 +120,12 @@ func run(args []string) int {
 		return 1
 	}
 	stage := filepath.Dir(exe)
+	if *phase == "root" {
+		if err := checkStage(stage); err != nil {
+			fmt.Fprintln(os.Stderr, "la-setup:", err)
+			return 2
+		}
+	}
 	logPath := filepath.Join(stage, "setup.log")
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -35,19 +37,39 @@ func TestHandoffArgs(t *testing.T) {
 }
 
 func TestHandoffNeverWritesIntoTheServiceHomeAsRoot(t *testing.T) {
+	stage := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stage, "e2e.toml"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	f := host.NewFake().
-		On("chown -R root:linear-agents /tmp/la-setup", 0, "").
-		On("chmod -R g+rX,o-rwx /tmp/la-setup", 0, "").
+		On("chown -R root:linear-agents "+stage, 0, "").
+		On("chmod -R g+rX,o-rwx "+stage, 0, "").
 		On("sudo -iu linear-agents sh -c "+copyScript("e2e.toml"), 0, "")
-	if err := handoff(context.Background(), f, "/tmp/la-setup", "/tmp/la-setup/e2e.toml", nil); err != nil {
+	if err := handoff(context.Background(), f, stage, filepath.Join(stage, "e2e.toml"), nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range f.Calls {
-		if strings.Contains(c, "/home/linear-agents") && !strings.HasPrefix(c, "interactive: sudo -iu linear-agents") {
-			t.Errorf("root touched the service home: %s", c)
+		if c == "chown -R root:linear-agents "+stage || c == "chmod -R g+rX,o-rwx "+stage {
+			continue
+		}
+		if !strings.HasPrefix(c, "sudo -iu linear-agents") && !strings.HasPrefix(c, "interactive: sudo -iu linear-agents") {
+			t.Errorf("root ran something besides the stage chown/chmod and the service user's own commands: %s", c)
 		}
 	}
-	if err := handoff(context.Background(), host.NewFake(), "/tmp/la-setup", "/x/a;rm -rf ~.toml", nil); err == nil {
-		t.Error("a shell metacharacter in the answers file name must be refused")
+	for _, name := range []string{"a;rm -rf ~.toml", "-t.toml", "..", "missing.toml"} {
+		if err := handoff(context.Background(), host.NewFake(), stage, filepath.Join(stage, name), nil); err == nil {
+			t.Errorf("answers file %q must be refused", name)
+		}
+	}
+}
+
+func TestCheckStage(t *testing.T) {
+	if checkStage(rootStage) != nil {
+		t.Fatal("the root stage was refused")
+	}
+	for _, d := range []string{"/usr/local/bin", "/tmp/la-setup/x", ""} {
+		if checkStage(d) == nil {
+			t.Errorf("%q: want refusal", d)
+		}
 	}
 }
