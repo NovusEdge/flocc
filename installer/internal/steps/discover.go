@@ -17,25 +17,44 @@ import (
 // concatenated. Archived and disabled repos and any without a default branch are dropped:
 // none can be cloned and checked out. Repos with size 0 are kept, since the API also reports
 // 0 for small or new repos, but their URLs come back in maybeEmpty so the caller can warn.
+//
+// GitHub lists every public repo the user owns or belongs to for any token, so a token scoped
+// to one org still sees hundreds of unrelated public repos. Private repos appear only if the
+// token was granted them, so only owners with a private repo in the result are kept. With no
+// private repo visible, everything is kept.
 func ParseRepos(b []byte) (repos []answers.Repo, maybeEmpty []string, err error) {
+	var all []apiRepo
 	dec := json.NewDecoder(bytes.NewReader(b))
 	for {
 		var page []apiRepo
 		if err := dec.Decode(&page); errors.Is(err, io.EOF) {
-			return repos, maybeEmpty, nil
+			break
 		} else if err != nil {
 			return nil, nil, err
 		}
 		for _, r := range page {
-			if r.Archived || r.Disabled || r.DefaultBranch == "" {
-				continue
-			}
-			repos = append(repos, r.repo())
-			if r.Size == 0 {
-				maybeEmpty = append(maybeEmpty, r.HTMLURL)
+			if !r.Archived && !r.Disabled && r.DefaultBranch != "" {
+				all = append(all, r)
 			}
 		}
 	}
+	granted, anyPrivate := map[string]bool{}, false
+	for _, r := range all {
+		if r.Private {
+			granted[r.owner()] = true
+			anyPrivate = true
+		}
+	}
+	for _, r := range all {
+		if anyPrivate && !granted[r.owner()] {
+			continue
+		}
+		repos = append(repos, r.repo())
+		if r.Size == 0 {
+			maybeEmpty = append(maybeEmpty, r.HTMLURL)
+		}
+	}
+	return repos, maybeEmpty, nil
 }
 
 type apiRepo struct {
@@ -46,6 +65,10 @@ type apiRepo struct {
 	Archived      bool   `json:"archived"`
 	Disabled      bool   `json:"disabled"`
 	Size          int    `json:"size"`
+}
+
+func (r apiRepo) owner() string {
+	return strings.ToLower(strings.SplitN(strings.TrimPrefix(r.HTMLURL, "https://github.com/"), "/", 2)[0])
 }
 
 func (r apiRepo) repo() answers.Repo {

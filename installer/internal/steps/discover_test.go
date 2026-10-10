@@ -35,6 +35,36 @@ func TestParseReposReadsConcatenatedPagesAndSkipsArchived(t *testing.T) {
 	}
 }
 
+func TestParseReposKeepsOnlyOwnersWithAPrivateRepo(t *testing.T) {
+	out := `[{"name":"priv","html_url":"https://github.com/org/priv","default_branch":"main","private":true,"size":1},
+{"name":"pub","html_url":"https://github.com/Org/pub","default_branch":"main","size":1},
+{"name":"mine","html_url":"https://github.com/me/mine","default_branch":"main","size":1},
+{"name":"other","html_url":"https://github.com/someone/other","default_branch":"main","size":0}]`
+	got, maybeEmpty, err := ParseRepos([]byte(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range got {
+		names = append(names, r.Name)
+	}
+	if !slices.Equal(names, []string{"priv", "pub"}) {
+		t.Fatalf("%v", names)
+	}
+	if len(maybeEmpty) != 0 {
+		t.Fatalf("%v", maybeEmpty)
+	}
+}
+
+func TestParseReposKeepsEverythingWhenNoPrivateRepoIsVisible(t *testing.T) {
+	out := `[{"name":"a","html_url":"https://github.com/o1/a","default_branch":"main","size":1},
+{"name":"b","html_url":"https://github.com/o2/b","default_branch":"main","size":1}]`
+	got, _, err := ParseRepos([]byte(out))
+	if err != nil || len(got) != 2 {
+		t.Fatalf("%v %+v", err, got)
+	}
+}
+
 func TestValidateRejectsDuplicateNamesAndURLs(t *testing.T) {
 	r := func(name, url string) answers.Repo { return answers.Repo{Name: name, URL: url} }
 	for _, repos := range [][]answers.Repo{
