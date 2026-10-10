@@ -272,6 +272,24 @@ def cmd_doctor(args) -> int:
     return run_doctor(cfg)
 
 
+def cmd_status(args) -> int:
+    from linear_agents.sessions import Sessions
+    from linear_agents.status import collect
+
+    cfg, _ = _config(args)
+    report = collect(cfg, Sessions())
+    if args.json:
+        print(json.dumps(report))
+        return 0
+    print(f"{report['host']} ({report['mode']}), cap {report['session_cap']}")
+    for c in report["claims"]:
+        alive = "up" if c["tmux_alive"] else "down"
+        print(f"  {c['issue']}  {c['phase']}  {c['state']}  ctx {_pct(c['context_pct'])}  {alive}")
+    if not report["claims"]:
+        print("  no live claims")
+    return 0
+
+
 COMMANDS = {
     "statusline": cmd_statusline,
     "escalate": cmd_escalate,
@@ -285,6 +303,7 @@ COMMANDS = {
     "run": cmd_run,
     "release": cmd_release,
     "doctor": cmd_doctor,
+    "status": cmd_status,
 }
 
 
@@ -319,6 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("key")
     rel.add_argument("--keep-worktree", action="store_true")
     sub.add_parser("doctor")
+    status = sub.add_parser("status")
+    status.add_argument("--json", action="store_true")
     return parser
 
 

@@ -124,6 +124,20 @@ func (a daytonaAuth) sandboxID(ctx context.Context, client *http.Client, name st
 	return "", fmt.Errorf("no Daytona sandbox named %q in this organization", name)
 }
 
+type Sandbox struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	State  string `json:"state"`
+	CPU    int    `json:"cpu"`
+	Memory int    `json:"memory"` // GiB
+}
+
+func (a daytonaAuth) sandboxes(ctx context.Context, client *http.Client) ([]Sandbox, error) {
+	var all []Sandbox
+	err := a.do(ctx, client, "GET", "/sandbox", &all)
+	return all, err
+}
+
 const (
 	waitEvery   = 5 * time.Second
 	waitTimeout = 5 * time.Minute
