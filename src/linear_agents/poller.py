@@ -55,24 +55,24 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
         except LinearError as exc:
             print(f"release: {claim.issue_key} not moved back to Todo: {exc}", file=sys.stderr)
     ledger.delete_claim(rt.con, claim.issue_key)
+    # Alert dedupe is keyed to the old claim; a rerun that blocks again for the same cause must
+    # still push.
+    ledger.clear_issue_alerts(rt.con, claim.issue_key)
 
 
 def poll(rt) -> None:
     cfg = rt.cfg
     for issue in rt.linear.ready_issues(cfg.team_key, cfg.trigger_label):
         claim = ledger.get_claim(rt.con, issue.key)
+        rerun = claim is not None
         if claim is not None:
             if claim.state == "running":
-                print(f"{issue.key}: held, claim is still running", file=sys.stderr)
                 continue
             # Only `release` moves a claimed issue back to Todo, so an issue that is in Todo
             # with a finished or blocked claim (its session is already killed) was moved by the
-            # owner, who is asking for a rerun.
-            release_claim(rt, claim, to_todo=False)
-            try:
-                rt.linear.comment(issue.id, "moved back to Todo; restarting from a fresh claim.")
-            except LinearError as exc:
-                print(f"{issue.key}: rerun comment not posted: {exc}", file=sys.stderr)
+            # owner, who is asking for a rerun. The worktree is kept: block messages send the
+            # owner to fix things there.
+            release_claim(rt, claim, keep_worktree=True, to_todo=False)
         repo = repo_for(issue, cfg)
         if repo is None:
             _comment_once(
@@ -120,6 +120,11 @@ def poll(rt) -> None:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)
             continue
         _start(rt, issue, repo, settings)
+        if rerun and ledger.get_claim(rt.con, issue.key):
+            try:
+                rt.linear.comment(issue.id, "moved back to Todo; restarting from a fresh claim.")
+            except LinearError as exc:
+                print(f"{issue.key}: rerun comment not posted: {exc}", file=sys.stderr)
 
 
 def _size(path: Path) -> int:
@@ -213,7 +218,13 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         # and an In Progress issue would not be polled again. Leave it in Todo, unclaimed.
         ledger.delete_claim(rt.con, issue.key)
         raise
-    rt.linear.start(issue)
+    try:
+        rt.linear.start(issue)
+    except LinearError:
+        # A running claim on a Todo issue would be read as an owner's rerun once it finishes.
+        rt.sessions.kill(session_name(issue.key, phase))
+        ledger.delete_claim(rt.con, issue.key)
+        raise
 
 
 def _new_lines(path: Path, offset: int) -> list[bytes]:
