@@ -174,8 +174,8 @@ def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch)
     assert ledger.remembered_tests(rt.con, "NF-9") is None
 
 
-@pytest.mark.parametrize("state", ["done", "timed_out"])
-def test_finished_claim_back_in_todo_is_released_and_rerun(rt, monkeypatch, state):
+@pytest.mark.parametrize("state", ["done", "timed_out", "blocked"])
+def test_finished_or_blocked_claim_back_in_todo_is_released_and_rerun(rt, monkeypatch, state):
     removed = []
     monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: removed.append(a))
     ledger.insert_claim(rt.con, make("NF-9", state=state))
@@ -191,11 +191,9 @@ def test_finished_claim_back_in_todo_is_released_and_rerun(rt, monkeypatch, stat
     assert rt.linear.started == ["NF-9"]
 
 
-@pytest.mark.parametrize(
-    "state, phase", [("running", "test"), ("running", "review"), ("blocked", "impl")]
-)
-def test_live_claim_in_todo_is_left_alone(rt, capsys, state, phase):
-    claim = make("NF-9", state=state)
+@pytest.mark.parametrize("phase", ["test", "impl", "review"])
+def test_running_claim_in_todo_is_left_alone(rt, capsys, phase):
+    claim = make("NF-9")
     claim.phase = phase
     ledger.insert_claim(rt.con, claim)
     rt.linear.ready = [issue()]

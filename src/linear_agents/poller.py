@@ -62,11 +62,12 @@ def poll(rt) -> None:
     for issue in rt.linear.ready_issues(cfg.team_key, cfg.trigger_label):
         claim = ledger.get_claim(rt.con, issue.key)
         if claim is not None:
-            if claim.state in ledger.LIVE_STATES:
-                print(f"{issue.key}: held, claim is still live", file=sys.stderr)
+            if claim.state == "running":
+                print(f"{issue.key}: held, claim is still running", file=sys.stderr)
                 continue
             # Only `release` moves a claimed issue back to Todo, so an issue that is in Todo
-            # with a finished claim was moved by the owner, who is asking for a rerun.
+            # with a finished or blocked claim (its session is already killed) was moved by the
+            # owner, who is asking for a rerun.
             release_claim(rt, claim, to_todo=False)
             try:
                 rt.linear.comment(issue.id, "moved back to Todo; restarting from a fresh claim.")
