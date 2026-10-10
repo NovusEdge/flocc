@@ -125,3 +125,10 @@ func RunAll(ctx context.Context, e *Env, steps []Step) error {
 }
 
 func cmd(name string, args ...string) host.Cmd { return host.Cmd{Name: name, Args: args} }
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
+}
