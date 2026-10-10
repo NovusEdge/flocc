@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type Cmd struct {
@@ -47,6 +48,9 @@ func (e Exec) command(ctx context.Context, c Cmd) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Dir = c.Dir
 	cmd.Env = append(os.Environ(), c.Env...)
+	// A context kill reaches ssh but not a ControlMaster or proxy child still holding the output
+	// pipes, which would otherwise keep Run waiting past the deadline.
+	cmd.WaitDelay = 2 * time.Second
 	return cmd
 }
 

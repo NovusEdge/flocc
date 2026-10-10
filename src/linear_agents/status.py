@@ -1,8 +1,10 @@
 import calendar
+import os
 import re
 import shutil
 import socket
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -40,19 +42,57 @@ def _parse_utc(text: str) -> float | None:
         return None
 
 
-def _live_claims(path: Path) -> list[ledger.Claim]:
+_SYSTEMD_PROPS = "ExecMainStartTimestamp,ExecMainExitTimestamp,ExecMainStatus,ActiveState"
+
+
+def _parse_systemd_ts(text: str) -> float | None:
+    # "Sat 2026-01-01 00:03:00 UTC": systemd prints the zone name, which is UTC or the host's own.
+    parts = text.split()
+    if len(parts) < 4:
+        return None
+    try:
+        t = time.strptime(f"{parts[1]} {parts[2]}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return float(calendar.timegm(t) if parts[3] == "UTC" else time.mktime(t))
+
+
+def systemd_tick(now: float, run=subprocess.run) -> dict | None:
+    env = {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
+    try:
+        out = run(
+            ["systemctl", "--user", "show", "linear-agents.service", "-p", _SYSTEMD_PROPS],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    at = _parse_systemd_ts(props.get("ExecMainStartTimestamp", ""))
+    if at is None:
+        return None
+    running = props.get("ActiveState") in ("active", "activating")
+    return {"at": at, "exit": None if running else props.get("ExecMainStatus")}
+
+
+def _live_claims(path: Path) -> tuple[list[ledger.Claim], str | None]:
     # Not ledger.connect: that creates the file, switches the journal mode and runs the schema.
+    # mode=ro still creates the -shm and -wal files beside a WAL ledger, but never changes the
+    # ledger file itself.
+    if not path.exists():
+        return [], None
     try:
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
-    except sqlite3.Error:
-        return []
-    con.row_factory = sqlite3.Row
-    try:
-        return ledger.live_claims(con)
-    except sqlite3.Error:
-        return []
-    finally:
-        con.close()
+        con.row_factory = sqlite3.Row
+        try:
+            return ledger.live_claims(con), None
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        return [], str(exc)
 
 
 def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
@@ -88,20 +128,29 @@ def _disk(path: Path) -> dict | None:
     return {"free_bytes": free, "total_bytes": total}
 
 
-def collect(cfg: Config, sessions, now: float | None = None) -> dict:
+def collect(
+    cfg: Config,
+    sessions,
+    now: float | None = None,
+    mode: str | None = None,
+    run=subprocess.run,
+) -> dict:
     """Reads host state without taking the tick lock or touching Linear and GitHub."""
     now = time.time() if now is None else now
-    tick = last_tick(cfg.state_root / "run.log")
+    mode = mode or ("systemd" if Path("/run/systemd/system").is_dir() else "loop")
+    tick = systemd_tick(now, run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
     if tick is not None and tick["at"] is not None:
         tick["age_s"] = max(0.0, now - tick["at"])
     latest = usage.latest_usage(cfg.state_root, now)
+    claims, ledger_error = _live_claims(cfg.ledger_path)
     return {
         "host": socket.gethostname(),
-        "mode": "systemd" if Path("/run/systemd/system").is_dir() else "loop",
+        "mode": mode,
         "now": now,
         "last_tick": tick,
         "session_cap": cfg.session_cap,
-        "claims": [_claim_row(cfg, c, sessions, now) for c in _live_claims(cfg.ledger_path)],
+        "claims": [_claim_row(cfg, c, sessions, now) for c in claims],
+        "ledger_error": ledger_error,
         "five_hour_max_pct": cfg.five_hour_max_pct,
         "weekly_max_pct": cfg.weekly_max_pct,
         "usage": None

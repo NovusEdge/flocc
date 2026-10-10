@@ -23,18 +23,25 @@ import (
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
 )
 
-// Daytona list prices; the figure shown is an estimate, not what the account is billed.
+// Daytona list prices (daytona.io/pricing); the figure shown is an estimate, not what the account
+// is billed. The page does not say what a stopped or archived sandbox costs, so those get no
+// figure.
 const (
 	usdPerVCPUHour = 0.0504
 	usdPerGiBHour  = 0.0162
+	usdPerDiskHour = 0.000108
+	freeDiskGiB    = 5
 
 	hostTimeout = 20 * time.Second
 	staleTick   = 10 * time.Minute
 	lowDisk     = 0.15
+	// An SSH token lives 60 minutes; reusing one for less leaves room for a slow ssh.
+	tokenReuse = 50 * time.Minute
 )
 
-func estimateHourly(cpu, memGiB int) float64 {
-	return float64(cpu)*usdPerVCPUHour + float64(memGiB)*usdPerGiBHour
+func estimateHourly(cpu, memGiB, diskGiB int) float64 {
+	return float64(cpu)*usdPerVCPUHour + float64(memGiB)*usdPerGiBHour +
+		float64(max(diskGiB-freeDiskGiB, 0))*usdPerDiskHour
 }
 
 // Report is the JSON of linear-agents status --json.
@@ -45,6 +52,7 @@ type Report struct {
 		Exit *string  `json:"exit"` // nil while the tick is still running
 		AgeS *float64 `json:"age_s"`
 	} `json:"last_tick"`
+	LedgerError    string  `json:"ledger_error"`
 	SessionCap     int     `json:"session_cap"`
 	FiveHourMaxPct float64 `json:"five_hour_max_pct"`
 	WeeklyMaxPct   float64 `json:"weekly_max_pct"`
@@ -71,9 +79,10 @@ type Claim struct {
 // FleetHost is one row's identity. State is empty for an ssh destination, whose reachability is
 // only known by trying it.
 type FleetHost struct {
-	Name, Target, State string
-	CPU, MemGiB         int
-	Daytona             bool
+	Name, Target, State  string
+	ID                   string // the Daytona sandbox id
+	CPU, MemGiB, DiskGiB int
+	Daytona              bool
 }
 
 type Row struct {
@@ -82,23 +91,29 @@ type Row struct {
 	Err    string
 }
 
-func readHostsFile(path string) ([]string, error) {
+// readHostsFile returns the ssh destinations and the lines it refused. A line starting with "-"
+// would reach ssh as an option (-oProxyCommand=... runs a local command).
+func readHostsFile(path string) (targets, rejected []string, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
-	var out []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" && !strings.HasPrefix(line, "#") {
-			out = append(out, line)
+		line := strings.TrimSpace(sc.Text())
+		switch {
+		case line == "" || strings.HasPrefix(line, "#"):
+		case strings.HasPrefix(line, "-"):
+			rejected = append(rejected, line)
+		default:
+			targets = append(targets, line)
 		}
 	}
-	return out, sc.Err()
+	return targets, rejected, sc.Err()
 }
 
 // discover lists the Daytona org's sandboxes and the hosts file. Neither failing stops the other:
@@ -117,12 +132,15 @@ func discover(ctx context.Context, daytonaConfig, hostsFile string, client *http
 		}
 		sort.Slice(sbs, func(i, j int) bool { return sbs[i].Name < sbs[j].Name })
 		for _, s := range sbs {
-			hosts = append(hosts, FleetHost{Name: s.Name, Target: "daytona:" + s.Name, State: strings.ToLower(s.State), CPU: s.CPU, MemGiB: s.Memory, Daytona: true})
+			hosts = append(hosts, FleetHost{Name: s.Name, Target: "daytona:" + s.Name, State: strings.ToLower(s.State), ID: s.ID, CPU: s.CPU, MemGiB: s.Memory, DiskGiB: s.Disk, Daytona: true})
 		}
 	}
-	targets, err := readHostsFile(hostsFile)
+	targets, rejected, err := readHostsFile(hostsFile)
 	if err != nil {
 		notes = append(notes, "hosts file: "+err.Error())
+	}
+	for _, r := range rejected {
+		notes = append(notes, fmt.Sprintf("hosts file: ignored %q, a destination cannot start with '-'", r))
 	}
 	for _, t := range targets {
 		hosts = append(hosts, FleetHost{Name: t, Target: t})
@@ -137,20 +155,70 @@ func scrub(s, token string) string {
 	return strings.ReplaceAll(s, token, "<token>")
 }
 
+// destCache keeps each Daytona host's SSH destination until shortly before its token expires, so
+// --watch does not mint a token per host on every redraw.
+type destCache struct {
+	mu   sync.Mutex
+	m    map[string]cachedDest
+	now  func() time.Time
+	mint func(context.Context, FleetHost) (Dest, error)
+}
+
+type cachedDest struct {
+	dest    Dest
+	expires time.Time
+}
+
+func newDestCache(mint func(context.Context, FleetHost) (Dest, error)) *destCache {
+	return &destCache{m: map[string]cachedDest{}, now: time.Now, mint: mint}
+}
+
+func (c *destCache) resolve(ctx context.Context, h FleetHost) (Dest, error) {
+	if !h.Daytona {
+		return Dest{SSH: h.Target}, nil
+	}
+	c.mu.Lock()
+	hit, ok := c.m[h.Target]
+	c.mu.Unlock()
+	if ok && c.now().Before(hit.expires) {
+		return hit.dest, nil
+	}
+	d, err := c.mint(ctx, h)
+	if err != nil {
+		return Dest{}, err
+	}
+	c.mu.Lock()
+	c.m[h.Target] = cachedDest{d, c.now().Add(tokenReuse)}
+	c.mu.Unlock()
+	return d, nil
+}
+
+func (c *destCache) forget(h FleetHost) {
+	c.mu.Lock()
+	delete(c.m, h.Target)
+	c.mu.Unlock()
+}
+
 // fetch runs linear-agents status --json on one host. BatchMode keeps ssh from stopping at a
 // password prompt, which would hold the view until the timeout.
-func fetch(ctx context.Context, r host.Runner, resolve func(context.Context, string) (Dest, error), h FleetHost) Row {
+func fetch(ctx context.Context, r host.Runner, c *destCache, h FleetHost) Row {
 	row := Row{FleetHost: h}
 	if h.State != "" && h.State != "started" {
 		return row
 	}
 	ctx, cancel := context.WithTimeout(ctx, hostTimeout)
 	defer cancel()
-	dest, err := resolve(ctx, h.Target)
+	dest, err := c.resolve(ctx, h)
 	if err != nil {
 		row.Err = firstLine(err.Error())
 		return row
 	}
+	// A failure may mean the cached token was revoked, so the next draw mints a fresh one.
+	defer func() {
+		if row.Err != "" {
+			c.forget(h)
+		}
+	}()
 	dest.Opts = append(append([]string{}, dest.Opts...), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
 	res, err := r.Run(ctx, sshCmd(dest, false, asServiceUser([]string{"linear-agents", "status", "--json"})))
 	switch {
@@ -175,14 +243,14 @@ func firstLine(s string) string {
 }
 
 // collect queries every host in parallel; one slow or dead host delays only its own row.
-func collect(ctx context.Context, r host.Runner, resolve func(context.Context, string) (Dest, error), hosts []FleetHost) []Row {
+func collect(ctx context.Context, r host.Runner, c *destCache, hosts []FleetHost) []Row {
 	rows := make([]Row, len(hosts))
 	var wg sync.WaitGroup
 	for i, h := range hosts {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			rows[i] = fetch(ctx, r, resolve, h)
+			rows[i] = fetch(ctx, r, c, h)
 		}()
 	}
 	wg.Wait()
@@ -233,12 +301,15 @@ func tickCell(rep *Report) string {
 	if t == nil || t.AgeS == nil {
 		return cell("-", dim)
 	}
+	stale := time.Duration(*t.AgeS*float64(time.Second)) > staleTick
 	switch {
+	case t.Exit == nil && stale:
+		return cell(fmt.Sprintf("%s ago, still running", age(*t.AgeS)), warn)
 	case t.Exit == nil:
 		return fmt.Sprintf("%s ago, running", age(*t.AgeS))
 	case *t.Exit != "0":
 		return cell(fmt.Sprintf("%s ago, exit %s", age(*t.AgeS), *t.Exit), bad)
-	case time.Duration(*t.AgeS*float64(time.Second)) > staleTick:
+	case stale:
 		return cell(fmt.Sprintf("%s ago, ok", age(*t.AgeS)), warn)
 	}
 	return fmt.Sprintf("%s ago, ok", age(*t.AgeS))
@@ -256,10 +327,10 @@ func diskCell(rep *Report) string {
 }
 
 func costCell(h FleetHost) string {
-	if !h.Daytona || h.CPU == 0 && h.MemGiB == 0 {
+	if !h.Daytona || h.State != "started" || h.CPU == 0 && h.MemGiB == 0 {
 		return cell("-", dim)
 	}
-	return fmt.Sprintf("~$%.2f", estimateHourly(h.CPU, h.MemGiB))
+	return fmt.Sprintf("~$%.3f", estimateHourly(h.CPU, h.MemGiB, h.DiskGiB))
 }
 
 func newTable(headers ...string) *table.Table {
@@ -302,9 +373,12 @@ func render(rows []Row, notes []string) string {
 		}
 		running := 0
 		for _, c := range rep.Claims {
-			if c.TmuxAlive {
+			if c.State == "running" {
 				running++
 			}
+		}
+		if rep.LedgerError != "" {
+			failures = append(failures, fmt.Sprintf("%s: ledger unreadable: %s", name, rep.LedgerError))
 		}
 		five, week := cell("-", dim), cell("-", dim)
 		if rep.Usage != nil {
@@ -314,11 +388,18 @@ func render(rows []Row, notes []string) string {
 		hosts.Row(name, state, rep.Mode, tickCell(rep), fmt.Sprintf("%d/%d", running, rep.SessionCap), five, week, diskCell(rep), costCell(r.FleetHost))
 		for _, c := range rep.Claims {
 			nClaims++
-			ctxPct, tmux := cell("-", dim), cell("yes", plain)
+			ctxPct := cell("-", dim)
 			if c.ContextPct != nil {
 				ctxPct = fmt.Sprintf("%.0f%%", *c.ContextPct)
 			}
-			if !c.TmuxAlive {
+			// The supervisor kills a blocked claim's session on purpose, so only a running
+			// claim with a dead session is wrong.
+			tmux := cell("-", dim)
+			switch {
+			case c.State != "running":
+			case c.TmuxAlive:
+				tmux = "yes"
+			default:
 				tmux = cell("no", bad)
 			}
 			claims.Row(name, c.Issue, c.Phase, c.State, age(c.StartedAge), ctxPct, tmux)
@@ -335,7 +416,7 @@ func render(rows []Row, notes []string) string {
 	for _, n := range notes {
 		b.WriteString(cell(n, dim) + "\n")
 	}
-	b.WriteString(cell("est $/h: vCPU and GiB at Daytona list prices; an estimate, not a bill", dim) + "\n")
+	b.WriteString(cell("est $/h: started sandboxes only, vCPU, memory and disk beyond 5 GiB at Daytona list prices; stopped and archived show - because their rate is not confirmed. An estimate, not a bill", dim) + "\n")
 	return b.String()
 }
 
@@ -353,12 +434,16 @@ func FleetMain(args []string, out io.Writer) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	resolve := func(ctx context.Context, target string) (Dest, error) {
-		return resolveTarget(ctx, target, daytonaConfig, client, realWaiter(io.Discard))
-	}
+	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
+		auth, err := loadDaytona(daytonaConfig)
+		if err != nil {
+			return Dest{}, err
+		}
+		return auth.sshDest(ctx, client, h.ID, h.Name, realWaiter(io.Discard))
+	})
 	for {
 		hosts, notes := discover(ctx, daytonaConfig, hostsFile, client)
-		rows := collect(ctx, host.Exec{}, resolve, hosts)
+		rows := collect(ctx, host.Exec{}, cache, hosts)
 		if ctx.Err() != nil {
 			return 0
 		}

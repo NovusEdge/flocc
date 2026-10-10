@@ -130,6 +130,7 @@ type Sandbox struct {
 	State  string `json:"state"`
 	CPU    int    `json:"cpu"`
 	Memory int    `json:"memory"` // GiB
+	Disk   int    `json:"disk"`   // GiB
 }
 
 func (a daytonaAuth) sandboxes(ctx context.Context, client *http.Client) ([]Sandbox, error) {
@@ -217,6 +218,11 @@ func resolveTarget(ctx context.Context, target, daytonaConfig string, client *ht
 	if err != nil {
 		return Dest{}, err
 	}
+	return auth.sshDest(ctx, client, id, name, w)
+}
+
+// sshDest waits for the sandbox to start, then mints a 60-minute SSH token for it.
+func (auth daytonaAuth) sshDest(ctx context.Context, client *http.Client, id, name string, w waiter) (Dest, error) {
 	if err := auth.waitStarted(ctx, client, id, name, w); err != nil {
 		return Dest{}, err
 	}

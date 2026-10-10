@@ -76,8 +76,12 @@ box.tailnet.ts.net
 ```
 
 Each started host answers `linear-agents status --json`, which only reads state: it takes no tick
-lock and calls neither Linear nor GitHub. Stopped sandboxes are listed with their state, and the
-`est $/h` column prices their vCPU and memory at Daytona's list rates, so it is an estimate. An
+lock and calls neither Linear nor GitHub. (On a WAL ledger, opening it read-only still creates
+the `-shm` and `-wal` files beside it; the ledger file itself is not changed.) Stopped sandboxes
+are listed with their state. The `est $/h` column prices started sandboxes only, from vCPU,
+memory and disk beyond 5 GiB at Daytona's list rates, so it is an estimate; stopped and archived
+sandboxes show `-` because their rate is not confirmed. Lines in the hosts file starting with `-`
+are ignored, since ssh would read them as options. An
 unreachable host gets a row and an error line, and the rest still render. Cells are colored for usage at
 the configured `five_hour_max_pct` and `weekly_max_pct`, disk under 15% free, a last tick older
 than 10 minutes, and a non-zero tick exit. Without a Daytona login the Daytona hosts are skipped

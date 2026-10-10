@@ -285,7 +285,9 @@ def cmd_status(args) -> int:
     for c in report["claims"]:
         alive = "up" if c["tmux_alive"] else "down"
         print(f"  {c['issue']}  {c['phase']}  {c['state']}  ctx {_pct(c['context_pct'])}  {alive}")
-    if not report["claims"]:
+    if report["ledger_error"]:
+        print(f"  ledger unreadable: {report['ledger_error']}")
+    elif not report["claims"]:
         print("  no live claims")
     return 0
 
