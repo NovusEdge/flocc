@@ -123,3 +123,5 @@ func RunAll(ctx context.Context, e *Env, steps []Step) error {
 	}
 	return nil
 }
+
+func cmd(name string, args ...string) host.Cmd { return host.Cmd{Name: name, Args: args} }
