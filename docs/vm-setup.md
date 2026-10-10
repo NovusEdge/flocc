@@ -59,6 +59,34 @@ Watch it from the desktop with `just status <target>` (sessions, last log lines,
 `just logs <target>` (the journal in systemd mode, `run.log` in loop mode) and
 `just attach <target> NF-123` (read-only tmux).
 
+### Fleet view
+
+`just fleet-status` shows every host in two tables: one row per host (mode, last tick and exit
+status, running sessions against the cap, 5h and weekly usage, free disk) and one row per live
+claim (phase, age, context use, whether its tmux session is up). `just fleet-status --watch
+--interval 30s` redraws until Ctrl-C.
+
+The hosts are every sandbox in the active Daytona organization, read with the Daytona CLI's login,
+plus each ssh destination listed in `~/.config/la-setup/hosts`, one per line (blank lines and lines
+starting with `#` are skipped):
+
+```
+# Tailscale names
+box.tailnet.ts.net
+```
+
+Each started host answers `linear-agents status --json`, which only reads state: it takes no tick
+lock and calls neither Linear nor GitHub. (On a WAL ledger, opening it read-only still creates
+the `-shm` and `-wal` files beside it; the ledger file itself is not changed.) Stopped sandboxes
+are listed with their state. The `est $/h` column prices started sandboxes only, from vCPU,
+memory and disk beyond 5 GiB at Daytona's list rates, so it is an estimate; stopped and archived
+sandboxes show `-` because their rate is not confirmed. Lines in the hosts file starting with `-`
+are ignored, since ssh would read them as options. An
+unreachable host gets a row and an error line, and the rest still render. Cells are colored for usage at
+the configured `five_hour_max_pct` and `weekly_max_pct`, disk under 15% free, a last tick older
+than 10 minutes, and a non-zero tick exit. Without a Daytona login the Daytona hosts are skipped
+with a note.
+
 ## Upgrading
 
 `digest_issue` is now required. A config without it fails to load, which fails every tick and the

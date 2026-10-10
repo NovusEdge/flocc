@@ -89,7 +89,7 @@ func (a daytonaAuth) do(ctx context.Context, client *http.Client, method, path s
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		// The CLI refreshes its stored access token; this reader does not.
-		return errors.New("Daytona refused the stored login; run daytona list to refresh it, then ship again")
+		return errors.New("Daytona refused the stored login; run daytona list to refresh it, then retry")
 	}
 	if resp.StatusCode >= 300 {
 		return &apiError{fmt.Sprintf("Daytona API %s %s: %s", method, path, resp.Status), resp.StatusCode}
@@ -122,6 +122,21 @@ func (a daytonaAuth) sandboxID(ctx context.Context, client *http.Client, name st
 		}
 	}
 	return "", fmt.Errorf("no Daytona sandbox named %q in this organization", name)
+}
+
+type Sandbox struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	State  string `json:"state"`
+	CPU    int    `json:"cpu"`
+	Memory int    `json:"memory"` // GiB
+	Disk   int    `json:"disk"`   // GiB
+}
+
+func (a daytonaAuth) sandboxes(ctx context.Context, client *http.Client) ([]Sandbox, error) {
+	var all []Sandbox
+	err := a.do(ctx, client, "GET", "/sandbox", &all)
+	return all, err
 }
 
 const (
@@ -203,6 +218,11 @@ func resolveTarget(ctx context.Context, target, daytonaConfig string, client *ht
 	if err != nil {
 		return Dest{}, err
 	}
+	return auth.sshDest(ctx, client, id, name, w)
+}
+
+// sshDest waits for the sandbox to start, then mints a 60-minute SSH token for it.
+func (auth daytonaAuth) sshDest(ctx context.Context, client *http.Client, id, name string, w waiter) (Dest, error) {
 	if err := auth.waitStarted(ctx, client, id, name, w); err != nil {
 		return Dest{}, err
 	}

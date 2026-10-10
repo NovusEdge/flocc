@@ -139,6 +139,9 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "host" {
 		return ship.HostMain(args[1:])
 	}
+	if len(args) > 0 && args[0] == "fleet" {
+		return ship.FleetMain(args[1:], os.Stdout)
+	}
 	if len(args) > 0 && args[0] == "ship" {
 		return ship.Main(args[1:])
 	}

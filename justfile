@@ -78,6 +78,11 @@ doctor target: build-desktop
 status target: build-desktop
     build/la-setup host {{target}} 'tmux -L linear-agents ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers linear-agents.timer; true'
 
+# Show every host's loop, sessions, usage and disk in one table
+[group('host')]
+fleet-status *flags: build-desktop
+    build/la-setup fleet {{flags}}
+
 # Follow run.log, or the journal on a systemd host
 [group('host')]
 logs target: build-desktop
