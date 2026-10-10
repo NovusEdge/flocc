@@ -157,6 +157,15 @@ def cmd_tick(args) -> int:
         return tick(cfg, path)
 
 
+def cmd_run(args) -> int:
+    from linear_agents.tick import run_loop
+
+    cfg, _ = _config(args)
+    config = ["--config", args.config] if args.config else []
+    run_loop([sys.argv[0], *config, "tick"], cfg.state_root / "run.log", 180)
+    return 0
+
+
 def cmd_release(args) -> int:
     from linear_agents.linear import LinearError
     from linear_agents.sessions import session_name
@@ -212,6 +221,7 @@ COMMANDS = {
     "done": cmd_done,
     "handoff-ready": cmd_handoff_ready,
     "tick": cmd_tick,
+    "run": cmd_run,
     "release": cmd_release,
     "doctor": cmd_doctor,
 }
@@ -240,6 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
     done.add_argument("--summary", required=True)
     sub.add_parser("handoff-ready")
     sub.add_parser("tick")
+    sub.add_parser("run")
     rel = sub.add_parser("release")
     rel.add_argument("key")
     rel.add_argument("--keep-worktree", action="store_true")

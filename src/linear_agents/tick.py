@@ -1,5 +1,6 @@
 import fcntl
 import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -177,3 +178,27 @@ def tick(cfg: Config, config_path: Path) -> int:
         _page_tick_failure(rt.con, rt.notifier, exc)
         raise
     return 0
+
+
+def run_loop(
+    argv: list[str],
+    log: Path,
+    interval_s: float,
+    run=subprocess.run,
+    sleep=time.sleep,
+    now=time.time,
+    iterations: int | None = None,
+) -> None:
+    """Tick every interval_s on hosts without systemd, where the timer cannot."""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
+    while iterations is None or n < iterations:
+        # A subprocess per tick, as under the timer: one that crashes does not end the loop.
+        with log.open("a") as f:
+            f.write(f"--- tick {time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(now()))}Z\n")
+            f.flush()
+            code = run(argv, stdout=f, stderr=subprocess.STDOUT, check=False).returncode
+            f.write(f"--- exit {code}\n")
+        n += 1
+        if iterations is None or n < iterations:
+            sleep(interval_s)
