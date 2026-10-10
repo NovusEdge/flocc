@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/answers"
@@ -21,8 +22,8 @@ import (
 // GitHub lists every public repo the user owns or belongs to for any token, so a token scoped
 // to one org still sees hundreds of unrelated public repos. Private repos appear only if the
 // token was granted them, so only owners with a private repo in the result are kept. With no
-// private repo visible, everything is kept.
-func ParseRepos(b []byte) (repos []answers.Repo, maybeEmpty []string, err error) {
+// private repo visible, everything is kept. The owners left out come back sorted in dropped.
+func ParseRepos(b []byte) (repos []answers.Repo, maybeEmpty, dropped []string, err error) {
 	var all []apiRepo
 	dec := json.NewDecoder(bytes.NewReader(b))
 	for {
@@ -30,14 +31,11 @@ func ParseRepos(b []byte) (repos []answers.Repo, maybeEmpty []string, err error)
 		if err := dec.Decode(&page); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		for _, r := range page {
-			if !r.Archived && !r.Disabled && r.DefaultBranch != "" {
-				all = append(all, r)
-			}
-		}
+		all = append(all, page...)
 	}
+	// Counted before the archived/disabled filter: an archived private repo still shows the grant.
 	granted, anyPrivate := map[string]bool{}, false
 	for _, r := range all {
 		if r.Private {
@@ -46,7 +44,13 @@ func ParseRepos(b []byte) (repos []answers.Repo, maybeEmpty []string, err error)
 		}
 	}
 	for _, r := range all {
+		if r.Archived || r.Disabled || r.DefaultBranch == "" {
+			continue
+		}
 		if anyPrivate && !granted[r.owner()] {
+			if !slices.Contains(dropped, r.owner()) {
+				dropped = append(dropped, r.owner())
+			}
 			continue
 		}
 		repos = append(repos, r.repo())
@@ -54,7 +58,8 @@ func ParseRepos(b []byte) (repos []answers.Repo, maybeEmpty []string, err error)
 			maybeEmpty = append(maybeEmpty, r.HTMLURL)
 		}
 	}
-	return repos, maybeEmpty, nil
+	slices.Sort(dropped)
+	return repos, maybeEmpty, dropped, nil
 }
 
 type apiRepo struct {
@@ -65,9 +70,15 @@ type apiRepo struct {
 	Archived      bool   `json:"archived"`
 	Disabled      bool   `json:"disabled"`
 	Size          int    `json:"size"`
+	Owner         struct {
+		Login string `json:"login"`
+	} `json:"owner"`
 }
 
 func (r apiRepo) owner() string {
+	if r.Owner.Login != "" {
+		return strings.ToLower(r.Owner.Login)
+	}
 	return strings.ToLower(strings.SplitN(strings.TrimPrefix(r.HTMLURL, "https://github.com/"), "/", 2)[0])
 }
 
@@ -127,10 +138,10 @@ func (e *Env) ghAPI(ctx context.Context, args ...string) (string, error) {
 		Args: append([]string{"api"}, args...)})
 }
 
-func (e *Env) discoverRepos(ctx context.Context) ([]answers.Repo, []string, error) {
+func (e *Env) discoverRepos(ctx context.Context) ([]answers.Repo, []string, []string, error) {
 	out, err := e.ghAPI(ctx, "--paginate", "/user/repos?per_page=100&affiliation=owner,collaborator,organization_member")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	return ParseRepos([]byte(out))
 }

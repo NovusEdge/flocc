@@ -15,7 +15,7 @@ func TestParseReposReadsConcatenatedPagesAndSkipsArchived(t *testing.T) {
 {"name":"nobranch","html_url":"https://github.com/o/nobranch","default_branch":null,"size":5},
 {"name":"blank","html_url":"https://github.com/o/blank","default_branch":"","size":5}]
 [{"name":"b","html_url":"https://github.com/o/b","default_branch":"main","private":true,"size":1}]`
-	got, maybeEmpty, err := ParseRepos([]byte(out))
+	got, maybeEmpty, _, err := ParseRepos([]byte(out))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestParseReposReadsConcatenatedPagesAndSkipsArchived(t *testing.T) {
 	if !slices.Equal(maybeEmpty, []string{"https://github.com/o/empty"}) {
 		t.Fatalf("%v", maybeEmpty)
 	}
-	if _, _, err := ParseRepos([]byte(`{"message":"Bad credentials"}`)); err == nil {
+	if _, _, _, err := ParseRepos([]byte(`{"message":"Bad credentials"}`)); err == nil {
 		t.Fatal("an error object is not a repo list")
 	}
 }
@@ -40,9 +40,12 @@ func TestParseReposKeepsOnlyOwnersWithAPrivateRepo(t *testing.T) {
 {"name":"pub","html_url":"https://github.com/Org/pub","default_branch":"main","size":1},
 {"name":"mine","html_url":"https://github.com/me/mine","default_branch":"main","size":1},
 {"name":"other","html_url":"https://github.com/someone/other","default_branch":"main","size":0}]`
-	got, maybeEmpty, err := ParseRepos([]byte(out))
+	got, maybeEmpty, dropped, err := ParseRepos([]byte(out))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Equal(dropped, []string{"me", "someone"}) {
+		t.Fatalf("%v", dropped)
 	}
 	var names []string
 	for _, r := range got {
@@ -59,9 +62,19 @@ func TestParseReposKeepsOnlyOwnersWithAPrivateRepo(t *testing.T) {
 func TestParseReposKeepsEverythingWhenNoPrivateRepoIsVisible(t *testing.T) {
 	out := `[{"name":"a","html_url":"https://github.com/o1/a","default_branch":"main","size":1},
 {"name":"b","html_url":"https://github.com/o2/b","default_branch":"main","size":1}]`
-	got, _, err := ParseRepos([]byte(out))
-	if err != nil || len(got) != 2 {
-		t.Fatalf("%v %+v", err, got)
+	got, _, dropped, err := ParseRepos([]byte(out))
+	if err != nil || len(got) != 2 || len(dropped) != 0 {
+		t.Fatalf("%v %+v %v", err, got, dropped)
+	}
+}
+
+func TestParseReposCountsAnArchivedPrivateRepoAndPrefersOwnerLogin(t *testing.T) {
+	out := `[{"name":"old","html_url":"https://github.com/renamed/old","owner":{"login":"Org"},"default_branch":"main","private":true,"archived":true,"size":1},
+{"name":"pub","html_url":"https://github.com/renamed/pub","owner":{"login":"Org"},"default_branch":"main","size":1},
+{"name":"x","html_url":"https://github.com/me/x","owner":{"login":"me"},"default_branch":"main","size":1}]`
+	got, _, dropped, err := ParseRepos([]byte(out))
+	if err != nil || len(got) != 1 || got[0].Name != "pub" || !slices.Equal(dropped, []string{"me"}) {
+		t.Fatalf("%v %+v %v", err, got, dropped)
 	}
 }
 
