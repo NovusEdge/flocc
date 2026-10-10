@@ -100,10 +100,11 @@ func (Secrets) Apply(_ context.Context, e *Env) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", s.title, err)
 		}
-		if err := os.WriteFile(path, []byte(v+"\n"), 0o600); err != nil {
+		// WriteFile keeps the mode of an existing file, so a 644 file would briefly hold the token.
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := os.Chmod(path, 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(v+"\n"), 0o600); err != nil {
 			return err
 		}
 	}

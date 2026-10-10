@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -36,15 +37,96 @@ func TestHandoffArgs(t *testing.T) {
 	}
 }
 
-func TestHandoffNeverWritesIntoTheServiceHomeAsRoot(t *testing.T) {
+func fillStage(t *testing.T, names ...string) string {
+	t.Helper()
 	stage := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stage, "e2e.toml"), nil, 0o600); err != nil {
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(stage, n), []byte(n), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return stage
+}
+
+func TestStageNamesKeepsOnlyKnownSafeFiles(t *testing.T) {
+	stage := fillStage(t, "la-setup", "linear-agents.bundle", "plugins.json", "mp-X.tar", "e2e.toml",
+		"setup.log", "other.toml", "-bad.tar", "a b.tar")
+	got, err := stageNames(stage, "/x/e2e.toml")
+	want := []string{"e2e.toml", "la-setup", "linear-agents.bundle", "mp-X.tar", "plugins.json"}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("%v %v", got, err)
+	}
+	if _, err := stageNames(fillStage(t, "plugins.json"), ""); err == nil {
+		t.Fatal("a stage without la-setup must be refused")
+	}
+}
+
+// sudo -i passes the script through the login shell, which expands $ before the inner sh runs.
+func TestCopyScriptHasNoExpansionAndCopiesTheStage(t *testing.T) {
+	stage := fillStage(t, "la-setup", "linear-agents.bundle", "plugins.json", "mp-X.tar", "e2e.toml")
+	names, err := stageNames(stage, "e2e.toml")
+	if err != nil {
 		t.Fatal(err)
 	}
+	script := copyScript(stage, names)
+	if strings.ContainsAny(script, "$`*?[\"'\\") {
+		t.Fatalf("shell expansion in %q", script)
+	}
+	home := t.TempDir()
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	for _, n := range names {
+		if b, err := os.ReadFile(filepath.Join(home, ".cache/la-setup", n)); err != nil || string(b) != n {
+			t.Errorf("%s: %q %v", n, b, err)
+		}
+	}
+}
+
+func TestDropAnswersCopyKeepsSavedState(t *testing.T) {
+	d := t.TempDir()
+	keep, drop := filepath.Join(d, "answers.toml"), filepath.Join(d, "e2e.toml")
+	os.WriteFile(keep, nil, 0o600)
+	os.WriteFile(drop, nil, 0o600)
+	dropAnswersCopy(keep)
+	dropAnswersCopy(drop)
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("answers.toml removed")
+	}
+	if _, err := os.Stat(drop); err == nil {
+		t.Error("e2e.toml kept")
+	}
+}
+
+func TestHandoffRemovesTheStagedAnswersOnlyOnSuccess(t *testing.T) {
+	stage := fillStage(t, "la-setup", "e2e.toml")
+	f := host.NewFake().
+		On("chown -R root:linear-agents "+stage, 0, "").
+		On("chmod -R g+rX,o-rwx "+stage, 0, "")
+	f.Responses["sudo -iu linear-agents sh -c "+copyScript(rootStage, []string{"e2e.toml", "la-setup"})] = host.Result{Code: 1}
+	if err := handoff(context.Background(), f, stage, "e2e.toml", nil); err == nil {
+		t.Fatal("want the copy failure")
+	}
+	if _, err := os.Stat(filepath.Join(stage, "e2e.toml")); err != nil {
+		t.Fatal("answers removed after a failed handoff")
+	}
+	f.On("sudo -iu linear-agents sh -c "+copyScript(rootStage, []string{"e2e.toml", "la-setup"}), 0, "")
+	if err := handoff(context.Background(), f, stage, "e2e.toml", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(stage, "e2e.toml")); err == nil {
+		t.Fatal("answers kept after a successful handoff")
+	}
+}
+
+func TestHandoffNeverWritesIntoTheServiceHomeAsRoot(t *testing.T) {
+	stage := fillStage(t, "la-setup", "e2e.toml")
 	f := host.NewFake().
 		On("chown -R root:linear-agents "+stage, 0, "").
 		On("chmod -R g+rX,o-rwx "+stage, 0, "").
-		On("sudo -iu linear-agents sh -c "+copyScript("e2e.toml"), 0, "")
+		On("sudo -iu linear-agents sh -c "+copyScript(rootStage, []string{"e2e.toml", "la-setup"}), 0, "")
 	if err := handoff(context.Background(), f, stage, filepath.Join(stage, "e2e.toml"), nil); err != nil {
 		t.Fatal(err)
 	}

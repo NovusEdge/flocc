@@ -10,6 +10,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/answers"
@@ -65,15 +67,33 @@ func checkStage(dir string) error {
 	return nil
 }
 
-// copyScript is what the service user runs to copy the stage into its own home.
-func copyScript(answersIn string) string {
-	files := "la-setup *.bundle *.tar plugins.json"
-	if answersIn != "" {
-		files += " " + filepath.Base(answersIn)
+// stageNames lists what the service user copies. Root names every file itself because the
+// script must hold no shell expansion: sudo -i hands it to the login shell, which expands
+// `$` before the inner sh runs.
+func stageNames(stage, answersIn string) ([]string, error) {
+	entries, err := os.ReadDir(stage)
+	if err != nil {
+		return nil, err
 	}
-	// The test keeps an unmatched glob such as *.tar from failing cp.
-	return `mkdir -p ~/.cache/la-setup && cd ` + rootStage + ` && for f in ` + files +
-		`; do if [ -e "$f" ]; then cp -- "$f" ~/.cache/la-setup/; fi; done`
+	var names []string
+	for _, ent := range entries {
+		n := ent.Name()
+		known := n == "la-setup" || n == "linear-agents.bundle" || n == "plugins.json" ||
+			strings.HasSuffix(n, ".tar") || answersIn != "" && n == filepath.Base(answersIn)
+		if ent.Type().IsRegular() && known && stageFile.MatchString(n) {
+			names = append(names, n)
+		}
+	}
+	if !slices.Contains(names, "la-setup") {
+		return nil, fmt.Errorf("%s has no la-setup binary", stage)
+	}
+	return names, nil
+}
+
+// copyScript is what the service user runs to copy the stage into its own home. The names
+// must already match stageFile, so none needs quoting.
+func copyScript(dir string, names []string) string {
+	return "mkdir -p ~/.cache/la-setup && cd " + dir + " && cp -- " + strings.Join(names, " ") + " ~/.cache/la-setup/"
 }
 
 // handoff lets the service user read the stage and copy it itself. Root never writes inside
@@ -87,16 +107,32 @@ func handoff(ctx context.Context, r host.Runner, stage, answersIn string, args [
 			return fmt.Errorf("answers file %s is not in the stage: %w", filepath.Base(answersIn), err)
 		}
 	}
+	names, err := stageNames(stage, answersIn)
+	if err != nil {
+		return err
+	}
 	for _, c := range []host.Cmd{
 		{Name: "chown", Args: []string{"-R", "root:" + steps.ServiceUser, stage}},
 		{Name: "chmod", Args: []string{"-R", "g+rX,o-rwx", stage}},
-		{Name: "sudo", Args: []string{"-iu", steps.ServiceUser, "sh", "-c", copyScript(answersIn)}},
+		{Name: "sudo", Args: []string{"-iu", steps.ServiceUser, "sh", "-c", copyScript(rootStage, names)}},
 	} {
 		if _, err := host.Must(ctx, r, c); err != nil {
 			return err
 		}
 	}
-	return r.Interactive(ctx, host.Cmd{Name: "sudo", Args: append([]string{"-iu", steps.ServiceUser, serviceStage + "/la-setup"}, args...)})
+	err = r.Interactive(ctx, host.Cmd{Name: "sudo", Args: append([]string{"-iu", steps.ServiceUser, serviceStage + "/la-setup"}, args...)})
+	if err == nil && answersIn != "" {
+		dropAnswersCopy(filepath.Join(stage, filepath.Base(answersIn)))
+	}
+	return err
+}
+
+// dropAnswersCopy removes a --answers file, which carries tokens, once the run no longer needs
+// it. answers.toml is the saved state of the service phase and stays.
+func dropAnswersCopy(path string) {
+	if filepath.Base(path) != "answers.toml" {
+		os.Remove(path)
+	}
 }
 
 func run(args []string) int {
@@ -194,6 +230,9 @@ func run(args []string) int {
 		return 1
 	}
 	if *phase == "service" {
+		if *answersIn != "" {
+			dropAnswersCopy(*answersIn)
+		}
 		fmt.Println("Done.")
 	}
 	return 0

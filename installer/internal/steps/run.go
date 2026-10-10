@@ -24,8 +24,11 @@ func (e *Env) userctl(args ...string) host.Cmd {
 		Env: []string{"XDG_RUNTIME_DIR=/run/user/" + strconv.Itoa(e.UID)}}
 }
 
-// Sessions and checks inherit the loop's PATH, as they inherit the unit's.
-func loopCommand(home string) string { return "env " + servicePath(home) + " linear-agents run" }
+// Sessions and checks inherit the loop's PATH, as they inherit the unit's. When the pane's
+// command exits, tmux closes the window and, as the last one, the server; the loop keeps it alive.
+func loopCommand(home string) string {
+	return "sh -c 'while :; do env " + servicePath(home) + " linear-agents run; sleep 10; done'"
+}
 
 func (e *Env) loopPane(ctx context.Context) string {
 	return e.Output(ctx, "tmux", "-N", "-L", "linear-agents", "list-panes", "-t", "=la-loop", "-F", "#{pane_start_command}")

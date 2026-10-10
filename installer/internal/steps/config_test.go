@@ -3,13 +3,16 @@ package steps
 import (
 	"context"
 	"flag"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/NovusEdge/linear-agents/deploy"
 	"github.com/NovusEdge/linear-agents/installer/internal/answers"
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/linear-agents/installer/internal/ui"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -73,8 +76,27 @@ func TestConfigCheckUsesDoctorConfigAndRepoLines(t *testing.T) {
 	if done, _, _ := (Config{}).Check(context.Background(), testEnv(t, f)); !done {
 		t.Fatal("non-repo FAIL lines belong to other steps")
 	}
+	f.On(bin, 1, "ok    config: /x\nFAIL  repo r: cannot fetch origin\n")
+	if done, _, _ := (Config{}).Check(context.Background(), testEnv(t, f)); !done {
+		t.Fatal("a fetch failure is transient, not a missing config")
+	}
 	f.On(bin, 1, "FAIL  config: digest_issue is required\n")
 	if done, _, _ := (Config{}).Check(context.Background(), testEnv(t, f)); done {
 		t.Fatal("config FAIL must not be done")
+	}
+}
+
+func TestConfigApplyKeepsAnswersWhenValidationFails(t *testing.T) {
+	e := testEnv(t, host.NewFake())
+	e.AnswersPath = filepath.Join(t.TempDir(), "answers.toml")
+	e.Answers.DigestIssue = "NF-1"
+	e.Answers.Repos = []answers.Repo{{Name: "r", URL: "not-a-url"}}
+	e.UI = &ui.Scripted{A: e.Answers, Out: io.Discard}
+	if err := (Config{}).Apply(context.Background(), e); err == nil {
+		t.Fatal("want a validation error")
+	}
+	saved, err := answers.Load(e.AnswersPath)
+	if err != nil || saved.DigestIssue != "NF-1" || len(saved.Repos) != 1 {
+		t.Fatalf("%+v %v", saved, err)
 	}
 }

@@ -89,6 +89,24 @@ func TestSecretsApplyKeepsValidFilesOnEmptyInputAndWritesMode600(t *testing.T) {
 	}
 }
 
+func TestSecretsApplyReplacesAWorldReadableFileWithMode600(t *testing.T) {
+	e := testEnv(t, host.NewFake())
+	e.Answers = &answers.Answers{}
+	dir := e.HomePath(".config/linear-agents")
+	os.MkdirAll(dir, 0o700)
+	loose := filepath.Join(dir, "linear.key")
+	os.WriteFile(loose, []byte("old\n"), 0o644)
+	os.Chmod(loose, 0o644)
+	scriptedSecrets(e, &answers.Secrets{LinearKey: "lin_new", AgentToken: "a", PublishToken: "p"})
+	if err := (Secrets{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := os.Stat(loose)
+	if b, _ := os.ReadFile(loose); st.Mode().Perm() != 0o600 || string(b) != "lin_new\n" {
+		t.Fatalf("%o %q", st.Mode().Perm(), b)
+	}
+}
+
 func TestSecretsApplyRequiresMissingSecrets(t *testing.T) {
 	e := testEnv(t, host.NewFake())
 	if err := (Secrets{}).Apply(context.Background(), e); err == nil || !strings.Contains(err.Error(), "Linear API key is required") {

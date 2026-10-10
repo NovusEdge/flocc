@@ -23,6 +23,31 @@ func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 	}
 }
 
+func TestShipClearsTheStageWithSudoOnATerminal(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "build"), 0o755)
+	os.WriteFile(filepath.Join(root, "build", "la-setup-linux-amd64"), []byte("bin"), 0o755)
+	cfg := t.TempDir()
+	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{})
+	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{})
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	f := &bundleOK{host.NewFake().On("ssh h uname -m", 0, "x86_64\n")}
+	ship(context.Background(), f, root, Dest{SSH: "h"}, "", false)
+	if !f.Ran("interactive: ssh -t h sudo rm -rf /tmp/la-setup && mkdir -p /tmp/la-setup") {
+		t.Fatalf("%v", f.Calls)
+	}
+}
+
+// bundleOK accepts git commands, whose paths hold a random temp dir.
+type bundleOK struct{ *host.Fake }
+
+func (b *bundleOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
+	if c.Name == "git" {
+		return host.Result{}, nil
+	}
+	return b.Fake.Run(ctx, c)
+}
+
 func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 	root, dir, cfg := t.TempDir(), t.TempDir(), t.TempDir()
 	os.MkdirAll(filepath.Join(root, "build"), 0o755)

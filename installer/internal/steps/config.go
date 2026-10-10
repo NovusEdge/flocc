@@ -88,7 +88,8 @@ func (Config) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return false, "no valid config", nil
 	}
 	for _, f := range fails {
-		if strings.HasPrefix(f, "FAIL  repo ") {
+		// A failed fetch is transient; the Run step's doctor reports it.
+		if strings.HasPrefix(f, "FAIL  repo ") && strings.Contains(f, "is not a git clone") {
 			return false, strings.TrimPrefix(f, "FAIL  "), nil
 		}
 	}
@@ -124,10 +125,11 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	if err := e.UI.ConfigForm(a); err != nil {
 		return err
 	}
-	if err := validate(a); err != nil {
+	// Saved before validating, so a typo does not discard everything typed.
+	if err := e.SaveAnswers(); err != nil {
 		return err
 	}
-	if err := e.SaveAnswers(); err != nil {
+	if err := validate(a); err != nil {
 		return err
 	}
 	example, _ := deploy.Files.ReadFile("config.example.toml")

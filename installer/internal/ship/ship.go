@@ -25,6 +25,8 @@ func archFor(unameM string) (string, error) {
 	return "", fmt.Errorf("unsupported architecture %q", strings.TrimSpace(unameM))
 }
 
+const resetStage = "sudo rm -rf /tmp/la-setup && mkdir -p /tmp/la-setup"
+
 func sshCmd(d Dest, tty bool, remote string) host.Cmd {
 	args := append([]string{}, d.Opts...)
 	if tty {
@@ -173,7 +175,9 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersI
 	if err := stageFiles(ctx, r, root, dir, arch, answersIn, claudeConfigDir(), ghPrivate); err != nil {
 		return err
 	}
-	if _, err := host.Must(ctx, r, sshCmd(dest, false, "rm -rf /tmp/la-setup && mkdir -p /tmp/la-setup")); err != nil {
+	// A finished run leaves the stage root:linear-agents 750, so only sudo can clear it, and its
+	// password prompt needs the terminal.
+	if err := r.Interactive(ctx, sshCmd(dest, true, resetStage)); err != nil {
 		return err
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*"))

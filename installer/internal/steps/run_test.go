@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -87,6 +88,16 @@ func TestRunRefusesWhenDoctorDoesNotRun(t *testing.T) {
 	}
 	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop " + loopCommand("/home/linear-agents")) {
 		t.Fatal("started ticking on a broken doctor")
+	}
+}
+
+func TestLoopCommandRestartsTheRunAndStaysCheckable(t *testing.T) {
+	c := loopCommand("/home/linear-agents")
+	if !strings.Contains(c, "while :;") || !strings.Contains(c, "linear-agents run") {
+		t.Fatal(c)
+	}
+	if out, err := exec.Command("sh", "-n", "-c", c).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
 	}
 }
 
