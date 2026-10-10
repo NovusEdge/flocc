@@ -82,6 +82,57 @@ def test_add_label_skips_other_teams_labels():
     assert post.calls[1][1]["label"] == "ours"
 
 
+def lookup(parent=None):
+    return {"issueLabels": {"nodes": [{"id": "nd", "team": {"id": "t1"}, "parent": parent}]}}
+
+
+READINESS = {"id": "g-ready", "groupType": "singleSelect"}
+
+
+def test_add_label_drops_siblings_in_an_exclusive_group():
+    post = FakePost(
+        lookup(READINESS),
+        {
+            "issue": {
+                "labels": {
+                    "nodes": [
+                        {"id": "claude", "parent": None},
+                        {"id": "ready", "parent": {"id": "g-ready"}},
+                        {"id": "bug", "parent": {"id": "g-type"}},
+                        {"id": "repo", "parent": {"id": "g-code"}},
+                    ]
+                }
+            }
+        },
+        {"issueRemoveLabel": {"success": True}},
+        {"issueAddLabel": {"success": True}},
+    )
+    Linear(post).add_label(page2_issue(), "needs-decision")
+    assert [c[1] for c in post.calls[2:]] == [
+        {"id": "u2", "label": "ready"},
+        {"id": "u2", "label": "nd"},
+    ]
+    assert "issueRemoveLabel" in post.calls[2][0]
+
+
+def test_add_label_keeps_siblings_in_a_multi_select_group():
+    post = FakePost(lookup({"id": "g", "groupType": "multiSelect"}), {"issueAddLabel": {}})
+    Linear(post).add_label(page2_issue(), "needs-decision")
+    assert len(post.calls) == 2
+
+
+def test_add_top_level_label_only_adds():
+    post = FakePost(lookup(), {"issueAddLabel": {"success": True}})
+    Linear(post).add_label(page2_issue(), "needs-decision")
+    assert [c[1] for c in post.calls[1:]] == [{"id": "u2", "label": "nd"}]
+
+
+def test_add_label_already_present_is_a_noop():
+    post = FakePost()
+    Linear(post).add_label(page2_issue(), "claude")
+    assert post.calls == []
+
+
 def test_comments_mark_the_owners():
     post = FakePost(
         {

@@ -145,15 +145,32 @@ class Linear:
         )
 
     def add_label(self, issue: Issue, name: str) -> None:
+        if name in issue.labels:
+            return
         nodes = self._post(
             "query($name: String!) { issueLabels(filter: { name: { eq: $name } }) {"
-            " nodes { id team { id } } } }",
+            " nodes { id team { id } parent { id groupType } } } }",
             {"name": name},
         )["issueLabels"]["nodes"]
         # Names repeat across teams, and a label of another team cannot go on this issue.
         usable = [n for n in nodes if n["team"] is None or n["team"]["id"] == issue.team_id]
         if not usable:
             raise LinearError(f"label {name!r} does not exist; create it in Linear (vm-setup.md)")
+        parent = usable[0].get("parent")
+        # issueAddLabel does not evict siblings; Linear rejects the add with "labelIds not
+        # exclusive child labels". A group without a groupType is single-select.
+        if parent and parent.get("groupType") != "multiSelect":
+            current = self._post(
+                "query($id: String!) { issue(id: $id) { labels { nodes { id parent { id } } } } }",
+                {"id": issue.id},
+            )["issue"]["labels"]["nodes"]
+            for sibling in current:
+                if (sibling.get("parent") or {}).get("id") == parent["id"]:
+                    self._post(
+                        "mutation($id: String!, $label: String!) {"
+                        " issueRemoveLabel(id: $id, labelId: $label) { success } }",
+                        {"id": issue.id, "label": sibling["id"]},
+                    )
         self._post(
             "mutation($id: String!, $label: String!) {"
             " issueAddLabel(id: $id, labelId: $label) { success } }",
