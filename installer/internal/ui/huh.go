@@ -122,6 +122,16 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(u
 			}
 		}
 		a.ExcludedRepos = answers.UpdateExcluded(a.ExcludedRepos, found, urls)
+		if len(urls) < len(found) {
+			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+				Title("Do other hosts handle the unticked repos?").
+				Description("If yes, issues for unmapped repos get no comment from this host.").
+				Value(&a.SharedTeam))).Run(); err != nil {
+				return err
+			}
+		} else {
+			a.SharedTeam = false
+		}
 		a.Repos = nil
 		for _, u := range urls {
 			a.Repos = append(a.Repos, byURL[u])

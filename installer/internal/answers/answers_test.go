@@ -8,6 +8,22 @@ import (
 	"testing"
 )
 
+func TestSharedTeamSurvivesSaveLoadAndOverlay(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "answers.toml")
+	if err := (&Answers{SharedTeam: true}).Save(p); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &Answers{}
+	o.Overlay(saved)
+	if !o.SharedTeam {
+		t.Fatal("shared_team lost")
+	}
+}
+
 func TestExclusionsRoundTripAndDriveThePreselection(t *testing.T) {
 	found := []Repo{{Name: "a", URL: "u/a"}, {Name: "b", URL: "u/b"}}
 	excluded := UpdateExcluded(nil, found, []string{"u/a"})

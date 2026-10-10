@@ -13,6 +13,9 @@ check_timeout_s = 1800
 setup_timeout_s = 900
 # Agent commits carry a "Linear-Agents: KEY phase" trailer; set false to leave it off.
 # commit_trailer = false
+# For hosts that share a Linear team and map only some of its repos: leave issues matching no
+# mapped repo alone instead of commenting that no repo matches.
+# skip_unmapped = true
 
 [repos.backend]
 path = "~/src/backend"

@@ -2,13 +2,16 @@ import io
 import json
 import subprocess
 import urllib.error
+from dataclasses import replace
 
 import pytest
 
 from linear_agents import doctor
+from linear_agents.config import load
 from linear_agents.doctor import Result
 from linear_agents.linear import Issue, LinearError
 from linear_agents.tokens import TokenRejected, can_write_contents
+from tests.paths import EXAMPLE
 
 DAY = 86400
 NOW = 1_800_000_000.0
@@ -19,6 +22,13 @@ def secret(tmp_path, text, mode=0o600):
     p.write_text(text)
     p.chmod(mode)
     return p
+
+
+def test_scope_check_only_reports_when_skipping_unmapped_issues():
+    cfg = load(EXAMPLE)
+    assert doctor.scope_check(cfg) == []
+    [r] = doctor.scope_check(replace(cfg, skip_unmapped=True))
+    assert r.status == "ok" and "left to other hosts" in r.detail
 
 
 def test_secret_file_checks(tmp_path):

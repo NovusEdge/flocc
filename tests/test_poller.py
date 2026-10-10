@@ -259,6 +259,33 @@ def test_poll_comments_once_then_admits_after_fix(rt):
     assert ledger.get_claim(rt.con, "NF-9") is not None
 
 
+def test_unmapped_issue_gets_one_comment_by_default(rt):
+    rt.linear.ready = [issue(labels=("claude",))]
+    poll(rt)
+    poll(rt)
+    assert len(rt.linear.comments) == 1 and "No configured repo" in rt.linear.comments[0][1]
+    assert ledger.get_claim(rt.con, "NF-9") is None
+
+
+def test_skip_unmapped_leaves_other_hosts_issues_alone(rt, capsys):
+    rt.cfg = replace(rt.cfg, skip_unmapped=True)
+    rt.linear.ready = [issue(labels=("claude", "elsewhere")), issue("NF-10")]
+    poll(rt)
+    assert rt.linear.comments == [] and capsys.readouterr().err == ""
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    assert ledger.get_claim(rt.con, "NF-10") is not None
+
+
+def test_skip_unmapped_says_so_once_when_a_relabelled_rerun_releases_its_claim(rt, capsys):
+    rt.cfg = replace(rt.cfg, skip_unmapped=True)
+    ledger.insert_claim(rt.con, make("NF-9", state="done"))
+    rt.linear.ready = [issue(labels=("claude", "elsewhere"))]
+    poll(rt)
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    assert capsys.readouterr().err.count("no mapped repo matches") == 1
+
+
 def test_poll_respects_cap(rt):
     for key in ("NF-1", "NF-2"):
         ledger.insert_claim(rt.con, make(key, ()))

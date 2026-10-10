@@ -204,6 +204,19 @@ def path_checks(cfg: Config) -> list[Result]:
     return results
 
 
+def scope_check(cfg: Config) -> list[Result]:
+    if not cfg.skip_unmapped:
+        return []
+    return [
+        Result(
+            "ok",
+            "skip_unmapped",
+            f"issues matching none of {', '.join(cfg.repos)} are left to other hosts,"
+            " with no comment",
+        )
+    ]
+
+
 def report(results: list[Result]) -> int:
     for r in results:
         print(f"{'FAIL' if r.status == 'fail' else r.status:<6}{r.name}: {r.detail}")
@@ -211,7 +224,7 @@ def report(results: list[Result]) -> int:
 
 
 def run_doctor(cfg: Config) -> int:
-    results = path_checks(cfg)
+    results = path_checks(cfg) + scope_check(cfg)
     key = secret_file("linear key", cfg.linear_key_file)
     results.append(key)
     if key.status == "ok":
