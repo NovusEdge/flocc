@@ -84,10 +84,12 @@ time, so the installer cannot install units that differ from the repo it ships w
    service is `just ship` again.
 4. Writes the plugin list: the `enabledPlugins` of my user-scope Claude settings and the
    marketplaces they come from. Each marketplace whose GitHub repo is private
-   (`gh repo view --json visibility`) is bundled from its local clone under
-   `~/.claude/plugins/marketplaces/` the same way.
-5. `scp`s the binary, bundles and plugin list to `/tmp/la-setup/` and runs
-   `ssh -t <target> sudo /tmp/la-setup/la-setup`.
+   (`gh repo view --json visibility`) is shipped as a `git archive` tar of its local clone,
+   with the commit it came from. Not a bundle: Claude Code's marketplace clones are shallow, and
+   a bundle of a shallow clone cannot be fetched.
+5. `scp`s the binary, bundle, archives and plugin list to `/tmp/la-setup/` and runs
+   `ssh -t <target> sudo /tmp/la-setup/la-setup`. A Daytona SSH token is redacted from the
+   commands it echoes.
 
 ## Steps
 
@@ -96,18 +98,20 @@ makes it hold. On start the installer runs every check and shows the list with e
 state; a multi-select lets me pick finished steps to redo (to replace a secret, say). Then it
 applies the steps that are not done, in order.
 
-The first four steps run as root. Step 4 copies the binary, bundles and plugin list into the
-service user's home and re-executes the installer as that user (`sudo -iu linear-agents
-~/.cache/la-setup/la-setup --phase service`), so nothing after it has root.
+The first four steps run as root. Then root makes `/tmp/la-setup/` readable to the
+`linear-agents` group, and the service user copies it into `~/.cache/la-setup/` itself and runs
+the installer from there (`sudo -iu linear-agents ~/.cache/la-setup/la-setup --phase service`).
+Root never writes inside the service home: an agent could plant a symlink there and have root
+write through it.
 
 | # | Step | As | Check | Apply |
 |---|------|----|-------|-------|
 | 1 | Preflight | root | `/etc/os-release` `ID`/`ID_LIKE` maps to apt, pacman or dnf; arch is amd64 or arm64; picks the runtime mode | refuses with the reason; in loop mode, shows the table row above and asks to continue |
-| 2 | Packages | root | `git`, `tmux`, `curl`, `gh`, `node` on `PATH` | installs the missing ones; on Debian and Ubuntu adds GitHub's apt repo for `gh`, on RHEL GitHub's rpm repo |
+| 2 | Packages | root | `git`, `tmux`, `curl`, `gh`, `node` on `PATH` | installs only the missing ones (reinstalling curl conflicts with RHEL 9's curl-minimal); `gh` comes from the distribution on Debian 12+, Ubuntu 22.04+, Arch and Fedora, and from GitHub's rpm repo on RHEL |
 | 3 | Tailscale | root | `tailscale status --json` shows `BackendState` `Running` | installs with `tailscale.com/install.sh`, or `pacman -S tailscale` on Arch; starts tailscaled (`systemctl enable --now tailscaled`, or `nohup tailscaled` in loop mode); if logged out, asks for a hostname and runs `tailscale up --hostname=<name>` attached to the terminal so I open the URL it prints; then `tailscale set --ssh`; reminds me to disable key expiry for the node in the admin console |
 | 4 | Service user | root | user exists, home mode 700, in no sudo group; in systemd mode `loginctl show-user` reports `Linger=yes` | `useradd --create-home --shell /bin/bash`, `chmod 700`, `loginctl enable-linger` in systemd mode; then hands off to the service phase |
 | 5 | Service repo | service | `~/agents/linear-agents` is a git checkout at the bundle's commit and `linear-agents` is on `PATH` | clones from (or fetches) the bundle, checks out its commit, runs `./setup` and `uv tool install --editable .` |
-| 6 | Claude | service | `claude --version` is 2.1.293 or later, `claude auth status` reports a claude.ai login, every plugin in the shipped list installed | installs with the native installer; runs `claude` attached to the terminal with a note to `/login`, set the two push settings in `/config`, accept Remote Control in `~/agents/worktrees`, and exit; then clones each bundled marketplace to `~/agents/marketplaces/<name>`, adds it with `claude plugin marketplace add <dir>`, adds public ones by their GitHub source, and runs `claude plugin install <plugin>@<marketplace>` for each |
+| 6 | Claude | service | `claude --version` is 2.1.293 or later, `claude auth status` reports a claude.ai login, every plugin in the shipped list installed | installs with the native installer; runs `claude` attached to the terminal with a note to `/login`, set the two push settings in `/config`, accept Remote Control in `~/agents/worktrees`, and exit; then extracts each archived marketplace to `~/agents/marketplaces/<name>` (replaced when the shipped commit differs), adds it with `claude plugin marketplace add <dir>`, adds public ones by their GitHub source, and runs `claude plugin install <plugin>@<marketplace>` for each |
 | 7 | Secrets | service | the three files exist, mode 600, one non-empty line each | masked `huh` inputs for the Linear key and both GitHub tokens, with the permissions each token needs shown beside it |
 | 8 | Config | service | `linear-agents doctor` prints `ok    config:` | a form prefilled from the embedded example: team key, digest issue, ntfy topic (a random one generated, shown for me to subscribe to, then a priority 5 test push I confirm arrived), and one or more repos (name, GitHub URL, base branch, draft, check command); clones each repo to `~/src/<name>` with the agent token through a repo-local credential helper |
 | 9 | Run | service | systemd mode: the three units match the embedded copies, the tmux service is active and the timer enabled; loop mode: session `la-loop` runs `linear-agents run` | systemd mode: installs the units, `daemon-reload`, enables the tmux service; loop mode: starts session `la-loop` idle, so the tmux server is up for doctor's tmux check. Both: runs `linear-agents doctor` and shows its output, then offers to start ticking (enable the timer, or start `la-loop`) only when no line is FAIL |

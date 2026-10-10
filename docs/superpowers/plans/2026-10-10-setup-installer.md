@@ -26,11 +26,13 @@
 
 ## Review Focus
 
-1. Re-running after an aborted Claude login (claude installed, not logged in) runs only the login and plugin parts, not the reinstall. Pinned in Task 8.
-2. A host checkout with local edits (the old VM had uncommitted eval edits) stops the repo step with git's own message instead of discarding the edits. Pinned in Task 7.
-3. A pasted secret with a trailing newline, CRLF, inner space or a `NAME=` prefix is cleaned or refused before it is written. Pinned in Task 7.
-4. An existing `linear-agents` user that is in `sudo` or `wheel` stops the run instead of being used. Pinned in Task 5.
-5. The root phase run without root, or the service phase run as root, is refused before anything changes. Pinned in Task 11.
+1. A symlink an agent planted in `~linear-agents/.cache` must not make root write through it on the next ship: root never writes inside the service home. Pinned in Task 11.
+2. Re-running after an aborted Claude login (claude installed, not logged in) runs only the login and plugin parts, not the reinstall. Pinned in Task 8.
+3. A host checkout with local edits (the old VM had uncommitted eval edits) stops the repo step with git's own message instead of discarding the edits. Pinned in Task 7.
+4. A pasted secret with a trailing newline, CRLF, inner space or a `NAME=` prefix is cleaned or refused before it is written. Pinned in Task 7.
+5. An existing `linear-agents` user that is in `sudo` or `wheel` stops the run instead of being used. Pinned in Task 5.
+
+The phase guard (root phase without root, service phase as root) and doctor's PATH under `sudo -iu` are pinned too, in Tasks 11 and 9.
 
 ---
 
@@ -556,7 +558,7 @@ git commit -s -m "Add the installer's command runner and distro detection"
   - `type Secrets struct{ LinearKey, AgentToken, PublishToken string }` (toml `linear_key`, `agent_token`, `publish_token`).
   - `type Answers struct{ Hostname, TeamKey, DigestIssue, NtfyTopic string; Repos []Repo; Secrets *Secrets }`.
   - `func Load(path string) (*Answers, error)` (missing file → empty Answers), `func (a *Answers) Save(path string) error`, `func (a *Answers) Overlay(o *Answers)`.
-  - `type Marketplace struct{ Name, GitHub, Bundle string }` (json `name`, `github,omitempty`, `bundle,omitempty`); `type List struct{ Marketplaces []Marketplace; Plugins []string }` (json `marketplaces`, `plugins`); `func Load(path string) (List, error)`; `func (l List) Write(path string) error`.
+  - `type Marketplace struct{ Name, GitHub, Archive, Commit string }` (json `name`, `github,omitempty`, `archive,omitempty`, `commit,omitempty`); `type List struct{ Marketplaces []Marketplace; Plugins []string }` (json `marketplaces`, `plugins`); `func Load(path string) (List, error)`; `func (l List) Write(path string) error`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -621,13 +623,13 @@ import (
 
 func TestRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "plugins.json")
-	l := List{Marketplaces: []Marketplace{{Name: "NovusEdge", Bundle: "mp-NovusEdge.bundle"}, {Name: "curt", GitHub: "o/curt"}},
+	l := List{Marketplaces: []Marketplace{{Name: "NovusEdge", Archive: "mp-NovusEdge.tar", Commit: "abc"}, {Name: "curt", GitHub: "o/curt"}},
 		Plugins: []string{"docket@NovusEdge", "curt@curt"}}
 	if err := l.Write(p); err != nil {
 		t.Fatal(err)
 	}
 	back, err := Load(p)
-	if err != nil || len(back.Plugins) != 2 || back.Marketplaces[0].Bundle != "mp-NovusEdge.bundle" {
+	if err != nil || len(back.Plugins) != 2 || back.Marketplaces[0].Archive != "mp-NovusEdge.tar" || back.Marketplaces[0].Commit != "abc" {
 		t.Fatalf("%+v %v", back, err)
 	}
 }
@@ -741,7 +743,10 @@ import (
 type Marketplace struct {
 	Name   string `json:"name"`
 	GitHub string `json:"github,omitempty"` // owner/repo, for public marketplaces
-	Bundle string `json:"bundle,omitempty"` // git bundle file in the stage dir, for private ones
+	// A tar of a private marketplace's tree, in the stage dir. Not a git bundle: Claude Code's
+	// marketplace clones are shallow, and a bundle of a shallow clone cannot be fetched.
+	Archive string `json:"archive,omitempty"`
+	Commit  string `json:"commit,omitempty"` // the archived commit, so the host can tell it is stale
 }
 
 type List struct {
@@ -1137,7 +1142,7 @@ func testEnv(t *testing.T, f *host.Fake) *Env {
 
 - [ ] **Step 1: Write the failing tests**
 
-`installer/internal/steps/root_test.go` (imports: `context`, `io`, `os`, `path/filepath`, `strings`, `testing`, `time`, plus `answers`, `host`, `ui`):
+`installer/internal/steps/root_test.go` (imports: `context`, `io`, `os`, `strings`, `testing`, `time`, plus `answers`, `host`, `ui`):
 
 ```go
 func TestPackagesCheckNamesMissingTools(t *testing.T) {
@@ -1151,6 +1156,18 @@ func TestPackagesCheckNamesMissingTools(t *testing.T) {
 	}
 }
 
+func TestPackagesApplyInstallsOnlyMissingTools(t *testing.T) {
+	f := host.NewFake().On("pacman -Syu --noconfirm --needed github-cli nodejs", 0, "")
+	for _, tool := range []string{"git", "tmux", "curl"} {
+		f.On("sh -c command -v "+tool, 0, "/usr/bin/"+tool)
+	}
+	e := testEnv(t, f)
+	e.Distro = host.Distro{ID: "arch", Manager: host.Pacman}
+	if err := (Packages{}).Apply(context.Background(), e); err != nil {
+		t.Fatalf("%v; calls %v", err, f.Calls)
+	}
+}
+
 func TestPackagesApplyAddsGHRepoOnRHELOnly(t *testing.T) {
 	for _, c := range []struct {
 		distro host.Distro
@@ -1159,7 +1176,7 @@ func TestPackagesApplyAddsGHRepoOnRHELOnly(t *testing.T) {
 		f := host.NewFake().
 			On("dnf install -y dnf-plugins-core", 0, "").
 			On("dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo", 0, "").
-			On("dnf install -y git tmux curl nodejs gh", 0, "")
+			On("dnf install -y git tmux curl gh nodejs", 0, "")
 		e := testEnv(t, f)
 		e.Distro = c.distro
 		if err := (Packages{}).Apply(context.Background(), e); err != nil {
@@ -1197,7 +1214,7 @@ func TestTailscaleApplyInLoopModeStartsDaemonAndLogsIn(t *testing.T) {
 	if err := (Tailscale{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran(daemon) || !f.Ran("interactive: tailscale up --hostname=la-smoke") || !f.Ran("tailscale set --ssh") {
+	if !f.Ran(daemon) || !f.Ran("interactive: tailscale up --hostname=la-smoke --ssh") || f.Ran("tailscale set --ssh") {
 		t.Fatalf("calls: %v", f.Calls)
 	}
 	if f.Ran("systemctl enable --now tailscaled") {
@@ -1248,12 +1265,25 @@ package steps
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
 )
 
 var tools = []string{"git", "tmux", "curl", "gh", "node"}
+
+// pkgName maps a tool to its package; only missing tools are installed, since reinstalling
+// curl on RHEL 9 conflicts with its default curl-minimal.
+func pkgName(m host.Manager, tool string) string {
+	switch {
+	case tool == "node":
+		return "nodejs"
+	case tool == "gh" && m == host.Pacman:
+		return "github-cli"
+	}
+	return tool
+}
 
 type Packages struct{}
 
@@ -1277,23 +1307,32 @@ func (Packages) Check(ctx context.Context, e *Env) (bool, string, error) {
 }
 
 func (Packages) Apply(ctx context.Context, e *Env) error {
+	missing := missingTools(ctx, e)
+	if len(missing) == 0 {
+		return nil
+	}
+	var pkgs []string
+	for _, t := range missing {
+		pkgs = append(pkgs, pkgName(e.Distro.Manager, t))
+	}
 	var cmds []host.Cmd
 	switch e.Distro.Manager {
 	case host.Apt:
+		// gh comes from the distribution, which has it since Debian 12 and Ubuntu 22.04.
 		env := []string{"DEBIAN_FRONTEND=noninteractive"}
 		cmds = []host.Cmd{
 			{Name: "apt-get", Args: []string{"update"}, Env: env},
-			{Name: "apt-get", Args: []string{"install", "-y", "git", "tmux", "curl", "ca-certificates", "nodejs", "gh"}, Env: env},
+			{Name: "apt-get", Args: append([]string{"install", "-y", "ca-certificates"}, pkgs...), Env: env},
 		}
 	case host.Pacman:
-		cmds = []host.Cmd{{Name: "pacman", Args: []string{"-Syu", "--noconfirm", "--needed", "git", "tmux", "curl", "nodejs", "github-cli"}}}
+		cmds = []host.Cmd{{Name: "pacman", Args: append([]string{"-Syu", "--noconfirm", "--needed"}, pkgs...)}}
 	case host.Dnf:
-		if e.Distro.NeedsGHRepo() {
+		if e.Distro.NeedsGHRepo() && slices.Contains(missing, "gh") {
 			cmds = append(cmds,
 				host.Cmd{Name: "dnf", Args: []string{"install", "-y", "dnf-plugins-core"}},
 				host.Cmd{Name: "dnf", Args: []string{"config-manager", "--add-repo", "https://cli.github.com/packages/rpm/gh-cli.repo"}})
 		}
-		cmds = append(cmds, host.Cmd{Name: "dnf", Args: []string{"install", "-y", "git", "tmux", "curl", "nodejs", "gh"}})
+		cmds = append(cmds, host.Cmd{Name: "dnf", Args: append([]string{"install", "-y"}, pkgs...)})
 	}
 	for _, c := range cmds {
 		if err := e.UI.Spin(c.String(), func() error { _, err := e.MustCmd(ctx, c); return err }); err != nil {
@@ -1395,11 +1434,13 @@ func (Tailscale) Apply(ctx context.Context, e *Env) error {
 			return err
 		}
 		e.Answers.Hostname = name
-		if err := e.Run.Interactive(ctx, cmd("tailscale", "up", "--hostname="+name)); err != nil {
+		// --ssh here, not a later set: once RunSSH is on, up refuses to run without it.
+		if err := e.Run.Interactive(ctx, cmd("tailscale", "up", "--hostname="+name, "--ssh")); err != nil {
 			return err
 		}
 		e.UI.Note("Tailscale key expiry", "Open https://login.tailscale.com/admin/machines, find "+name+
 			" and choose Disable key expiry. An untagged node's key otherwise expires after 180 days.")
+		return nil
 	}
 	_, err := e.Must(ctx, "tailscale", "set", "--ssh")
 	return err
@@ -1523,7 +1564,9 @@ def test_a_failing_tick_is_logged_and_the_loop_goes_on(tmp_path):
         return subprocess.CompletedProcess(argv, next(codes))
 
     log = tmp_path / "state" / "run.log"
-    run_loop(["linear-agents", "tick"], log, 180, run=run, sleep=sleeps.append, now=lambda: 0, iterations=2)
+    run_loop(
+        ["linear-agents", "tick"], log, 180, run=run, sleep=sleeps.append, now=lambda: 0, iterations=2
+    )
 
     assert calls == [["linear-agents", "tick"], ["linear-agents", "tick"]]
     assert sleeps == [180]
@@ -1580,7 +1623,7 @@ Add `"run": cmd_run,` to `COMMANDS` and `sub.add_parser("run")` in `build_parser
 
 - [ ] **Step 3: Verify and commit**
 
-Run: `uv run pytest -q && uv run ruff check && uv run pyrefly check` — Expected: all pass.
+Run: `uv run pytest -q && uv run ruff format --check && uv run ruff check && uv run pyrefly check` — Expected: all pass.
 
 ```bash
 git add src/linear_agents/tick.py src/linear_agents/cli.py tests/test_run_loop.py
@@ -1809,7 +1852,8 @@ func (Repo) Apply(ctx context.Context, e *Env) error {
 		return err
 	}
 	for _, c := range []host.Cmd{
-		{Name: "./setup", Dir: dir},
+		// Go is only for building la-setup on the desktop; the host does not need it.
+		{Name: "./setup", Dir: dir, Env: []string{"MISE_DISABLE_TOOLS=go"}},
 		{Name: e.Real(".local/bin/mise"), Args: []string{"exec", "--", "uv", "tool", "install", "--force", "--editable", "."}, Dir: dir},
 	} {
 		if err := e.UI.Spin(c.String(), func() error { _, err := e.MustCmd(ctx, c); return err }); err != nil {
@@ -1953,8 +1997,8 @@ git commit -s -m "Add the installer's repo and secrets steps"
 - Create: `installer/internal/steps/claude.go`, `claude_test.go`
 
 **Interfaces:**
-- Consumes: `plugins.List`, `plugins.Load`, `syncFromBundle`, `host.AtLeast`, `worktreesRel`.
-- Produces: `type Claude struct{}` implementing `Step`; `var minClaude = [3]int{2, 1, 293}`.
+- Consumes: `plugins.List`, `plugins.Load`, `host.AtLeast`, `worktreesRel`, `Fake.OnSeq`.
+- Produces: `type Claude struct{}` implementing `Step`; `var minClaude = [3]int{2, 1, 293}`; `const marketplacesRel = "agents/marketplaces"`; `func extractArchive(ctx, e *Env, archive, dir, commit string) error`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2010,7 +2054,9 @@ func TestClaudeCheck(t *testing.T) {
 func TestClaudeApplyAfterAbortedLoginSkipsReinstall(t *testing.T) {
 	f := host.NewFake().
 		On(claudeBin+" --version", 0, "2.1.295\n").
-		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`).
+		OnSeq(claudeBin+" auth status",
+			host.Result{Stdout: `{"loggedIn":false,"authMethod":"none"}`},
+			host.Result{Stdout: `{"loggedIn":true,"authMethod":"claude.ai"}`}).
 		On(claudeBin+" plugin marketplace add o/curt", 0, "").
 		On(claudeBin+" plugin install curt@curt", 0, "")
 	e := claudeEnv(t, f, plugins.List{Marketplaces: []plugins.Marketplace{{Name: "curt", GitHub: "o/curt"}}, Plugins: []string{"curt@curt"}})
@@ -2020,22 +2066,20 @@ func TestClaudeApplyAfterAbortedLoginSkipsReinstall(t *testing.T) {
 	if f.Ran("sh -c curl -fsSL https://claude.ai/install.sh | bash") {
 		t.Fatal("reinstalled a current claude")
 	}
-	if !f.Ran(claudeBin+" plugin install curt@curt") {
+	if !f.Ran("interactive: "+claudeBin) || !f.Ran(claudeBin+" plugin install curt@curt") {
 		t.Fatalf("calls: %v", f.Calls)
 	}
 }
 
-func TestClaudeApplyRegistersBundledMarketplaceAsDirectory(t *testing.T) {
+func TestClaudeArchivedMarketplaceIsExtractedRegisteredAndTracked(t *testing.T) {
 	dir := "/home/linear-agents/agents/marketplaces/NovusEdge"
 	f := host.NewFake().
 		On(claudeBin+" --version", 0, "2.1.295\n").
-		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`).
-		On("git init -q "+dir, 0, "")
-	e := claudeEnv(t, f, plugins.List{Marketplaces: []plugins.Marketplace{{Name: "NovusEdge", Bundle: "mp-NovusEdge.bundle"}},
-		Plugins: []string{"docket@NovusEdge"}})
-	bundle := filepath.Join(e.Stage, "mp-NovusEdge.bundle")
-	f.On("git -C "+dir+" fetch -q "+bundle+" HEAD", 0, "").
-		On("git -C "+dir+" checkout -q --detach FETCH_HEAD", 0, "").
+		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
+	l := plugins.List{Marketplaces: []plugins.Marketplace{{Name: "NovusEdge", Archive: "mp-NovusEdge.tar", Commit: "c1"}},
+		Plugins: []string{"docket@NovusEdge"}}
+	e := claudeEnv(t, f, l)
+	f.On("tar -xf "+filepath.Join(e.Stage, "mp-NovusEdge.tar")+" -C "+dir, 0, "").
 		On(claudeBin+" plugin marketplace add "+dir, 0, "").
 		On(claudeBin+" plugin install docket@NovusEdge", 0, "")
 	if err := (Claude{}).Apply(context.Background(), e); err != nil {
@@ -2043,6 +2087,15 @@ func TestClaudeApplyRegistersBundledMarketplaceAsDirectory(t *testing.T) {
 	}
 	if !f.Ran(claudeBin + " plugin marketplace add " + dir) {
 		t.Fatalf("calls: %v", f.Calls)
+	}
+	writeInstalled(t, e, `{"plugins":{"docket@NovusEdge":[{"scope":"user"}]}}`)
+	if done, _, _ := (Claude{}).Check(context.Background(), e); !done {
+		t.Fatal("want done after extracting c1")
+	}
+	l.Marketplaces[0].Commit = "c2"
+	l.Write(filepath.Join(e.Stage, "plugins.json"))
+	if done, detail, _ := (Claude{}).Check(context.Background(), e); done || detail != "marketplace NovusEdge out of date" {
+		t.Fatalf("detail=%q", detail)
 	}
 }
 ```
@@ -2120,6 +2173,22 @@ func missingPlugins(e *Env, l plugins.List) []string {
 	return missing
 }
 
+const marketplacesRel = "agents/marketplaces"
+
+// extractArchive replaces dir (a real path) with the archive's tree and records its commit.
+func extractArchive(ctx context.Context, e *Env, archive, dir, commit string) error {
+	if err := os.RemoveAll(e.Path(dir)); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(e.Path(dir), 0o755); err != nil {
+		return err
+	}
+	if _, err := e.Must(ctx, "tar", "-xf", archive, "-C", dir); err != nil {
+		return err
+	}
+	return os.WriteFile(e.Path(filepath.Join(dir, ".la-commit")), []byte(commit), 0o644)
+}
+
 func knownMarketplaces(e *Env) map[string]json.RawMessage {
 	known := map[string]json.RawMessage{}
 	b, _ := os.ReadFile(e.HomePath(".claude/plugins/known_marketplaces.json"))
@@ -2140,6 +2209,14 @@ func (Claude) Check(ctx context.Context, e *Env) (bool, string, error) {
 	}
 	if m := missingPlugins(e, l); len(m) > 0 {
 		return false, "plugins missing: " + strings.Join(m, ", "), nil
+	}
+	for _, m := range l.Marketplaces {
+		if m.Archive == "" {
+			continue
+		}
+		if b, _ := os.ReadFile(e.HomePath(filepath.Join(marketplacesRel, m.Name, ".la-commit"))); string(b) != m.Commit {
+			return false, "marketplace " + m.Name + " out of date", nil
+		}
 	}
 	_, v := claudeVersion(ctx, e)
 	return true, v + ", logged in, " + plural(len(l.Plugins), "plugin"), nil
@@ -2173,10 +2250,10 @@ func (Claude) Apply(ctx context.Context, e *Env) error {
 	known := knownMarketplaces(e)
 	for _, m := range l.Marketplaces {
 		source := m.GitHub
-		if m.Bundle != "" {
-			// Synced on every run: a directory marketplace loads its plugins in place.
-			source = e.Real(filepath.Join("agents/marketplaces", m.Name))
-			if err := syncFromBundle(ctx, e, filepath.Join(e.Stage, m.Bundle), source); err != nil {
+		if m.Archive != "" {
+			// Replaced on every run: a directory marketplace loads its plugins in place.
+			source = e.Real(filepath.Join(marketplacesRel, m.Name))
+			if err := extractArchive(ctx, e, filepath.Join(e.Stage, m.Archive), source, m.Commit); err != nil {
 				return err
 			}
 		}
@@ -2207,7 +2284,7 @@ func plural(n int, word string) string {
 }
 ```
 
-The bundled-marketplace test's fake has no `known_marketplaces.json`, so `add` runs; the abort-login test's `auth status` reports logged in, so no interactive call happens. Both pin Review Focus item 1: the version check gates the install.
+The aborted-login test pins Review Focus item 1: claude is current, so only the login and the plugins run. The archive test's fake has no `known_marketplaces.json`, so `add` runs.
 
 - [ ] **Step 3: Verify and commit**
 
@@ -2215,7 +2292,7 @@ Run: `go test ./installer/internal/steps/` — Expected: PASS.
 
 ```bash
 git add installer/internal/steps
-git commit -s -m "Add the installer's Claude step with bundled private marketplaces"
+git commit -s -m "Add the installer's Claude step with archived private marketplaces"
 ```
 
 ---
@@ -2229,7 +2306,8 @@ git commit -s -m "Add the installer's Claude step with bundled private marketpla
 - Consumes: `deploy.Files`, `answers.Answers`, `answers.Repo`.
 - Produces:
   - `func RenderConfig(example []byte, a *answers.Answers) ([]byte, error)`.
-  - `func doctor(ctx, e *Env) (out string, fails []string)` — runs `<home>/.local/bin/linear-agents doctor`, returns stdout and the lines starting with `FAIL`.
+  - `func servicePath(home string) string` — `PATH=<home>/.local/bin:<home>/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin`, the unit's PATH.
+  - `func doctor(ctx, e *Env) (out string, fails []string)` — runs `<home>/.local/bin/linear-agents doctor` with `servicePath` in its environment, returns stdout and the lines starting with `FAIL`.
   - `type Config struct{}` implementing `Step`.
   - `const credentialHelper string`.
 
@@ -2281,6 +2359,27 @@ func TestRenderConfigMatchesGolden(t *testing.T) {
 	}
 }
 
+func TestDoctorRunsWithTheServicePath(t *testing.T) {
+	var got []string
+	r := envRecorder{Fake: host.NewFake(), env: &got}
+	e := testEnv(t, r.Fake)
+	e.Run = r
+	doctor(context.Background(), e)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "PATH=/home/linear-agents/.local/bin:") {
+		t.Fatalf("env %v", got)
+	}
+}
+
+type envRecorder struct {
+	*host.Fake
+	env *[]string
+}
+
+func (r envRecorder) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
+	*r.env = c.Env
+	return r.Fake.Run(ctx, c)
+}
+
 func TestConfigCheckUsesDoctorConfigAndRepoLines(t *testing.T) {
 	bin := "/home/linear-agents/.local/bin/linear-agents doctor"
 	f := host.NewFake().On(bin, 1, "ok    config: /x\nFAIL  repo r: /home/linear-agents/src/r is not a git clone\nFAIL  claude login: none\n")
@@ -2318,6 +2417,7 @@ import (
 
 	"github.com/NovusEdge/linear-agents/deploy"
 	"github.com/NovusEdge/linear-agents/installer/internal/answers"
+	"github.com/NovusEdge/linear-agents/installer/internal/host"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -2347,8 +2447,14 @@ func RenderConfig(example []byte, a *answers.Answers) ([]byte, error) {
 	return toml.Marshal(m)
 }
 
+// servicePath is the PATH the tick unit sets. A sudo -iu login shell may lack ~/.local/bin
+// (Debian adds it only if it existed at login, Arch never), and doctor looks tools up on PATH.
+func servicePath(home string) string {
+	return fmt.Sprintf("PATH=%[1]s/.local/bin:%[1]s/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin", home)
+}
+
 func doctor(ctx context.Context, e *Env) (string, []string) {
-	r, _ := e.Run.Run(ctx, cmd(e.Real(".local/bin/linear-agents"), "doctor"))
+	r, _ := e.Run.Run(ctx, host.Cmd{Name: e.Real(".local/bin/linear-agents"), Args: []string{"doctor"}, Env: []string{servicePath(e.Home)}})
 	var fails []string
 	for _, line := range strings.Split(r.Stdout, "\n") {
 		if strings.HasPrefix(line, "FAIL") {
@@ -2627,10 +2733,8 @@ func (e *Env) userctl(args ...string) host.Cmd {
 		Env: []string{"XDG_RUNTIME_DIR=/run/user/" + strconv.Itoa(e.UID)}}
 }
 
-// loopCommand matches the PATH the tick unit sets, which sessions and checks inherit.
-func loopCommand(home string) string {
-	return fmt.Sprintf("env PATH=%[1]s/.local/bin:%[1]s/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin linear-agents run", home)
-}
+// Sessions and checks inherit the loop's PATH, as they inherit the unit's.
+func loopCommand(home string) string { return "env " + servicePath(home) + " linear-agents run" }
 
 func (e *Env) loopPane(ctx context.Context) string {
 	return e.Output(ctx, "tmux", "-N", "-L", "linear-agents", "list-panes", "-t", "=la-loop", "-F", "#{pane_start_command}")
@@ -2733,7 +2837,7 @@ git commit -s -m "Add the installer's run step for both modes"
 
 **Interfaces:**
 - Consumes: everything in `steps`, `ui`, `answers`, `host`; `ship.Main(args []string) int` (Task 12; until then `main.go` prints "ship: not built yet" — remove that line in Task 12).
-- Produces: `func checkPhase(phase string, euid int) error`; `func handoffArgs(answersIn string, skip bool, dest string) []string`; `ui.NewHuh() *Huh`.
+- Produces: `func checkPhase(phase string, euid int) error`; `func handoffArgs(answersIn string, skip bool, dest string) []string`; `func copyScript(answersIn string) string`; `func handoff(ctx, host.Runner, stage, answersIn string, args []string) error`; `ui.NewHuh() *Huh`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2743,8 +2847,12 @@ git commit -s -m "Add the installer's run step for both modes"
 package main
 
 import (
+	"context"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/NovusEdge/linear-agents/installer/internal/host"
 )
 
 func TestCheckPhase(t *testing.T) {
@@ -2769,6 +2877,24 @@ func TestHandoffArgs(t *testing.T) {
 	}
 	if got := handoffArgs("", false, "/d"); !slices.Equal(got, []string{"--phase", "service"}) {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestHandoffNeverWritesIntoTheServiceHomeAsRoot(t *testing.T) {
+	f := host.NewFake().
+		On("chown -R root:linear-agents /tmp/la-setup", 0, "").
+		On("chmod -R g+rX,o-rwx /tmp/la-setup", 0, "").
+		On("sudo -iu linear-agents sh -c "+copyScript("e2e.toml"), 0, "")
+	if err := handoff(context.Background(), f, "/tmp/la-setup", "/tmp/la-setup/e2e.toml", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.Calls {
+		if strings.Contains(c, "/home/linear-agents") && !strings.HasPrefix(c, "interactive: sudo -iu linear-agents") {
+			t.Errorf("root touched the service home: %s", c)
+		}
+	}
+	if err := handoff(context.Background(), host.NewFake(), "/tmp/la-setup", "/x/a;rm -rf ~.toml", nil); err == nil {
+		t.Error("a shell metacharacter in the answers file name must be refused")
 	}
 }
 ```
@@ -2903,6 +3029,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/answers"
@@ -2944,12 +3071,29 @@ func handoffArgs(answersIn string, skip bool, dest string) []string {
 	return args
 }
 
-func handoff(ctx context.Context, r host.Runner, stage string, args []string) error {
-	owner := steps.ServiceUser + ":" + steps.ServiceUser
+var stageFile = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// copyScript is what the service user runs to copy the stage into its own home.
+func copyScript(answersIn string) string {
+	files := "la-setup *.bundle *.tar plugins.json"
+	if answersIn != "" {
+		files += " " + filepath.Base(answersIn)
+	}
+	// The test keeps an unmatched glob such as *.tar from failing cp.
+	return `mkdir -p ~/.cache/la-setup && cd /tmp/la-setup && for f in ` + files +
+		`; do if [ -e "$f" ]; then cp "$f" ~/.cache/la-setup/; fi; done`
+}
+
+// handoff lets the service user read the stage and copy it itself. Root never writes inside
+// the service home: an agent could plant a symlink there and have root write through it.
+func handoff(ctx context.Context, r host.Runner, stage, answersIn string, args []string) error {
+	if answersIn != "" && !stageFile.MatchString(filepath.Base(answersIn)) {
+		return fmt.Errorf("answers file name %q: use letters, digits, '.', '_' or '-'", filepath.Base(answersIn))
+	}
 	for _, c := range []host.Cmd{
-		{Name: "install", Args: []string{"-d", "-o", steps.ServiceUser, "-g", steps.ServiceUser, "-m", "700", filepath.Dir(serviceStage), serviceStage}},
-		{Name: "cp", Args: []string{"-a", stage + "/.", serviceStage + "/"}},
-		{Name: "chown", Args: []string{"-R", owner, serviceStage}},
+		{Name: "chown", Args: []string{"-R", "root:" + steps.ServiceUser, stage}},
+		{Name: "chmod", Args: []string{"-R", "g+rX,o-rwx", stage}},
+		{Name: "sudo", Args: []string{"-iu", steps.ServiceUser, "sh", "-c", copyScript(answersIn)}},
 	} {
 		if _, err := host.Must(ctx, r, c); err != nil {
 			return err
@@ -3033,7 +3177,7 @@ func run(args []string) int {
 	}
 	err = steps.RunAll(ctx, env, list)
 	if err == nil && *phase == "root" {
-		err = handoff(ctx, runner, stage, handoffArgs(*answersIn, *skip, serviceStage))
+		err = handoff(ctx, runner, stage, *answersIn, handoffArgs(*answersIn, *skip, serviceStage))
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return exit.ExitCode() // the service phase already reported its error
@@ -3075,7 +3219,7 @@ git commit -s -m "Wire the installer's phases, huh forms and root-to-service han
 - Consumes: `plugins.List`, `plugins.Marketplace`, `host.Exec`, `host.Must`.
 - Produces:
   - `func Main(args []string) int` — flags `--skip-interactive`, `--answers FILE`, `--stage-only DIR`; positional target (not needed with `--stage-only`).
-  - `type planned struct{ List plugins.List; BundleFrom map[string]string; Warnings []string }`; `func planPlugins(configDir string, private func(repo string) (bool, error)) (planned, error)`.
+  - `type planned struct{ List plugins.List; ArchiveFrom map[string]string; Warnings []string }`; `func planPlugins(configDir string, private func(repo string) (bool, error)) (planned, error)` — private marketplaces get `Archive: "mp-<name>.tar"`; `stageFiles` fills in `Commit`.
   - `type Dest struct{ SSH string; Opts []string }`; `func resolveTarget(ctx, target, daytonaConfig string, client *http.Client) (Dest, error)`.
   - `func archFor(unameM string) (string, error)` (`x86_64`→`amd64`, `aarch64`/`arm64`→`arm64`).
 
@@ -3094,6 +3238,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -3119,11 +3264,11 @@ func TestPlanPluginsBundlesPrivateAndSkipsDisabled(t *testing.T) {
 	if !slices.Equal(p.List.Plugins, []string{"curt@curt", "docket@NovusEdge"}) {
 		t.Fatalf("plugins %v", p.List.Plugins)
 	}
-	if p.BundleFrom["NovusEdge"] != "/m/NovusEdge" || len(p.BundleFrom) != 1 {
-		t.Fatalf("bundles %v", p.BundleFrom)
+	if p.ArchiveFrom["NovusEdge"] != "/m/NovusEdge" || len(p.ArchiveFrom) != 1 {
+		t.Fatalf("archives %v", p.ArchiveFrom)
 	}
 	for _, m := range p.List.Marketplaces {
-		if m.Name == "curt" && m.GitHub != "o/curt" || m.Name == "NovusEdge" && m.Bundle != "mp-NovusEdge.bundle" {
+		if m.Name == "curt" && m.GitHub != "o/curt" || m.Name == "NovusEdge" && m.Archive != "mp-NovusEdge.tar" {
 			t.Fatalf("marketplace %+v", m)
 		}
 	}
@@ -3160,8 +3305,16 @@ func TestResolveTargetDaytonaGetsAToken(t *testing.T) {
 		"id": "initial", "activeOrganizationId": "org1",
 		"api": map[string]any{"url": srv.URL + "/api", "key": "k", "token": map[string]string{"accessToken": "acc"}}}}})
 	d, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
-	if err != nil || d.SSH != "tok@ssh.example.test" {
+	if err != nil || d.SSH != "tok@ssh.example.test" || d.Token != "tok" {
 		t.Fatalf("%+v %v", d, err)
+	}
+}
+
+func TestRedactHidesTheToken(t *testing.T) {
+	var b strings.Builder
+	redact{&b, "tok123"}.Write([]byte("$ ssh tok123@ssh.app.daytona.io uname -m\n"))
+	if strings.Contains(b.String(), "tok123") || !strings.Contains(b.String(), "<token>@ssh.app.daytona.io") {
+		t.Fatalf("%q", b.String())
 	}
 }
 
@@ -3197,12 +3350,12 @@ import (
 
 type planned struct {
 	List       plugins.List
-	BundleFrom map[string]string // marketplace name → its local clone
+	ArchiveFrom map[string]string // marketplace name → its local clone
 	Warnings   []string
 }
 
 func planPlugins(configDir string, private func(repo string) (bool, error)) (planned, error) {
-	p := planned{BundleFrom: map[string]string{}}
+	p := planned{ArchiveFrom: map[string]string{}}
 	var settings struct {
 		EnabledPlugins map[string]bool `json:"enabledPlugins"`
 	}
@@ -3248,8 +3401,8 @@ func planPlugins(configDir string, private func(repo string) (bool, error)) (pla
 		}
 		m := plugins.Marketplace{Name: mp, GitHub: k.Source.Repo}
 		if priv {
-			m = plugins.Marketplace{Name: mp, Bundle: "mp-" + mp + ".bundle"}
-			p.BundleFrom[mp] = k.InstallLocation
+			m = plugins.Marketplace{Name: mp, Archive: "mp-" + mp + ".tar"}
+			p.ArchiveFrom[mp] = k.InstallLocation
 		}
 		p.List.Marketplaces = append(p.List.Marketplaces, m)
 	}
@@ -3263,10 +3416,12 @@ func planPlugins(configDir string, private func(repo string) (bool, error)) (pla
 package ship
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -3274,8 +3429,25 @@ import (
 )
 
 type Dest struct {
-	SSH  string
-	Opts []string
+	SSH   string
+	Token string // a Daytona SSH token inside SSH, redacted from logs
+	Opts  []string
+}
+
+// redact keeps a credential out of the command echo on the desktop terminal.
+type redact struct {
+	w      io.Writer
+	secret string
+}
+
+func (r redact) Write(p []byte) (int, error) {
+	if r.secret != "" {
+		if _, err := r.w.Write(bytes.ReplaceAll(p, []byte(r.secret), []byte("<token>"))); err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+	return r.w.Write(p)
 }
 
 type daytonaAuth struct{ url, bearer, org string }
@@ -3329,10 +3501,41 @@ func (a daytonaAuth) do(ctx context.Context, client *http.Client, method, path s
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		// The CLI refreshes its stored access token; this reader does not.
+		return errors.New("Daytona refused the stored login; run daytona list to refresh it, then ship again")
+	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("Daytona API %s %s: %s", method, path, resp.Status)
+		return &apiError{fmt.Sprintf("Daytona API %s %s: %s", method, path, resp.Status), resp.StatusCode}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+type apiError struct {
+	msg  string
+	code int
+}
+
+func (e *apiError) Error() string { return e.msg }
+
+// sandboxID looks a sandbox up by name, falling back to the list if the API wants an id.
+func (a daytonaAuth) sandboxID(ctx context.Context, client *http.Client, name string) (string, error) {
+	var sb struct{ ID string }
+	err := a.do(ctx, client, "GET", "/sandbox/"+url.PathEscape(name), &sb)
+	var api *apiError
+	if !errors.As(err, &api) || api.code != http.StatusNotFound {
+		return sb.ID, err
+	}
+	var all []struct{ ID, Name string }
+	if err := a.do(ctx, client, "GET", "/sandbox", &all); err != nil {
+		return "", err
+	}
+	for _, s := range all {
+		if s.Name == name {
+			return s.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no Daytona sandbox named %q in this organization", name)
 }
 
 func resolveTarget(ctx context.Context, target, daytonaConfig string, client *http.Client) (Dest, error) {
@@ -3344,15 +3547,15 @@ func resolveTarget(ctx context.Context, target, daytonaConfig string, client *ht
 	if err != nil {
 		return Dest{}, err
 	}
-	var sb struct{ ID string }
-	if err := auth.do(ctx, client, "GET", "/sandbox/"+url.PathEscape(name), &sb); err != nil {
+	id, err := auth.sandboxID(ctx, client, name)
+	if err != nil {
 		return Dest{}, err
 	}
 	var access struct {
 		Token      string `json:"token"`
 		SSHCommand string `json:"sshCommand"`
 	}
-	if err := auth.do(ctx, client, "POST", "/sandbox/"+sb.ID+"/ssh-access?expiresInMinutes=60", &access); err != nil {
+	if err := auth.do(ctx, client, "POST", "/sandbox/"+id+"/ssh-access?expiresInMinutes=60", &access); err != nil {
 		return Dest{}, err
 	}
 	host := "ssh.app.daytona.io"
@@ -3361,7 +3564,7 @@ func resolveTarget(ctx context.Context, target, daytonaConfig string, client *ht
 			host = h
 		}
 	}
-	return Dest{SSH: access.Token + "@" + host, Opts: []string{"-o", "StrictHostKeyChecking=accept-new"}}, nil
+	return Dest{SSH: access.Token + "@" + host, Token: access.Token, Opts: []string{"-o", "StrictHostKeyChecking=accept-new"}}, nil
 }
 ```
 
@@ -3434,10 +3637,19 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn s
 	for _, w := range plan.Warnings {
 		fmt.Fprintln(os.Stderr, "ship:", w)
 	}
-	for name, from := range plan.BundleFrom {
-		if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", from, "bundle", "create", filepath.Join(dir, "mp-"+name+".bundle"), "HEAD"}}); err != nil {
+	for i, m := range plan.List.Marketplaces {
+		from, ok := plan.ArchiveFrom[m.Name]
+		if !ok {
+			continue
+		}
+		if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", from, "archive", "--format=tar", "-o", filepath.Join(dir, m.Archive), "HEAD"}}); err != nil {
 			return err
 		}
+		sha, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", from, "rev-parse", "HEAD"}})
+		if err != nil {
+			return err
+		}
+		plan.List.Marketplaces[i].Commit = strings.TrimSpace(sha)
 	}
 	if err := plan.List.Write(filepath.Join(dir, "plugins.json")); err != nil {
 		return err
@@ -3482,7 +3694,7 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: la-setup ship [--skip-interactive] [--answers FILE] <ssh-target|daytona:SANDBOX>")
 		return 2
 	}
-	if err := ship(ctx, r, root, fs.Arg(0), *answersIn, *skip); err != nil {
+	if err := ship(ctx, root, fs.Arg(0), *answersIn, *skip); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return exit.ExitCode() // the host already reported its error
@@ -3493,12 +3705,13 @@ func Main(args []string) int {
 	return 0
 }
 
-func ship(ctx context.Context, r host.Runner, root, target, answersIn string, skip bool) error {
+func ship(ctx context.Context, root, target, answersIn string, skip bool) error {
 	home, _ := os.UserHomeDir()
 	dest, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), http.DefaultClient)
 	if err != nil {
 		return err
 	}
+	r := host.Exec{Log: redact{os.Stderr, dest.Token}}
 	unameM, err := host.Must(ctx, r, sshCmd(dest, false, "uname -m"))
 	if err != nil {
 		return err
@@ -3549,11 +3762,11 @@ importing `github.com/NovusEdge/linear-agents/installer/internal/ship`.
 - [ ] **Step 5: Verify and commit**
 
 Run: `go vet ./... && go test ./... && just build-setup && build/la-setup ship --stage-only build/stage && ls build/stage && jq . build/stage/plugins.json`
-Expected: PASS; `build/stage` holds `la-setup`, `linear-agents.bundle`, `mp-NovusEdge.bundle`, `plugins.json`; the plugin list names `docket@NovusEdge` with `"bundle"` and the public marketplaces with `"github"`.
+Expected: PASS; `build/stage` holds `la-setup`, `linear-agents.bundle`, `mp-NovusEdge.tar`, `plugins.json`; the plugin list names `docket@NovusEdge` with `"archive"` and `"commit"`, and the public marketplaces with `"github"`. Then check the archive holds a marketplace: `tar -tf build/stage/mp-NovusEdge.tar | grep .claude-plugin/marketplace.json`.
 
 ```bash
 git add installer
-git commit -s -m "Add la-setup ship: stage bundles and the plugin list, then run on the host"
+git commit -s -m "Add la-setup ship: stage the bundle, archives and plugin list, then run on the host"
 ```
 
 ---
