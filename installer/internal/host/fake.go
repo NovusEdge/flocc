@@ -10,6 +10,7 @@ type Fake struct {
 	Responses map[string]Result
 	Seqs      map[string][]Result
 	Calls     []string
+	Argv      [][]string // name and args of each Run, unjoined
 
 	InteractiveErrs map[string]error
 }
@@ -30,6 +31,7 @@ func (f *Fake) OnSeq(cmd string, rs ...Result) *Fake {
 
 func (f *Fake) Run(_ context.Context, c Cmd) (Result, error) {
 	f.Calls = append(f.Calls, c.String())
+	f.Argv = append(f.Argv, append([]string{c.Name}, c.Args...))
 	if seq := f.Seqs[c.String()]; len(seq) > 0 {
 		r := seq[0]
 		if len(seq) > 1 {

@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,5 +40,21 @@ func TestWriteLoadRoundTripAndMissingFile(t *testing.T) {
 	}
 	if got, err := Load(p); err != nil || got != want {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestLoadRejectsUnusableIdentities(t *testing.T) {
+	for _, body := range []string{
+		`{"name":"Ada"}`,
+		`{"email":"a@b.test"}`,
+		`{"name":"Ada","email":"not-an-email"}`,
+		`{"name":"Ada","email":"a@b.test>"}`,
+		`{"name":"Ada","email":"a@b\ntest"}`,
+	} {
+		p := filepath.Join(t.TempDir(), "identity.json")
+		os.WriteFile(p, []byte(body), 0o644)
+		if _, err := Load(p); err == nil {
+			t.Errorf("%s: want an error", body)
+		}
 	}
 }

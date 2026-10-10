@@ -22,6 +22,7 @@ class RepoConfig:
     check: str = "just check"
     # GitHub Free organizations cannot open draft PRs on private repos.
     draft: bool = True
+    commit_trailer: bool | None = None  # None follows Config.commit_trailer
 
 
 # No claude_config_dir: sessions must share the owner's Claude Code login and
@@ -52,8 +53,13 @@ class Config:
     check_timeout_s: int = 1800
     setup_timeout_s: int = 900
     mcp_servers: dict[str, dict] = field(default_factory=dict)
+    commit_trailer: bool = True
     # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
     claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
+
+
+def trailer_enabled(cfg: Config, repo: RepoConfig) -> bool:
+    return cfg.commit_trailer if repo.commit_trailer is None else repo.commit_trailer
 
 
 def default_config_path() -> Path:

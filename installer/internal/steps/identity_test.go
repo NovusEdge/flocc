@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
@@ -30,6 +31,15 @@ func TestIdentityCheckAndApply(t *testing.T) {
 	f.On("git config --global user.name Ada L", 0, "").On("git config --global user.email ada@example.test", 0, "")
 	if err := (Identity{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
+	}
+	want := [][]string{
+		{"git", "config", "--global", "user.name", "Ada L"},
+		{"git", "config", "--global", "user.email", "ada@example.test"},
+	}
+	for _, w := range want {
+		if !slices.ContainsFunc(f.Argv, func(a []string) bool { return slices.Equal(a, w) }) {
+			t.Errorf("no call with argv %q in %q", w, f.Argv)
+		}
 	}
 	f.On("git config --global user.name", 0, "Ada L\n").On("git config --global user.email", 0, "ada@example.test\n")
 	if done, _, _ := (Identity{}).Check(context.Background(), e); !done {

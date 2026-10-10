@@ -31,7 +31,7 @@ func FromRepo(ctx context.Context, r host.Runner, dir string) (Identity, error) 
 	if id.Name == "" || id.Email == "" {
 		return id, fmt.Errorf("git user.name and user.email are not both set in %s; agents commit as you, so set them first", dir)
 	}
-	return id, nil
+	return id, id.validate()
 }
 
 // Load returns the zero Identity when the stage has none.
@@ -44,7 +44,23 @@ func Load(path string) (Identity, error) {
 	if err != nil {
 		return id, err
 	}
-	return id, json.Unmarshal(b, &id)
+	if err := json.Unmarshal(b, &id); err != nil {
+		return id, err
+	}
+	if id == (Identity{}) {
+		return id, nil
+	}
+	return id, id.validate()
+}
+
+func (id Identity) validate() error {
+	if id.Name == "" || id.Email == "" {
+		return errors.New("identity.json needs both name and email")
+	}
+	if !strings.Contains(id.Email, "@") || strings.ContainsAny(id.Email, "<>\r\n") || strings.ContainsAny(id.Name, "\r\n") {
+		return fmt.Errorf("identity.json: %q <%q> is not a usable git author", id.Name, id.Email)
+	}
+	return nil
 }
 
 func (id Identity) Write(path string) error {

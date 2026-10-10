@@ -54,7 +54,7 @@ type bundleOK struct{ *host.Fake }
 func (b *bundleOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 	if c.Name == "git" {
 		if slices.Contains(c.Args, "config") {
-			return host.Result{Stdout: "x\n"}, nil
+			return host.Result{Stdout: "x@x.test\n"}, nil
 		}
 		return host.Result{}, nil
 	}

@@ -224,6 +224,11 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     if result.status == "opened":
         rt.linear.comment(issue.id, f"PR for review: {result.url}")
         ledger.add_digest(rt.con, key, f"PR ready for review: {result.url}", rt.now())
+        if result.untrailed:
+            line = (
+                f"{key}: commits without the Linear-Agents trailer: {', '.join(result.untrailed)}"
+            )
+            ledger.add_digest(rt.con, key, line, rt.now())
         _start_review(rt, claim, issue.title, issue.description, result.url)
     elif result.status == "check_failed" and claim.fix_attempts == 0:
         extra = f"The check failed with:\n\n{result.detail}"

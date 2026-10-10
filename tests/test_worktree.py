@@ -172,7 +172,7 @@ def test_reinstalled_hook_still_chains_to_the_repo_hook_once(origin, tmp_path):
     assert (tmp_path / "repo-hook.log").read_text() == "ran\n"
 
 
-def _commit_with_hooks(origin, tmp_path):
+def _commit_with_hooks(origin, tmp_path, trailer=True):
     path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     cfg = tmp_path / "c.toml"
     cfg.write_text(
@@ -183,7 +183,7 @@ def _commit_with_hooks(origin, tmp_path):
     )
     exe = shutil.which("linear-agents")
     assert exe
-    install_hook(path, tmp_path / "hooks", exe, cfg)
+    install_hook(path, tmp_path / "hooks", exe, cfg, trailer=trailer)
     return path
 
 
@@ -201,6 +201,75 @@ def test_commit_msg_hook_adds_the_trailer_once(origin, tmp_path, monkeypatch):
     assert _msg(path).count("Linear-Agents: NF-3 impl") == 1
     git("commit", "-q", "--amend", "--no-edit", cwd=path)
     assert _msg(path).count("Linear-Agents:") == 1
+
+
+def test_commit_msg_hook_keeps_signoff_and_strips_claude_attribution(origin, tmp_path, monkeypatch):
+    path = _commit_with_hooks(origin, tmp_path)
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "test")
+    (path / "ok.txt").write_text("fine\n")
+    git("add", "ok.txt", cwd=path)
+    message = (
+        "ok\n\nSigned-off-by: Ada <a@example.test>\n"
+        "co-authored-by: claude Sonnet <noreply@anthropic.com>\n"
+        "Claude-Session: https://claude.ai/code/x\n"
+        "Co-Authored-By: Human <h@example.test>\n"
+    )
+    git("commit", "-q", "-m", message, cwd=path)
+    lines = _msg(path).splitlines()
+    assert "Signed-off-by: Ada <a@example.test>" in lines
+    assert "Co-Authored-By: Human <h@example.test>" in lines
+    assert "Linear-Agents: NF-3 test" in lines
+    assert not [ln for ln in lines if "claude" in ln.lower()]
+
+
+def test_commit_msg_hook_without_trailer_still_strips_attribution(origin, tmp_path, monkeypatch):
+    path = _commit_with_hooks(origin, tmp_path, trailer=False)
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    (path / "ok.txt").write_text("fine\n")
+    git("add", "ok.txt", cwd=path)
+    git("commit", "-q", "-m", "ok\n\nClaude-Session: https://claude.ai/code/x", cwd=path)
+    assert _msg(path).strip() == "ok"
+
+
+def test_hooks_chain_to_the_repos_own_commit_msg_and_other_hooks(origin, tmp_path, monkeypatch):
+    for name in ("commit-msg", "pre-push"):
+        hook = origin / ".git" / "hooks" / name
+        hook.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path / (name + ".log")}\n')
+        hook.chmod(0o755)
+    path = _commit_with_hooks(origin, tmp_path)
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    (path / "ok.txt").write_text("fine\n")
+    git("add", "ok.txt", cwd=path)
+    git("commit", "-qm", "ok", cwd=path)
+    assert "COMMIT_EDITMSG" in (tmp_path / "commit-msg.log").read_text()
+    assert "Linear-Agents: NF-3 impl" in _msg(path)
+    git("push", "-q", "origin", "HEAD:refs/heads/pushed", cwd=path)
+    assert "origin" in (tmp_path / "pre-push.log").read_text()
+
+
+def test_reinstall_drops_stubs_for_hooks_the_repo_no_longer_has(origin, tmp_path):
+    hook = origin / ".git" / "hooks" / "pre-push"
+    hook.write_text("#!/bin/sh\n")
+    hook.chmod(0o755)
+    _commit_with_hooks(origin, tmp_path)
+    assert (tmp_path / "hooks" / "pre-push").exists()
+    hook.unlink()
+    _commit_with_hooks(origin, tmp_path)
+    assert not (tmp_path / "hooks" / "pre-push").exists()
+
+
+def test_commit_msg_hook_adds_no_trailer_in_the_review_phase(origin, tmp_path, monkeypatch):
+    path = _commit_with_hooks(origin, tmp_path)
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "review")
+    msg = tmp_path / "msg"
+    msg.write_text("x\n")
+    assert main(["hook", "commit-msg", str(msg)]) == 0
+    assert msg.read_text() == "x\n"
+    assert path.exists()
 
 
 def test_commit_msg_hook_leaves_a_hand_made_commit_alone(origin, tmp_path, monkeypatch):

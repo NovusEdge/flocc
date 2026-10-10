@@ -11,12 +11,16 @@ ntfy_url = "https://ntfy.sh/replace-with-a-long-random-topic"
 digest_issue = "NF-1"
 check_timeout_s = 1800
 setup_timeout_s = 900
+# Agent commits carry a "Linear-Agents: KEY phase" trailer; set false to leave it off.
+# commit_trailer = false
 
 [repos.backend]
 path = "~/src/backend"
 base_branch = "main"
 # Private repos of a GitHub Free organization cannot have draft PRs; set false there.
 # draft = false
+# Overrides the top-level commit_trailer for this repo.
+# commit_trailer = false
 
 [mcp_servers.sentry]
 type = "http"

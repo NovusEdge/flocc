@@ -112,3 +112,26 @@ def test_comment_uses_the_publish_token_and_stdin(origin, tmp_path):
         ["gh", "pr", "comment", "https://github.com/o/r/pull/9", "--body-file", "-"]
     ]
     assert gh.kw["input"] == "hello" and gh.kw["env"]["GH_TOKEN"] == "pub-token"
+
+
+def _trailed_commit(path, name, trailer):
+    (path / name).write_text("x\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", f"{name}\n\n{trailer}".strip(), cwd=path)
+
+
+def test_commits_without_the_trailer_are_listed_not_blocked(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    _trailed_commit(path, "a.py", "Linear-Agents: NF-5 impl")
+    _trailed_commit(path, "b.py", "")
+    bare = git("rev-parse", "--short", "HEAD", cwd=path)
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh())
+    tests = git("rev-parse", "--short", str(claim.tester_sha), cwd=path)
+    assert result.status == "opened"
+    assert set(result.untrailed) == {bare, tests}
+
+
+def test_trailer_check_is_skipped_when_the_trailer_is_off(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), trailer=False)
+    assert result.status == "opened" and result.untrailed == ()
