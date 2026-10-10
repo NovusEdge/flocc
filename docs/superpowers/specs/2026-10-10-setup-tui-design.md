@@ -53,7 +53,9 @@ group is rare, and the sandbox is stopped after the smoke test.
 
 ## Shape
 
-The installer is one Go program, `la-setup`, in `installer/` with its own `go.mod`. On the host
+The installer is one Go program, `la-setup`, in `installer/`. The `go.mod` sits at the repo root
+because `go:embed` cannot reach a parent directory: a small `deploy` package next to the unit
+files embeds them. On the host
 it is a plain `main` that walks the steps in order: each step that needs input runs a standalone
 `huh` form, long commands run under huh's spinner, and interactive logins (`claude`,
 `tailscale up`) run as ordinary child processes attached to the terminal, since no Bubble Tea
@@ -108,7 +110,7 @@ service user's home and re-executes the installer as that user (`sudo -iu linear
 | 6 | Claude | service | `claude --version` is 2.1.293 or later, `claude auth status` reports a claude.ai login, every plugin in the shipped list installed | installs with the native installer; runs `claude` attached to the terminal with a note to `/login`, set the two push settings in `/config`, accept Remote Control in `~/agents/worktrees`, and exit; then clones each bundled marketplace to `~/agents/marketplaces/<name>`, adds it with `claude plugin marketplace add <dir>`, adds public ones by their GitHub source, and runs `claude plugin install <plugin>@<marketplace>` for each |
 | 7 | Secrets | service | the three files exist, mode 600, one non-empty line each | masked `huh` inputs for the Linear key and both GitHub tokens, with the permissions each token needs shown beside it |
 | 8 | Config | service | `linear-agents doctor` prints `ok    config:` | a form prefilled from the embedded example: team key, digest issue, ntfy topic (a random one generated, shown for me to subscribe to, then a priority 5 test push I confirm arrived), and one or more repos (name, GitHub URL, base branch, draft, check command); clones each repo to `~/src/<name>` with the agent token through a repo-local credential helper |
-| 9 | Run | service | systemd mode: the three units match the embedded copies and the tmux service is active; loop mode: session `la-loop` exists | systemd mode: installs the units, `daemon-reload`, enables the tmux service; loop mode: nothing yet. Both: runs `linear-agents doctor` and shows its output, then offers to start ticking (enable the timer, or start `la-loop`) only when no line is FAIL |
+| 9 | Run | service | systemd mode: the three units match the embedded copies, the tmux service is active and the timer enabled; loop mode: session `la-loop` runs `linear-agents run` | systemd mode: installs the units, `daemon-reload`, enables the tmux service; loop mode: starts session `la-loop` idle, so the tmux server is up for doctor's tmux check. Both: runs `linear-agents doctor` and shows its output, then offers to start ticking (enable the timer, or start `la-loop`) only when no line is FAIL |
 
 The config form writes only the keys it asks for and keeps everything else from the example, so
 a key added to `config.example.toml` reaches new hosts without an installer change.
@@ -135,11 +137,14 @@ excluded) as soon as the form is submitted, so a re-run prefills them.
   `config.load`, so the two cannot drift), plugin-list parsing, and each check against fixture
   states.
 - A Python test for `linear-agents run`: a failing tick is logged and the loop continues.
-- End-to-end runs in local stoat VMs for Debian, Arch and Fedora (systemd mode) and in one
-  Daytona container (loop mode). `--answers <file>` supplies every form value and
-  `--skip-interactive` skips the Claude and Tailscale logins, so the run needs no TTY; the pass
-  condition is that doctor's only FAIL lines are the Claude login and the live Linear and GitHub
-  checks the test secrets cannot pass. A second run on the same host must apply nothing.
+- End-to-end runs in local stoat VMs for Debian, Arch and Fedora (systemd mode), from a stage
+  directory written by `la-setup ship --stage-only <dir>`. `--answers <file>` supplies every form
+  value and `--skip-interactive` skips the Claude and Tailscale logins, so the run needs no TTY;
+  the pass condition is that doctor's only FAIL lines are the Claude login and the live Linear
+  and GitHub checks the test secrets cannot pass. A second run on the same host must apply
+  nothing before the Run step, which stops on those FAIL lines by design.
+- Loop mode is exercised by bringing up the Daytona smoke host itself, interactively; a
+  separate throwaway container run would spend credits for the same coverage.
 - `just check` gains `go vet` and `go test` for `installer/`; `mise.toml` pins Go 1.27.1, since
   Bubble Tea v2 needs Go 1.26 or later.
 
