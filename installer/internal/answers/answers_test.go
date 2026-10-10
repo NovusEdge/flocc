@@ -1,0 +1,44 @@
+package answers
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSaveNeverWritesSecretsAndIsMode600(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "sub", "answers.toml")
+	a := &Answers{TeamKey: "NF", Repos: []Repo{{Name: "r", URL: "https://github.com/o/r", BaseBranch: "main", Draft: false, Check: "just check"}},
+		Secrets: &Secrets{LinearKey: "lin_api_x"}}
+	if err := a.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if strings.Contains(string(b), "lin_api_x") || strings.Contains(string(b), "secrets") {
+		t.Fatalf("secrets written: %s", b)
+	}
+	st, _ := os.Stat(p)
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o", st.Mode().Perm())
+	}
+	back, err := Load(p)
+	if err != nil || back.TeamKey != "NF" || back.Repos[0].Draft || back.Secrets != nil {
+		t.Fatalf("round trip: %+v %v", back, err)
+	}
+}
+
+func TestLoadMissingIsEmpty(t *testing.T) {
+	a, err := Load(filepath.Join(t.TempDir(), "none.toml"))
+	if err != nil || a.TeamKey != "" {
+		t.Fatalf("%+v %v", a, err)
+	}
+}
+
+func TestOverlayKeepsUnsetFields(t *testing.T) {
+	a := &Answers{TeamKey: "NF", DigestIssue: "NF-186"}
+	a.Overlay(&Answers{DigestIssue: "NF-1", Secrets: &Secrets{AgentToken: "t"}})
+	if a.TeamKey != "NF" || a.DigestIssue != "NF-1" || a.Secrets.AgentToken != "t" {
+		t.Fatalf("%+v", a)
+	}
+}
