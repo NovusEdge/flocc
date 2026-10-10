@@ -39,8 +39,7 @@ func RenderConfig(example []byte, a *answers.Answers) ([]byte, error) {
 		repos[r.Name] = map[string]any{"path": "~/src/" + r.Name, "base_branch": r.BaseBranch, "check": r.Check, "draft": r.Draft}
 	}
 	m["repos"] = repos
-	// An unticked discovered repo is presumably mapped on another host sharing the team.
-	if len(a.ExcludedRepos) > 0 {
+	if a.SharedTeam {
 		m["skip_unmapped"] = true
 	}
 	return toml.Marshal(m)

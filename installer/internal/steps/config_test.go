@@ -44,17 +44,26 @@ func TestRenderConfigMatchesGolden(t *testing.T) {
 	}
 }
 
-func TestRenderConfigSetsSkipUnmappedOnlyWhenReposAreExcluded(t *testing.T) {
+func TestRenderConfigSetsSkipUnmappedOnlyForASharedTeam(t *testing.T) {
 	example, _ := deploy.Files.ReadFile("config.example.toml")
 	plain, err := RenderConfig(example, goldenAnswers())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(plain), "skip_unmapped") {
-		t.Errorf("skip_unmapped rendered with nothing excluded:\n%s", plain)
+		t.Errorf("skip_unmapped rendered for a single host:\n%s", plain)
 	}
+	// Auto-excluded empty repos and repos the owner just does not want land here too.
 	a := goldenAnswers()
-	a.ExcludedRepos = []string{"https://github.com/nimble-fox-ai/other"}
+	a.ExcludedRepos = []string{"https://github.com/nimble-fox-ai/empty"}
+	excluded, err := RenderConfig(example, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(excluded), "skip_unmapped") {
+		t.Errorf("excluding a repo alone turned skip_unmapped on:\n%s", excluded)
+	}
+	a.SharedTeam = true
 	got, err := RenderConfig(example, a)
 	if err != nil {
 		t.Fatal(err)

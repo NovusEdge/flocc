@@ -211,7 +211,8 @@ def scope_check(cfg: Config) -> list[Result]:
         Result(
             "ok",
             "skip_unmapped",
-            f"issues matching none of {', '.join(cfg.repos)} are left to other hosts",
+            f"issues matching none of {', '.join(cfg.repos)} are left to other hosts,"
+            " with no comment",
         )
     ]
 

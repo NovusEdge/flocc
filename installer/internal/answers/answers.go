@@ -110,6 +110,8 @@ type Answers struct {
 	// while repos created since still arrive ticked. A GitHub rename or transfer changes the
 	// URL, so the repo comes back ticked.
 	ExcludedRepos []string `toml:"excluded_repos,omitempty"`
+	// Other hosts handle the repos left unmapped here; renders skip_unmapped.
+	SharedTeam bool `toml:"shared_team,omitempty"`
 	// Read only from an --answers file, for runs without a terminal; Save drops it.
 	Secrets *Secrets `toml:"secrets,omitempty"`
 }
@@ -158,6 +160,9 @@ func (a *Answers) Overlay(o *Answers) {
 	}
 	if len(o.ExcludedRepos) > 0 {
 		a.ExcludedRepos = o.ExcludedRepos
+	}
+	if o.SharedTeam {
+		a.SharedTeam = true
 	}
 	if o.Secrets != nil {
 		a.Secrets = o.Secrets

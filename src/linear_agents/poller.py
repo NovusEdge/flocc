@@ -76,6 +76,13 @@ def poll(rt) -> None:
         repo = repo_for(issue, cfg)
         if repo is None:
             if cfg.skip_unmapped:
+                if rerun:
+                    # The release above kept the worktree; nothing on this host will clean it up.
+                    print(
+                        f"{issue.key}: claim released, no mapped repo matches any more;"
+                        f" worktree {claim.worktree} kept",
+                        file=sys.stderr,
+                    )
                 continue
             _comment_once(
                 rt,

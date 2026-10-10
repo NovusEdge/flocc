@@ -90,14 +90,18 @@ with a note.
 ### Running more than one host
 
 Each host keeps its own ledger, so nothing stops two hosts from claiming the same issue. Split
-the repos instead: every repo is mapped on exactly one host, and an issue is only ever picked up
-by the host that maps its label or project.
+the repos instead: every repo is mapped on exactly one host, and an issue is picked up by the host
+that maps its label or project. That holds only if each issue carries exactly one repo label or
+repo project: an issue with two repos' labels matches on both hosts and is worked twice. It also
+assumes every host uses the same Linear key, because ready issues are read from the key's
+assigned issues; hosts on different keys see different issues.
 
 Set `skip_unmapped = true` on each host. Without it, a host comments "No configured repo matches"
-on every ready issue that belongs to the other host's repos. The installer writes it for you when
-you untick discovered repos in the config form; doctor prints a `skip_unmapped` line when it is
-on. The cost is that a typo in a label no longer gets that comment, so an unmapped issue just sits
-in Todo.
+on every ready issue that belongs to the other host's repos. The installer asks "Do other hosts
+handle the unticked repos?" when you untick discovered repos in the config form, and writes the key
+if you say yes (`shared_team = true` in an answers file does the same). Doctor prints a
+`skip_unmapped` line when it is on. The cost is that a typo in a label no longer gets that comment,
+so an unmapped issue just sits in Todo.
 
 The hosts share the owner's Claude login and so its 5h and weekly usage limits; each applies
 `five_hour_max_pct` and `weekly_max_pct` to the same account, so size the caps with that in mind.
