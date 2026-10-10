@@ -102,7 +102,7 @@ func (Run) Apply(ctx context.Context, e *Env) error {
 	if e.Mode == Systemd {
 		_, err = e.MustCmd(ctx, e.userctl("enable", "--now", "linear-agents.timer"))
 	} else {
-		_, err = e.Must(ctx, "tmux", "-L", "linear-agents", "respawn-pane", "-k", "-t", "=la-loop", loopCommand(e.Home))
+		_, err = e.Must(ctx, "tmux", "-L", "linear-agents", "respawn-pane", "-k", "-t", "=la-loop:", loopCommand(e.Home))
 	}
 	return err
 }
