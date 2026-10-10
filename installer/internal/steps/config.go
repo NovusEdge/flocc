@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/NovusEdge/linear-agents/deploy"
@@ -20,8 +21,7 @@ import (
 const credentialHelper = `!f() { test "$1" = get && printf 'username=x-access-token\npassword=%s\n' "$(cat "$HOME/.config/linear-agents/gh-agent.token")"; }; f`
 
 var (
-	repoName  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-	githubURL = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+?(\.git)?/?$`)
+	repoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
 func RenderConfig(example []byte, a *answers.Answers) ([]byte, error) {
@@ -100,13 +100,20 @@ func validate(a *answers.Answers) error {
 	if a.TeamKey == "" || a.DigestIssue == "" || len(a.Repos) == 0 {
 		return errors.New("team key, digest issue and at least one repo are required")
 	}
+	names, urls := map[string]bool{}, map[string]bool{}
 	for _, r := range a.Repos {
-		if !repoName.MatchString(r.Name) {
+		if !repoName.MatchString(r.Name) || r.Name == "." || r.Name == ".." {
 			return fmt.Errorf("repo name %q: use letters, digits, '.', '_' or '-', matching its Linear label", r.Name)
 		}
-		if !githubURL.MatchString(r.URL) {
+		if !answers.ValidGitHubURL(r.URL) {
 			return fmt.Errorf("repo %s: %q is not an https://github.com/<owner>/<repo> URL", r.Name, r.URL)
 		}
+		// Names are config keys and clone directories, so a repeat would silently replace the first.
+		u := answers.NormalizeURL(r.URL)
+		if names[r.Name] || urls[u] {
+			return fmt.Errorf("repo %s (%s) is mapped twice", r.Name, r.URL)
+		}
+		names[r.Name], urls[u] = true, true
 	}
 	return nil
 }
@@ -122,7 +129,37 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	if len(a.Repos) == 0 {
 		a.Repos = []answers.Repo{{BaseBranch: "main", Check: "just check", Draft: true}}
 	}
-	if err := e.UI.ConfigForm(a); err != nil {
+	var found []answers.Repo
+	if !e.SkipInteractive {
+		repos, maybeEmpty, err := e.discoverRepos(ctx)
+		if err != nil || len(repos) == 0 {
+			why := "The token sees no usable repos."
+			if err != nil {
+				why = err.Error()
+			}
+			e.UI.Note("Could not list the repos the agent token can see", "Enter each repo by URL instead.\n\n"+why)
+		} else {
+			var skipped []string
+			found, skipped = MergeRepos(repos, a.Repos)
+			if len(skipped) > 0 {
+				e.UI.Note("Skipped repos whose name another repo already has",
+					strings.Join(skipped, "\n")+"\nAdd one by URL and rename it if you want it mapped.")
+			}
+			// Left unticked unless already mapped; ticking one in the form removes the exclusion.
+			var empty []string
+			for _, u := range maybeEmpty {
+				if !slices.ContainsFunc(a.Repos, func(r answers.Repo) bool { return answers.SameURL(r.URL, u) }) {
+					a.ExcludedRepos = answers.Exclude(a.ExcludedRepos, u)
+					empty = append(empty, u)
+				}
+			}
+			if len(empty) > 0 {
+				e.UI.Note("These repos may be empty; the clone fails if so", strings.Join(empty, "\n"))
+			}
+		}
+	}
+	defaults := func(url string) (string, bool) { return e.repoDefaults(ctx, url) }
+	if err := e.UI.ConfigForm(a, found, defaults); err != nil {
 		return err
 	}
 	// Saved before validating, so a typo does not discard everything typed.
@@ -157,7 +194,11 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	for _, r := range a.Repos {
 		dir := e.Real("src/" + r.Name)
 		if _, err := os.Stat(e.HomePath("src/" + r.Name + "/.git")); err != nil {
-			if _, err := e.Must(ctx, "git", "-c", "credential.helper=", "-c", "credential.helper="+credentialHelper, "clone", "-q", r.URL, dir); err != nil {
+			err := e.UI.Spin("Cloning "+r.Name, func() error {
+				_, err := e.Must(ctx, "git", "-c", "credential.helper=", "-c", "credential.helper="+credentialHelper, "clone", "-q", r.URL, dir)
+				return err
+			})
+			if err != nil {
 				return err
 			}
 		}

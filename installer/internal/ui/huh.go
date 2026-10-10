@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"charm.land/huh/v2"
@@ -74,7 +76,7 @@ func (*Huh) Spin(title string, fn func() error) error {
 	return err
 }
 
-func (*Huh) ConfigForm(a *answers.Answers) error {
+func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error {
 	if err := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Linear team key").Value(&a.TeamKey),
 		huh.NewInput().Title("Digest issue key").Description("The pinned issue tier 3 reports go to, such as NF-186.").Value(&a.DigestIssue),
@@ -82,24 +84,119 @@ func (*Huh) ConfigForm(a *answers.Answers) error {
 	)).Run(); err != nil {
 		return err
 	}
-	for i := 0; ; i++ {
+	start := 0
+	if len(found) > 0 {
+		byURL := map[string]answers.Repo{}
+		opts := make([]huh.Option[string], len(found))
+		urls := answers.Preselected(found, a.ExcludedRepos)
+		for i, r := range found {
+			byURL[r.URL] = r
+			opts[i] = huh.NewOption(r.Name, r.URL).Selected(slices.Contains(urls, r.URL))
+		}
+		for {
+			if err := huh.NewForm(huh.NewGroup(huh.NewMultiSelect[string]().
+				Title("Repos agents may work on").Description("Untick to exclude.").
+				Validate(func(s []string) error {
+					if len(s) == 0 {
+						return errors.New("pick at least one repo")
+					}
+					return nil
+				}).
+				Options(opts...).Value(&urls))).Run(); err != nil {
+				return err
+			}
+			if len(urls) <= maxRepos {
+				break
+			}
+			ok := false
+			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+				Title(fmt.Sprintf("%d repos selected; each is cloned now and checked on every run. Continue?", len(urls))).
+				Value(&ok))).Run(); err != nil {
+				return err
+			}
+			if ok {
+				break
+			}
+			for i, r := range found {
+				opts[i] = opts[i].Selected(slices.Contains(urls, r.URL))
+			}
+		}
+		a.ExcludedRepos = answers.UpdateExcluded(a.ExcludedRepos, found, urls)
+		a.Repos = nil
+		for _, u := range urls {
+			a.Repos = append(a.Repos, byURL[u])
+		}
+		start = len(a.Repos)
+	}
+	for i := start; ; i++ {
 		if i == len(a.Repos) {
 			more := false
-			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Map another repo?").Value(&more))).Run(); err != nil || !more {
+			title := "Map another repo?"
+			if len(found) > 0 {
+				title = "Add another repo by URL?"
+			}
+			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(title).Value(&more))).Run(); err != nil || !more {
 				return err
 			}
 			a.Repos = append(a.Repos, answers.Repo{BaseBranch: "main", Check: "just check", Draft: true})
 		}
-		r := &a.Repos[i]
-		if err := huh.NewForm(huh.NewGroup(
-			huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
-			huh.NewInput().Title("Name").Description("Exactly the Linear label that routes issues to it.").Value(&r.Name),
-			huh.NewInput().Title("GitHub URL").Description("https://github.com/<owner>/<repo>").Value(&r.URL),
-			huh.NewInput().Title("Base branch").Value(&r.BaseBranch),
-			huh.NewInput().Title("Check command").Value(&r.Check),
-			huh.NewConfirm().Title("Open draft PRs?").Description("Private repos of a GitHub Free organization cannot have drafts.").Value(&r.Draft),
-		)).Run(); err != nil {
+		if err := editRepo(a.Repos, i, defaults); err != nil {
 			return err
 		}
+		a.ExcludedRepos = answers.Include(a.ExcludedRepos, a.Repos[i].URL)
 	}
+}
+
+// maxRepos is where the form stops to ask: every mapped repo is cloned in Apply and
+// ls-remoted by doctor on each run.
+const maxRepos = 30
+
+func editRepo(repos []answers.Repo, i int, defaults func(url string) (string, bool)) error {
+	r := &repos[i]
+	prevURL := r.URL
+	if err := huh.NewForm(huh.NewGroup(
+		huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
+		huh.NewInput().Title("GitHub URL").Description("https://github.com/<owner>/<repo>").Value(&r.URL).
+			Validate(func(s string) error {
+				if !answers.ValidGitHubURL(s) {
+					return errors.New("use https://github.com/<owner>/<repo>")
+				}
+				for j, o := range repos {
+					if j != i && answers.SameURL(o.URL, s) {
+						return errors.New("already mapped as " + o.Name)
+					}
+				}
+				return nil
+			}),
+	)).Run(); err != nil {
+		return err
+	}
+	// A saved name may be a Linear label that differs from the repo name, so keep it while the URL stands.
+	if r.Name == "" || r.URL != prevURL {
+		// Taken before normalizing, which lowercases.
+		r.Name = answers.NameFromURL(r.URL)
+		r.URL = answers.NormalizeURL(r.URL)
+	}
+	if prevURL == "" {
+		r.BaseBranch, r.Draft = defaults(r.URL)
+	}
+	ok := true
+	if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+		Title(fmt.Sprintf("Use name %s, base %s, check `%s`, draft PRs %s?", r.Name, r.BaseBranch, r.Check, yesNo(r.Draft))).
+		Description("The name must equal the repo's Linear label.").Value(&ok))).Run(); err != nil || ok {
+		return err
+	}
+	return huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Name").Description("Exactly the Linear label that routes issues to it.").Value(&r.Name),
+		huh.NewInput().Title("Base branch").Value(&r.BaseBranch),
+		huh.NewInput().Title("Check command").Value(&r.Check),
+		huh.NewConfirm().Title("Open draft PRs?").Description("Private repos of a GitHub Free organization cannot have drafts.").Value(&r.Draft),
+	)).Run()
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }

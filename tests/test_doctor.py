@@ -94,8 +94,10 @@ def test_tmux_check(tmux_server):
 class DoctorLinear:
     def __init__(self, missing=(), digest_state="backlog", down=False):
         self.missing, self.digest_state, self.down = list(missing), digest_state, down
+        self.label_calls = []
 
     def missing_labels(self, team_key, names):
+        self.label_calls.append(list(names))
         if self.down:
             raise LinearError("Authentication required")
         return [n for n in names if n in self.missing]
@@ -106,8 +108,16 @@ class DoctorLinear:
 
 def test_linear_checks(tmp_cfg):
     assert [r.status for r in doctor.linear_checks(tmp_cfg, DoctorLinear())] == ["ok", "ok"]
-    labels = doctor.linear_checks(tmp_cfg, DoctorLinear(missing=["backend"]))[0]
-    assert labels.status == "fail" and "backend" in labels.detail
+    labels = doctor.linear_checks(tmp_cfg, DoctorLinear(missing=["escalation"]))[0]
+    assert labels.status == "fail" and "escalation" in labels.detail
+    fake = DoctorLinear(missing=["backend"])
+    results = doctor.linear_checks(tmp_cfg, fake)
+    assert fake.label_calls == [
+        [tmp_cfg.trigger_label, "escalation", "needs-decision"],
+        list(tmp_cfg.repos),
+    ]
+    assert [r.status for r in results] == ["ok", "warn", "ok"]
+    assert "backend" in results[1].detail and "never routed" in results[1].detail
     closed = doctor.linear_checks(tmp_cfg, DoctorLinear(digest_state="completed"))[1]
     assert closed.status == "warn"
     [down] = doctor.linear_checks(tmp_cfg, DoctorLinear(down=True))

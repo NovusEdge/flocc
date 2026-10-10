@@ -3,9 +3,81 @@ package answers
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestExclusionsRoundTripAndDriveThePreselection(t *testing.T) {
+	found := []Repo{{Name: "a", URL: "u/a"}, {Name: "b", URL: "u/b"}}
+	excluded := UpdateExcluded(nil, found, []string{"u/a"})
+	if !slices.Equal(excluded, []string{"u/b"}) {
+		t.Fatalf("%v", excluded)
+	}
+	p := filepath.Join(t.TempDir(), "answers.toml")
+	if err := (&Answers{ExcludedRepos: excluded}).Save(p); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &Answers{}
+	o.Overlay(saved)
+	// c was created after the exclusion, so it arrives ticked; b stays excluded
+	// although its name differs, because exclusions are keyed by URL.
+	later := []Repo{{Name: "a", URL: "u/a"}, {Name: "b2", URL: "u/b"}, {Name: "c", URL: "u/c"}}
+	if got := Preselected(later, o.ExcludedRepos); !slices.Equal(got, []string{"u/a", "u/c"}) {
+		t.Fatalf("%v", got)
+	}
+	// Re-ticking b removes it; a URL not offered this time stays excluded.
+	if got := UpdateExcluded([]string{"u/b", "gone"}, found, []string{"u/a", "u/b"}); !slices.Equal(got, []string{"gone"}) {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestNormalizeURLMakesSpellingsOfOneRepoEqual(t *testing.T) {
+	for _, u := range []string{"https://github.com/O/R", "https://github.com/o/r.git", "https://github.com/o/r/", "https://github.com/O/R.git/", " https://github.com/o/r "} {
+		if got := NormalizeURL(u); got != "https://github.com/o/r" {
+			t.Errorf("NormalizeURL(%q) = %q", u, got)
+		}
+	}
+	if SameURL("https://github.com/o/r", "https://github.com/o/r2") {
+		t.Error("different repos compared equal")
+	}
+}
+
+func TestExclusionsMatchAcrossURLSpellings(t *testing.T) {
+	found := []Repo{{Name: "R", URL: "https://github.com/O/R"}}
+	if got := Preselected(found, []string{"https://github.com/o/r.git"}); len(got) != 0 {
+		t.Fatalf("%v", got)
+	}
+	if got := UpdateExcluded(nil, found, nil); !slices.Equal(got, []string{"https://github.com/o/r"}) {
+		t.Fatalf("%v", got)
+	}
+	if got := Include([]string{"https://github.com/o/r"}, "https://github.com/o/r.git"); len(got) != 0 {
+		t.Fatalf("%v", got)
+	}
+	if got := Exclude([]string{"https://github.com/o/r"}, "https://github.com/O/R/"); len(got) != 1 {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestNameFromURL(t *testing.T) {
+	for u, want := range map[string]string{
+		"https://github.com/o/r":      "r",
+		"https://github.com/o/r.git":  "r",
+		"https://github.com/o/r/":     "r",
+		"https://github.com/o/r.git/": "r",
+		"https://github.com/o":        "",
+		"http://github.com/o/r":       "",
+		"":                            "",
+	} {
+		if got := NameFromURL(u); got != want {
+			t.Errorf("NameFromURL(%q) = %q, want %q", u, got, want)
+		}
+	}
+}
 
 func TestSaveNeverWritesSecretsAndIsMode600(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "sub", "answers.toml")

@@ -129,17 +129,23 @@ def tmux_check(socket: str = SOCKET, run=subprocess.run) -> Result:
 
 
 def linear_checks(cfg: Config, linear) -> list[Result]:
-    names = [cfg.trigger_label, *_LABELS, *cfg.repos]
+    names = [cfg.trigger_label, *_LABELS]
     try:
-        missing = linear.missing_labels(cfg.team_key, names)
+        # Separate calls: a long repo list must not be able to crowd out a required label.
+        required = linear.missing_labels(cfg.team_key, names)
+        unrouted = linear.missing_labels(cfg.team_key, list(cfg.repos))
     except LinearError as exc:
         return [Result("fail", "linear", str(exc))]
-    if missing:
+    names = [*names, *cfg.repos]
+    if required:
         results = [
-            Result("fail", "linear labels", f"create on {cfg.team_key}: {', '.join(missing)}")
+            Result("fail", "linear labels", f"create on {cfg.team_key}: {', '.join(required)}")
         ]
     else:
-        results = [Result("ok", "linear labels", ", ".join(names))]
+        results = [Result("ok", "linear labels", ", ".join(n for n in names if n not in unrouted))]
+    if unrouted:
+        detail = f"no label on {cfg.team_key} for: {', '.join(unrouted)}; issues for them are never routed"
+        results.append(Result("warn", "repo labels", detail))
     try:
         digest = linear.issue(cfg.digest_issue)
     except LinearError as exc:
