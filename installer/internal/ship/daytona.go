@@ -112,8 +112,8 @@ func (a daytonaAuth) sandboxID(ctx context.Context, client *http.Client, name st
 	if !errors.As(err, &api) || api.code != http.StatusNotFound {
 		return sb.ID, err
 	}
-	var all []struct{ ID, Name string }
-	if err := a.do(ctx, client, "GET", "/sandbox", &all); err != nil {
+	all, err := a.sandboxes(ctx, client)
+	if err != nil {
 		return "", err
 	}
 	for _, s := range all {
@@ -133,10 +133,31 @@ type Sandbox struct {
 	Disk   int    `json:"disk"`   // GiB
 }
 
+// maxSandboxPages bounds the list walk in case the API echoes a cursor back.
+const maxSandboxPages = 50
+
 func (a daytonaAuth) sandboxes(ctx context.Context, client *http.Client) ([]Sandbox, error) {
 	var all []Sandbox
-	err := a.do(ctx, client, "GET", "/sandbox", &all)
-	return all, err
+	cursor := ""
+	for range maxSandboxPages {
+		path := "/sandbox"
+		if cursor != "" {
+			path += "?cursor=" + url.QueryEscape(cursor)
+		}
+		var page struct {
+			Items      []Sandbox `json:"items"`
+			NextCursor *string   `json:"nextCursor"`
+		}
+		if err := a.do(ctx, client, "GET", path, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Items...)
+		if page.NextCursor == nil || *page.NextCursor == "" || *page.NextCursor == cursor {
+			return all, nil
+		}
+		cursor = *page.NextCursor
+	}
+	return all, nil
 }
 
 const (

@@ -93,10 +93,15 @@ func TestDiscoverListsSandboxesByName(t *testing.T) {
 			w.WriteHeader(404)
 			return
 		}
-		json.NewEncoder(w).Encode([]map[string]any{
-			{"id": "2", "name": "b", "state": "STOPPED", "cpu": 2, "memory": 4, "disk": 30},
+		if r.URL.Query().Get("cursor") == "" {
+			json.NewEncoder(w).Encode(map[string]any{"nextCursor": "c2", "items": []map[string]any{
+				{"id": "2", "name": "b", "state": "STOPPED", "cpu": 2, "memory": 4, "disk": 30},
+			}})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"nextCursor": nil, "items": []map[string]any{
 			{"id": "1", "name": "a", "state": "started", "cpu": 1, "memory": 1},
-		})
+		}})
 	}))
 	t.Cleanup(srv.Close)
 	cfg := filepath.Join(t.TempDir(), "config.json")
