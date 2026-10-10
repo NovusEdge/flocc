@@ -27,7 +27,7 @@ func (e *Env) userctl(args ...string) host.Cmd {
 // Sessions and checks inherit the loop's PATH, as they inherit the unit's. When the pane's
 // command exits, tmux closes the window and, as the last one, the server; the loop keeps it alive.
 func loopCommand(home string) string {
-	return "sh -c 'while :; do env " + servicePath(home) + " linear-agents run; sleep 10; done'"
+	return "sh -c 'while :; do env " + ServicePath(home) + " linear-agents run; sleep 10; done'"
 }
 
 func (e *Env) loopPane(ctx context.Context) string {
