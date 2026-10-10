@@ -64,8 +64,9 @@ ship target *flags: build-setup
 
 # Run any command on the host as linear-agents, with the service PATH
 [group('host')]
+[positional-arguments]
 host target *cmd: build-desktop
-    build/la-setup host {{target}} {{cmd}}
+    build/la-setup host "$@"
 
 # Run linear-agents doctor on the host
 [group('host')]
@@ -75,7 +76,7 @@ doctor target: build-desktop
 # Show tmux sessions, the last run.log lines and the timer on the host
 [group('host')]
 status target: build-desktop
-    build/la-setup host {{target}} 'tmux -L linear-agents ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && systemctl --user list-timers linear-agents.timer; true'
+    build/la-setup host {{target}} 'tmux -L linear-agents ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers linear-agents.timer; true'
 
 # Follow run.log, or the journal on a systemd host
 [group('host')]
@@ -94,8 +95,9 @@ tick target: build-desktop
 
 # Release a blocked or timed-out issue's claim on the host
 [group('host')]
+[positional-arguments]
 release target key *flags: build-desktop
-    build/la-setup host {{target}} linear-agents release {{key}} {{flags}}
+    t=$1; shift; build/la-setup host "$t" linear-agents release "$@"
 
 # Create a Daytona sandbox that never auto-stops
 [group('daytona')]

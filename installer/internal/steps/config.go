@@ -42,16 +42,16 @@ func RenderConfig(example []byte, a *answers.Answers) ([]byte, error) {
 	return toml.Marshal(m)
 }
 
-// servicePath is the PATH the tick unit sets. A sudo -iu login shell may lack ~/.local/bin
+// ServicePath is the PATH=... assignment the tick unit sets. A sudo -iu login shell may lack ~/.local/bin
 // (Debian adds it only if it existed at login, Arch never), and doctor looks tools up on PATH.
-func servicePath(home string) string {
+func ServicePath(home string) string {
 	return fmt.Sprintf("PATH=%[1]s/.local/bin:%[1]s/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin", home)
 }
 
 // doctor's ok is false when the command could not run or exited non-zero; that can happen with
 // no FAIL line (missing binary, Python traceback), so callers must not read empty fails as healthy.
 func doctor(ctx context.Context, e *Env) (out string, fails []string, ok bool) {
-	r, err := e.Run.Run(ctx, host.Cmd{Name: e.Real(".local/bin/linear-agents"), Args: []string{"doctor"}, Env: []string{servicePath(e.Home)}})
+	r, err := e.Run.Run(ctx, host.Cmd{Name: e.Real(".local/bin/linear-agents"), Args: []string{"doctor"}, Env: []string{ServicePath(e.Home)}})
 	for _, line := range strings.Split(r.Stdout, "\n") {
 		if strings.HasPrefix(line, "FAIL") {
 			fails = append(fails, line)

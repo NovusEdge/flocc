@@ -2,31 +2,16 @@ package ship
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/linear-agents/installer/internal/steps"
 )
 
-// sudoEscape mimics sudo -i, which backslash-escapes every byte of its argv that is not
-// alphanumeric, '_' or '-' before the login shell parses the joined string.
-func sudoEscape(words []string) string {
-	var out []string
-	for _, w := range words {
-		var b strings.Builder
-		for _, c := range []byte(w) {
-			if c != '_' && c != '-' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
-				b.WriteByte('\\')
-			}
-			b.WriteByte(c)
-		}
-		out = append(out, b.String())
-	}
-	return strings.Join(out, " ")
-}
-
-// shWords has sh parse line into words, the way a shell parses a command line into argv.
+// shWords has sh parse line into words, the way the ssh user's shell parses the remote command.
 func shWords(t *testing.T, line string) []string {
 	t.Helper()
 	out, err := exec.Command("sh", "-c", "for a in "+line+`; do printf '%s\0' "$a"; done`).Output()
@@ -45,31 +30,33 @@ func TestShQuoteRoundTripsThroughSh(t *testing.T) {
 }
 
 func TestAsServiceUserDeliversTheCommandIntact(t *testing.T) {
-	cmd := []string{"echo", `it's "$HOME"`, "&&", "printf", `%s\n`, "$(echo x)", "|", "cat"}
-	joined := strings.Join(cmd, " ")
-	// The ssh user's shell yields sudo's argv; sudo -i escapes it; the login shell parses it again.
+	cmd := []string{"printf", `'%s\n'`, `'$1 $$'`, `'it'\''s'`, "'`id`'", "'a\nb'"}
 	argv := shWords(t, strings.TrimPrefix(asServiceUser(cmd), "sudo "))
-	if len(argv) != 7 || argv[0] != "-iu" || argv[3] != "PATH="+servicePath || argv[6] != joined {
+	want := []string{"-u", steps.ServiceUser, "-H", "env", "HOME=" + serviceHome, steps.ServicePath(serviceHome), "sh", "-c"}
+	if len(argv) != len(want)+1 || strings.Join(argv[:len(want)], "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("%q", argv)
 	}
-	got := shWords(t, sudoEscape(argv[2:]))
-	if strings.Join(got, "\x00") != strings.Join(argv[2:], "\x00") {
-		t.Fatalf("login shell changed the argv: %q", got)
+	script := argv[len(want)]
+	if script != "cd && "+strings.Join(cmd, " ") {
+		t.Fatalf("%q", script)
 	}
-	if got[len(got)-1] != joined {
-		t.Fatalf("%q", got)
+	// The test host has no service home, so run the script without its cd.
+	out, err := exec.Command("sh", "-c", strings.TrimPrefix(script, "cd && ")).Output()
+	if want := "$1 $$\nit's\n`id`\na\nb\n"; err != nil || string(out) != want {
+		t.Fatalf("%q %v", out, err)
 	}
 }
 
 func TestHostRunAttachesATerminalAndScrubsTheToken(t *testing.T) {
 	remote := asServiceUser([]string{"tmux", "ls"})
-	f := host.NewFake().On("ssh -o StrictHostKeyChecking=accept-new -t tok@h "+remote, 255, "")
+	line := "ssh -o StrictHostKeyChecking=accept-new -t tok@h " + remote
+	f := host.NewFake().OnInteractive(line, errors.New("ssh tok@h failed"))
 	dest := Dest{SSH: "tok@h", Token: "tok", Opts: []string{"-o", "StrictHostKeyChecking=accept-new"}}
 	err := hostRun(context.Background(), f, dest, []string{"tmux", "ls"})
-	if !f.Ran("interactive: ssh -o StrictHostKeyChecking=accept-new -t tok@h " + remote) {
+	if !f.Ran("interactive: " + line) {
 		t.Fatalf("%v", f.Calls)
 	}
-	if err != nil && strings.Contains(err.Error(), "tok@") {
+	if err == nil || strings.Contains(err.Error(), "tok@") || !strings.Contains(err.Error(), "<token>@h") {
 		t.Fatal(err)
 	}
 }

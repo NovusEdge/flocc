@@ -10,9 +10,13 @@ type Fake struct {
 	Responses map[string]Result
 	Seqs      map[string][]Result
 	Calls     []string
+
+	InteractiveErrs map[string]error
 }
 
-func NewFake() *Fake { return &Fake{Responses: map[string]Result{}, Seqs: map[string][]Result{}} }
+func NewFake() *Fake {
+	return &Fake{Responses: map[string]Result{}, Seqs: map[string][]Result{}, InteractiveErrs: map[string]error{}}
+}
 
 func (f *Fake) On(cmd string, code int, stdout string) *Fake {
 	f.Responses[cmd] = Result{Stdout: stdout, Code: code}
@@ -39,9 +43,15 @@ func (f *Fake) Run(_ context.Context, c Cmd) (Result, error) {
 	return Result{Stderr: "fake: no response for " + c.String(), Code: 127}, nil
 }
 
+// OnInteractive makes Interactive return err for cmd.
+func (f *Fake) OnInteractive(cmd string, err error) *Fake {
+	f.InteractiveErrs[cmd] = err
+	return f
+}
+
 func (f *Fake) Interactive(_ context.Context, c Cmd) error {
 	f.Calls = append(f.Calls, "interactive: "+c.String())
-	return nil
+	return f.InteractiveErrs[c.String()]
 }
 
 func (f *Fake) Ran(cmd string) bool { return slices.Contains(f.Calls, cmd) }

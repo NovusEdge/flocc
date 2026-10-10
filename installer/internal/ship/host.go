@@ -15,18 +15,19 @@ import (
 	"github.com/NovusEdge/linear-agents/installer/internal/steps"
 )
 
-const servicePath = "/home/" + steps.ServiceUser + "/.local/bin:/home/" + steps.ServiceUser + "/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
+const serviceHome = "/home/" + steps.ServiceUser
 
 // shQuote makes s one word for a POSIX shell.
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// asServiceUser builds the remote command line. The ssh user's shell parses it once, then sudo -i
-// re-escapes its argv for the login shell, so the command must reach sudo as a single quoted
-// word for sh -c.
+// asServiceUser builds the remote command line. Without -i, sudo execs its argv directly, so
+// the ssh user's shell is the only one that parses it and the command stays one quoted word.
+// A login shell would expand $... inside the quotes and turn newlines into continuations.
 func asServiceUser(command []string) string {
-	return "sudo -iu " + steps.ServiceUser + " env PATH=" + servicePath + " sh -c " + shQuote(strings.Join(command, " "))
+	script := "cd && " + strings.Join(command, " ")
+	return "sudo -u " + steps.ServiceUser + " -H env HOME=" + serviceHome + " " + steps.ServicePath(serviceHome) + " sh -c " + shQuote(script)
 }
 
 // HostMain runs a command on a host as the service user and returns its exit code.
@@ -44,7 +45,10 @@ func HostMain(args []string) int {
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return exit.ExitCode()
+			if code := exit.ExitCode(); code >= 0 {
+				return code
+			}
+			return 255 // ssh was killed by a signal; ExitCode reports -1
 		}
 		fmt.Fprintln(os.Stderr, "host:", err)
 		return 1
