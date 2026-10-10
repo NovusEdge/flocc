@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -93,15 +94,18 @@ func TestDiscoverListsSandboxesByName(t *testing.T) {
 			w.WriteHeader(404)
 			return
 		}
-		if r.URL.Query().Get("cursor") == "" {
-			json.NewEncoder(w).Encode(map[string]any{"nextCursor": "c2", "items": []map[string]any{
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			json.NewEncoder(w).Encode(map[string]any{"nextCursor": "c/2", "items": []map[string]any{
 				{"id": "2", "name": "b", "state": "STOPPED", "cpu": 2, "memory": 4, "disk": 30},
 			}})
-			return
+		case "c/2":
+			json.NewEncoder(w).Encode(map[string]any{"nextCursor": nil, "items": []map[string]any{
+				{"id": "1", "name": "a", "state": "started", "cpu": 1, "memory": 1},
+			}})
+		default:
+			w.WriteHeader(400)
 		}
-		json.NewEncoder(w).Encode(map[string]any{"nextCursor": nil, "items": []map[string]any{
-			{"id": "1", "name": "a", "state": "started", "cpu": 1, "memory": 1},
-		}})
 	}))
 	t.Cleanup(srv.Close)
 	cfg := filepath.Join(t.TempDir(), "config.json")
@@ -112,6 +116,27 @@ func TestDiscoverListsSandboxesByName(t *testing.T) {
 	got, notes := discover(context.Background(), cfg, filepath.Join(t.TempDir(), "none"), srv.Client())
 	if len(notes) != 0 || len(got) != 2 || got[0].Target != "daytona:a" || got[1].State != "stopped" || got[1].CPU != 2 || got[1].ID != "2" || got[1].DiskGiB != 30 {
 		t.Fatalf("%+v %q", got, notes)
+	}
+}
+
+func TestDiscoverNotesASandboxListThatDoesNotAdvance(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		// Ignores the cursor and mints a new one each time, as a wrong parameter name would.
+		json.NewEncoder(w).Encode(map[string]any{"nextCursor": "c" + strconv.Itoa(calls), "items": []map[string]any{
+			{"id": "1", "name": "a", "state": "started", "cpu": 1, "memory": 1},
+		}})
+	}))
+	t.Cleanup(srv.Close)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	writeJSON(t, cfg, map[string]any{"activeProfile": "p", "profiles": []any{map[string]any{
+		"id": "p", "activeOrganizationId": "org1",
+		"api": map[string]any{"url": srv.URL + "/api", "key": "acc"},
+	}}})
+	got, notes := discover(context.Background(), cfg, filepath.Join(t.TempDir(), "none"), srv.Client())
+	if len(got) != 1 || calls != 2 || len(notes) != 1 || !strings.Contains(notes[0], "did not advance") {
+		t.Fatalf("calls=%d %+v %q", calls, got, notes)
 	}
 }
 

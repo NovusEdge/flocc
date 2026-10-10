@@ -133,11 +133,15 @@ type Sandbox struct {
 	Disk   int    `json:"disk"`   // GiB
 }
 
-// maxSandboxPages bounds the list walk in case the API echoes a cursor back.
+// maxSandboxPages bounds the walk if the API keeps returning new cursors without advancing.
 const maxSandboxPages = 50
 
+// sandboxes returns what it collected alongside any error, so a caller can still show a partial
+// list. The cursor parameter name was never seen working against a second page; a page with no
+// new IDs is how a wrong one would show up.
 func (a daytonaAuth) sandboxes(ctx context.Context, client *http.Client) ([]Sandbox, error) {
 	var all []Sandbox
+	seen := map[string]bool{}
 	cursor := ""
 	for range maxSandboxPages {
 		path := "/sandbox"
@@ -149,15 +153,25 @@ func (a daytonaAuth) sandboxes(ctx context.Context, client *http.Client) ([]Sand
 			NextCursor *string   `json:"nextCursor"`
 		}
 		if err := a.do(ctx, client, "GET", path, &page); err != nil {
-			return nil, err
+			return all, err
 		}
-		all = append(all, page.Items...)
-		if page.NextCursor == nil || *page.NextCursor == "" || *page.NextCursor == cursor {
+		fresh := 0
+		for _, s := range page.Items {
+			if !seen[s.ID] {
+				seen[s.ID] = true
+				all = append(all, s)
+				fresh++
+			}
+		}
+		if page.NextCursor == nil || *page.NextCursor == "" {
 			return all, nil
+		}
+		if fresh == 0 {
+			return all, fmt.Errorf("the sandbox list did not advance; showing the first %d", len(all))
 		}
 		cursor = *page.NextCursor
 	}
-	return all, nil
+	return all, fmt.Errorf("the sandbox list ran past %d pages; showing the first %d", maxSandboxPages, len(all))
 }
 
 const (
