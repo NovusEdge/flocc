@@ -5,11 +5,11 @@ finished ones and resumes at the first that is not. `<target>` is an SSH destina
 the host's Tailscale name, or `daytona:<sandbox>`. It needs `go` (from `mise install`), `gh`
 logged in on the desktop, and, for Daytona, the Daytona CLI logged in with `daytona login`.
 
-The first run on a host asks you to log in to Tailscale and to Claude (`/login`, the two push
-settings in `/config`, Remote Control), to paste the Linear key and the two GitHub tokens, to
-fill in the config form and to confirm an ntfy test push. It ends by running
-`linear-agents doctor` and starts ticking only when doctor reports no FAIL line. Everything it
-runs is logged to `/tmp/la-setup/setup.log` (root steps) and
+The first run on a host asks you to log in to Tailscale and to Claude (`/login`, Remote Control;
+the two push settings are written to `~/.claude/settings.json` for you), to paste the Linear key
+and the two GitHub tokens, to fill in the config form and to confirm an ntfy test push. It ends
+by running `linear-agents doctor` and starts ticking only when doctor reports no FAIL line.
+Everything it runs is logged to `/tmp/la-setup/setup.log` (root steps) and
 `~linear-agents/.cache/la-setup/setup.log` (the rest).
 
 The root phase must run from `/tmp/la-setup`, where `just ship` puts it; running `la-setup` by
