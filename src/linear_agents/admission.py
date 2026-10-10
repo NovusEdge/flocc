@@ -22,7 +22,10 @@ def admit(
     dep_states: dict[str, str],
     cfg: Config,
     now: float,
+    free_disk_gb: float | None = None,
 ) -> Decision:
+    if free_disk_gb is not None and free_disk_gb < cfg.min_free_disk_gb:
+        return Decision(False, f"disk free {free_disk_gb:.1f} GB < min_free_disk_gb")
     running = [c for c in live if c.state == "running"]
     if len(running) >= cfg.session_cap:
         return Decision(False, f"session cap {cfg.session_cap} reached")

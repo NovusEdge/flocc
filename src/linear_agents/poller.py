@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import sys
 import time
@@ -20,7 +21,13 @@ from linear_agents.linear import BOT_PREFIX, Issue, LinearError
 from linear_agents.sessions import session_name
 from linear_agents.supervisor import launch
 from linear_agents.usage import latest_usage
-from linear_agents.worktree import contains, git, install_hook, prepare_worktree
+from linear_agents.worktree import (
+    contains,
+    git,
+    has_uncommitted_changes,
+    install_hook,
+    prepare_worktree,
+)
 
 COMMENT_ONCE_S = 365 * 24 * 3600
 
@@ -58,6 +65,43 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
     # Alert dedupe is keyed to the old claim; a rerun that blocks again for the same cause must
     # still push.
     ledger.clear_issue_alerts(rt.con, claim.issue_key)
+
+
+def reap_worktrees(rt) -> None:
+    """Removes the worktrees of finished runs whose issue is closed; the branch stays."""
+    # Caches a killed tick left behind; setup runs under the tick lock, so none is in use here.
+    for stale in rt.cfg.worktree_root.glob(".uv-cache-*"):
+        shutil.rmtree(
+            stale, onexc=lambda fn, p, exc: print(f"reap: {p} not removed: {exc}", file=sys.stderr)
+        )
+    for claim in ledger.finished_claims(rt.con):
+        # A removed worktree is not retried: its path is gone, so no Linear call is made.
+        if not Path(claim.worktree).exists():
+            continue
+        try:
+            state = rt.linear.state_types([claim.issue_key])[claim.issue_key]
+        except LinearError as exc:
+            # A deleted issue can never be rerun, and asking again every tick would not change that.
+            # Only Linear's entity error: a wrong-workspace key fails every issue with other text.
+            if "entity not found" not in str(exc).lower():
+                print(f"reap: {claim.issue_key} state not read: {exc}", file=sys.stderr)
+                continue
+            state = "canceled"
+        # Anything else stays: the owner may move the issue to Todo to rerun, which reuses it.
+        if state not in ("completed", "canceled"):
+            continue
+        try:
+            # A run stopped by the wall clock may hold work nobody committed, new files included;
+            # a finished one published, so what is left is disposable.
+            if claim.state == "timed_out" and has_uncommitted_changes(Path(claim.worktree)):
+                cause = f"{claim.issue_key}:worktree-kept"
+                if not ledger.alert_seen(rt.con, cause, COMMENT_ONCE_S, rt.now()):
+                    print(f"reap: {claim.worktree} has uncommitted changes, kept", file=sys.stderr)
+                    ledger.record_alert(rt.con, cause, 3, claim.issue_key, rt.now())
+                continue
+            git("worktree", "remove", "--force", claim.worktree, cwd=rt.cfg.repos[claim.repo].path)
+        except (subprocess.CalledProcessError, OSError, KeyError) as exc:
+            print(f"reap: worktree {claim.worktree} not removed: {exc}", file=sys.stderr)
 
 
 def poll(rt) -> None:
@@ -124,7 +168,8 @@ def poll(rt) -> None:
             ledger.clear_alert(rt.con, f"{issue.key}:{cause}")
         live = ledger.live_claims(rt.con)
         usage = latest_usage(cfg.state_root, rt.now())
-        decision = admit(issue.key, settings, live, usage, deps, cfg, rt.now())
+        free = rt.free_disk_gb(cfg.worktree_root)
+        decision = admit(issue.key, settings, live, usage, deps, cfg, rt.now(), free)
         if not decision.ok:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)
             continue

@@ -11,7 +11,13 @@ from linear_agents import ledger
 from linear_agents.config import Config, trailer_enabled
 from linear_agents.escalation import Escalation, Notifier, ntfy_push
 from linear_agents.linear import Linear, LinearError, http_transport
-from linear_agents.poller import forward_comments, maybe_digest, poll, route_escalations
+from linear_agents.poller import (
+    forward_comments,
+    maybe_digest,
+    poll,
+    reap_worktrees,
+    route_escalations,
+)
 from linear_agents.publisher import comment_on_pr, publish
 from linear_agents.runtime import Runtime
 from linear_agents.sessions import Sessions
@@ -164,6 +170,8 @@ def tick(cfg: Config, config_path: Path) -> int:
                 )
         failed |= route_escalations(rt)
         failed |= forward_comments(rt)
+        # Before poll, so the space it frees counts toward this tick's admission.
+        reap_worktrees(rt)
         poll(rt)
         # Before the digest, so a warning written today goes out with today's digest.
         check_tokens(rt)

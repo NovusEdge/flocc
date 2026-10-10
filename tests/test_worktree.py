@@ -10,6 +10,7 @@ from linear_agents.config import RepoConfig
 from linear_agents.worktree import (
     changed_files,
     contains,
+    free_disk_gb,
     git,
     install_hook,
     prepare_worktree,
@@ -47,6 +48,57 @@ def test_prepare_recovers_a_worktree_whose_directory_was_deleted(origin, tmp_pat
     again, again_branch, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     assert (again, again_branch, base) == (path, branch, head)
     assert (path / "t.txt").exists()
+
+
+def test_prepare_recreates_a_worktree_removed_with_git(origin, tmp_path):
+    path, branch, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    (path / "t.txt").write_text("t\n")
+    git("add", "t.txt", cwd=path)
+    git("commit", "-qm", "earlier run", cwd=path)
+    head = git("rev-parse", "HEAD", cwd=path)
+    git("worktree", "remove", "--force", str(path), cwd=origin)
+    assert not path.exists()
+    again, again_branch, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert (again, again_branch, base) == (path, branch, head)
+    assert (path / ".setup-ran").exists()
+
+
+def push_setup(origin, body):
+    (origin / "setup").write_text(f"#!/bin/sh\n{body}\n")
+    git("commit", "-qam", "setup", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+
+
+# The script records where its cache is and what link mode it got, and fills the cache.
+RECORD = (
+    'mkdir -p "$UV_CACHE_DIR"; echo pkg > "$UV_CACHE_DIR/pkg"; '
+    'echo "$UV_CACHE_DIR $UV_LINK_MODE" > "$(dirname "$UV_CACHE_DIR")/seen.txt"'
+)
+
+
+@pytest.mark.parametrize("body, raises", [("", None), ("exit 1", subprocess.CalledProcessError)])
+def test_setup_gets_a_throwaway_cache_beside_the_worktree(origin, tmp_path, body, raises):
+    root = tmp_path / "wt"
+    push_setup(origin, f"{RECORD}\n{body}")
+    if raises:
+        with pytest.raises(raises):
+            prepare_worktree(RepoConfig(origin), root, "NF-3")
+    else:
+        prepare_worktree(RepoConfig(origin), root, "NF-3")
+    cache = root.resolve() / ".uv-cache-NF-3"
+    assert (root / "seen.txt").read_text().split() == [str(cache), "hardlink"]
+    assert not cache.exists()
+
+
+def test_cache_is_removed_when_setup_times_out(origin, tmp_path):
+    push_setup(origin, 'mkdir -p "$UV_CACHE_DIR"; sleep 30')
+    with pytest.raises(subprocess.TimeoutExpired):
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3", setup_timeout_s=0.5)
+    assert not (tmp_path / "wt" / ".uv-cache-NF-3").exists()
+
+
+def test_free_disk_gb_probes_the_nearest_existing_parent(tmp_path):
+    assert free_disk_gb(tmp_path / "not" / "yet") > 0
 
 
 def test_setup_that_outlives_its_timeout_fails(origin, tmp_path):

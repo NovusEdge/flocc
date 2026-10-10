@@ -52,6 +52,7 @@ class Config:
     review_wall_clock_s: int = 3600
     check_timeout_s: int = 1800
     setup_timeout_s: int = 900
+    min_free_disk_gb: float = 2.0
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     commit_trailer: bool = True
     # Hosts sharing a Linear team each map only some repos, so an issue for another host's repo
