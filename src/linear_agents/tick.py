@@ -12,7 +12,7 @@ from linear_agents.config import Config
 from linear_agents.escalation import Escalation, Notifier, ntfy_push
 from linear_agents.linear import Linear, LinearError, http_transport
 from linear_agents.poller import forward_comments, maybe_digest, poll, route_escalations
-from linear_agents.publisher import publish
+from linear_agents.publisher import comment_on_pr, publish
 from linear_agents.runtime import Runtime
 from linear_agents.sessions import Sessions
 from linear_agents.supervisor import supervise
@@ -61,6 +61,13 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
             check_timeout_s=cfg.check_timeout_s,
         )
 
+    def review_diff(claim):
+        base = f"origin/{cfg.repos[claim.repo].base_branch}"
+        return git("diff", f"{base}...HEAD", cwd=Path(claim.worktree))
+
+    def comment_pr(claim, url, body):
+        comment_on_pr(claim, url, body, token)
+
     return Runtime(
         cfg=cfg,
         con=con,
@@ -73,6 +80,8 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         config_path=config_path,
         publish_fn=publish_fn,
         git_head=lambda path: git("rev-parse", "HEAD", cwd=Path(path)),
+        review_diff=review_diff,
+        comment_pr=comment_pr,
     )
 
 

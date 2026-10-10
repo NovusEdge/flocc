@@ -47,6 +47,8 @@ class Config:
     weekly_max_pct: float = 50.0
     context_restart_pct: float = 60.0
     default_wall_clock_s: int = 3 * 3600
+    review_model: str = "opus"
+    review_wall_clock_s: int = 3600
     check_timeout_s: int = 1800
     setup_timeout_s: int = 900
     mcp_servers: dict[str, dict] = field(default_factory=dict)

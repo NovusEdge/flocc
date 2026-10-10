@@ -3,7 +3,7 @@ import time
 from dataclasses import replace
 
 from linear_agents.config import RepoConfig
-from linear_agents.publisher import publish
+from linear_agents.publisher import COMMENT_LIMIT, comment_on_pr, publish, review_comment
 from linear_agents.worktree import git, prepare_worktree
 from tests.test_ledger import make
 
@@ -26,6 +26,7 @@ class Gh:
         self.existing = existing
 
     def __call__(self, argv, **kw):
+        self.kw = kw
         if argv[0] != "gh":
             return subprocess.run(argv, check=kw.pop("check", False), **kw)
         self.calls.append(argv)
@@ -91,3 +92,23 @@ def test_failed_check(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'echo boom; exit 1'")
     result = publish(claim, repo, "t", "s", token="t", runner=Gh())
     assert result.status == "check_failed" and "boom" in result.detail
+
+
+def test_review_comment_wraps_the_review_verbatim():
+    assert review_comment("body\n") == "🤖 linear-agents review\n\nbody\n"
+
+
+def test_review_comment_is_truncated_to_githubs_limit():
+    body = review_comment("x" * (COMMENT_LIMIT + 500))
+    assert len(body) == COMMENT_LIMIT and body.endswith("full text is on the host.]")
+    assert review_comment("x" * 100).endswith("x" * 100)
+
+
+def test_comment_uses_the_publish_token_and_stdin(origin, tmp_path):
+    _, _, claim = setup_claim(origin, tmp_path)
+    gh = Gh()
+    comment_on_pr(claim, "https://github.com/o/r/pull/9", "hello", "pub-token", runner=gh)
+    assert gh.calls == [
+        ["gh", "pr", "comment", "https://github.com/o/r/pull/9", "--body-file", "-"]
+    ]
+    assert gh.kw["input"] == "hello" and gh.kw["env"]["GH_TOKEN"] == "pub-token"

@@ -46,9 +46,34 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
         config_path=path,
         publish_fn=lambda *a: None,
         git_head=lambda p: "sha0",
+        review_diff=lambda c: "",
+        comment_pr=lambda c, u, b: None,
     )
     monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
     assert main(["--config", str(path), "release", "NF-1"]) == 0
     assert ledger.get_claim(con, "NF-1") is None and sessions.killed == ["NF-1-test"]
     err = capsys.readouterr().err
     assert "worktree" in err and "Entity not found" in err
+
+
+def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, capsys):
+    con_path = tmp_path / "hook.sqlite"
+    claim = make("NF-1", (), worktree=str(origin.resolve()))
+    claim.phase = "review"
+    ledger.insert_claim(ledger.connect(con_path), claim)
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(con_path))
+    monkeypatch.chdir(origin)
+    assert main(["hook", "pre-commit"]) == 1
+    assert "read-only" in capsys.readouterr().err
+    ledger.update_claim(ledger.connect(con_path), "NF-1", phase="impl")
+    assert main(["hook", "pre-commit"]) == 0
+
+
+def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
+    assert main(["review-done"]) == 1
+    (tmp_path / "review.md").write_text(" \n")
+    assert main(["review-done"]) == 1
+    assert not (tmp_path / "done.json").exists()
+    (tmp_path / "review.md").write_text("Verdict: approve\n")
+    assert main(["review-done"]) == 0 and (tmp_path / "done.json").exists()

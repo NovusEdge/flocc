@@ -197,12 +197,22 @@ def route_escalations(rt) -> dict[str, LinearError]:
         lines = _new_lines(path, claim.escalation_offset)
         if not lines:
             continue
+        offset = claim.escalation_offset
+        if claim.phase == "review":
+            # The PR is already open; a review finding must not label the issue or push the owner.
+            for line in lines:
+                text = line.decode(errors="replace")[:300]
+                ledger.add_digest(
+                    rt.con, claim.issue_key, f"review session escalated: {text}", rt.now()
+                )
+                offset += len(line) + 1
+                ledger.update_claim(rt.con, claim.issue_key, escalation_offset=offset)
+            continue
         try:
             issue = rt.linear.issue(claim.issue_key)
         except LinearError as exc:
             failed[claim.issue_key] = exc
             continue
-        offset = claim.escalation_offset
         for line in lines:
             raw = line.decode(errors="replace")
             try:

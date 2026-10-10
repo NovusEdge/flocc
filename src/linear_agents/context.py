@@ -10,6 +10,7 @@ _COMMANDS = """## Commands
 - `linear-agents context` to see this text again with the current peer list.
 - `linear-agents escalate ...` when you need the owner; see the escalate skill.
 - `linear-agents done --summary '<one paragraph>'` when this phase is finished.
+- `linear-agents review-done` after writing review.md, in the review phase only.
 - `linear-agents handoff-ready` after writing handoff.md when asked to hand off.
 """
 
@@ -40,6 +41,12 @@ def phase_prompt(phase: str, issue_key: str, extra: str = "") -> str:
         body = (
             f"You are the implementer for {issue_key}. Follow the implementer skill: make the"
             " committed tests pass without changing them, then run linear-agents done."
+        )
+    elif phase == "review":
+        body = (
+            f"You are the reviewer for {issue_key}. Follow the reviewer skill: read"
+            " review-input.md in your state directory, write review.md, then run"
+            " linear-agents review-done. Change nothing in the repo."
         )
     else:
         body = (

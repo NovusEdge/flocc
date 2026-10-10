@@ -111,3 +111,29 @@ def publish(
         text=True,
     )
     return PublishResult("opened", url=pr.stdout.strip().splitlines()[-1])
+
+
+COMMENT_HEADER = "🤖 linear-agents review\n\n"
+# GitHub rejects issue and PR comments past this many characters.
+COMMENT_LIMIT = 65_536
+_TRUNCATED = "\n\n[Truncated at GitHub's 65,536-character comment limit; full text is on the host.]"
+
+
+def review_comment(review: str) -> str:
+    body = COMMENT_HEADER + review
+    if len(body) <= COMMENT_LIMIT:
+        return body
+    return body[: COMMENT_LIMIT - len(_TRUNCATED)] + _TRUNCATED
+
+
+def comment_on_pr(claim: Claim, url: str, body: str, token: str, runner=subprocess.run) -> None:
+    # The body goes in on stdin: a long review would otherwise ride on the command line.
+    runner(
+        ["gh", "pr", "comment", url, "--body-file", "-"],
+        input=body,
+        cwd=claim.worktree,
+        env={**os.environ, "GH_TOKEN": token},
+        check=True,
+        capture_output=True,
+        text=True,
+    )

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from linear_agents.config import Config
+from linear_agents.ledger import Claim
 
 
 @dataclass
@@ -21,3 +22,6 @@ class Runtime:
     config_path: Path
     publish_fn: Callable
     git_head: Callable[[str], str]
+    # The PR's diff against its base, and a comment on the PR made with the publish token.
+    review_diff: Callable[[Claim], str]
+    comment_pr: Callable[[Claim, str, str], None]
