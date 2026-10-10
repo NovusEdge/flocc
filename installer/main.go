@@ -14,6 +14,7 @@ import (
 
 	"github.com/NovusEdge/linear-agents/installer/internal/answers"
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/linear-agents/installer/internal/ship"
 	"github.com/NovusEdge/linear-agents/installer/internal/steps"
 	"github.com/NovusEdge/linear-agents/installer/internal/ui"
 )
@@ -84,8 +85,7 @@ func handoff(ctx context.Context, r host.Runner, stage, answersIn string, args [
 
 func run(args []string) int {
 	if len(args) > 0 && args[0] == "ship" {
-		fmt.Fprintln(os.Stderr, "ship: not built yet")
-		return 2
+		return ship.Main(args[1:])
 	}
 	fs := flag.NewFlagSet("la-setup", flag.ContinueOnError)
 	phase := fs.String("phase", "root", "root or service; the root phase hands off to the service phase itself")
