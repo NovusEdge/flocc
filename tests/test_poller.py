@@ -9,7 +9,14 @@ from linear_agents.config import load
 from linear_agents.context import state_dir
 from linear_agents.escalation import Notifier
 from linear_agents.linear import BOT_PREFIX, Comment, Issue, LinearError
-from linear_agents.poller import forward_comments, maybe_digest, poll, repo_for, route_escalations
+from linear_agents.poller import (
+    forward_comments,
+    maybe_digest,
+    poll,
+    reap_worktrees,
+    repo_for,
+    route_escalations,
+)
 from linear_agents.runtime import Runtime
 from linear_agents.supervisor import LaunchError
 from linear_agents.tick import tick, tick_lock
@@ -533,3 +540,99 @@ def test_review_session_escalations_go_to_the_digest_only(rt):
     assert rt.notifier.sent == []
     [(_, key, text)] = ledger.pending_digest(rt.con)
     assert key == "NF-1" and "review session escalated" in text and "boom" in text
+
+
+def test_low_disk_holds_a_start(rt):
+    rt.free_disk_gb = lambda path: 0.4
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None and rt.linear.started == []
+
+
+def finished(rt, key, state="done"):
+    wt = rt.cfg.worktree_root / key
+    wt.mkdir()
+    ledger.insert_claim(rt.con, make(key, state=state, worktree=str(wt)))
+    return wt
+
+
+@pytest.mark.parametrize(
+    "state_type, removed",
+    [("completed", True), ("canceled", True), ("unstarted", False), ("started", False)],
+)
+def test_reap_removes_worktrees_of_closed_issues_only(rt, monkeypatch, state_type, removed):
+    wt = finished(rt, "NF-5", state="timed_out")
+    rt.linear.state_types = lambda keys: {k: state_type for k in keys}
+    monkeypatch.setattr("linear_agents.poller.has_tracked_changes", lambda path: False)
+    calls = []
+    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    reap_worktrees(rt)
+    assert calls == ([("worktree", "remove", "--force", str(wt))] if removed else [])
+
+
+def test_reap_leaves_live_claims_and_skips_missing_worktrees(rt, monkeypatch):
+    for key, state in (("NF-1", "running"), ("NF-2", "blocked")):
+        (rt.cfg.worktree_root / key).mkdir()
+        ledger.insert_claim(
+            rt.con, make(key, state=state, worktree=str(rt.cfg.worktree_root / key))
+        )
+    finished(rt, "NF-3").rmdir()
+    asked = []
+    rt.linear.state_types = lambda keys: asked.append(keys) or {k: "completed" for k in keys}
+    calls = []
+    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    reap_worktrees(rt)
+    assert calls == [] and asked == []
+
+
+def test_reap_survives_a_linear_error_and_a_failed_removal(rt, monkeypatch, capsys):
+    finished(rt, "NF-5")
+    finished(rt, "NF-6")
+
+    def state_types(keys):
+        if keys == ["NF-5"]:
+            raise LinearError("rate limited")
+        return {"NF-6": "completed"}
+
+    def failing(*a, cwd):
+        raise subprocess.CalledProcessError(1, "git")
+
+    rt.linear.state_types = state_types
+    monkeypatch.setattr("linear_agents.poller.git", failing)
+    reap_worktrees(rt)
+    err = capsys.readouterr().err
+    assert "NF-5 state not read" in err and "NF-6" in err
+
+
+def test_reap_treats_a_deleted_issue_as_closed(rt, monkeypatch):
+    wt = finished(rt, "NF-5")
+
+    def gone(keys):
+        raise LinearError("Entity not found: Issue")
+
+    rt.linear.state_types = gone
+    calls = []
+    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    reap_worktrees(rt)
+    assert calls == [("worktree", "remove", "--force", str(wt))]
+
+
+@pytest.mark.parametrize(
+    "claim_state, dirty, removed",
+    [
+        ("timed_out", True, False),
+        ("timed_out", False, True),
+        ("done", True, True),
+    ],
+)
+def test_reap_keeps_a_timed_out_worktree_with_uncommitted_changes(
+    rt, monkeypatch, capsys, claim_state, dirty, removed
+):
+    finished(rt, "NF-5", state=claim_state)
+    rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
+    monkeypatch.setattr("linear_agents.poller.has_tracked_changes", lambda path: dirty)
+    calls = []
+    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    reap_worktrees(rt)
+    assert bool(calls) is removed
+    assert ("uncommitted" in capsys.readouterr().err) is (not removed)

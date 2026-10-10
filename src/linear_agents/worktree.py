@@ -1,5 +1,6 @@
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 from pathlib import Path
@@ -21,13 +22,16 @@ def git(*args: str, cwd: Path) -> str:
     return out.stdout.strip()
 
 
-def run_bounded(argv: list[str], cwd: Path, timeout_s: float) -> tuple[int | None, str]:
+def run_bounded(
+    argv: list[str], cwd: Path, timeout_s: float, env: dict[str, str] | None = None
+) -> tuple[int | None, str]:
     """Runs argv with stdout and stderr merged; the code is None when it timed out."""
     # Its own process group, so a timeout kills the test runner or installer it started too;
     # killing only the direct child would leave it running and holding the output pipe open.
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -50,6 +54,14 @@ def run_bounded(argv: list[str], cwd: Path, timeout_s: float) -> tuple[int | Non
             out = (exc.output or b"").decode(errors="replace")
         return None, out
     return proc.returncode, out
+
+
+def free_disk_gb(path: Path) -> float:
+    """Free space on the filesystem that holds path, or would once it is created."""
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free / 1e9
 
 
 def prepare_worktree(
@@ -95,7 +107,7 @@ def prepare_worktree(
         # A kept worktree may hold the previous run's uncommitted work; only what setup adds counts.
         before = _status(path)
         # It runs under the tick lock, which every later tick waits on.
-        code, out = run_bounded(["./setup"], path, setup_timeout_s)
+        code, out = _run_setup(path, worktree_root.resolve() / f".uv-cache-{key}", setup_timeout_s)
         if code is None:
             raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr=out)
         if code != 0:
@@ -110,12 +122,31 @@ def prepare_worktree(
     return path, branch, base
 
 
+def _run_setup(path: Path, cache: Path, timeout_s: float) -> tuple[int | None, str]:
+    # A cache per setup, deleted after it, because uv's shared ~/.cache/uv grew to 5.6 GB on a 10 GB
+    # disk and cannot be pruned while any session's `uv run` holds its lock (UV_LOCK_TIMEOUT does not
+    # shorten that wait). It sits beside the worktree so uv can still link rather than copy. The
+    # venv survives the deletion because hardlinked files keep their data; uv's symlink mode would
+    # not, so the mode is pinned.
+    env = {**os.environ, "UV_CACHE_DIR": str(cache), "UV_LINK_MODE": "hardlink"}
+    shutil.rmtree(cache, ignore_errors=True)
+    try:
+        return run_bounded(["./setup"], path, timeout_s, env)
+    finally:
+        shutil.rmtree(cache, ignore_errors=True)
+
+
 def _status(path: Path) -> list[str]:
     # Not git(): its strip() would eat the first line's leading status column.
     out = subprocess.run(
         ["git", "status", "--porcelain"], cwd=path, check=True, capture_output=True, text=True
     )
     return out.stdout.splitlines()
+
+
+def has_tracked_changes(path: Path) -> bool:
+    out = git("status", "--porcelain", "--untracked-files=no", cwd=path)
+    return bool(out)
 
 
 def install_hook(

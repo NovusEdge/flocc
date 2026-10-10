@@ -6,6 +6,7 @@ from typing import Any
 
 from linear_agents.config import Config
 from linear_agents.ledger import Claim
+from linear_agents.worktree import free_disk_gb
 
 
 @dataclass
@@ -25,3 +26,4 @@ class Runtime:
     # The PR's diff against its base, and a comment on the PR made with the publish token.
     review_diff: Callable[[Claim], str]
     comment_pr: Callable[[Claim, str, str], None]
+    free_disk_gb: Callable[[Path], float] = free_disk_gb

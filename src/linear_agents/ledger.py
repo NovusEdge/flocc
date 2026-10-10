@@ -128,6 +128,13 @@ def live_claims(con: sqlite3.Connection) -> list[Claim]:
     return [_from_row(r) for r in rows]
 
 
+def finished_claims(con: sqlite3.Connection) -> list[Claim]:
+    rows = con.execute(
+        "SELECT * FROM claims WHERE state IN ('done', 'timed_out') ORDER BY started_at, issue_key"
+    )
+    return [_from_row(r) for r in rows]
+
+
 def claim_for_worktree(con: sqlite3.Connection, path: str) -> Claim | None:
     row = con.execute("SELECT * FROM claims WHERE worktree = ?", (path,)).fetchone()
     return _from_row(row) if row else None

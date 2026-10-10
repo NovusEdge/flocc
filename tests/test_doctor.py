@@ -80,6 +80,16 @@ def fake_run(outputs):
     return run
 
 
+def test_disk_check(tmp_cfg):
+    def at(gb):
+        return doctor.disk_check(tmp_cfg, free=lambda path: gb)
+
+    assert at(5.0).status == "ok"
+    assert at(3.9).status == "warn"
+    low = at(1.9)
+    assert low.status == "fail" and "min_free_disk_gb" in low.detail
+
+
 def test_claude_checks(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     status = json.dumps({"loggedIn": True, "authMethod": "claude.ai"})

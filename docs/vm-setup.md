@@ -107,6 +107,24 @@ The hosts share the owner's Claude login and so its 5h and weekly usage limits; 
 `five_hour_max_pct` and `weekly_max_pct` to the same account, so size the caps with that in mind.
 `just fleet-status` shows all hosts together. Tailscale hostnames must differ between hosts.
 
+## Disk use
+
+A worktree with its venv can reach 1.4 GB, and uv's download cache (`~/.cache/uv`) grows with every
+repo `./setup`, which can fill a small disk (Daytona's is 10 GB) and break SSH and the installer.
+Three things limit it:
+
+- Each worktree's `./setup` runs with `UV_CACHE_DIR` pointing at `<worktree_root>/.uv-cache-<KEY>`
+  and `UV_LINK_MODE=hardlink`, and that directory is deleted when setup ends, whether it succeeds,
+  fails or times out. Every setup therefore downloads its packages fresh, and the venv keeps its own
+  files. The cache is on the worktree's filesystem so uv can still link instead of copy.
+- `min_free_disk_gb` (default 2.0) holds new starts while the disk holding `worktree_root` has less
+  free space than that. `linear-agents doctor` warns below twice the value and fails below it.
+- Each tick removes the worktree (not the branch) of a finished run whose Linear issue is
+  completed or canceled, or no longer exists. Running and blocked claims, and issues in any other
+  state, keep theirs, so a rerun from Todo still reuses it. A timed-out run with uncommitted
+  changes keeps its worktree. A removed worktree is recreated from the kept branch if the issue is
+  rerun.
+
 ## Upgrading
 
 `digest_issue` is now required. A config without it fails to load, which fails every tick and the

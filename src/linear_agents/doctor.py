@@ -11,6 +11,7 @@ from linear_agents.config import Config
 from linear_agents.linear import Linear, LinearError, http_transport
 from linear_agents.sessions import SOCKET
 from linear_agents.tokens import WARN_DAYS, TokenRejected, can_write_contents, token_expiry
+from linear_agents.worktree import free_disk_gb
 
 # --name and --remote-control as the launcher passes them.
 MIN_CLAUDE = (2, 1, 293)
@@ -217,6 +218,16 @@ def scope_check(cfg: Config) -> list[Result]:
     ]
 
 
+def disk_check(cfg: Config, free=free_disk_gb) -> Result:
+    gb = free(cfg.worktree_root)
+    detail = f"{gb:.1f} GB free under {cfg.worktree_root}"
+    if gb < cfg.min_free_disk_gb:
+        return Result("fail", "disk", f"{detail}, below min_free_disk_gb {cfg.min_free_disk_gb:g}")
+    if gb < 2 * cfg.min_free_disk_gb:
+        return Result("warn", "disk", f"{detail}, under twice min_free_disk_gb")
+    return Result("ok", "disk", detail)
+
+
 def report(results: list[Result]) -> int:
     for r in results:
         print(f"{'FAIL' if r.status == 'fail' else r.status:<6}{r.name}: {r.detail}")
@@ -225,6 +236,7 @@ def report(results: list[Result]) -> int:
 
 def run_doctor(cfg: Config) -> int:
     results = path_checks(cfg) + scope_check(cfg)
+    results.append(disk_check(cfg))
     key = secret_file("linear key", cfg.linear_key_file)
     results.append(key)
     if key.status == "ok":

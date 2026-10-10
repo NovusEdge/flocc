@@ -14,6 +14,7 @@ def test_example_loads_with_defaults():
     assert cfg.repos["backend"].draft is True
     assert cfg.check_timeout_s == 1800
     assert cfg.setup_timeout_s == 900
+    assert cfg.min_free_disk_gb == 2.0
     assert cfg.state_root.is_absolute()
     assert cfg.mcp_servers["sentry"]["type"] == "http"
 

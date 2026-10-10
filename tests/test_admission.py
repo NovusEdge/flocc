@@ -10,12 +10,18 @@ OK = Usage(10, 10, observed_at=1000)
 DEFAULT = IssueSettings()
 
 
-def run(settings=DEFAULT, live=(), usage=OK, deps=None, now=1100):
-    return admit("NF-9", settings, list(live), usage, deps or {}, CFG, now)
+def run(settings=DEFAULT, live=(), usage=OK, deps=None, now=1100, free=None):
+    return admit("NF-9", settings, list(live), usage, deps or {}, CFG, now, free)
 
 
 def test_admits_when_clear():
     assert run().ok
+
+
+def test_low_disk_holds_the_start():
+    d = run(free=1.54)
+    assert not d.ok and d.reason == "disk free 1.5 GB < min_free_disk_gb"
+    assert run(free=2.0).ok
 
 
 def test_cap():

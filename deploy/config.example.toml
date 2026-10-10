@@ -11,6 +11,8 @@ ntfy_url = "https://ntfy.sh/replace-with-a-long-random-topic"
 digest_issue = "NF-1"
 check_timeout_s = 1800
 setup_timeout_s = 900
+# New starts are held while the disk holding worktree_root has less free space than this.
+# min_free_disk_gb = 2.0
 # Agent commits carry a "Linear-Agents: KEY phase" trailer; set false to leave it off.
 # commit_trailer = false
 # For hosts that share a Linear team and map only some of its repos: leave issues matching no
