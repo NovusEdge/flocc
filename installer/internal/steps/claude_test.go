@@ -2,8 +2,10 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
@@ -21,6 +23,16 @@ func claudeEnv(t *testing.T, f *host.Fake, l plugins.List) *Env {
 	return e
 }
 
+const pushOn = `{"inputNeededNotifEnabled":true,"agentPushNotifEnabled":false}`
+
+func writeSettings(t *testing.T, e *Env, body string) {
+	t.Helper()
+	os.MkdirAll(e.HomePath(".claude"), 0o755)
+	if err := os.WriteFile(e.HomePath(".claude/settings.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeInstalled(t *testing.T, e *Env, json string) {
 	os.MkdirAll(e.HomePath(".claude/plugins"), 0o755)
 	os.WriteFile(e.HomePath(".claude/plugins/installed_plugins.json"), []byte(json), 0o644)
@@ -31,6 +43,7 @@ func TestClaudeCheck(t *testing.T) {
 		On(claudeBin+" --version", 0, "2.1.295 (Claude Code)\n").
 		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
 	e := claudeEnv(t, f, plugins.List{Plugins: []string{"curt@curt"}})
+	writeSettings(t, e, pushOn)
 	if done, detail, _ := (Claude{}).Check(context.Background(), e); done || detail != "plugins missing: curt@curt" {
 		t.Fatalf("detail=%q", detail)
 	}
@@ -89,5 +102,72 @@ func TestClaudeArchivedMarketplaceIsExtractedRegisteredAndTracked(t *testing.T) 
 	l.Write(filepath.Join(e.Stage, "plugins.json"))
 	if done, detail, _ := (Claude{}).Check(context.Background(), e); done || detail != "marketplace NovusEdge out of date" {
 		t.Fatalf("detail=%q", detail)
+	}
+}
+
+func TestMergePushSettings(t *testing.T) {
+	for name, in := range map[string]string{
+		"missing":  "",
+		"blank":    " \n",
+		"wrong":    `{"inputNeededNotifEnabled":false,"agentPushNotifEnabled":true,"theme":"dark","hooks":{"a":[1]}}`,
+		"preserve": `{"theme":"dark","hooks":{"a":[1]}}`,
+	} {
+		out, err := mergePushSettings([]byte(in))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if m["inputNeededNotifEnabled"] != true || m["agentPushNotifEnabled"] != false {
+			t.Fatalf("%s: %s", name, out)
+		}
+		if name != "missing" && name != "blank" && (m["theme"] != "dark" || m["hooks"] == nil) {
+			t.Fatalf("%s lost keys: %s", name, out)
+		}
+		if !strings.Contains(string(out), "\n  \"") {
+			t.Fatalf("%s not 2-space indented: %s", name, out)
+		}
+	}
+}
+
+func TestClaudeApplyWritesPushSettings(t *testing.T) {
+	f := host.NewFake().
+		On(claudeBin+" --version", 0, "2.1.295\n").
+		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
+	e := claudeEnv(t, f, plugins.List{})
+	if done, detail, _ := (Claude{}).Check(context.Background(), e); done || detail != "push settings not applied" {
+		t.Fatalf("detail=%q", detail)
+	}
+	writeSettings(t, e, `{"theme":"dark"}`)
+	if err := (Claude{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if done, detail, _ := (Claude{}).Check(context.Background(), e); !done {
+		t.Fatalf("detail=%q", detail)
+	}
+	st, err := os.Stat(e.HomePath(".claude/settings.json"))
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("stat: %v %v", st, err)
+	}
+	b, _ := os.ReadFile(e.HomePath(".claude/settings.json"))
+	if !strings.Contains(string(b), `"theme": "dark"`) {
+		t.Fatalf("lost theme: %s", b)
+	}
+}
+
+func TestClaudeApplyRejectsInvalidSettingsWithoutOverwriting(t *testing.T) {
+	f := host.NewFake().
+		On(claudeBin+" --version", 0, "2.1.295\n").
+		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
+	e := claudeEnv(t, f, plugins.List{})
+	writeSettings(t, e, `{oops`)
+	err := (Claude{}).Apply(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "/home/linear-agents/.claude/settings.json") {
+		t.Fatalf("err=%v", err)
+	}
+	if b, _ := os.ReadFile(e.HomePath(".claude/settings.json")); string(b) != `{oops` {
+		t.Fatalf("overwrote: %s", b)
 	}
 }
