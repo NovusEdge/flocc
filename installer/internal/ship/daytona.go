@@ -89,7 +89,7 @@ func (a daytonaAuth) do(ctx context.Context, client *http.Client, method, path s
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		// The CLI refreshes its stored access token; this reader does not.
-		return errors.New("Daytona refused the stored login; run daytona list to refresh it, then ship again")
+		return errors.New("Daytona refused the stored login; run daytona list to refresh it, then retry")
 	}
 	if resp.StatusCode >= 300 {
 		return &apiError{fmt.Sprintf("Daytona API %s %s: %s", method, path, resp.Status), resp.StatusCode}

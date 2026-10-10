@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -226,6 +227,69 @@ func TestRenderOmitsTheClaimsTableWhenNothingRuns(t *testing.T) {
 	out := plainText(render([]Row{{FleetHost: FleetHost{Name: "x"}, Err: "boom"}}, nil))
 	if strings.Contains(out, "ISSUE") {
 		t.Fatal(out)
+	}
+}
+
+// hangingRunner blocks the "slow" host until its context ends and answers the others at once.
+type hangingRunner struct{}
+
+func (hangingRunner) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
+	if strings.Contains(c.String(), " slow ") {
+		<-ctx.Done()
+		return host.Result{}, ctx.Err()
+	}
+	return host.Result{Stdout: statusJSON}, nil
+}
+func (hangingRunner) Interactive(context.Context, host.Cmd) error { return nil }
+
+func TestOneSlowHostDoesNotDelayTheOthersPastTheTimeout(t *testing.T) {
+	old := hostTimeout
+	hostTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { hostTimeout = old })
+	cache := newDestCache(nil)
+	start := time.Now()
+	rows := collect(context.Background(), hangingRunner{}, cache, []FleetHost{{Name: "slow", Target: "slow"}, {Name: "fast", Target: "fast"}})
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatal(took)
+	}
+	if rows[0].Report != nil || rows[0].Err == "" || rows[1].Report == nil {
+		t.Fatalf("%+v %+v", rows[0], rows[1])
+	}
+}
+
+func TestTickAndDiskCellsFlagProblems(t *testing.T) {
+	const red, yellow = "\x1b[31m", "\x1b[33m"
+	for _, tc := range []struct {
+		json, text, color string
+	}{
+		{`{"last_tick":{"exit":null,"age_s":30}}`, "30s ago, running", ""},
+		{`{"last_tick":{"exit":"0","age_s":700}}`, "11m ago, ok", yellow},
+		{`{"last_tick":{"exit":"0","age_s":60}}`, "1m ago, ok", ""},
+		{`{"last_tick":{"exit":"2","age_s":60}}`, "1m ago, exit 2", red},
+		{`{}`, "-", ""},
+	} {
+		var rep Report
+		if err := json.Unmarshal([]byte(tc.json), &rep); err != nil {
+			t.Fatal(err)
+		}
+		got := tickCell(&rep)
+		if plainText(got) != tc.text || tc.color != "" && !strings.Contains(got, tc.color) {
+			t.Errorf("%s: %q", tc.json, got)
+		}
+	}
+	var low, fine Report
+	json.Unmarshal([]byte(`{"disk":{"free_bytes":14,"total_bytes":100}}`), &low)
+	json.Unmarshal([]byte(`{"disk":{"free_bytes":15,"total_bytes":100}}`), &fine)
+	if !strings.Contains(diskCell(&low), red) || strings.Contains(diskCell(&fine), red) {
+		t.Errorf("%q %q", diskCell(&low), diskCell(&fine))
+	}
+}
+
+func TestFleetRejectsATightWatchInterval(t *testing.T) {
+	for _, iv := range []string{"0s", "-1s", "1s"} {
+		if code := FleetMain([]string{"--watch", "--interval", iv}, io.Discard); code != 2 {
+			t.Errorf("%s: %d", iv, code)
+		}
 	}
 }
 

@@ -32,12 +32,17 @@ const (
 	usdPerDiskHour = 0.000108
 	freeDiskGiB    = 5
 
-	hostTimeout = 20 * time.Second
 	staleTick   = 10 * time.Minute
 	lowDisk     = 0.15
+	minInterval = 5 * time.Second
+	// The shell convention for a process ended by SIGINT.
+	exitInterrupted = 130
 	// An SSH token lives 60 minutes; reusing one for less leaves room for a slow ssh.
 	tokenReuse = 50 * time.Minute
 )
+
+// hostTimeout is a var so a test can shorten it.
+var hostTimeout = 20 * time.Second
 
 func estimateHourly(cpu, memGiB, diskGiB int) float64 {
 	return float64(cpu)*usdPerVCPUHour + float64(memGiB)*usdPerGiBHour +
@@ -428,6 +433,10 @@ func FleetMain(args []string, out io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if *watch && *interval < minInterval {
+		fmt.Fprintf(os.Stderr, "fleet: --interval must be at least %s; each redraw calls the Daytona API and every host\n", minInterval)
+		return 2
+	}
 	home, _ := os.UserHomeDir()
 	daytonaConfig := filepath.Join(home, ".config/daytona/config.json")
 	hostsFile := filepath.Join(home, ".config/la-setup/hosts")
@@ -445,7 +454,7 @@ func FleetMain(args []string, out io.Writer) int {
 		hosts, notes := discover(ctx, daytonaConfig, hostsFile, client)
 		rows := collect(ctx, host.Exec{}, cache, hosts)
 		if ctx.Err() != nil {
-			return 0
+			return exitInterrupted
 		}
 		if *watch {
 			fmt.Fprint(out, "\x1b[H\x1b[2J")
@@ -459,7 +468,7 @@ func FleetMain(args []string, out io.Writer) int {
 		}
 		select {
 		case <-ctx.Done():
-			return 0
+			return exitInterrupted
 		case <-time.After(*interval):
 		}
 	}
