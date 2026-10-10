@@ -76,7 +76,7 @@ func (*Huh) Spin(title string, fn func() error) error {
 	return err
 }
 
-func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo) error {
+func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error {
 	if err := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Linear team key").Value(&a.TeamKey),
 		huh.NewInput().Title("Digest issue key").Description("The pinned issue tier 3 reports go to, such as NF-186.").Value(&a.DigestIssue),
@@ -93,10 +93,33 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo) error {
 			byURL[r.URL] = r
 			opts[i] = huh.NewOption(r.Name, r.URL).Selected(slices.Contains(urls, r.URL))
 		}
-		if err := huh.NewForm(huh.NewGroup(huh.NewMultiSelect[string]().
-			Title("Repos agents may work on").Description("Untick to exclude.").
-			Options(opts...).Value(&urls))).Run(); err != nil {
-			return err
+		for {
+			if err := huh.NewForm(huh.NewGroup(huh.NewMultiSelect[string]().
+				Title("Repos agents may work on").Description("Untick to exclude.").
+				Validate(func(s []string) error {
+					if len(s) == 0 {
+						return errors.New("pick at least one repo")
+					}
+					return nil
+				}).
+				Options(opts...).Value(&urls))).Run(); err != nil {
+				return err
+			}
+			if len(urls) <= maxRepos {
+				break
+			}
+			ok := false
+			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+				Title(fmt.Sprintf("%d repos selected; each is cloned now and checked on every run. Continue?", len(urls))).
+				Value(&ok))).Run(); err != nil {
+				return err
+			}
+			if ok {
+				break
+			}
+			for i, r := range found {
+				opts[i] = opts[i].Selected(slices.Contains(urls, r.URL))
+			}
 		}
 		a.ExcludedRepos = answers.UpdateExcluded(a.ExcludedRepos, found, urls)
 		a.Repos = nil
@@ -117,13 +140,17 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo) error {
 			}
 			a.Repos = append(a.Repos, answers.Repo{BaseBranch: "main", Check: "just check", Draft: true})
 		}
-		if err := editRepo(&a.Repos[i], i); err != nil {
+		if err := editRepo(&a.Repos[i], i, defaults); err != nil {
 			return err
 		}
 	}
 }
 
-func editRepo(r *answers.Repo, i int) error {
+// maxRepos is where the form stops to ask: every mapped repo is cloned in Apply and
+// ls-remoted by doctor on each run.
+const maxRepos = 30
+
+func editRepo(r *answers.Repo, i int, defaults func(url string) (string, bool)) error {
 	prevURL := r.URL
 	if err := huh.NewForm(huh.NewGroup(
 		huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
@@ -140,6 +167,9 @@ func editRepo(r *answers.Repo, i int) error {
 	// A saved name may be a Linear label that differs from the repo name, so keep it while the URL stands.
 	if r.Name == "" || r.URL != prevURL {
 		r.Name = answers.NameFromURL(r.URL)
+	}
+	if prevURL == "" {
+		r.BaseBranch, r.Draft = defaults(r.URL)
 	}
 	ok := true
 	if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().

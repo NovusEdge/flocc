@@ -100,7 +100,7 @@ func validate(a *answers.Answers) error {
 		return errors.New("team key, digest issue and at least one repo are required")
 	}
 	for _, r := range a.Repos {
-		if !repoName.MatchString(r.Name) {
+		if !repoName.MatchString(r.Name) || r.Name == "." || r.Name == ".." {
 			return fmt.Errorf("repo name %q: use letters, digits, '.', '_' or '-', matching its Linear label", r.Name)
 		}
 		if !answers.ValidGitHubURL(r.URL) {
@@ -135,7 +135,8 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 			}
 		}
 	}
-	if err := e.UI.ConfigForm(a, found); err != nil {
+	defaults := func(url string) (string, bool) { return e.repoDefaults(ctx, url) }
+	if err := e.UI.ConfigForm(a, found, defaults); err != nil {
 		return err
 	}
 	// Saved before validating, so a typo does not discard everything typed.
@@ -170,7 +171,11 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	for _, r := range a.Repos {
 		dir := e.Real("src/" + r.Name)
 		if _, err := os.Stat(e.HomePath("src/" + r.Name + "/.git")); err != nil {
-			if _, err := e.Must(ctx, "git", "-c", "credential.helper=", "-c", "credential.helper="+credentialHelper, "clone", "-q", r.URL, dir); err != nil {
+			err := e.UI.Spin("Cloning "+r.Name, func() error {
+				_, err := e.Must(ctx, "git", "-c", "credential.helper=", "-c", "credential.helper="+credentialHelper, "clone", "-q", r.URL, dir)
+				return err
+			})
+			if err != nil {
 				return err
 			}
 		}

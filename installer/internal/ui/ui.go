@@ -22,7 +22,8 @@ type UI interface {
 	Secret(id, title, help string) (string, error)
 	// found is every repo the agent token can see, already merged with saved answers;
 	// empty when discovery failed, which falls back to asking for each repo by URL.
-	ConfigForm(a *answers.Answers, found []answers.Repo) error
+	// defaults gives the base branch and draft setting of a repo added by URL.
+	ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error
 	PickRedo(done []string) ([]string, error)
 	Spin(title string, fn func() error) error
 }
@@ -64,7 +65,7 @@ func (s *Scripted) Secret(id, _, _ string) (string, error) {
 	return "", fmt.Errorf("unknown secret %q", id)
 }
 
-func (s *Scripted) ConfigForm(a *answers.Answers, _ []answers.Repo) error {
+func (s *Scripted) ConfigForm(a *answers.Answers, _ []answers.Repo, _ func(string) (string, bool)) error {
 	if a.TeamKey == "" || a.DigestIssue == "" || len(a.Repos) == 0 {
 		return errors.New("the answers file needs team_key, digest_issue and at least one [[repos]]")
 	}

@@ -33,31 +33,31 @@ func NameFromURL(u string) string {
 	return strings.TrimSuffix(path.Base(strings.TrimSuffix(u, "/")), ".git")
 }
 
-// Preselected is the URLs of found repos whose names are not excluded.
+// Preselected is the URLs of found repos that are not excluded.
 func Preselected(found []Repo, excluded []string) []string {
 	var urls []string
 	for _, r := range found {
-		if !slices.Contains(excluded, r.Name) {
+		if !slices.Contains(excluded, r.URL) {
 			urls = append(urls, r.URL)
 		}
 	}
 	return urls
 }
 
-// UpdateExcluded returns the excluded names after the user ticked chosen URLs among found:
-// unticked found repos join, re-ticked ones leave, names not offered this time stay.
+// UpdateExcluded returns the excluded URLs after the user ticked chosen among found:
+// unticked found repos join, re-ticked ones leave, URLs not offered this time stay.
 func UpdateExcluded(excluded []string, found []Repo, chosen []string) []string {
 	offered := map[string]bool{}
 	var out []string
 	for _, r := range found {
-		offered[r.Name] = true
+		offered[r.URL] = true
 		if !slices.Contains(chosen, r.URL) {
-			out = append(out, r.Name)
+			out = append(out, r.URL)
 		}
 	}
-	for _, n := range excluded {
-		if !offered[n] {
-			out = append(out, n)
+	for _, u := range excluded {
+		if !offered[u] {
+			out = append(out, u)
 		}
 	}
 	return out
@@ -75,7 +75,7 @@ type Answers struct {
 	DigestIssue string `toml:"digest_issue,omitempty"`
 	NtfyTopic   string `toml:"ntfy_topic,omitempty"`
 	Repos       []Repo `toml:"repos,omitempty"`
-	// Names of discovered repos the user unticked, so a rerun does not tick them again
+	// URLs of discovered repos the user unticked, so a rerun does not tick them again
 	// while repos created since still arrive ticked.
 	ExcludedRepos []string `toml:"excluded_repos,omitempty"`
 	// Read only from an --answers file, for runs without a terminal; Save drops it.

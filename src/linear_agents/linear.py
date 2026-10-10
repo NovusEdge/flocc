@@ -161,21 +161,24 @@ class Linear:
         )
 
     def missing_labels(self, team_key: str, names: list[str]) -> list[str]:
-        data = self._post(
-            """query($key: String!, $names: [String!]) {
-                 teams(filter: { key: { eq: $key } }) { nodes { id } }
-                 issueLabels(first: 250, filter: { name: { in: $names } }) {
-                   nodes { name team { key } } } }""",
-            {"key": team_key, "names": names},
-        )
-        if not data["teams"]["nodes"]:
-            raise LinearError(f"team {team_key} does not exist or the key cannot see it")
-        # The same rule add_label applies: a workspace label or one of this team's.
-        usable = {
-            n["name"]
-            for n in data["issueLabels"]["nodes"]
-            if n["team"] is None or n["team"]["key"] == team_key
-        }
+        usable: set[str] = set()
+        # Chunked so a long name list cannot push a label past the 250-node page.
+        for i in range(0, max(len(names), 1), 100):
+            data = self._post(
+                """query($key: String!, $names: [String!]) {
+                     teams(filter: { key: { eq: $key } }) { nodes { id } }
+                     issueLabels(first: 250, filter: { name: { in: $names } }) {
+                       nodes { name team { key } } } }""",
+                {"key": team_key, "names": names[i : i + 100]},
+            )
+            if not data["teams"]["nodes"]:
+                raise LinearError(f"team {team_key} does not exist or the key cannot see it")
+            # The same rule add_label applies: a workspace label or one of this team's.
+            usable |= {
+                n["name"]
+                for n in data["issueLabels"]["nodes"]
+                if n["team"] is None or n["team"]["key"] == team_key
+            }
         return [n for n in names if n not in usable]
 
     def comments_since(self, issue_id: str, after_iso: str | None) -> list[Comment]:

@@ -127,6 +127,18 @@ def test_missing_labels_counts_team_and_workspace_labels():
     assert post.calls[0][1] == {"key": "NF", "names": ["claude", "escalation", "backend"]}
 
 
+def test_missing_labels_queries_at_most_100_names_per_call():
+    team = {"nodes": [{"id": "t1"}]}
+    post = FakePost(
+        {"teams": team, "issueLabels": {"nodes": [{"name": "r0", "team": None}]}},
+        {"teams": team, "issueLabels": {"nodes": [{"name": "r100", "team": None}]}},
+    )
+    names = [f"r{i}" for i in range(101)]
+    missing = Linear(post).missing_labels("NF", names)
+    assert [len(c[1]["names"]) for c in post.calls] == [100, 1]
+    assert missing == names[1:100]
+
+
 def test_missing_labels_on_an_unknown_team_raises():
     post = FakePost({"teams": {"nodes": []}, "issueLabels": {"nodes": []}})
     with pytest.raises(LinearError, match="team NF"):
