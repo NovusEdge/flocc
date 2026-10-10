@@ -71,6 +71,9 @@ def cmd_hook(args) -> int:
     mine = ledger.claim_for_worktree(con, str(top))
     if mine is None:
         return 0
+    if mine.phase == "review":
+        print("linear-agents: the review session is read-only; do not commit", file=sys.stderr)
+        return 1
     staged = git("diff", "--cached", "--name-only", cwd=top).splitlines()
     clash = ledger.file_conflicts(staged, ledger.live_claims(con), exclude=mine.issue_key)
     if not clash:

@@ -429,3 +429,52 @@ def test_handoff_ready_restarts_same_phase_with_a_clean_slate(rt):
         assert not (d / name).exists()
     supervise(rt, current(rt))
     assert rt.sessions.sent == [], "the old session's 70% must not ask the new one to hand off"
+
+
+def test_comment_already_posted_is_not_posted_again(rt):
+    review_session(rt)
+    rt.linear.comment = lambda issue_id, text: (_ for _ in ()).throw(LinearError("x"))
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert len(rt.pr_comments) == 1
+    # A tick that died after the post but before finishing the claim.
+    ledger.update_claim(rt.con, "NF-1", state="running")
+    ledger.meta_set(rt.con, "review_posted:NF-1", "1")
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert len(rt.pr_comments) == 1 and current(rt).state == "done"
+    assert not ledger.meta_get(rt.con, "review_posted:NF-1")
+
+
+@pytest.mark.parametrize("pct", ["five_hour", "seven_day"])
+def test_review_is_skipped_when_usage_is_over_the_limit(rt, pct):
+    window = {"used_percentage": 20.0, "resets_at": 4_000_000_000}
+    over = {**window, "used_percentage": 95.0}
+    status = {"rate_limits": {"five_hour": window, "seven_day": window, "context_window": {}}}
+    status["rate_limits"][pct] = over
+    add(rt, phase="impl", tester_sha="sha-tests")
+    write_status(state_dir(rt.cfg, "NF-1"), status)
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and rt.notifier.sent == []
+    assert all(name != "NF-1-review" for name, _ in rt.sessions.started)
+    assert "usage over the limit" in ledger.pending_digest(rt.con)[-1][2]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["**Verdict:** approve", "Verdict: **approve**", "## Verdict: Approve", "_Verdict_: approve"],
+)
+def test_verdict_tolerates_markdown_emphasis(rt, line):
+    review_session(rt, f"## Minor\n- a.py:1 nit\n\n{line}\n")
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert rt.linear.comments[-1] == "Review: approve — https://pr/1"
+
+
+def test_review_is_bounded_by_review_wall_clock_s(rt):
+    rt.cfg = replace(rt.cfg, review_wall_clock_s=60)
+    review_session(rt, text=None)
+    rt.now = lambda: 100.0 + 61
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and "wall-clock" in ledger.pending_digest(rt.con)[-1][2]

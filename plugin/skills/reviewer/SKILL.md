@@ -12,6 +12,8 @@ Review the branch the implementer pushed. You change nothing: do not edit files,
 - Read the repo's `AGENTS.md` and `CLAUDE.md` if present, and check the diff against their
   conventions. Open the surrounding code when the diff alone does not show whether a change is safe.
 - Run the repo's check only if you doubt it passes; the service already ran it before the push.
+- Findings go only in `review.md`. Do not run `linear-agents escalate`; the PR is already open and
+  the owner reads the review.
 - Do not raise style points a linter would catch or changes outside the diff.
 
 Write `review.md` in your state directory, with these headings, omitting an empty one:

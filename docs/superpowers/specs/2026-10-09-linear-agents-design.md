@@ -103,7 +103,8 @@ They never push, open PRs, or change Linear.
 
 The session name is the issue key (`NF-123`) for the implementer; the tester and reviewer use
 `NF-123-test` and `NF-123-review`. The review session counts against the session cap and usage
-admission like any other.
+admission like any other, except that over the usage limits the review is skipped with a digest
+line instead of waiting, and `review_wall_clock_s` (default 1 hour) bounds it.
 
 ### Failure handling
 

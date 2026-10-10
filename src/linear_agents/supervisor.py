@@ -22,7 +22,9 @@ _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
 PUBLISH_TRIES = 3
 POST_TRIES = 3
-_VERDICT = re.compile(r"^\W*verdict:\s*(approve|changes requested)", re.IGNORECASE | re.MULTILINE)
+_VERDICT = re.compile(
+    r"^[\s*_#>-]*verdict[\s*_]*:?[\s*_]*(approve|changes requested)", re.IGNORECASE | re.MULTILINE
+)
 
 
 class LaunchError(RuntimeError):
@@ -114,6 +116,7 @@ def _review_skipped(rt, claim: Claim, why: str) -> None:
     url = _pr_url(rt, claim)
     rt.sessions.kill(session_name(key, "review"))
     ledger.add_digest(rt.con, key, f"review skipped, {why}; PR: {url}", rt.now())
+    ledger.meta_set(rt.con, f"review_posted:{key}", "")
     ledger.update_claim(rt.con, key, state="done")
 
 
@@ -125,6 +128,14 @@ def _pr_url(rt, claim: Claim) -> str:
 def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> None:
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
+    usage = latest_usage(rt.cfg.state_root, rt.now())
+    if usage is not None and (
+        usage.five_hour_pct >= rt.cfg.five_hour_max_pct or usage.weekly_pct >= rt.cfg.weekly_max_pct
+    ):
+        (d / "pr-url").write_text(url)
+        ledger.add_digest(rt.con, key, f"review skipped, usage over the limit; PR: {url}", rt.now())
+        ledger.update_claim(rt.con, key, state="done")
+        return
     try:
         (d / "pr-url").write_text(url)
         (d / "pr.diff").write_text(rt.review_diff(claim) + "\n")
@@ -151,26 +162,31 @@ def _finish_review(rt, claim: Claim) -> None:
         return
     url = _pr_url(rt, claim)
     counter = f"review_post_failures:{key}"
-    try:
-        rt.comment_pr(claim, url, review_comment(text))
-    except Exception as exc:  # noqa: BLE001 - a gh failure is counted, not re-raised
-        fails = int(ledger.meta_get(rt.con, counter) or 0) + 1
-        print(f"{key}: review comment failed ({fails}/{POST_TRIES}): {exc}", file=sys.stderr)
-        if fails < POST_TRIES:
-            ledger.meta_set(rt.con, counter, str(fails))
+    posted = f"review_posted:{key}"
+    # Set right after the post: a tick that dies before finishing the claim must not comment twice.
+    if not ledger.meta_get(rt.con, posted):
+        try:
+            rt.comment_pr(claim, url, review_comment(text))
+        except Exception as exc:  # noqa: BLE001 - a gh failure is counted, not re-raised
+            fails = int(ledger.meta_get(rt.con, counter) or 0) + 1
+            print(f"{key}: review comment failed ({fails}/{POST_TRIES}): {exc}", file=sys.stderr)
+            if fails < POST_TRIES:
+                ledger.meta_set(rt.con, counter, str(fails))
+                return
+            ledger.meta_set(rt.con, counter, "0")
+            _review_skipped(rt, claim, f"posting the comment failed {fails} times: {exc}")
             return
         ledger.meta_set(rt.con, counter, "0")
-        _review_skipped(rt, claim, f"posting the comment failed {fails} times: {exc}")
-        return
-    ledger.meta_set(rt.con, counter, "0")
+        ledger.meta_set(rt.con, posted, "1")
     matches = _VERDICT.findall(text)
     verdict = matches[-1].lower() if matches else "no verdict"
     line = f"Review: {verdict} — {url}"
-    ledger.update_claim(rt.con, key, state="done")
     try:
         rt.linear.comment(claim.issue_id, line)
     except LinearError:
         ledger.add_digest(rt.con, key, line, rt.now())
+    ledger.meta_set(rt.con, posted, "")
+    ledger.update_claim(rt.con, key, state="done")
 
 
 def _finish_phase(rt, claim: Claim, summary: str) -> None:
@@ -268,7 +284,8 @@ def supervise(rt, claim: Claim) -> None:
         _relaunch(rt, claim)
         ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
-    if rt.now() - claim.started_at > claim.wall_clock_s:
+    limit = rt.cfg.review_wall_clock_s if claim.phase == "review" else claim.wall_clock_s
+    if rt.now() - claim.started_at > limit:
         if claim.phase == "review":
             _record_usage(rt, key, claim.phase, "end")
             _review_skipped(rt, claim, f"stopped at the wall-clock limit ({name})")

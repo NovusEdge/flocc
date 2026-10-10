@@ -416,3 +416,18 @@ def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monke
     assert transports == []
     con = ledger.connect(cfg.ledger_path)
     assert ledger.live_claims(con) == [] and ledger.meta_get(con, "tick_failures") == "1"
+
+
+def test_review_session_escalations_go_to_the_digest_only(rt):
+    claim = make("NF-1", ())
+    claim.phase = "review"
+    ledger.insert_claim(rt.con, claim)
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True)
+    line = json.dumps({"tier": 1, "cause": "c", "summary": "boom", "issue_key": "NF-1"})
+    (d / "escalations.jsonl").write_text(line + "\n")
+    route_escalations(rt)
+    route_escalations(rt)
+    assert rt.notifier.sent == []
+    [(_, key, text)] = ledger.pending_digest(rt.con)
+    assert key == "NF-1" and "review session escalated" in text and "boom" in text
