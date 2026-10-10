@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
 )
@@ -124,29 +125,93 @@ func TestResolveTargetPlainIsPassedThrough(t *testing.T) {
 	}
 }
 
-func TestResolveTargetDaytonaGetsAToken(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// daytonaFake serves the sandbox states in order (the last one repeats) and
+// records the polls seen before the SSH token was requested.
+func daytonaFake(t *testing.T, states ...string) (cfg string, srv *httptest.Server, polls, tokens *int) {
+	t.Helper()
+	polls, tokens = new(int), new(int)
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer acc" || r.Header.Get("X-Daytona-Organization-ID") != "org1" {
 			w.WriteHeader(401)
 			return
 		}
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/api/sandbox/la-smoke":
-			json.NewEncoder(w).Encode(map[string]string{"id": "sb1"})
+			json.NewEncoder(w).Encode(map[string]string{"id": "sb1", "state": states[0]})
+		case r.Method == "GET" && r.URL.Path == "/api/sandbox/sb1":
+			json.NewEncoder(w).Encode(map[string]string{"state": states[min(*polls, len(states)-1)]})
+			*polls++
 		case r.Method == "POST" && r.URL.Path == "/api/sandbox/sb1/ssh-access" && r.URL.Query().Get("expiresInMinutes") == "60":
+			*tokens++
 			json.NewEncoder(w).Encode(map[string]string{"token": "tok", "sshCommand": "ssh tok@ssh.example.test"})
 		default:
 			w.WriteHeader(404)
 		}
 	}))
-	defer srv.Close()
-	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Cleanup(srv.Close)
+	cfg = filepath.Join(t.TempDir(), "config.json")
 	writeJSON(t, cfg, map[string]any{"activeProfile": "initial", "profiles": []any{map[string]any{
 		"id": "initial", "activeOrganizationId": "org1",
 		"api": map[string]any{"url": srv.URL + "/api", "key": "k", "token": map[string]string{"accessToken": "acc"}}}}})
+	return cfg, srv, polls, tokens
+}
+
+// fakeClock replaces the wait sleep and clock; the returned count is the sleeps taken.
+func fakeClock(t *testing.T) *int {
+	t.Helper()
+	oldSleep, oldNow := waitSleep, waitNow
+	t.Cleanup(func() { waitSleep, waitNow = oldSleep, oldNow })
+	var elapsed time.Duration
+	sleeps := new(int)
+	waitSleep = func(d time.Duration) { elapsed += d; *sleeps++ }
+	waitNow = func() time.Time { return time.Unix(0, 0).Add(elapsed) }
+	return sleeps
+}
+
+func TestResolveTargetDaytonaGetsAToken(t *testing.T) {
+	sleeps := fakeClock(t)
+	cfg, srv, _, tokens := daytonaFake(t, "started")
 	d, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
-	if err != nil || d.SSH != "tok@ssh.example.test" || d.Token != "tok" {
+	if err != nil || d.SSH != "tok@ssh.example.test" || d.Token != "tok" || *tokens != 1 || *sleeps != 0 {
 		t.Fatalf("%+v %v", d, err)
+	}
+}
+
+func TestResolveTargetDaytonaWaitsForStarted(t *testing.T) {
+	sleeps := fakeClock(t)
+	cfg, srv, polls, tokens := daytonaFake(t, "CREATING", "creating", "STARTED")
+	if _, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if *polls != 3 || *sleeps != 2 || *tokens != 1 {
+		t.Fatalf("polls %d sleeps %d tokens %d", *polls, *sleeps, *tokens)
+	}
+}
+
+func TestResolveTargetDaytonaStoppedFailsAtOnce(t *testing.T) {
+	sleeps := fakeClock(t)
+	cfg, srv, _, tokens := daytonaFake(t, "STOPPED")
+	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
+	if err == nil || !strings.Contains(err.Error(), "daytona start la-smoke") || *tokens != 0 || *sleeps != 0 {
+		t.Fatalf("%v tokens %d", err, *tokens)
+	}
+}
+
+func TestResolveTargetDaytonaFailedStateFails(t *testing.T) {
+	fakeClock(t)
+	cfg, srv, _, _ := daytonaFake(t, "build_failed")
+	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
+	if err == nil || !strings.Contains(err.Error(), "build_failed") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestResolveTargetDaytonaWaitTimesOut(t *testing.T) {
+	fakeClock(t)
+	cfg, srv, _, tokens := daytonaFake(t, "creating")
+	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client())
+	if err == nil || !strings.Contains(err.Error(), "creating") || *tokens != 0 {
+		t.Fatalf("%v", err)
 	}
 }
 

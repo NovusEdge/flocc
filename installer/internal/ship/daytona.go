@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 type Dest struct {
@@ -123,6 +124,43 @@ func (a daytonaAuth) sandboxID(ctx context.Context, client *http.Client, name st
 	return "", fmt.Errorf("no Daytona sandbox named %q in this organization", name)
 }
 
+// Package-level so tests can run the wait without sleeping.
+var (
+	waitSleep   = time.Sleep
+	waitNow     = time.Now
+	waitEvery   = 5 * time.Second
+	waitTimeout = 5 * time.Minute
+)
+
+// waitStarted blocks until the sandbox is started: the SSH gateway drops connections to a sandbox still in CREATING.
+func (a daytonaAuth) waitStarted(ctx context.Context, client *http.Client, id, name string, log io.Writer) error {
+	deadline := waitNow().Add(waitTimeout)
+	last := ""
+	for {
+		var sb struct{ State string }
+		if err := a.do(ctx, client, "GET", "/sandbox/"+url.PathEscape(id), &sb); err != nil {
+			return err
+		}
+		state := strings.ToLower(sb.State)
+		switch {
+		case state == "started":
+			return nil
+		case state == "stopped" || state == "archived":
+			return fmt.Errorf("Daytona sandbox %s is %s; start it with daytona start %s", name, state, name)
+		case state == "error" || strings.HasSuffix(state, "failed"):
+			return fmt.Errorf("Daytona sandbox %s is in state %s", name, state)
+		}
+		if state != last {
+			fmt.Fprintf(log, "ship: waiting for Daytona sandbox %s (state %s)\n", name, state)
+			last = state
+		}
+		if !waitNow().Add(waitEvery).Before(deadline) {
+			return fmt.Errorf("Daytona sandbox %s did not start within %s (last state %s)", name, waitTimeout, state)
+		}
+		waitSleep(waitEvery)
+	}
+}
+
 func resolveTarget(ctx context.Context, target, daytonaConfig string, client *http.Client) (Dest, error) {
 	name, ok := strings.CutPrefix(target, "daytona:")
 	if !ok {
@@ -134,6 +172,9 @@ func resolveTarget(ctx context.Context, target, daytonaConfig string, client *ht
 	}
 	id, err := auth.sandboxID(ctx, client, name)
 	if err != nil {
+		return Dest{}, err
+	}
+	if err := auth.waitStarted(ctx, client, id, name, os.Stderr); err != nil {
 		return Dest{}, err
 	}
 	var access struct {
