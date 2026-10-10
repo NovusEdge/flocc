@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -62,9 +63,54 @@ def _ledger(args):
     return ledger.connect(load(path).ledger_path)
 
 
+# Claude Code's own attribution; the session settings turn it off, this catches what slips by.
+_CLAUDE_ATTRIBUTION = re.compile(r"^(Claude-Session:|Co-Authored-By: Claude)", re.IGNORECASE)
+
+
+def _strip_attribution(message_file: str) -> None:
+    path = Path(message_file)
+    lines = path.read_text().splitlines(keepends=True)
+    kept = [ln for ln in lines if not _CLAUDE_ATTRIBUTION.match(ln)]
+    if len(kept) == len(lines):
+        return
+    while kept and not kept[-1].strip():
+        kept.pop()
+    path.write_text("".join(kept))
+
+
+def _commit_msg(message_file: str, trailer_on: bool) -> int:
+    _strip_attribution(message_file)
+    if not trailer_on:
+        return 0
+    key = os.environ.get("LINEAR_AGENTS_STATE")
+    phase = os.environ.get("LINEAR_AGENTS_PHASE")
+    # A commit made by hand in the worktree has neither; it stays the owner's plain commit.
+    if not key or not phase or phase == "review":
+        return 0
+    trailer = f"Linear-Agents: {Path(key).name} {phase}"
+    # doNothing matches on the key alone: an amend keeps the phase it was first committed in, and
+    # never stacks a second copy. Rebase and cherry-pick skip commit-msg, so they keep it as is.
+    subprocess.run(
+        [
+            "git",
+            "interpret-trailers",
+            "--in-place",
+            "--if-exists",
+            "doNothing",
+            "--trailer",
+            trailer,
+            message_file,
+        ],
+        check=True,
+    )
+    return 0
+
+
 def cmd_hook(args) -> int:
     from linear_agents.worktree import git
 
+    if args.name == "commit-msg":
+        return _commit_msg(args.message_file, not args.no_trailer)
     top = Path.cwd()
     top = Path(git("rev-parse", "--show-toplevel", cwd=top))
     con = _ledger(args)
@@ -257,7 +303,9 @@ def build_parser() -> argparse.ArgumentParser:
     esc.add_argument("--waiting", action="store_true")
     esc.add_argument("--global", dest="is_global", action="store_true")
     hook = sub.add_parser("hook")
-    hook.add_argument("name", choices=["pre-commit"])
+    hook.add_argument("name", choices=["pre-commit", "commit-msg"])
+    hook.add_argument("--no-trailer", action="store_true")
+    hook.add_argument("message_file", nargs="?")
     claim = sub.add_parser("claim")
     claim.add_argument("globs", nargs="+")
     sub.add_parser("context")

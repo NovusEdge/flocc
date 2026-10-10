@@ -1,6 +1,6 @@
 import pytest
 
-from linear_agents.config import load
+from linear_agents.config import load, trailer_enabled
 from tests.paths import EXAMPLE
 
 
@@ -48,3 +48,17 @@ def test_repo_draft_can_be_turned_off_and_unknown_repo_keys_fail(tmp_path):
     p.write_text(EXAMPLE.read_text().replace("[repos.backend]\n", "[repos.backend]\ndarft = 1\n"))
     with pytest.raises(TypeError, match="darft"):
         load(p)
+
+
+def test_commit_trailer_is_on_unless_a_repo_overrides_it(tmp_path):
+    cfg = load(EXAMPLE)
+    repo = cfg.repos["backend"]
+    assert cfg.commit_trailer is True and repo.commit_trailer is None
+    assert trailer_enabled(cfg, repo)
+    p = tmp_path / "c.toml"
+    p.write_text(EXAMPLE.read_text().replace('base_branch = "main"\n', "commit_trailer = false\n"))
+    off = load(p)
+    assert not trailer_enabled(off, off.repos["backend"])
+    p.write_text("commit_trailer = false\n" + EXAMPLE.read_text())
+    global_off = load(p)
+    assert not trailer_enabled(global_off, global_off.repos["backend"])

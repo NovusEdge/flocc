@@ -12,6 +12,7 @@ from linear_agents.agentblock import (
     parse_settings,
     settings_to_json,
 )
+from linear_agents.config import trailer_enabled
 from linear_agents.context import state_dir, write_context
 from linear_agents.escalation import DEDUPE_S, Escalation, scoped
 from linear_agents.ledger import Claim
@@ -130,7 +131,13 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     # Cleared here, not with the other causes in poll(): those run before every prepare attempt.
     ledger.clear_alert(rt.con, cause)
     d = state_dir(cfg, issue.key)
-    install_hook(path, d / "hooks", rt.exe, rt.config_path)
+    install_hook(
+        path,
+        d / "hooks",
+        rt.exe,
+        rt.config_path,
+        trailer=trailer_enabled(cfg, cfg.repos[repo]),
+    )
     # The previous claim's notes would be read as this session's handoff, and would satisfy
     # handoff-ready before the new session wrote its own. Kept for the owner.
     if (d / "handoff.md").exists():

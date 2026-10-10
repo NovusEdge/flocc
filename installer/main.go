@@ -78,7 +78,7 @@ func stageNames(stage, answersIn string) ([]string, error) {
 	var names []string
 	for _, ent := range entries {
 		n := ent.Name()
-		known := n == "la-setup" || n == "linear-agents.bundle" || n == "plugins.json" ||
+		known := n == "la-setup" || n == "linear-agents.bundle" || n == "plugins.json" || n == "identity.json" ||
 			strings.HasSuffix(n, ".tar") || answersIn != "" && n == filepath.Base(answersIn)
 		if ent.Type().IsRegular() && known && stageFile.MatchString(n) {
 			names = append(names, n)

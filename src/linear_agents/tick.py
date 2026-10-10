@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from linear_agents import ledger
-from linear_agents.config import Config
+from linear_agents.config import Config, trailer_enabled
 from linear_agents.escalation import Escalation, Notifier, ntfy_push
 from linear_agents.linear import Linear, LinearError, http_transport
 from linear_agents.poller import forward_comments, maybe_digest, poll, route_escalations
@@ -59,6 +59,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
             summary,
             token,
             check_timeout_s=cfg.check_timeout_s,
+            trailer=trailer_enabled(cfg, cfg.repos[claim.repo]),
         )
 
     def review_diff(claim):

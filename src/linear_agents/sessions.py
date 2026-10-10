@@ -7,6 +7,15 @@ from linear_agents.agentblock import IssueSettings
 from linear_agents.config import Config
 
 SOCKET = "linear-agents"
+# --no-verify skips the pre-commit claim check and the commit-msg trailer. Flag order varies, so
+# the wildcard forms cover the flag anywhere after `git commit`; -n also arrives bundled (-nm).
+_DENY = [
+    "Bash(git commit --no-verify:*)",
+    "Bash(git commit -n:*)",
+    "Bash(git commit * --no-verify*)",
+    "Bash(git commit * -n *)",
+    "Bash(git commit * -n)",
+]
 _KEEP = ("HOME", "USER", "PATH", "LANG", "TERM")
 # $0 is the token file. Reading it inside the pane keeps the token off the tmux and ps command
 # lines, and a missing file stops the session instead of leaving gh to find other credentials.
@@ -63,6 +72,8 @@ def claude_argv(
     session_settings = {
         "statusLine": {"type": "command", "command": f"{exe} statusline"},
         "autoContinueAtUsageLimit": True,
+        "attribution": False,
+        "permissions": {"deny": _DENY},
     }
     # The pane would otherwise inherit the tmux server's environment, which is whatever the
     # process that started the server had.

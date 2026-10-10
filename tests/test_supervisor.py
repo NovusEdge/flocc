@@ -257,6 +257,15 @@ def test_no_review_when_publish_fails(rt):
     assert all(name != "NF-1-review" for name, _ in rt.sessions.started)
 
 
+def test_publish_notes_commits_without_the_trailer_in_the_digest(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("opened", url="u", untrailed=("abc1234",))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    lines = [line for _, _, line in ledger.pending_digest(rt.con)]
+    assert any("abc1234" in line and "trailer" in line for line in lines)
+
+
 def test_check_failure_gets_one_fix_then_blocks(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
     add(rt, phase="impl", tester_sha="sha-tests")

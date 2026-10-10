@@ -45,6 +45,14 @@ def test_argv_wraps_claude_in_a_clean_env():
     assert "--strict-mcp-config" in argv
 
 
+def test_session_settings_drop_attribution_and_deny_no_verify_commits():
+    argv = claude_argv(CFG, "NF-1", IssueSettings(), "p", env={}, claude_exe="c", exe="x")
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings["attribution"] is False
+    deny = settings["permissions"]["deny"]
+    assert "Bash(git commit --no-verify:*)" in deny and "Bash(git commit -n:*)" in deny
+
+
 def test_unknown_mcp_server_raises():
     with pytest.raises(KeyError, match="nope"):
         claude_argv(CFG, "NF-1", IssueSettings(mcp=("nope",)), "p", env={}, claude_exe="c", exe="x")

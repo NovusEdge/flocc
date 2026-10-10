@@ -75,7 +75,7 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
         return path, f"agent/{key.lower()}", "sha0"
 
     monkeypatch.setattr("linear_agents.poller.prepare_worktree", fake_prepare)
-    monkeypatch.setattr("linear_agents.poller.install_hook", lambda *a: None)
+    monkeypatch.setattr("linear_agents.poller.install_hook", lambda *a, **kw: None)
     return Runtime(
         cfg=tmp_cfg,
         con=ledger.connect(tmp_cfg.ledger_path),

@@ -1,4 +1,5 @@
 import os
+import shlex
 import signal
 import subprocess
 from pathlib import Path
@@ -7,6 +8,7 @@ from linear_agents.config import RepoConfig
 
 _LISTED = 20
 _DRAIN_S = 5
+_OWN_HOOKS = ("pre-commit", "commit-msg")
 
 
 # A SubprocessError so the poller's prepare-failure handling covers it.
@@ -116,7 +118,9 @@ def _status(path: Path) -> list[str]:
     return out.stdout.splitlines()
 
 
-def install_hook(worktree: Path, hooks_dir: Path, exe: str, config_path: Path) -> None:
+def install_hook(
+    worktree: Path, hooks_dir: Path, exe: str, config_path: Path, trailer: bool = True
+) -> None:
     # The repo's own hooks dir, read with this worktree's core.hooksPath unset so the generated
     # hook can chain to it. A kept worktree still points at the previous install, and chaining to
     # that would make the hook exec itself forever. Exit 5 (not set) and the error before
@@ -131,6 +135,17 @@ def install_hook(worktree: Path, hooks_dir: Path, exe: str, config_path: Path) -
     if not original.is_absolute():
         original = (worktree / original).resolve()
     hooks_dir.mkdir(parents=True, exist_ok=True)
+    # core.hooksPath replaces the repo's whole hooks dir, so every other hook it has gets a stub.
+    # A stub left from an earlier install of a hook the repo has since dropped would run nothing.
+    for old in hooks_dir.iterdir():
+        old.unlink()
+    if original.is_dir():
+        for src in original.iterdir():
+            if src.suffix == ".sample" or src.name in _OWN_HOOKS or not os.access(src, os.X_OK):
+                continue
+            stub = hooks_dir / src.name
+            stub.write_text(f'#!/bin/sh\nexec {shlex.quote(str(src))} "$@"\n')
+            stub.chmod(0o755)
     hook = hooks_dir / "pre-commit"
     hook.write_text(
         "#!/bin/sh\nset -e\n"
@@ -138,6 +153,13 @@ def install_hook(worktree: Path, hooks_dir: Path, exe: str, config_path: Path) -
         f'if [ -x "{original}/pre-commit" ]; then exec "{original}/pre-commit" "$@"; fi\n'
     )
     hook.chmod(0o755)
+    msg_hook = hooks_dir / "commit-msg"
+    msg_hook.write_text(
+        "#!/bin/sh\nset -e\n"
+        f'"{exe}" hook commit-msg{"" if trailer else " --no-trailer"} "$1"\n'
+        f'if [ -x "{original}/commit-msg" ]; then exec "{original}/commit-msg" "$@"; fi\n'
+    )
+    msg_hook.chmod(0o755)
     # Worktree-scoped config so the main checkout and other worktrees keep their own hooks.
     git("config", "extensions.worktreeConfig", "true", cwd=worktree)
     git("config", "--worktree", "core.hooksPath", str(hooks_dir), cwd=worktree)

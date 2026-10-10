@@ -16,6 +16,9 @@ class PublishResult:
     status: str
     detail: str = ""
     url: str = ""
+    untrailed: tuple[
+        str, ...
+    ] = ()  # short SHAs of branch commits without the Linear-Agents trailer
 
 
 def publish(
@@ -26,6 +29,7 @@ def publish(
     token: str,
     runner=subprocess.run,
     check_timeout_s: float = 1800,
+    trailer: bool = True,
 ) -> PublishResult:
     wt = Path(claim.worktree)
     if claim.base_sha is None or claim.tester_sha is None:
@@ -46,6 +50,18 @@ def publish(
         return PublishResult("check_failed", detail.strip())
     if code != 0:
         return PublishResult("check_failed", out[-_TAIL:])
+    # Commits made with --no-verify skip the hook; noted, not blocked, since the work is sound.
+    untrailed = ()
+    if trailer:
+        out = git(
+            "log",
+            f"{claim.base_sha}..{claim.branch}",
+            "--format=%h",
+            "--invert-grep",
+            "--grep=^Linear-Agents: ",
+            cwd=wt,
+        )
+        untrailed = tuple(out.split())
     env = {**os.environ, "GH_TOKEN": token}
     runner(
         [
@@ -88,7 +104,7 @@ def publish(
         text=True,
     )
     if existing.stdout.strip():
-        return PublishResult("opened", url=existing.stdout.strip())
+        return PublishResult("opened", url=existing.stdout.strip(), untrailed=untrailed)
     pr = runner(
         [
             "gh",
@@ -110,7 +126,7 @@ def publish(
         capture_output=True,
         text=True,
     )
-    return PublishResult("opened", url=pr.stdout.strip().splitlines()[-1])
+    return PublishResult("opened", url=pr.stdout.strip().splitlines()[-1], untrailed=untrailed)
 
 
 COMMENT_HEADER = "🤖 linear-agents review\n\n"
