@@ -14,6 +14,13 @@ import (
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
 )
 
+func TestRemoteCmdMakesTheBinaryExecutable(t *testing.T) {
+	want := "chmod 755 /tmp/la-setup/la-setup && sudo /tmp/la-setup/la-setup --answers /tmp/la-setup/a.toml --skip-interactive"
+	if got := remoteCmd("/x/a.toml", true); got != want {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 	dest := Dest{SSH: "tok123@ssh.example.test", Token: "tok123"}
 	f := host.NewFake().On("ssh tok123@ssh.example.test uname -m", 255, "")

@@ -185,12 +185,17 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersI
 	if _, err := host.Must(ctx, r, host.Cmd{Name: "scp", Args: append(scp, dest.SSH+":/tmp/la-setup/")}); err != nil {
 		return err
 	}
-	remote := "sudo /tmp/la-setup/la-setup"
+	return r.Interactive(ctx, sshCmd(dest, true, remoteCmd(answersIn, skip)))
+}
+
+func remoteCmd(answersIn string, skip bool) string {
+	// scp through the Daytona gateway drops the exec bit.
+	remote := "chmod 755 /tmp/la-setup/la-setup && sudo /tmp/la-setup/la-setup"
 	if answersIn != "" {
 		remote += " --answers /tmp/la-setup/" + filepath.Base(answersIn)
 	}
 	if skip {
 		remote += " --skip-interactive"
 	}
-	return r.Interactive(ctx, sshCmd(dest, true, remote))
+	return remote
 }
