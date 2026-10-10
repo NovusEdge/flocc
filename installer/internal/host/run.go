@@ -36,6 +36,13 @@ type Runner interface {
 
 type Exec struct{ Log io.Writer }
 
+func (e Exec) log() io.Writer {
+	if e.Log == nil {
+		return io.Discard
+	}
+	return e.Log
+}
+
 func (e Exec) command(ctx context.Context, c Cmd) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Dir = c.Dir
@@ -47,11 +54,16 @@ func (e Exec) Run(ctx context.Context, c Cmd) (Result, error) {
 	cmd := e.command(ctx, c)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	fmt.Fprintf(e.Log, "$ %s\n", c)
+	log := e.log()
+	fmt.Fprintf(log, "$ %s\n", c)
 	err := cmd.Run()
-	e.Log.Write(out.Bytes())
-	e.Log.Write(errb.Bytes())
+	log.Write(out.Bytes())
+	log.Write(errb.Bytes())
 	res := Result{Stdout: out.String(), Stderr: errb.String()}
+	// A context kill surfaces as ExitError with code -1; report the cancellation instead.
+	if ctx.Err() != nil {
+		return res, ctx.Err()
+	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		res.Code = exit.ExitCode()
@@ -63,7 +75,7 @@ func (e Exec) Run(ctx context.Context, c Cmd) (Result, error) {
 func (e Exec) Interactive(ctx context.Context, c Cmd) error {
 	cmd := e.command(ctx, c)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	fmt.Fprintf(e.Log, "$ %s (interactive)\n", c)
+	fmt.Fprintf(e.log(), "$ %s (interactive)\n", c)
 	return cmd.Run()
 }
 

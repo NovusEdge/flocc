@@ -1,6 +1,7 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -81,5 +82,45 @@ func TestFakeUnknownCommandExits127(t *testing.T) {
 	r, err := NewFake().Run(context.Background(), Cmd{Name: "nope"})
 	if err != nil || r.Code != 127 {
 		t.Fatalf("got %+v %v", r, err)
+	}
+}
+
+func TestExecCapturesOutputAndExitCode(t *testing.T) {
+	var log bytes.Buffer
+	r, err := Exec{Log: &log}.Run(context.Background(), Cmd{Name: "sh", Args: []string{"-c", "echo out; echo err >&2; exit 3"}})
+	if err != nil || r.Code != 3 || r.Stdout != "out\n" || r.Stderr != "err\n" {
+		t.Fatalf("got %+v %v", r, err)
+	}
+	for _, want := range []string{"$ sh -c echo out; echo err >&2; exit 3", "out\n", "err\n"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("log %q lacks %q", log.String(), want)
+		}
+	}
+}
+
+func TestExecMissingBinaryErrors(t *testing.T) {
+	if _, err := (Exec{}).Run(context.Background(), Cmd{Name: "la-no-such-binary"}); err == nil {
+		t.Fatal("want an error")
+	}
+}
+
+func TestExecAppliesDirAndEnv(t *testing.T) {
+	dir := t.TempDir()
+	r, err := Exec{}.Run(context.Background(), Cmd{Name: "sh", Args: []string{"-c", "pwd; echo $LA_X"}, Dir: dir, Env: []string{"LA_X=1"}})
+	if err != nil || r.Code != 0 {
+		t.Fatalf("got %+v %v", r, err)
+	}
+	lines := strings.Fields(r.Stdout)
+	if len(lines) != 2 || lines[1] != "1" || !strings.HasSuffix(lines[0], strings.TrimPrefix(dir, "/private")) {
+		t.Fatalf("stdout %q, dir %q", r.Stdout, dir)
+	}
+}
+
+func TestExecCancelledContextReturnsContextError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { cancel() }()
+	_, err := Exec{}.Run(ctx, Cmd{Name: "sleep", Args: []string{"5"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v", err)
 	}
 }
