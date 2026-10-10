@@ -75,6 +75,8 @@ def poll(rt) -> None:
             release_claim(rt, claim, keep_worktree=True, to_todo=False)
         repo = repo_for(issue, cfg)
         if repo is None:
+            if cfg.skip_unmapped:
+                continue
             _comment_once(
                 rt,
                 issue,

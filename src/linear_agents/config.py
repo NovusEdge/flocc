@@ -54,6 +54,9 @@ class Config:
     setup_timeout_s: int = 900
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     commit_trailer: bool = True
+    # Hosts sharing a Linear team each map only some repos, so an issue for another host's repo
+    # is left alone instead of getting the no-repo comment.
+    skip_unmapped: bool = False
     # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
     claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
 
