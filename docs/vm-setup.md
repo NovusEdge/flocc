@@ -1,65 +1,61 @@
-# VM setup
+# Host setup
 
-One-time steps on the VM, in order. The service and its agents run as a dedicated user, so
-sessions cannot read your own account's browser profiles, keys or logins. Create it from your own
-account:
+`just ship <target>` sets a host up and is safe to run again: it checks every step, skips the
+finished ones and resumes at the first that is not. `<target>` is an SSH destination, such as
+the host's Tailscale name, or `daytona:<sandbox>`. It needs `go` (from `mise install`), `gh`
+logged in on the desktop, and, for Daytona, the Daytona CLI logged in with `daytona login`.
+
+The first run on a host asks you to log in to Tailscale and to Claude (`/login`, the two push
+settings in `/config`, Remote Control), to paste the Linear key and the two GitHub tokens, to
+fill in the config form and to confirm an ntfy test push. It ends by running
+`linear-agents doctor` and starts ticking only when doctor reports no FAIL line. Everything it
+runs is logged to `/tmp/la-setup/setup.log` (root steps) and
+`~linear-agents/.cache/la-setup/setup.log` (the rest).
+
+The root phase must run from `/tmp/la-setup`, where `just ship` puts it; running `la-setup` by
+hand from anywhere else is refused.
+
+Upgrading the service on a host is `just ship <target>` again: it ships the current commit as
+a git bundle, since the repo is private and the host has no credential for it.
+
+## Hosts
+
+Debian, Ubuntu, Arch, Fedora and RHEL VMs run in systemd mode: a timer ticks every 3 minutes
+and a user unit keeps the tmux server up. Any host whose PID 1 is not systemd runs in loop mode:
+`linear-agents run` in tmux session `la-loop` ticks instead (the installer's `la-loop` session
+starts the tmux server), a process a timed-out check daemonized is not killed when its tick
+ends, and after the host stops `just ship` restarts tailscaled and the loop.
+
+A Daytona container for a smoke test, about $0.17 an hour while running:
 
 ```bash
-sudo useradd --create-home --shell /bin/bash linear-agents
-sudo chmod 700 /home/linear-agents
-sudo loginctl enable-linger linear-agents
+daytona create --snapshot daytona-medium --name la-smoke --auto-stop 0
+just ship daytona:la-smoke
+# when done
+daytona stop la-smoke
 ```
 
-It gets no password, no groups and no sudo. Run every step below as `linear-agents`
-(`sudo -iu linear-agents`, or `ssh linear-agents@<vm>` over Tailscale SSH). Check that nothing
-outside its home is writable to it, such as a Homebrew prefix your own `PATH` uses:
-`find / -xdev -writable -not -path '/proc/*' -not -path '/home/linear-agents/*' 2>/dev/null`.
+`--auto-stop 0` matters: a running tick loop does not count as activity, so the default
+15-minute auto-stop ends it mid-run. A stopped sandbox bills only its disk. If
+`daytona-medium` has less than 2 vCPU and 4 GiB, pass `--cpu 2 --memory 4096` instead of
+`--snapshot`.
 
-1. Install `git`, `gh`, `tmux`, `claude` (2.1.293 or later) and this repo; run `./setup`, then
-   `uv tool install --editable .` so `linear-agents` is on `PATH` at `~/.local/bin`.
-2. Sign Claude Code in with the subscription (`claude`, then `/login`), with `CLAUDE_CONFIG_DIR`
-   unset as the sessions have it; set, it moves `.claude.json` and the login and folder trust go
-   with it. Do not set `ANTHROPIC_API_KEY` anywhere.
-3. In `/config`: turn on "Push when actions required", turn off "Push when Claude decides".
-   Leave extra usage off.
-4. Create `worktree_root`, then run `cd ~/agents/worktrees && claude` once and accept "Enable
-   Remote Control" if asked. A worktree is its own git repo and does not inherit folder trust from
-   this directory, so the launcher marks each worktree and its main checkout as trusted in
-   `~/.claude.json` before starting a session.
-5. Linear: a personal API key limited to the team, saved to `linear_key_file` (mode 600). Create
-   the labels `claude`, `escalation` and `needs-decision`, and a pinned digest issue whose key goes
-   in `digest_issue`. Create one label per mapped repo, named exactly as its `[repos.<name>]` key
-   in `config.toml`: an issue is matched to a repo by that label (or by a project of that name),
-   and an issue with neither is skipped.
-6. GitHub: a read-only fine-grained token (contents, pull requests, checks, issues: read) in
-   `agent_gh_token_file`, and a token with contents and pull requests write on the mapped repos in
-   `publish_gh_token_file`. Both mode 600. A session does not start without the read-only one.
-7. ntfy: install the app, subscribe to a long random topic, put its URL in `ntfy_url`. Send a
-   priority 5 test (`curl -H 'Priority: 5' -d test <url>`) with Do Not Disturb on, to see whether it
-   gets through.
-8. Copy `deploy/config.example.toml` to `~/.config/linear-agents/config.toml` and edit it. In each
-   mapped repo, gitignore everything `./setup` and the check write, or every issue fails at
-   prepare. If the
-   mapped repos need tools outside `~/.local/bin`, the mise shims and the system directories, add
-   them to `Environment=PATH` in `deploy/linear-agents.service`.
-9. Install and start the units, and let them run without a login session:
+## What the installer cannot do
 
-   ```bash
-   cp deploy/linear-agents.{service,timer} deploy/linear-agents-tmux.service \
-      ~/.config/systemd/user/
-   systemctl --user daemon-reload
-   systemctl --user enable --now linear-agents-tmux.service
-   linear-agents doctor
-   systemctl --user enable --now linear-agents.timer
-   ```
+- Linear: the labels `claude`, `escalation`, `needs-decision` and one per mapped repo (named
+  exactly as its `[repos.<name>]` key), and a pinned digest issue, must exist in the team.
+  Doctor checks them.
+- GitHub tokens are made in the browser. The installer shows the permissions each needs next to
+  its input.
+- In the Tailscale admin console, disable key expiry for the host; an untagged node's key
+  otherwise expires after 180 days.
+- In each mapped repo, gitignore everything `./setup` and the check write, or every issue fails
+  at prepare. If the mapped repos need tools outside `~/.local/bin`, the mise shims and the
+  system directories, add them to `Environment=PATH` in `deploy/linear-agents.service` and to
+  `loopCommand` in `installer/internal/steps/run.go`.
 
-   Enable the timer only once `linear-agents doctor` reports no FAIL line. It checks the config,
-   the Linear key, labels and digest issue, each repo's fetch, both GitHub tokens' expiry and
-   access (the agent token must not be able to push), the Claude login and version, and the tmux
-   server, and changes nothing. Lingering was enabled when the user was created. Over `sudo -iu`, `systemctl --user` needs
-   `XDG_RUNTIME_DIR=/run/user/$(id -u)`.
-
-Watch it with `journalctl --user -u linear-agents -f`, and attach to a session with
+Watch it with `journalctl --user -u linear-agents -f` (systemd mode) or
+`tail -f ~/.local/state/linear-agents/run.log` (loop mode), and attach to a session with
 `tmux -L linear-agents attach -t NF-123`.
 
 ## Upgrading
@@ -95,8 +91,8 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
 2. Run `linear-agents tick` by hand; it takes the same lock as the timer's ticks. Pass: the issue
    moves to In Progress, and `NF-…-test` appears in `tmux -L linear-agents ls` and in the Claude
    app. A tick run from a shell leaves behind any process a timed-out check daemonized; under
-   the timer, or with `systemctl --user start linear-agents.service`, systemd kills it when the
-   tick ends.
+   the timer, or with `systemctl --user start linear-agents.service` (systemd mode only), systemd
+   kills it when the tick ends.
 3. Before anything else, check the tester session's tools. In the app, run `/mcp` in the first
    launched session and list its tools. Pass: no claude.ai connectors, Linear in particular,
    because `--strict-mcp-config` is unverified in interactive sessions. If any connector shows up,
@@ -127,7 +123,7 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
 9. Exercise a rerun: block a second issue (kill its session twice, one tick apart), then run
    `linear-agents release NF-…`. Pass: the issue is back in Todo, and the next tick restarts it on
    the kept branch.
-10. Check that one failed tick does not stop the timer. Empty the agent token file
+10. Check that one failed tick does not stop the timer (systemd mode). Empty the agent token file
     (`: > <agent_gh_token_file>`, after copying it aside), then run:
 
     ```bash
