@@ -20,7 +20,7 @@ from linear_agents.linear import BOT_PREFIX, Issue, LinearError
 from linear_agents.sessions import session_name
 from linear_agents.supervisor import launch
 from linear_agents.usage import latest_usage
-from linear_agents.worktree import contains, install_hook, prepare_worktree
+from linear_agents.worktree import contains, git, install_hook, prepare_worktree
 
 COMMENT_ONCE_S = 365 * 24 * 3600
 
@@ -39,11 +39,39 @@ def _comment_once(rt, issue: Issue, cause: str, text: str) -> None:
     ledger.record_alert(rt.con, cause, 3, issue.key, rt.now())
 
 
+def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: bool = True) -> None:
+    rt.sessions.kill(session_name(claim.issue_key, claim.phase))
+    # Each step below may already be done or impossible (a deleted issue, a worktree removed
+    # by an earlier release); the claim is cleared regardless, or it blocks every tick.
+    if not keep_worktree:
+        try:
+            git("worktree", "remove", "--force", claim.worktree, cwd=rt.cfg.repos[claim.repo].path)
+        except (subprocess.CalledProcessError, OSError, KeyError) as exc:
+            print(f"release: worktree {claim.worktree} not removed: {exc}", file=sys.stderr)
+    # Back to Todo so the next poll picks it up again; the rerun continues on the kept branch.
+    if to_todo:
+        try:
+            rt.linear.unstart(rt.linear.issue(claim.issue_key))
+        except LinearError as exc:
+            print(f"release: {claim.issue_key} not moved back to Todo: {exc}", file=sys.stderr)
+    ledger.delete_claim(rt.con, claim.issue_key)
+
+
 def poll(rt) -> None:
     cfg = rt.cfg
     for issue in rt.linear.ready_issues(cfg.team_key, cfg.trigger_label):
-        if ledger.get_claim(rt.con, issue.key):
-            continue
+        claim = ledger.get_claim(rt.con, issue.key)
+        if claim is not None:
+            if claim.state in ledger.LIVE_STATES:
+                print(f"{issue.key}: held, claim is still live", file=sys.stderr)
+                continue
+            # Only `release` moves a claimed issue back to Todo, so an issue that is in Todo
+            # with a finished claim was moved by the owner, who is asking for a rerun.
+            release_claim(rt, claim, to_todo=False)
+            try:
+                rt.linear.comment(issue.id, "moved back to Todo; restarting from a fresh claim.")
+            except LinearError as exc:
+                print(f"{issue.key}: rerun comment not posted: {exc}", file=sys.stderr)
         repo = repo_for(issue, cfg)
         if repo is None:
             _comment_once(

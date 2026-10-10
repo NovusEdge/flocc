@@ -125,7 +125,9 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
    `linear.py` and add the real response as a fixture.
 9. Exercise a rerun: block a second issue (kill its session twice, one tick apart), then run
    `linear-agents release NF-…`. Pass: the issue is back in Todo, and the next tick restarts it on
-   the kept branch.
+   the kept branch. For a run that has finished (review done, or timed out), dragging the issue
+   back to Todo in Linear does the same: the next tick releases the old claim, comments once, and
+   restarts. A blocked or running claim ignores the move; use `release`.
 10. Check that one failed tick does not stop the timer (systemd mode). Empty the agent token file
     (`: > <agent_gh_token_file>`, after copying it aside), then run:
 

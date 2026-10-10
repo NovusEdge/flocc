@@ -174,6 +174,38 @@ def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch)
     assert ledger.remembered_tests(rt.con, "NF-9") is None
 
 
+@pytest.mark.parametrize("state", ["done", "timed_out"])
+def test_finished_claim_back_in_todo_is_released_and_rerun(rt, monkeypatch, state):
+    removed = []
+    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: removed.append(a))
+    ledger.insert_claim(rt.con, make("NF-9", state=state))
+    rt.linear.ready = [issue()]
+    poll(rt)
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.state == "running" and c.started_at == 1000.0
+    assert removed == [("worktree", "remove", "--force", "/wt/NF-9")]
+    assert [text for _, text in rt.linear.comments] == [
+        "moved back to Todo; restarting from a fresh claim."
+    ]
+    assert rt.linear.started == ["NF-9"]
+
+
+@pytest.mark.parametrize(
+    "state, phase", [("running", "test"), ("running", "review"), ("blocked", "impl")]
+)
+def test_live_claim_in_todo_is_left_alone(rt, capsys, state, phase):
+    claim = make("NF-9", state=state)
+    claim.phase = phase
+    ledger.insert_claim(rt.con, claim)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") == claim
+    assert rt.sessions.killed == [] and rt.sessions.started == []
+    assert rt.linear.comments == [] and rt.linear.started == []
+    assert "NF-9: held" in capsys.readouterr().err
+
+
 def test_poll_comments_once_then_admits_after_fix(rt):
     rt.linear.ready = [issue(desc="no criteria")]
     poll(rt)
