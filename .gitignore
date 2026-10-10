@@ -1,8 +1,49 @@
-.venv/
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+dist/
+.venv/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.hypothesis/
+
+# Go
+*.exe
+*.test
+*.coverprofile
+profile.cov
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Build and eval output
+build/
 plugin/evals/results/
 
-.env
-build/
+# Local state
+.superpowers/
+.claude/settings.local.json
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+._*
