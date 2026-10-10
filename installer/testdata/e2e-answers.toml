@@ -1,0 +1,15 @@
+team_key = "NF"
+digest_issue = "NF-186"
+ntfy_topic = "la-e2e-throwaway-topic-do-not-subscribe"
+
+[[repos]]
+name = "hello-world"
+url = "https://github.com/octocat/Hello-World"
+base_branch = "master"
+check = "true"
+draft = true
+
+[secrets]
+linear_key = "lin_api_e2e_invalid"
+agent_token = "github_pat_e2e_invalid"
+publish_token = "github_pat_e2e_invalid"

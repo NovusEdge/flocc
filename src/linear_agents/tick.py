@@ -1,5 +1,6 @@
 import fcntl
 import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -177,3 +178,39 @@ def tick(cfg: Config, config_path: Path) -> int:
         _page_tick_failure(rt.con, rt.notifier, exc)
         raise
     return 0
+
+
+def run_loop(
+    argv: list[str],
+    log: Path,
+    interval_s: float,
+    run=subprocess.run,
+    sleep=time.sleep,
+    now=time.time,
+    iterations: int | None = None,
+) -> None:
+    """Tick every interval_s on hosts without systemd, where the timer cannot."""
+    n = 0
+    while iterations is None or n < iterations:
+        # A subprocess per tick, as under the timer: one that crashes does not end the loop.
+        # Neither does an OSError: uv replacing the script mid-upgrade makes the exec fail, and
+        # this loop runs detached, so an escaping error would end it with nobody watching.
+        # On a full disk open() succeeds and the writes, flush and close fail instead, so the
+        # whole body is covered, not just the open.
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a") as f:
+                f.write(f"--- tick {time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(now()))}Z\n")
+                f.flush()
+                try:
+                    outcome = str(
+                        run(argv, stdout=f, stderr=subprocess.STDOUT, check=False).returncode
+                    )
+                except OSError as exc:
+                    outcome = f"error: {exc}"
+                f.write(f"--- exit {outcome}\n")
+        except OSError as exc:
+            print(f"run: log {log} not written: {exc}", file=sys.stderr)
+        n += 1
+        if iterations is None or n < iterations:
+            sleep(interval_s)

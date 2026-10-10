@@ -59,7 +59,7 @@ Pro does not [S1][S2]. Current limit numbers were not found; `/usage` shows mine
 ## Current design
 
 The design is in `docs/superpowers/specs/2026-10-09-linear-agents-design.md`, the build plan in
-`docs/superpowers/plans/2026-10-09-linear-agents.md`, and VM setup in `docs/vm-setup.md`. The
+`docs/superpowers/plans/2026-10-09-linear-agents.md`, and host setup in `docs/vm-setup.md`. The
 sections below are the original research.
 
 ## Recommended: a poller with headless Claude Code in a container
