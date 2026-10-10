@@ -57,7 +57,7 @@ def _parse_systemd_ts(text: str) -> float | None:
     return float(calendar.timegm(t) if parts[3] == "UTC" else time.mktime(t))
 
 
-def systemd_tick(now: float, run=subprocess.run) -> dict | None:
+def systemd_tick(run=subprocess.run) -> dict | None:
     env = {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
     try:
         out = run(
@@ -148,7 +148,7 @@ def collect(
     """Reads host state without taking the tick lock or touching Linear and GitHub."""
     now = time.time() if now is None else now
     mode = mode or _detect_mode()
-    tick = systemd_tick(now, run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
+    tick = systemd_tick(run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
     if tick is not None and tick["at"] is not None:
         tick["age_s"] = max(0.0, now - tick["at"])
     latest = usage.latest_usage(cfg.state_root, now)

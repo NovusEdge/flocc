@@ -173,6 +173,26 @@ func TestDestCacheReusesATokenUntilItIsNearExpiry(t *testing.T) {
 	}
 }
 
+type codeRunner struct{ code int }
+
+func (c codeRunner) Run(context.Context, host.Cmd) (host.Result, error) {
+	return host.Result{Stderr: "failed", Code: c.code}, nil
+}
+func (c codeRunner) Interactive(context.Context, host.Cmd) error { return nil }
+
+func TestOnlyAnSSHFailureDropsTheCachedToken(t *testing.T) {
+	h := FleetHost{Name: "sb", Target: "daytona:sb", State: "started", Daytona: true}
+	for code, cached := range map[int]bool{1: true, 127: true, 255: false} {
+		cache := newDestCache(func(context.Context, FleetHost) (Dest, error) { return Dest{SSH: "tok@gw", Token: "tok"}, nil })
+		if row := fetch(context.Background(), codeRunner{code}, cache, h); row.Err == "" {
+			t.Fatal("expected an error row")
+		}
+		if got := len(cache.m) == 1; got != cached {
+			t.Errorf("exit %d: cached %v", code, got)
+		}
+	}
+}
+
 type errRunner struct{ err error }
 
 func (e errRunner) Run(context.Context, host.Cmd) (host.Result, error) { return host.Result{}, e.err }
@@ -194,7 +214,7 @@ func TestRenderShowsHostsClaimsFailuresAndNotes(t *testing.T) {
 		"NF-1", "impl", "1h", "42%",
 		"unreachable", "down: exit 255: Connection refused",
 		"stopped",
-		"daytona: no CLI config, skipped", "An estimate",
+		"daytona: no CLI config, skipped", "an estimate", "show - (their rate",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

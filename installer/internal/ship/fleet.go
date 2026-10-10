@@ -218,9 +218,11 @@ func fetch(ctx context.Context, r host.Runner, c *destCache, h FleetHost) Row {
 		row.Err = firstLine(err.Error())
 		return row
 	}
-	// A failure may mean the cached token was revoked, so the next draw mints a fresh one.
+	// ssh failing may mean the cached token was revoked, so the next draw mints a fresh one. A
+	// remote command that ran and exited non-zero reached the host, so the token still works.
+	sshFailed := false
 	defer func() {
-		if row.Err != "" {
+		if sshFailed {
 			c.forget(h)
 		}
 	}()
@@ -228,8 +230,10 @@ func fetch(ctx context.Context, r host.Runner, c *destCache, h FleetHost) Row {
 	res, err := r.Run(ctx, sshCmd(dest, false, asServiceUser([]string{"linear-agents", "status", "--json"})))
 	switch {
 	case err != nil:
+		sshFailed = true
 		row.Err = scrub(firstLine(err.Error()), dest.Token)
 	case res.Code != 0:
+		sshFailed = res.Code == 255
 		row.Err = scrub(fmt.Sprintf("exit %d: %s", res.Code, firstLine(host.Tail(res.Out(), 1))), dest.Token)
 	default:
 		var rep Report
@@ -421,7 +425,13 @@ func render(rows []Row, notes []string) string {
 	for _, n := range notes {
 		b.WriteString(cell(n, dim) + "\n")
 	}
-	b.WriteString(cell("est $/h: started sandboxes only, vCPU, memory and disk beyond 5 GiB at Daytona list prices; stopped and archived show - because their rate is not confirmed. An estimate, not a bill", dim) + "\n")
+	for _, line := range []string{
+		"est $/h: an estimate at Daytona list prices, not a bill.",
+		"Started sandboxes only: vCPU, memory and disk beyond 5 GiB.",
+		"Stopped and archived sandboxes show - (their rate is not confirmed).",
+	} {
+		b.WriteString(cell(line, dim) + "\n")
+	}
 	return b.String()
 }
 

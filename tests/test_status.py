@@ -84,10 +84,10 @@ def test_systemd_tick_reads_the_service_timestamps(cfg):
         "ExecMainStartTimestamp=Thu 2026-01-01 00:03:00 UTC\nExecMainExitTimestamp=Thu 2026-01-01"
         " 00:03:20 UTC\nExecMainStatus=1\nActiveState=failed\n"
     )
-    assert systemd_tick(0, FakeSystemctl(props)) == {"at": 1767225780.0, "exit": "1"}
+    assert systemd_tick(FakeSystemctl(props)) == {"at": 1767225780.0, "exit": "1"}
     running = props.replace("failed", "activating")
-    assert systemd_tick(0, FakeSystemctl(running))["exit"] is None  # type: ignore[index]
-    assert systemd_tick(0, FakeSystemctl("ExecMainStartTimestamp=\n")) is None
+    assert systemd_tick(FakeSystemctl(running))["exit"] is None  # type: ignore[index]
+    assert systemd_tick(FakeSystemctl("ExecMainStartTimestamp=\n")) is None
     report = collect(
         cfg, FakeSessions(), now=1767225800.0, mode="systemd", run=FakeSystemctl(props)
     )
