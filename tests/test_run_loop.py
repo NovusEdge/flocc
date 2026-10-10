@@ -3,6 +3,32 @@ import subprocess
 from linear_agents.tick import run_loop
 
 
+class FullDisk:
+    def write(self, text):
+        raise OSError(28, "No space left on device")
+
+    def flush(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_a_log_that_cannot_be_written_does_not_end_the_loop(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("pathlib.Path.open", lambda self, mode="r": FullDisk())
+    calls, sleeps = [], []
+    log = tmp_path / "run.log"
+    run_loop(
+        ["x"], log, 180, run=lambda *a, **k: calls.append(a), sleep=sleeps.append, iterations=2
+    )
+
+    assert calls == [] and sleeps == [180]
+    assert capsys.readouterr().err.count("not written") == 2
+
+
 def test_an_exec_failure_is_logged_and_the_loop_goes_on(tmp_path):
     calls, sleeps = [], []
 

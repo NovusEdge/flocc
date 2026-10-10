@@ -195,20 +195,22 @@ def run_loop(
         # A subprocess per tick, as under the timer: one that crashes does not end the loop.
         # Neither does an OSError: uv replacing the script mid-upgrade makes the exec fail, and
         # this loop runs detached, so an escaping error would end it with nobody watching.
+        # On a full disk open() succeeds and the writes, flush and close fail instead, so the
+        # whole body is covered, not just the open.
         try:
             log.parent.mkdir(parents=True, exist_ok=True)
-            f = log.open("a")
-        except OSError as exc:
-            print(f"run: log {log} not opened: {exc}", file=sys.stderr)
-        else:
-            with f:
+            with log.open("a") as f:
                 f.write(f"--- tick {time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(now()))}Z\n")
                 f.flush()
                 try:
-                    code = run(argv, stdout=f, stderr=subprocess.STDOUT, check=False).returncode
-                    f.write(f"--- exit {code}\n")
+                    outcome = str(
+                        run(argv, stdout=f, stderr=subprocess.STDOUT, check=False).returncode
+                    )
                 except OSError as exc:
-                    f.write(f"--- exit error: {exc}\n")
+                    outcome = f"error: {exc}"
+                f.write(f"--- exit {outcome}\n")
+        except OSError as exc:
+            print(f"run: log {log} not written: {exc}", file=sys.stderr)
         n += 1
         if iterations is None or n < iterations:
             sleep(interval_s)
