@@ -28,6 +28,9 @@ func TestRunLoopModeStartsTmuxBeforeDoctor(t *testing.T) {
 	if err := (Run{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
+	if !f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop " + loopCommand("/home/linear-agents")) {
+		t.Fatal("never started ticking")
+	}
 	start, doc := -1, -1
 	for i, c := range f.Calls {
 		if strings.Contains(c, "new-session") {
@@ -66,6 +69,24 @@ func TestRunDeclineIsErrStopped(t *testing.T) {
 	e.UI = declineUI{&ui.Scripted{A: &answers.Answers{}, Out: io.Discard}}
 	if err := (Run{}).Apply(context.Background(), e); !errors.Is(err, ErrStopped) {
 		t.Fatalf("err=%v", err)
+	}
+	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop " + loopCommand("/home/linear-agents")) {
+		t.Fatal("started ticking after decline")
+	}
+}
+
+func TestRunRefusesWhenDoctorDoesNotRun(t *testing.T) {
+	f := host.NewFake().
+		On("tmux -L linear-agents new-session -d -s la-loop sleep infinity", 0, "")
+	f.Responses[doctorCmd] = host.Result{Code: 2, Stderr: "Traceback (most recent call last):\n"}
+	e := testEnv(t, f)
+	e.Mode = Loop
+	err := (Run{}).Apply(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "did not run cleanly") {
+		t.Fatalf("err=%v", err)
+	}
+	if f.Ran("tmux -L linear-agents respawn-pane -k -t =la-loop " + loopCommand("/home/linear-agents")) {
+		t.Fatal("started ticking on a broken doctor")
 	}
 }
 

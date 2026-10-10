@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/NovusEdge/linear-agents/deploy"
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
@@ -70,16 +71,23 @@ func (Run) Apply(ctx context.Context, e *Env) error {
 				return err
 			}
 		}
+		// enable --now returns before the tmux server exists; doctor's tmux check needs it.
+		for i := 0; i < 10 && !e.Ok(ctx, "tmux", "-N", "-L", "linear-agents", "list-sessions"); i++ {
+			e.Sleep(500 * time.Millisecond)
+		}
 	} else if e.loopPane(ctx) == "" {
 		// Idle until doctor passes; doctor's tmux check needs a server, and ticks never start one.
 		if _, err := e.Must(ctx, "tmux", "-L", "linear-agents", "new-session", "-d", "-s", "la-loop", "sleep infinity"); err != nil {
 			return err
 		}
 	}
-	out, fails := doctor(ctx, e)
+	out, fails, ok := doctor(ctx, e)
 	e.UI.Note("linear-agents doctor", out)
 	if len(fails) > 0 {
-		return fmt.Errorf("doctor reports %d FAIL lines; fix them and run just ship again", len(fails))
+		return fmt.Errorf("doctor reports %s; fix them and run just ship again", plural(len(fails), "FAIL line"))
+	}
+	if !ok {
+		return fmt.Errorf("linear-agents doctor did not run cleanly; see its output above")
 	}
 	start, err := e.UI.Confirm("Doctor reports no FAIL line. Start ticking every 3 minutes?", true)
 	if err != nil {

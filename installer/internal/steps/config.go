@@ -48,15 +48,24 @@ func servicePath(home string) string {
 	return fmt.Sprintf("PATH=%[1]s/.local/bin:%[1]s/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin", home)
 }
 
-func doctor(ctx context.Context, e *Env) (string, []string) {
-	r, _ := e.Run.Run(ctx, host.Cmd{Name: e.Real(".local/bin/linear-agents"), Args: []string{"doctor"}, Env: []string{servicePath(e.Home)}})
-	var fails []string
+// doctor's ok is false when the command could not run or exited non-zero; that can happen with
+// no FAIL line (missing binary, Python traceback), so callers must not read empty fails as healthy.
+func doctor(ctx context.Context, e *Env) (out string, fails []string, ok bool) {
+	r, err := e.Run.Run(ctx, host.Cmd{Name: e.Real(".local/bin/linear-agents"), Args: []string{"doctor"}, Env: []string{servicePath(e.Home)}})
 	for _, line := range strings.Split(r.Stdout, "\n") {
 		if strings.HasPrefix(line, "FAIL") {
 			fails = append(fails, line)
 		}
 	}
-	return r.Stdout, fails
+	ok = err == nil && r.Code == 0
+	out = r.Stdout
+	if !ok && len(fails) == 0 {
+		if err != nil {
+			out += err.Error() + "\n"
+		}
+		out += host.Tail(r.Stderr, 20)
+	}
+	return out, fails, ok
 }
 
 func randomTopic() string {
@@ -74,7 +83,7 @@ type Config struct{}
 func (Config) Name() string { return "Config" }
 
 func (Config) Check(ctx context.Context, e *Env) (bool, string, error) {
-	out, fails := doctor(ctx, e)
+	out, fails, _ := doctor(ctx, e)
 	if !strings.Contains("\n"+out, "\nok    config:") {
 		return false, "no valid config", nil
 	}
