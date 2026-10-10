@@ -138,6 +138,13 @@ def install_hook(worktree: Path, hooks_dir: Path, exe: str, config_path: Path) -
         f'if [ -x "{original}/pre-commit" ]; then exec "{original}/pre-commit" "$@"; fi\n'
     )
     hook.chmod(0o755)
+    msg_hook = hooks_dir / "commit-msg"
+    msg_hook.write_text(
+        "#!/bin/sh\nset -e\n"
+        f'"{exe}" hook commit-msg "$1"\n'
+        f'if [ -x "{original}/commit-msg" ]; then exec "{original}/commit-msg" "$@"; fi\n'
+    )
+    msg_hook.chmod(0o755)
     # Worktree-scoped config so the main checkout and other worktrees keep their own hooks.
     git("config", "extensions.worktreeConfig", "true", cwd=worktree)
     git("config", "--worktree", "core.hooksPath", str(hooks_dir), cwd=worktree)

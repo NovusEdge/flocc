@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/linear-agents/installer/internal/identity"
 )
 
 func archFor(unameM string) (string, error) {
@@ -57,8 +58,15 @@ func claudeConfigDir() string {
 	return filepath.Join(home, ".claude")
 }
 
-// stageFiles writes the host binary for arch, the bundles and plugins.json into dir.
+// stageFiles writes the host binary for arch, the bundles, identity.json and plugins.json into dir.
 func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn, configDir string, private func(string) (bool, error)) error {
+	id, err := identity.FromRepo(ctx, r, root)
+	if err != nil {
+		return err
+	}
+	if err := id.Write(filepath.Join(dir, "identity.json")); err != nil {
+		return err
+	}
 	bin, err := os.ReadFile(filepath.Join(root, "build", "la-setup-linux-"+arch))
 	if err != nil {
 		return fmt.Errorf("%w; run just build-setup", err)

@@ -172,6 +172,47 @@ def test_reinstalled_hook_still_chains_to_the_repo_hook_once(origin, tmp_path):
     assert (tmp_path / "repo-hook.log").read_text() == "ran\n"
 
 
+def _commit_with_hooks(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        EXAMPLE.read_text().replace(
+            'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"',
+            f'ledger_path = "{tmp_path / "l.sqlite"}"',
+        )
+    )
+    exe = shutil.which("linear-agents")
+    assert exe
+    install_hook(path, tmp_path / "hooks", exe, cfg)
+    return path
+
+
+def _msg(path):
+    return git("log", "-1", "--format=%B", cwd=path)
+
+
+def test_commit_msg_hook_adds_the_trailer_once(origin, tmp_path, monkeypatch):
+    path = _commit_with_hooks(origin, tmp_path)
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    (path / "ok.txt").write_text("fine\n")
+    git("add", "ok.txt", cwd=path)
+    git("commit", "-qm", "ok", cwd=path)
+    assert _msg(path).count("Linear-Agents: NF-3 impl") == 1
+    git("commit", "-q", "--amend", "--no-edit", cwd=path)
+    assert _msg(path).count("Linear-Agents:") == 1
+
+
+def test_commit_msg_hook_leaves_a_hand_made_commit_alone(origin, tmp_path, monkeypatch):
+    path = _commit_with_hooks(origin, tmp_path)
+    monkeypatch.delenv("LINEAR_AGENTS_STATE", raising=False)
+    monkeypatch.delenv("LINEAR_AGENTS_PHASE", raising=False)
+    (path / "ok.txt").write_text("fine\n")
+    git("add", "ok.txt", cwd=path)
+    git("commit", "-qm", "by hand", cwd=path)
+    assert "Linear-Agents" not in _msg(path)
+
+
 def test_contains(origin, tmp_path):
     path, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     (path / "t.txt").write_text("t\n")

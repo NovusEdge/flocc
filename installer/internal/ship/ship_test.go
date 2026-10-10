@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/linear-agents/installer/internal/identity"
 )
 
 func TestRemoteCmdMakesTheBinaryExecutable(t *testing.T) {
@@ -52,6 +53,9 @@ type bundleOK struct{ *host.Fake }
 
 func (b *bundleOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 	if c.Name == "git" {
+		if slices.Contains(c.Args, "config") {
+			return host.Result{Stdout: "x\n"}, nil
+		}
 		return host.Result{}, nil
 	}
 	return b.Fake.Run(ctx, c)
@@ -65,12 +69,17 @@ func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{
 		"X": map[string]any{"source": map[string]string{"source": "github", "repo": "o/x"}, "installLocation": "/m/X"}})
 	f := host.NewFake().
+		On("git -C "+root+" config user.name", 0, "Ada L\n").
+		On("git -C "+root+" config user.email", 0, "ada@example.test\n").
 		On("git -C "+root+" bundle create "+dir+"/linear-agents.bundle HEAD", 0, "").
 		On("git -C /m/X archive --format=tar -o "+dir+"/mp-X.tar HEAD", 0, "").
 		On("git -C /m/X rev-parse HEAD", 0, "abc\n")
 	err := stageFiles(context.Background(), f, root, dir, "amd64", "", cfg, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatal(err)
+	}
+	if id, err := identity.Load(filepath.Join(dir, "identity.json")); err != nil || id.Email != "ada@example.test" {
+		t.Fatalf("%+v %v", id, err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "plugins.json"))
 	var got struct {
@@ -273,5 +282,13 @@ func TestArchFor(t *testing.T) {
 	}
 	if _, err := archFor("riscv64"); err == nil {
 		t.Error("riscv64: want error")
+	}
+}
+
+func TestStageFilesFailsWithoutAnOwnerIdentity(t *testing.T) {
+	f := host.NewFake().On("git -C /r config user.name", 0, "\n").On("git -C /r config user.email", 0, "\n")
+	err := stageFiles(context.Background(), f, "/r", t.TempDir(), "amd64", "", t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "user.name") {
+		t.Fatalf("%v", err)
 	}
 }

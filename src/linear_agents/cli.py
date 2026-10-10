@@ -62,9 +62,35 @@ def _ledger(args):
     return ledger.connect(load(path).ledger_path)
 
 
+def _commit_msg(message_file: str) -> int:
+    key = os.environ.get("LINEAR_AGENTS_STATE")
+    phase = os.environ.get("LINEAR_AGENTS_PHASE")
+    # A commit made by hand in the worktree has neither; it stays the owner's plain commit.
+    if not key or not phase:
+        return 0
+    trailer = f"Linear-Agents: {Path(key).name} {phase}"
+    # doNothing keeps an amend or a rebase from stacking a second copy.
+    subprocess.run(
+        [
+            "git",
+            "interpret-trailers",
+            "--in-place",
+            "--if-exists",
+            "doNothing",
+            "--trailer",
+            trailer,
+            message_file,
+        ],
+        check=True,
+    )
+    return 0
+
+
 def cmd_hook(args) -> int:
     from linear_agents.worktree import git
 
+    if args.name == "commit-msg":
+        return _commit_msg(args.message_file)
     top = Path.cwd()
     top = Path(git("rev-parse", "--show-toplevel", cwd=top))
     con = _ledger(args)
@@ -257,7 +283,8 @@ def build_parser() -> argparse.ArgumentParser:
     esc.add_argument("--waiting", action="store_true")
     esc.add_argument("--global", dest="is_global", action="store_true")
     hook = sub.add_parser("hook")
-    hook.add_argument("name", choices=["pre-commit"])
+    hook.add_argument("name", choices=["pre-commit", "commit-msg"])
+    hook.add_argument("message_file", nargs="?")
     claim = sub.add_parser("claim")
     claim.add_argument("globs", nargs="+")
     sub.add_parser("context")

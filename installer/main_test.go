@@ -49,10 +49,10 @@ func fillStage(t *testing.T, names ...string) string {
 }
 
 func TestStageNamesKeepsOnlyKnownSafeFiles(t *testing.T) {
-	stage := fillStage(t, "la-setup", "linear-agents.bundle", "plugins.json", "mp-X.tar", "e2e.toml",
+	stage := fillStage(t, "la-setup", "linear-agents.bundle", "plugins.json", "identity.json", "mp-X.tar", "e2e.toml",
 		"setup.log", "other.toml", "-bad.tar", "a b.tar")
 	got, err := stageNames(stage, "/x/e2e.toml")
-	want := []string{"e2e.toml", "la-setup", "linear-agents.bundle", "mp-X.tar", "plugins.json"}
+	want := []string{"e2e.toml", "identity.json", "la-setup", "linear-agents.bundle", "mp-X.tar", "plugins.json"}
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("%v %v", got, err)
 	}
