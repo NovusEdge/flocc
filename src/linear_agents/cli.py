@@ -128,6 +128,17 @@ def cmd_done(args) -> int:
     return 0
 
 
+def cmd_review_done(args) -> int:
+    state = _state_dir()
+    review = state / "review.md"
+    if not review.exists() or not review.read_text().strip():
+        print(f"review-done: write {review} first", file=sys.stderr)
+        return 1
+    (state / "done.json").write_text(json.dumps({"summary": "review", "at": time.time()}))
+    print("review marked done; the service posts it on its next run")
+    return 0
+
+
 def cmd_handoff_ready(args) -> int:
     state = _state_dir()
     if not (state / "handoff.md").exists():
@@ -219,6 +230,7 @@ COMMANDS = {
     "claim": cmd_claim,
     "context": cmd_context,
     "done": cmd_done,
+    "review-done": cmd_review_done,
     "handoff-ready": cmd_handoff_ready,
     "tick": cmd_tick,
     "run": cmd_run,
@@ -248,6 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("context")
     done = sub.add_parser("done")
     done.add_argument("--summary", required=True)
+    sub.add_parser("review-done")
     sub.add_parser("handoff-ready")
     sub.add_parser("tick")
     sub.add_parser("run")

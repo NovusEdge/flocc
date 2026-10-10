@@ -1,5 +1,7 @@
 import json
+import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from linear_agents import ledger
@@ -7,6 +9,8 @@ from linear_agents.agentblock import settings_from_json
 from linear_agents.context import phase_prompt, state_dir
 from linear_agents.escalation import Escalation, scoped
 from linear_agents.ledger import Claim
+from linear_agents.linear import LinearError
+from linear_agents.publisher import review_comment
 from linear_agents.sessions import claude_argv, clean_env, session_name, trust_folders
 from linear_agents.usage import context_pct, latest_usage, read_status
 
@@ -17,6 +21,8 @@ HANDOFF_ASK = (
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
 PUBLISH_TRIES = 3
+POST_TRIES = 3
+_VERDICT = re.compile(r"^\W*verdict:\s*(approve|changes requested)", re.IGNORECASE | re.MULTILINE)
 
 
 class LaunchError(RuntimeError):
@@ -45,6 +51,8 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
         }
     )
     settings = settings_from_json(claim.settings_json)
+    if phase == "review":
+        settings = replace(settings, model=rt.cfg.review_model)
     prompt = phase_prompt(phase, claim.issue_key, extra)
     argv = claude_argv(rt.cfg, name, settings, prompt, env, rt.claude_exe, rt.exe)
     # After everything above that can raise. The previous session's markers would be taken for
@@ -100,9 +108,77 @@ def _relaunch(rt, claim: Claim) -> None:
     launch(rt, claim, claim.phase, extra=extra)
 
 
+def _review_skipped(rt, claim: Claim, why: str) -> None:
+    # A review is advice on an open PR; losing it must neither block the claim nor page anyone.
+    key = claim.issue_key
+    url = _pr_url(rt, claim)
+    rt.sessions.kill(session_name(key, "review"))
+    ledger.add_digest(rt.con, key, f"review skipped, {why}; PR: {url}", rt.now())
+    ledger.update_claim(rt.con, key, state="done")
+
+
+def _pr_url(rt, claim: Claim) -> str:
+    path = state_dir(rt.cfg, claim.issue_key) / "pr-url"
+    return path.read_text().strip() if path.exists() else "unknown"
+
+
+def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> None:
+    key = claim.issue_key
+    d = state_dir(rt.cfg, key)
+    try:
+        (d / "pr-url").write_text(url)
+        (d / "pr.diff").write_text(rt.review_diff(claim) + "\n")
+        (d / "review.md").unlink(missing_ok=True)
+        (d / "review-input.md").write_text(
+            f"# Review {key}: {title}\n\nPR: {url}\n\nThe diff is in {d / 'pr.diff'}.\n\n"
+            f"## Issue description, including the acceptance criteria\n\n{description}\n"
+        )
+        launch(rt, claim, "review")
+    except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
+        print(f"{key}: review not started: {exc}", file=sys.stderr)
+        ledger.add_digest(rt.con, key, f"review not started ({exc}); PR: {url}", rt.now())
+        ledger.update_claim(rt.con, key, state="done")
+        return
+    ledger.update_claim(rt.con, key, phase="review", restarts=0, started_at=rt.now())
+
+
+def _finish_review(rt, claim: Claim) -> None:
+    key = claim.issue_key
+    review = state_dir(rt.cfg, key) / "review.md"
+    text = review.read_text() if review.exists() else ""
+    if not text.strip():
+        _review_skipped(rt, claim, "the session finished without review.md")
+        return
+    url = _pr_url(rt, claim)
+    counter = f"review_post_failures:{key}"
+    try:
+        rt.comment_pr(claim, url, review_comment(text))
+    except Exception as exc:  # noqa: BLE001 - a gh failure is counted, not re-raised
+        fails = int(ledger.meta_get(rt.con, counter) or 0) + 1
+        print(f"{key}: review comment failed ({fails}/{POST_TRIES}): {exc}", file=sys.stderr)
+        if fails < POST_TRIES:
+            ledger.meta_set(rt.con, counter, str(fails))
+            return
+        ledger.meta_set(rt.con, counter, "0")
+        _review_skipped(rt, claim, f"posting the comment failed {fails} times: {exc}")
+        return
+    ledger.meta_set(rt.con, counter, "0")
+    matches = _VERDICT.findall(text)
+    verdict = matches[-1].lower() if matches else "no verdict"
+    line = f"Review: {verdict} — {url}"
+    ledger.update_claim(rt.con, key, state="done")
+    try:
+        rt.linear.comment(claim.issue_id, line)
+    except LinearError:
+        ledger.add_digest(rt.con, key, line, rt.now())
+
+
 def _finish_phase(rt, claim: Claim, summary: str) -> None:
     key = claim.issue_key
     _record_usage(rt, key, claim.phase, "end")
+    if claim.phase == "review":
+        _finish_review(rt, claim)
+        return
     if claim.phase == "test":
         head = rt.git_head(claim.worktree)
         if head == claim.base_sha:
@@ -132,7 +208,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     if result.status == "opened":
         rt.linear.comment(issue.id, f"PR for review: {result.url}")
         ledger.add_digest(rt.con, key, f"PR ready for review: {result.url}", rt.now())
-        ledger.update_claim(rt.con, key, state="done")
+        _start_review(rt, claim, issue.title, issue.description, result.url)
     elif result.status == "check_failed" and claim.fix_attempts == 0:
         extra = f"The check failed with:\n\n{result.detail}"
         (state_dir(rt.cfg, key) / FIX_CONTEXT).write_text(extra)
@@ -177,6 +253,9 @@ def supervise(rt, claim: Claim) -> None:
         _relaunch(rt, claim)
         return
     if not rt.sessions.alive(name):
+        if claim.restarts >= 1 and claim.phase == "review":
+            _review_skipped(rt, claim, f"the session died twice ({name})")
+            return
         if claim.restarts >= 1:
             _block(
                 rt,
@@ -190,6 +269,10 @@ def supervise(rt, claim: Claim) -> None:
         ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
     if rt.now() - claim.started_at > claim.wall_clock_s:
+        if claim.phase == "review":
+            _record_usage(rt, key, claim.phase, "end")
+            _review_skipped(rt, claim, f"stopped at the wall-clock limit ({name})")
+            return
         rt.sessions.kill(name)
         line = f"stopped at the wall-clock limit ({name}); rerun with linear-agents release {key}"
         ledger.add_digest(rt.con, key, line, rt.now())

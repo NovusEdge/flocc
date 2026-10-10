@@ -45,6 +45,8 @@ def test_fake_claude_through_tmux(tmp_cfg, tmux_server, origin, tmp_path):
         config_path=tmp_path / "c.toml",
         publish_fn=lambda *a: PublishResult("opened", url="u"),
         git_head=lambda p: git("rev-parse", "HEAD", cwd=Path(p)),
+        review_diff=lambda c: "",
+        comment_pr=lambda c, u, b: None,
     )
     ledger.insert_claim(rt.con, c)
     state = state_dir(tmp_cfg, "NF-1")

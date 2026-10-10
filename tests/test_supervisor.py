@@ -1,5 +1,6 @@
 import json
 import subprocess
+from dataclasses import replace
 
 import pytest
 
@@ -17,6 +18,7 @@ from tests.test_ledger import make
 
 @pytest.fixture
 def rt(tmp_cfg, tmp_path):
+    pr_comments: list = []
     runtime = Runtime(
         cfg=tmp_cfg,
         con=ledger.connect(tmp_cfg.ledger_path),
@@ -29,7 +31,10 @@ def rt(tmp_cfg, tmp_path):
         config_path=tmp_path / "c.toml",
         publish_fn=lambda claim, title, summary: PublishResult("opened", url="https://pr/1"),
         git_head=lambda path: "sha-tests",
+        review_diff=lambda claim: "diff --git a/x b/x",
+        comment_pr=lambda claim, url, body: pr_comments.append((url, body)),
     )
+    runtime.pr_comments = pr_comments  # type: ignore[attr-defined]
     return runtime
 
 
@@ -117,12 +122,139 @@ def test_tester_without_commits_blocks(rt):
     assert rt.notifier.sent[0].cause == "NF-1:no-tests"
 
 
-def test_implementer_done_publishes(rt):
+def test_implementer_done_publishes_and_starts_the_review(rt):
     add(rt, phase="impl", tester_sha="sha-tests")
+    rt.sessions.alive_names.add("NF-1")
     done(rt, "Implemented.")
     supervise(rt, current(rt))
-    assert current(rt).state == "done"
+    c = current(rt)
+    assert c.state == "running" and c.phase == "review" and c.restarts == 0
     assert "https://pr/1" in rt.linear.comments[0]
+    name, argv = rt.sessions.started[-1]
+    assert name == "NF-1-review" and "NF-1-review" in argv
+    assert argv[argv.index("--model") + 1] == "opus"
+    d = state_dir(rt.cfg, "NF-1")
+    assert (d / "pr.diff").read_text().startswith("diff --git")
+    assert "https://pr/1" in (d / "review-input.md").read_text()
+    assert "desc" in (d / "review-input.md").read_text()
+    assert not (d / "done.json").exists()
+
+
+def test_review_model_comes_from_config(rt):
+    rt.cfg = replace(rt.cfg, review_model="sonnet")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    argv = rt.sessions.started[-1][1]
+    assert argv[argv.index("--model") + 1] == "sonnet"
+
+
+def review_session(rt, text="## Minor\n- a.py:1 nit\n\nVerdict: approve\n"):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    d = state_dir(rt.cfg, "NF-1")
+    if text is not None:
+        (d / "review.md").write_text(text)
+    return d
+
+
+def test_review_done_posts_the_comment_and_finishes_the_claim(rt):
+    d = review_session(rt)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert rt.sessions.killed[-1] == "NF-1-review"
+    [(url, body)] = rt.pr_comments
+    assert url == "https://pr/1" and body.startswith("🤖 linear-agents review")
+    assert "a.py:1 nit" in body
+    assert rt.linear.comments[-1] == "Review: approve — https://pr/1"
+    assert current(rt).state == "done"
+    assert not rt.notifier.sent and (d / "review.md").exists()
+
+
+def test_review_verdict_changes_requested(rt):
+    review_session(rt, "## Critical\n- a.py:2 wrong\n\nVerdict: changes requested\n")
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert rt.linear.comments[-1] == "Review: changes requested — https://pr/1"
+
+
+def test_review_without_a_verdict_line_says_so(rt):
+    review_session(rt, "looks fine")
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert rt.linear.comments[-1].startswith("Review: no verdict")
+
+
+def test_review_comment_is_retried_then_dropped_without_blocking(rt):
+    def broken(claim, url, body):
+        raise subprocess.CalledProcessError(1, ["gh"], stderr="boom")
+
+    rt.comment_pr = broken
+    review_session(rt)
+    for _ in range(2):
+        done(rt, "review")
+        supervise(rt, current(rt))
+        assert current(rt).state == "running"
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and rt.notifier.sent == []
+    _, key, line = ledger.pending_digest(rt.con)[-1]
+    assert key == "NF-1" and "review skipped" in line and "https://pr/1" in line
+
+
+def test_linear_failure_after_the_comment_goes_to_the_digest(rt):
+    def down(issue_id, text):
+        if text.startswith("Review:"):
+            raise LinearError("timeout")
+
+    review_session(rt)
+    rt.linear.comment = down
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and len(rt.pr_comments) == 1
+    assert any("Review: approve" in line for _, _, line in ledger.pending_digest(rt.con))
+
+
+def test_review_session_that_dies_twice_is_skipped_quietly(rt):
+    review_session(rt, text=None)
+    rt.sessions.alive_names.clear()
+    supervise(rt, current(rt))
+    assert current(rt).restarts == 1 and current(rt).phase == "review"
+    rt.sessions.alive_names.clear()
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and rt.notifier.sent == [] and rt.pr_comments == []
+    assert "review skipped" in ledger.pending_digest(rt.con)[-1][2]
+
+
+def test_review_past_its_wall_clock_is_skipped_quietly(rt):
+    review_session(rt, text=None)
+    rt.now = lambda: 100.0 + 3601
+    supervise(rt, current(rt))
+    assert rt.sessions.killed[-1] == "NF-1-review"
+    assert current(rt).state == "done" and rt.notifier.sent == [] and rt.pr_comments == []
+    assert "wall-clock" in ledger.pending_digest(rt.con)[-1][2]
+
+
+def test_review_that_cannot_start_does_not_block_the_claim(rt):
+    def nodiff(claim):
+        raise subprocess.CalledProcessError(128, ["git", "diff"])
+
+    rt.review_diff = nodiff
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and rt.notifier.sent == []
+    assert "review not started" in ledger.pending_digest(rt.con)[-1][2]
+
+
+def test_no_review_when_publish_fails(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+    assert all(name != "NF-1-review" for name, _ in rt.sessions.started)
 
 
 def test_check_failure_gets_one_fix_then_blocks(rt):

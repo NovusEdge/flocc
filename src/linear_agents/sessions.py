@@ -47,7 +47,7 @@ def trust_folders(claude_json: Path, paths) -> None:
 
 
 def session_name(issue_key: str, phase: str) -> str:
-    return f"{issue_key}-test" if phase == "test" else issue_key
+    return f"{issue_key}-{phase}" if phase in ("test", "review") else issue_key
 
 
 def claude_argv(

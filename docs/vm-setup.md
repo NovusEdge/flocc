@@ -110,7 +110,9 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
    wrong, so fix it and add the real response as a fixture.
 6. Keep running `linear-agents tick` until a PR exists and Linear has the PR comment. It is a
    draft unless the repo sets `draft = false`, which a private repo of a GitHub Free
-   organization needs.
+   organization needs. Then keep ticking until `NF-…-review` has run (model from `review_model`,
+   default `opus`; set it in the config to change it). Pass: the PR has a `🤖 linear-agents review`
+   comment from the publish token's account, and the issue has a `Review: …` comment.
 7. Exercise escalation: in a session, run
 
    ```bash

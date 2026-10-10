@@ -1,0 +1,28 @@
+---
+name: reviewer
+description: Use when you are the review session for a linear-agents issue whose PR is already open
+---
+
+Review the branch the implementer pushed. You change nothing: do not edit files, commit or push.
+
+- Read `review-input.md` in your state directory. It holds the PR link, the issue description with
+  its acceptance criteria, and the path of `pr.diff`, the full `git diff <base>...HEAD`.
+- Check the diff against each acceptance criterion, one by one. A criterion with no code or test
+  behind it is a finding.
+- Read the repo's `AGENTS.md` and `CLAUDE.md` if present, and check the diff against their
+  conventions. Open the surrounding code when the diff alone does not show whether a change is safe.
+- Run the repo's check only if you doubt it passes; the service already ran it before the push.
+- Do not raise style points a linter would catch or changes outside the diff.
+
+Write `review.md` in your state directory, with these headings, omitting an empty one:
+
+- `## Critical`: wrong behavior, data loss, security, an unmet acceptance criterion.
+- `## Important`: likely bugs, missing tests for stated behavior, broken repo conventions.
+- `## Minor`: small improvements the author may skip.
+
+Give each finding as `path:line` followed by what is wrong and what to do. Quote nothing the diff
+does not contain. Close the file with exactly one line, `Verdict: approve` or
+`Verdict: changes requested`. Any Critical finding means changes requested.
+
+Then run `linear-agents review-done`. The service posts the file as a PR comment; the owner decides
+whether to merge.

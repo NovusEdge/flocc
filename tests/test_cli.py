@@ -46,6 +46,8 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
         config_path=path,
         publish_fn=lambda *a: None,
         git_head=lambda p: "sha0",
+        review_diff=lambda c: "",
+        comment_pr=lambda c, u, b: None,
     )
     monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
     assert main(["--config", str(path), "release", "NF-1"]) == 0

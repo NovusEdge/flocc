@@ -58,7 +58,7 @@ own lingering systemd user service, so sessions outlive each run of the program.
 | Notifier | Escalation routing, dedupe, ntfy pushes, Linear labels, the daily digest |
 | Claims ledger | SQLite: issue, session, claimed paths, dependencies, state |
 | Pre-commit hook | Rejects commits touching paths another live issue has claimed |
-| Agent plugin | Tester and implementer skills, escalation rubric, coordination rules, handoff hooks |
+| Agent plugin | Tester, implementer and reviewer skills, escalation rubric, coordination rules, handoff hooks |
 
 Agents write code, commit in their worktree, message peers, and write escalations to a file.
 They never push, open PRs, or change Linear.
@@ -89,10 +89,21 @@ They never push, open PRs, or change Linear.
    same Remote Control name.
 6. **Publish.** Reject the run if the implementer changed files the tester committed; `just check`;
    push; `gh pr create --draft` with `Fixes NF-123`, or reuse the open PR on a retry; comment the PR
-   link on the issue; release the claim.
+   link on the issue.
+7. **Review.** A read-only session on the same worktree and branch, on `review_model` (default
+   `opus`), checks `git diff <base>...HEAD` against each acceptance criterion and the repo's
+   `AGENTS.md` and `CLAUDE.md`. It writes `review.md` (Critical, Important and Minor findings with
+   `file:line`, ending in `Verdict: approve` or `Verdict: changes requested`) and runs
+   `linear-agents review-done`. The service posts the file as a PR comment headed
+   `🤖 linear-agents review`, using the publish token because the agents' token cannot comment,
+   truncating past GitHub's 65,536 characters; adds `Review: <verdict> — <PR link>` to the issue;
+   and releases the claim. I still merge by hand. A review that cannot start, dies twice, hits its
+   wall clock or cannot be posted three times leaves a digest line and releases the claim: it never
+   blocks the PR or pages me.
 
-The session name is the issue key (`NF-123`); the tester and implementer use `NF-123-test` and
-`NF-123`.
+The session name is the issue key (`NF-123`) for the implementer; the tester and reviewer use
+`NF-123-test` and `NF-123-review`. The review session counts against the session cap and usage
+admission like any other.
 
 ### Failure handling
 

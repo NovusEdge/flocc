@@ -88,6 +88,8 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
         config_path=tmp_path / "c.toml",
         publish_fn=lambda claim, title, summary: None,
         git_head=lambda p: "sha0",
+        review_diff=lambda c: "",
+        comment_pr=lambda c, u, b: None,
     )
 
 
