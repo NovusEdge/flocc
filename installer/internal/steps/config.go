@@ -2,10 +2,8 @@ package steps
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"regexp"
 	"slices"
@@ -71,16 +69,6 @@ func doctor(ctx context.Context, e *Env) (out string, fails []string, ok bool) {
 	return out, fails, ok
 }
 
-func randomTopic() string {
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, 24)
-	for i := range b {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
-		b[i] = chars[n.Int64()]
-	}
-	return "la-" + string(b)
-}
-
 type Config struct{}
 
 func (Config) Name() string { return "Config" }
@@ -126,9 +114,6 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	if a.TeamKey == "" {
 		a.TeamKey = "NF"
 	}
-	if a.NtfyTopic == "" {
-		a.NtfyTopic = randomTopic()
-	}
 	if len(a.Repos) == 0 {
 		a.Repos = []answers.Repo{{BaseBranch: "main", Check: "just check", Draft: true}}
 	}
@@ -168,6 +153,10 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	defaults := func(url string) (string, bool) { return e.repoDefaults(ctx, url) }
 	if err := e.UI.ConfigForm(a, found, defaults); err != nil {
 		return err
+	}
+	// The form shows a suggestion as a placeholder; scripted runs have none.
+	if a.NtfyTopic == "" {
+		a.NtfyTopic = answers.RandomTopic()
 	}
 	// Saved before validating, so a typo does not discard everything typed.
 	if err := e.SaveAnswers(); err != nil {

@@ -18,7 +18,9 @@ func TestSharedTeamSurvivesSaveLoadAndOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := &Answers{}
-	o.Overlay(saved)
+	if err := o.Overlay(saved); err != nil {
+		t.Fatal(err)
+	}
 	if !o.SharedTeam {
 		t.Fatal("shared_team lost")
 	}
@@ -39,7 +41,9 @@ func TestExclusionsRoundTripAndDriveThePreselection(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := &Answers{}
-	o.Overlay(saved)
+	if err := o.Overlay(saved); err != nil {
+		t.Fatal(err)
+	}
 	// c was created after the exclusion, so it arrives ticked; b stays excluded
 	// although its name differs, because exclusions are keyed by URL.
 	later := []Repo{{Name: "a", URL: "u/a"}, {Name: "b2", URL: "u/b"}, {Name: "c", URL: "u/c"}}
@@ -125,7 +129,9 @@ func TestLoadMissingIsEmpty(t *testing.T) {
 
 func TestOverlayKeepsUnsetFields(t *testing.T) {
 	a := &Answers{TeamKey: "NF", DigestIssue: "NF-186"}
-	a.Overlay(&Answers{DigestIssue: "NF-1", Secrets: &Secrets{AgentToken: "t"}})
+	if err := a.Overlay(&Answers{DigestIssue: "NF-1", Secrets: &Secrets{AgentToken: "t"}}); err != nil {
+		t.Fatal(err)
+	}
 	if a.TeamKey != "NF" || a.DigestIssue != "NF-1" || a.Secrets.AgentToken != "t" {
 		t.Fatalf("%+v", a)
 	}

@@ -191,7 +191,9 @@ func run(args []string) int {
 		env.Home, _ = os.UserHomeDir()
 		env.AnswersPath = filepath.Join(stage, "answers.toml")
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
-			a.Overlay(saved)
+			if err := a.OverlaySaved(saved); err != nil {
+				fmt.Fprintln(os.Stderr, "la-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
+			}
 		}
 	}
 	if *answersIn != "" {
@@ -200,7 +202,10 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, "la-setup:", err)
 			return 1
 		}
-		a.Overlay(in)
+		if err := a.Overlay(in); err != nil {
+			fmt.Fprintln(os.Stderr, "la-setup:", *answersIn+":", err)
+			return 1
+		}
 	}
 	var u ui.UI = ui.NewHuh()
 	if *skip {
