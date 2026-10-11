@@ -22,7 +22,12 @@ func TestNormalizeTopic(t *testing.T) {
 		{"la.abc", "", false},
 		{"https://ntfy.sh/a/b", "", false},
 		{"https://example.com/abc", "", false},
-		{"https://ntfy.sh/", "", true},
+		{"https://ntfy.sh/", "", false},
+		{"ntfy.sh/", "", false},
+		{"HTTP://NTFY.SH/la-abc", "la-abc", true},
+		{"ntfy.sh/la-abc", "la-abc", true},
+		{"https://ntfy.sh/la-abc/", "la-abc", true},
+		{"https://ntfy.sh/la-abc//", "", false},
 	}
 	for _, c := range cases {
 		got, err := NormalizeTopic(c.in)
@@ -40,6 +45,19 @@ func TestOverlayRejectsBadTopicWithoutChangingAnything(t *testing.T) {
 	}
 	if a.NtfyTopic != "la-keep" || a.TeamKey != "NF" {
 		t.Errorf("a failed overlay changed the answers: %+v", a)
+	}
+}
+
+func TestOverlaySavedDropsBadTopicAndKeepsTheRest(t *testing.T) {
+	a := &Answers{}
+	if a.OverlaySaved(&Answers{NtfyTopic: "la-x la-y", TeamKey: "NF"}) == nil {
+		t.Fatal("want the dropped topic reported")
+	}
+	if a.NtfyTopic != "" || a.TeamKey != "NF" {
+		t.Errorf("saved overlay: %+v", a)
+	}
+	if err := (&Answers{}).OverlaySaved(&Answers{NtfyTopic: "la-ok"}); err != nil {
+		t.Errorf("valid saved topic reported: %v", err)
 	}
 }
 

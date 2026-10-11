@@ -148,14 +148,21 @@ func (a *Answers) Save(path string) error {
 
 var ntfyTopic = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-const ntfyPrefix = "https://ntfy.sh/"
+var ntfyURLPrefix = regexp.MustCompile(`(?i)^(https?://)?ntfy\.sh/`)
 
-// NormalizeTopic trims whitespace and a pasted https://ntfy.sh/ prefix, then checks ntfy's
-// topic rule (docs.ntfy.sh/publish): up to 64 characters of [-_A-Za-z0-9]. An empty
-// input stays empty so callers can fall back to a generated topic.
+// NormalizeTopic trims whitespace and a pasted ntfy.sh URL prefix (any scheme case, one
+// trailing slash), then checks ntfy's topic rule (docs.ntfy.sh/publish): up to 64
+// characters of [-_A-Za-z0-9]. Empty input stays empty so callers can fall back to a
+// generated topic; a URL with no topic is rejected.
 func NormalizeTopic(s string) (string, error) {
-	t := strings.TrimPrefix(strings.TrimSpace(s), ntfyPrefix)
-	if t == "" || ntfyTopic.MatchString(t) {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return "", nil
+	}
+	if loc := ntfyURLPrefix.FindStringIndex(t); loc != nil {
+		t = strings.TrimSuffix(t[loc[1]:], "/")
+	}
+	if ntfyTopic.MatchString(t) {
 		return t, nil
 	}
 	return "", errors.New("ntfy topic: use 1-64 letters, digits, '-' or '_'; paste the topic only, not the URL")
@@ -169,6 +176,17 @@ func RandomTopic() string {
 		b[i] = chars[n.Int64()]
 	}
 	return "la-" + string(b)
+}
+
+// OverlaySaved overlays a saved answers file. A bad saved topic is dropped and returned as
+// dropped, so the form asks for it again instead of locking the owner out of fixing it.
+func (a *Answers) OverlaySaved(saved *Answers) (dropped error) {
+	if _, err := NormalizeTopic(saved.NtfyTopic); err != nil {
+		saved.NtfyTopic, dropped = "", err
+	}
+	// Cannot fail: the topic is the only error Overlay returns, and it is valid or empty here.
+	_ = a.Overlay(saved)
+	return dropped
 }
 
 // Overlay applies o's set fields. A bad ntfy topic fails before anything changes, so an

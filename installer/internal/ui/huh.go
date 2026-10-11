@@ -94,7 +94,8 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(u
 	if err != nil {
 		return err
 	}
-	if a.NtfyTopic = topic; topic == "" {
+	a.NtfyTopic = topic
+	if topic == "" {
 		a.NtfyTopic = suggested
 	}
 	start := 0

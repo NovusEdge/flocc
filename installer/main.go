@@ -191,9 +191,8 @@ func run(args []string) int {
 		env.Home, _ = os.UserHomeDir()
 		env.AnswersPath = filepath.Join(stage, "answers.toml")
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
-			if err := a.Overlay(saved); err != nil {
-				fmt.Fprintln(os.Stderr, "la-setup:", env.AnswersPath+":", err)
-				return 1
+			if err := a.OverlaySaved(saved); err != nil {
+				fmt.Fprintln(os.Stderr, "la-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
 			}
 		}
 	}
