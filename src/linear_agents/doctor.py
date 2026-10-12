@@ -13,7 +13,7 @@ from linear_agents.sessions import SOCKET
 from linear_agents.tokens import WARN_DAYS, TokenRejected, can_write_contents, token_expiry
 from linear_agents.worktree import free_disk_gb
 
-# --name and --remote-control as the launcher passes them.
+# Minimum claude version whose flags the launcher needs (--name, --remote-control).
 MIN_CLAUDE = (2, 1, 293)
 _LABELS = ("escalation", "needs-decision")
 
@@ -231,12 +231,23 @@ def disk_check(cfg: Config, free=free_disk_gb) -> Result:
 def report(results: list[Result]) -> int:
     for r in results:
         print(f"{'FAIL' if r.status == 'fail' else r.status:<6}{r.name}: {r.detail}")
-    return 1 if any(r.status == "fail" for r in results) else 0
+    fails = sum(1 for r in results if r.status == "fail")
+    print(f"{len(results)} checks, {fails} failed")
+    return 1 if fails else 0
+
+
+def ntfy_check(cfg: Config) -> Result:
+    if "replace-with-a-long-random-topic" in cfg.ntfy_url:
+        return Result(
+            "warn", "ntfy", "still the example placeholder, escalation pushes are dropped"
+        )
+    return Result("ok", "ntfy", cfg.ntfy_url)
 
 
 def run_doctor(cfg: Config) -> int:
     results = path_checks(cfg) + scope_check(cfg)
     results.append(disk_check(cfg))
+    results.append(ntfy_check(cfg))
     key = secret_file("linear key", cfg.linear_key_file)
     results.append(key)
     if key.status == "ok":

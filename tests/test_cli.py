@@ -52,8 +52,26 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
     monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
     assert main(["--config", str(path), "release", "NF-1"]) == 0
     assert ledger.get_claim(con, "NF-1") is None and sessions.killed == ["NF-1-test"]
-    err = capsys.readouterr().err
-    assert "worktree" in err and "Entity not found" in err
+    captured = capsys.readouterr()
+    assert "worktree" in captured.err and "Entity not found" in captured.err
+    assert "worktree removed" in captured.out
+    ledger.insert_claim(con, make("NF-1", worktree=str(tmp_path / "wt" / "NF-1")))
+    assert main(["--config", str(path), "release", "NF-1", "--keep-worktree"]) == 0
+    assert "worktree kept" in capsys.readouterr().out
+
+
+def test_bad_config_fails_cleanly_for_every_command(tmp_path, capsys):
+    bad = tmp_path / "bad.toml"
+    bad.write_text("= not toml")
+    for command in ("status", "tick", "release NF-1"):
+        assert main(["--config", str(bad), *command.split()]) == 1
+        assert "FAIL  config:" in capsys.readouterr().out
+
+
+def test_subcommands_have_help(capsys):
+    assert main(["--help"]) == 0
+    assert "Show claims, last tick, usage and disk" in capsys.readouterr().out
+    assert main(["status", "--help"]) == 0
 
 
 def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, capsys):

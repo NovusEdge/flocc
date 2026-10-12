@@ -146,9 +146,17 @@ def test_linear_checks(tmp_cfg):
 
 def test_report_exits_non_zero_on_a_failure(capsys):
     assert doctor.report([Result("ok", "a", "fine"), Result("warn", "b", "hm")]) == 0
+    ok_out = capsys.readouterr().out
     assert doctor.report([Result("fail", "c", "broken")]) == 1
     out = capsys.readouterr().out
-    assert "FAIL  c: broken" in out and "ok    a: fine" in out
+    assert "FAIL  c: broken" in out and "ok    a: fine" in ok_out
+    assert "2 checks, 0 failed" in ok_out and "1 checks, 1 failed" in out
+
+
+def test_ntfy_check_warns_on_placeholder():
+    cfg = load(EXAMPLE)
+    assert doctor.ntfy_check(cfg).status == "warn"
+    assert doctor.ntfy_check(replace(cfg, ntfy_url="https://ntfy.sh/realtopic")).status == "ok"
 
 
 def http_error(code):

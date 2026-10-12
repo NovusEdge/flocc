@@ -109,6 +109,47 @@ def test_last_tick_reads_the_final_marker_pair(tmp_path):
     assert last_tick(tmp_path / "missing.log") is None
 
 
+def _report(**over):
+    base = {
+        "host": "h",
+        "mode": "loop",
+        "session_cap": 2,
+        "claims": [],
+        "ledger_error": None,
+        "last_tick": None,
+        "usage": None,
+        "disk": None,
+    }
+    return base | over
+
+
+def test_human_status_prints_tick_usage_and_disk(cfg, tmp_path, monkeypatch, capsys):
+    path = str(tmp_path / "c.toml")
+    full = _report(
+        last_tick={"at": 1.0, "exit": "0", "age_s": 300.0},
+        usage={"five_hour_pct": 20, "weekly_pct": 30},
+        disk={"free_bytes": 5 * 2**30},
+    )
+    monkeypatch.setattr("linear_agents.status.collect", lambda cfg, sessions: full)
+    assert main(["--config", path, "status"]) == 0
+    out = capsys.readouterr().out
+    assert "last tick 5m ago, ok" in out
+    assert "usage 5h 20%  wk 30%" in out
+    assert "disk 5.0 GiB free" in out
+
+    empty = _report()
+    monkeypatch.setattr("linear_agents.status.collect", lambda cfg, sessions: empty)
+    assert main(["--config", path, "status"]) == 0
+    out = capsys.readouterr().out
+    assert "last tick: none" in out and "usage: none yet" in out and "disk" not in out
+
+    noage = _report(last_tick={"at": None, "exit": "0"})
+    monkeypatch.setattr("linear_agents.status.collect", lambda cfg, sessions: noage)
+    assert main(["--config", path, "status"]) == 0
+    out = capsys.readouterr().out
+    assert "last tick ok" in out and "ago" not in out
+
+
 def test_status_json_writes_nothing(cfg, tmp_path, capsys):
     path = tmp_path / "c.toml"
     assert main(["--config", str(path), "status", "--json"]) == 0
