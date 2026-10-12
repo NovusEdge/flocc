@@ -199,7 +199,11 @@ def cmd_handoff_ready(args) -> int:
 
 def _config(args):
     path = Path(args.config) if args.config else default_config_path()
-    return load(path), path
+    try:
+        return load(path), path
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"FAIL  config: {exc}")
+        raise SystemExit(1) from exc
 
 
 def _lock_path(cfg):
@@ -241,18 +245,15 @@ def cmd_release(args) -> int:
             print(f"release: no claim for {args.key}", file=sys.stderr)
             return 1
         release_claim(rt, claim, keep_worktree=args.keep_worktree)
-    print(f"released {args.key}, branch {claim.branch} kept")
+    wt = "kept" if args.keep_worktree else "removed"
+    print(f"released {args.key}, branch {claim.branch} kept, worktree {wt}")
     return 0
 
 
 def cmd_doctor(args) -> int:
     from linear_agents.doctor import run_doctor
 
-    try:
-        cfg, path = _config(args)
-    except (OSError, ValueError, TypeError) as exc:
-        print(f"FAIL  config: {exc}")
-        return 1
+    cfg, path = _config(args)
     print(f"ok    config: {path}")
     return run_doctor(cfg)
 
@@ -274,7 +275,35 @@ def cmd_status(args) -> int:
         print(f"  ledger unreadable: {report['ledger_error']}")
     elif not report["claims"]:
         print("  no live claims")
+    t = report["last_tick"]
+    if t is None:
+        print("  last tick: none")
+    else:
+        state = (
+            "running" if t["exit"] is None else ("ok" if t["exit"] == "0" else f"exit {t['exit']}")
+        )
+        age = t.get("age_s")
+        print(
+            f"  last tick {_age(age)} ago, {state}" if age is not None else f"  last tick {state}"
+        )
+    u = report["usage"]
+    if u is None:
+        print("  usage: none yet")
+    else:
+        print(f"  usage 5h {_pct(u['five_hour_pct'])}  wk {_pct(u['weekly_pct'])}")
+    if report["disk"]:
+        print(f"  disk {report['disk']['free_bytes'] / 2**30:.1f} GiB free")
     return 0
+
+
+def _age(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 172800:
+        return f"{seconds / 3600:.0f}h"
+    return f"{seconds / 86400:.0f}d"
 
 
 COMMANDS = {
@@ -295,38 +324,44 @@ COMMANDS = {
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="linear-agents")
-    parser.add_argument("--config", default=None)
+    parser = argparse.ArgumentParser(
+        prog="linear-agents", description="Run Claude sessions on Linear issues."
+    )
+    parser.add_argument("--config", default=None, help="config file (default: standard path)")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("statusline")
-    esc = sub.add_parser("escalate")
-    esc.add_argument("--tier", type=int, required=True)
-    esc.add_argument("--cause", required=True)
-    esc.add_argument("--summary", required=True)
-    esc.add_argument("--action")
-    esc.add_argument("--default")
-    esc.add_argument("--deadline-min", type=int)
-    esc.add_argument("--waiting", action="store_true")
-    esc.add_argument("--global", dest="is_global", action="store_true")
-    hook = sub.add_parser("hook")
-    hook.add_argument("name", choices=["pre-commit", "commit-msg"])
-    hook.add_argument("--no-trailer", action="store_true")
-    hook.add_argument("message_file", nargs="?")
-    claim = sub.add_parser("claim")
-    claim.add_argument("globs", nargs="+")
-    sub.add_parser("context")
-    done = sub.add_parser("done")
-    done.add_argument("--summary", required=True)
-    sub.add_parser("review-done")
-    sub.add_parser("handoff-ready")
-    sub.add_parser("tick")
-    sub.add_parser("run")
-    rel = sub.add_parser("release")
-    rel.add_argument("key")
-    rel.add_argument("--keep-worktree", action="store_true")
-    sub.add_parser("doctor")
-    status = sub.add_parser("status")
-    status.add_argument("--json", action="store_true")
+
+    def add(name, text):
+        return sub.add_parser(name, help=text, description=text)
+
+    add("statusline", "Record session usage from stdin and print the status line")
+    esc = add("escalate", "Record an escalation for the service to route")
+    esc.add_argument("--tier", type=int, required=True, help="escalation tier")
+    esc.add_argument("--cause", required=True, help="why it is escalated")
+    esc.add_argument("--summary", required=True, help="one-line summary")
+    esc.add_argument("--action", help="what the human should do")
+    esc.add_argument("--default", help="what happens if nobody answers")
+    esc.add_argument("--deadline-min", type=int, help="minutes until the default applies")
+    esc.add_argument("--waiting", action="store_true", help="session waits for the answer")
+    esc.add_argument("--global", dest="is_global", action="store_true", help="affects all issues")
+    hook = add("hook", "Git hook entry point")
+    hook.add_argument("name", choices=["pre-commit", "commit-msg"], help="which hook is running")
+    hook.add_argument("--no-trailer", action="store_true", help="skip the commit trailer")
+    hook.add_argument("message_file", nargs="?", help="commit message file (commit-msg)")
+    claim = add("claim", "Claim file globs for this issue")
+    claim.add_argument("globs", nargs="+", help="file globs to claim")
+    add("context", "Print the issue's claims and context")
+    done = add("done", "Mark the work done")
+    done.add_argument("--summary", required=True, help="what was done")
+    add("review-done", "Mark the review done (reads review.md)")
+    add("handoff-ready", "Mark handoff.md ready")
+    add("tick", "Run one service tick")
+    add("run", "Run ticks in a loop")
+    rel = add("release", "Clear a claim and kill its session")
+    rel.add_argument("key", help="issue key, e.g. NF-12")
+    rel.add_argument("--keep-worktree", action="store_true", help="leave the worktree on disk")
+    add("doctor", "Check config and host setup")
+    status = add("status", "Show claims, last tick, usage and disk")
+    status.add_argument("--json", action="store_true", help="print the raw report as JSON")
     return parser
 
 
@@ -334,6 +369,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+        return COMMANDS[args.command](args)
     except SystemExit as exc:
         return int(exc.code or 0)
-    return COMMANDS[args.command](args)

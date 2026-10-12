@@ -21,9 +21,20 @@ setup_timeout_s = 900
 # Linear user or bot/app ids (not names) whose comments on a running issue are typed into the
 # live session like the owner's, so another agent can steer. Empty forwards only the owner's.
 # steer_authors = ["your-hermes-linear-id"]
+# Most concurrent sessions this host runs.
+# session_cap = 2
 # Admission stops starting issues once sessions have used this share of each usage window.
 # five_hour_max_pct = 80.0
 # weekly_max_pct = 80.0
+# 0-23; hour the daily digest posts.
+# digest_hour = 18
+# Per-session wall-clock stop, in seconds.
+# default_wall_clock_s = 10800
+# Review phase wall-clock stop, in seconds.
+# review_wall_clock_s = 3600
+# Restart a session when its context passes this pct.
+# context_restart_pct = 60.0
+# review_model = "opus"
 # Per-phase reasoning effort (low|medium|high|xhigh|max); an issue's agentblock effort overrides.
 # tester_effort = "high"
 # impl_effort = "medium"

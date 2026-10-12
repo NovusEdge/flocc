@@ -1,3 +1,5 @@
+# Must match state_root in the host's config.toml. Only status/logs on non-systemd
+# (loop) hosts read it; systemd hosts use journald.
 runlog := "~/.local/state/linear-agents/run.log"
 
 [private]

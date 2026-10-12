@@ -8,6 +8,11 @@ def test_example_loads_with_defaults():
     cfg = load(EXAMPLE)
     assert cfg.team_key == "NF"
     assert cfg.session_cap == 2
+    assert cfg.digest_hour == 18
+    assert cfg.default_wall_clock_s == 10800
+    assert cfg.review_wall_clock_s == 3600
+    assert cfg.context_restart_pct == 60.0
+    assert cfg.review_model == "opus"
     assert cfg.five_hour_max_pct == 80.0
     assert cfg.weekly_max_pct == 80.0
     assert cfg.tester_effort == "high"
@@ -35,6 +40,17 @@ def test_bad_effort_level_is_an_error(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text('impl_effort = "mediium"\n' + EXAMPLE.read_text())
     with pytest.raises(ValueError, match="impl_effort.*mediium"):
+        load(p)
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["digest_hour = 24", "session_cap = 0", "five_hour_max_pct = 150.0", "weekly_max_pct = -1.0"],
+)
+def test_out_of_range_number_is_an_error(tmp_path, line):
+    p = tmp_path / "c.toml"
+    p.write_text(line + "\n" + EXAMPLE.read_text())
+    with pytest.raises(ValueError, match=line.split(" =")[0]):
         load(p)
 
 

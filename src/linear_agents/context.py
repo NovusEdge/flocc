@@ -8,6 +8,7 @@ _COMMANDS = """## Commands
 
 - `linear-agents claim '<glob>'` before editing files outside your claimed paths.
 - `linear-agents context` to see this text again with the current peer list.
+- message a peer with `SendMessage` before escalating when your change affects theirs; see the coordinate skill.
 - `linear-agents escalate ...` when you need the owner; see the escalate skill.
 - `linear-agents done --summary '<one paragraph>'` when this phase is finished.
 - `linear-agents review-done` after writing review.md, in the review phase only.

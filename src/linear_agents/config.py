@@ -116,4 +116,11 @@ def load(path: Path) -> Config:
         value = getattr(cfg, key)
         if value not in _EFFORT_LEVELS:
             raise ValueError(f"{path}: {key} {value!r} is not one of {', '.join(_EFFORT_LEVELS)}")
+    if not 0 <= cfg.digest_hour <= 23:
+        raise ValueError(f"{path}: digest_hour {cfg.digest_hour} is not in 0-23")
+    if cfg.session_cap < 1:
+        raise ValueError(f"{path}: session_cap {cfg.session_cap} must be >= 1")
+    for key in ("five_hour_max_pct", "weekly_max_pct"):
+        if not 0 <= getattr(cfg, key) <= 100:
+            raise ValueError(f"{path}: {key} {getattr(cfg, key)} is not in 0-100")
     return cfg

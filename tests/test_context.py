@@ -22,6 +22,8 @@ def test_context_lists_issue_and_commands(tmp_cfg):
         "linear-agents escalate",
         "linear-agents claim",
         "linear-agents context",
+        "SendMessage",
+        "coordinate skill",
     ):
         assert needle in text
 
