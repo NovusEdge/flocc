@@ -30,8 +30,8 @@ def test_cap():
 
 
 def test_usage_thresholds():
-    assert not run(usage=Usage(60, 10, 1000)).ok
-    assert not run(usage=Usage(10, 50, 1000)).ok
+    assert not run(usage=Usage(80, 10, 1000)).ok
+    assert not run(usage=Usage(10, 80, 1000)).ok
 
 
 def test_unknown_usage_admits_only_when_idle():

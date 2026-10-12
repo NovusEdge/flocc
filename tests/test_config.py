@@ -8,8 +8,11 @@ def test_example_loads_with_defaults():
     cfg = load(EXAMPLE)
     assert cfg.team_key == "NF"
     assert cfg.session_cap == 2
-    assert cfg.five_hour_max_pct == 60.0
-    assert cfg.weekly_max_pct == 50.0
+    assert cfg.five_hour_max_pct == 80.0
+    assert cfg.weekly_max_pct == 80.0
+    assert cfg.tester_effort == "high"
+    assert cfg.impl_effort == "medium"
+    assert cfg.review_effort == "medium"
     assert cfg.repos["backend"].check == "just check"
     assert cfg.repos["backend"].draft is True
     assert cfg.check_timeout_s == 1800
@@ -17,6 +20,15 @@ def test_example_loads_with_defaults():
     assert cfg.min_free_disk_gb == 2.0
     assert cfg.state_root.is_absolute()
     assert cfg.mcp_servers["sentry"]["type"] == "http"
+
+
+def test_effort_for_maps_phase_to_config():
+    cfg = load(EXAMPLE)
+    assert cfg.effort_for("test") == "high"
+    assert cfg.effort_for("impl") == "medium"
+    assert cfg.effort_for("review") == "medium"
+    # The post-check fix session runs the implementer skill, so it takes the implementer level.
+    assert cfg.effort_for("fix") == "medium"
 
 
 def test_missing_repos_is_an_error(tmp_path):

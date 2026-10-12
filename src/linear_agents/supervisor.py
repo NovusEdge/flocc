@@ -55,6 +55,8 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
     settings = settings_from_json(claim.settings_json)
     if phase == "review":
         settings = replace(settings, model=rt.cfg.review_model)
+    if settings.effort is None:
+        settings = replace(settings, effort=rt.cfg.effort_for(phase))
     prompt = phase_prompt(phase, claim.issue_key, extra)
     argv = claude_argv(rt.cfg, name, settings, prompt, env, rt.claude_exe, rt.exe)
     # After everything above that can raise. The previous session's markers would be taken for

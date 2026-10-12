@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from linear_agents import ledger
+from linear_agents.agentblock import IssueSettings, settings_to_json
 from linear_agents.context import state_dir
 from linear_agents.ledger import Claim
 from linear_agents.linear import LinearError
@@ -147,6 +148,40 @@ def test_review_model_comes_from_config(rt):
     supervise(rt, current(rt))
     argv = rt.sessions.started[-1][1]
     assert argv[argv.index("--model") + 1] == "sonnet"
+
+
+def _effort(argv):
+    return argv[argv.index("--effort") + 1]
+
+
+def test_tester_launches_at_high_effort(rt):
+    add(rt)
+    supervise(rt, current(rt))
+    name, argv = rt.sessions.started[0]
+    assert name == "NF-1-test" and _effort(argv) == "high"
+
+
+def test_implementer_launches_at_medium_effort(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt)
+    supervise(rt, current(rt))
+    name, argv = rt.sessions.started[0]
+    assert name == "NF-1" and _effort(argv) == "medium"
+
+
+def test_reviewer_launches_at_medium_effort(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    name, argv = rt.sessions.started[-1]
+    assert name == "NF-1-review" and _effort(argv) == "medium"
+
+
+def test_agentblock_effort_overrides_phase_default(rt):
+    add(rt, settings_json=settings_to_json(IssueSettings(effort="max")))
+    supervise(rt, current(rt))
+    assert _effort(rt.sessions.started[0][1]) == "max"
 
 
 def review_session(rt, text="## Minor\n- a.py:1 nit\n\nVerdict: approve\n"):
