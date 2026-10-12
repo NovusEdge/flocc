@@ -37,6 +37,8 @@ class Comment:
     body: str
     created_at: str
     mine: bool = False
+    # The Linear user id, or the bot/app actor id for an integration; None when neither is set.
+    author: str | None = None
 
 
 def http_transport(api_key: str) -> Transport:
@@ -215,14 +217,17 @@ class Linear:
         data = self._post(
             """query($id: String!, $after: DateTimeOrDuration) { issue(id: $id) {
                  comments(first: 50, filter: { createdAt: { gt: $after } }) {
-                   nodes { id body createdAt user { isMe } } } } }""",
+                   nodes { id body createdAt user { isMe id } botActor { id } } } } }""",
             {"id": issue_id, "after": after_iso or "1970-01-01T00:00:00Z"},
         )
         nodes = data["issue"]["comments"]["nodes"]
-        comments = [
-            Comment(n["id"], n["body"], n["createdAt"], bool((n.get("user") or {}).get("isMe")))
-            for n in nodes
-        ]
+        comments = []
+        for n in nodes:
+            user = n.get("user") or {}
+            author = user.get("id") or (n.get("botActor") or {}).get("id")
+            comments.append(
+                Comment(n["id"], n["body"], n["createdAt"], bool(user.get("isMe")), author)
+            )
         return sorted(comments, key=lambda c: c.created_at)
 
     def create_issue(self, team_id: str, title: str, description: str) -> str:

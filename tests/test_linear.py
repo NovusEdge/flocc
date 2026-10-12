@@ -163,6 +163,40 @@ def test_comments_mark_the_owners():
     assert [(c.id, c.mine) for c in comments] == [("c1", True), ("c2", False)]
 
 
+def test_comments_capture_author():
+    post = FakePost(
+        {
+            "issue": {
+                "comments": {
+                    "nodes": [
+                        {
+                            "id": "c1",
+                            "body": "a",
+                            "createdAt": "2026-10-09T10:00:00Z",
+                            "user": {"isMe": False, "id": "u-hermes"},
+                        },
+                        {
+                            "id": "c2",
+                            "body": "b",
+                            "createdAt": "2026-10-09T10:05:00Z",
+                            "user": None,
+                            "botActor": {"id": "bot-hermes"},
+                        },
+                        {
+                            "id": "c3",
+                            "body": "c",
+                            "createdAt": "2026-10-09T10:06:00Z",
+                            "user": None,
+                        },
+                    ]
+                }
+            }
+        }
+    )
+    authors = {c.id: c.author for c in Linear(post).comments_since("u1", None)}
+    assert authors == {"c1": "u-hermes", "c2": "bot-hermes", "c3": None}
+
+
 def test_missing_labels_counts_team_and_workspace_labels():
     post = FakePost(
         {

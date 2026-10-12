@@ -65,6 +65,9 @@ class Config:
     # Hosts sharing a Linear team each map only some repos, so an issue for another host's repo
     # is left alone instead of getting the no-repo comment.
     skip_unmapped: bool = False
+    # Linear user or bot/app ids whose comments on a running issue are forwarded into the live
+    # session like the owner's own, letting another agent steer. Empty forwards only the owner's.
+    steer_authors: tuple[str, ...] = ()
     # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
     claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
 
@@ -99,6 +102,8 @@ def load(path: Path) -> Config:
     for key in _PATH_KEYS:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()
+    if "steer_authors" in raw:
+        raw["steer_authors"] = tuple(raw["steer_authors"])
     cfg = Config(repos=repos, **raw)
     # launch() passes a per-phase effort to --effort for every session, so a typo here would
     # crash the tick for all issues with an opaque CLI error; fail at load instead.
