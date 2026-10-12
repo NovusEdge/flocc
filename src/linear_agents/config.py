@@ -3,6 +3,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
 _PATH_KEYS = (
     "state_root",
     "worktree_root",
@@ -44,11 +46,16 @@ class Config:
     digest_issue: str
     digest_hour: int = 18
     session_cap: int = 2
-    five_hour_max_pct: float = 60.0
-    weekly_max_pct: float = 50.0
+    five_hour_max_pct: float = 80.0
+    weekly_max_pct: float = 80.0
     context_restart_pct: float = 60.0
     default_wall_clock_s: int = 3 * 3600
     review_model: str = "opus"
+    # Per-phase reasoning effort, overridden by an issue's agentblock effort. The tester plans the
+    # behaviour before any code exists, so it runs high; implementer and reviewer run medium.
+    tester_effort: str = "high"
+    impl_effort: str = "medium"
+    review_effort: str = "medium"
     review_wall_clock_s: int = 3600
     check_timeout_s: int = 1800
     setup_timeout_s: int = 900
@@ -60,6 +67,13 @@ class Config:
     skip_unmapped: bool = False
     # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
     claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
+
+    def effort_for(self, phase: str) -> str:
+        if phase == "test":
+            return self.tester_effort
+        if phase == "review":
+            return self.review_effort
+        return self.impl_effort
 
 
 def trailer_enabled(cfg: Config, repo: RepoConfig) -> bool:
@@ -85,4 +99,11 @@ def load(path: Path) -> Config:
     for key in _PATH_KEYS:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()
-    return Config(repos=repos, **raw)
+    cfg = Config(repos=repos, **raw)
+    # launch() passes a per-phase effort to --effort for every session, so a typo here would
+    # crash the tick for all issues with an opaque CLI error; fail at load instead.
+    for key in ("tester_effort", "impl_effort", "review_effort"):
+        value = getattr(cfg, key)
+        if value not in _EFFORT_LEVELS:
+            raise ValueError(f"{path}: {key} {value!r} is not one of {', '.join(_EFFORT_LEVELS)}")
+    return cfg

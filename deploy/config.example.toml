@@ -18,6 +18,13 @@ setup_timeout_s = 900
 # For hosts that share a Linear team and map only some of its repos: leave issues matching no
 # mapped repo alone instead of commenting that no repo matches.
 # skip_unmapped = true
+# Admission stops starting issues once sessions have used this share of each usage window.
+# five_hour_max_pct = 80.0
+# weekly_max_pct = 80.0
+# Per-phase reasoning effort (low|medium|high|xhigh|max); an issue's agentblock effort overrides.
+# tester_effort = "high"
+# impl_effort = "medium"
+# review_effort = "medium"
 
 [repos.backend]
 path = "~/src/backend"
