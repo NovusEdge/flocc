@@ -344,14 +344,20 @@ def forward_comments(rt) -> dict[str, LinearError]:
             continue
         name = session_name(claim.issue_key, claim.phase)
         for comment in replies:
-            # The service's own comments carry BOT_PREFIX, and teammates comment on NF issues
-            # too; only the owner's replies go to the session.
-            if comment.mine and not comment.body.startswith(BOT_PREFIX):
+            # The service's own comments carry BOT_PREFIX, and teammates comment on NF issues too.
+            # The owner's replies steer; so do an allowlisted author's (e.g. a steering agent).
+            if comment.mine:
+                who = "The owner"
+            elif comment.author in rt.cfg.steer_authors:
+                who = "A steering agent"
+            else:
+                who = None
+            if who and not comment.body.startswith(BOT_PREFIX):
                 # A dead session is relaunched by the next tick's supervisor, which delivers
                 # this reply and the ones after it.
                 if not rt.sessions.alive(name):
                     break
-                rt.sessions.send(name, f"The owner replied on Linear: {comment.body}")
+                rt.sessions.send(name, f"{who} replied on Linear: {comment.body}")
             ledger.update_claim(rt.con, claim.issue_key, last_comment_at=comment.created_at)
     return failed
 

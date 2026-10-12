@@ -318,6 +318,27 @@ def test_forward_only_owner_comments(rt):
     assert c is not None and c.last_comment_at == "2026-10-09T10:06:00Z"
 
 
+def test_forward_steer_author_comments(rt):
+    rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "owner says hi", "2026-10-09T10:00:00Z", mine=True),
+            Comment("c2", "hermes nudge", "2026-10-09T10:05:00Z", mine=False, author="hermes-id"),
+            Comment("c3", "teammate aside", "2026-10-09T10:06:00Z", mine=False, author="other"),
+            Comment("c4", f"{BOT_PREFIX} own note", "2026-10-09T10:07:00Z", author="hermes-id"),
+        ]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    forward_comments(rt)
+    assert rt.sessions.sent == [
+        ("NF-1-test", "The owner replied on Linear: owner says hi"),
+        ("NF-1-test", "A steering agent replied on Linear: hermes nudge"),
+    ]
+    c = ledger.get_claim(rt.con, "NF-1")
+    assert c is not None and c.last_comment_at == "2026-10-09T10:07:00Z"
+
+
 def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
     ledger.insert_claim(rt.con, make("NF-1", ()))
     rt.linear.replies = {
