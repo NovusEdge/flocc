@@ -38,6 +38,13 @@ def test_bad_effort_level_is_an_error(tmp_path):
         load(p)
 
 
+def test_bad_steer_authors_is_an_error(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('steer_authors = "just-one-id"\n' + EXAMPLE.read_text())
+    with pytest.raises(ValueError, match="steer_authors"):
+        load(p)
+
+
 def test_missing_repos_is_an_error(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text(EXAMPLE.read_text().split("[repos.backend]")[0])

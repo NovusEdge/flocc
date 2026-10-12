@@ -103,7 +103,12 @@ def load(path: Path) -> Config:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()
     if "steer_authors" in raw:
-        raw["steer_authors"] = tuple(raw["steer_authors"])
+        authors = raw["steer_authors"]
+        # A bare string would become a char tuple and match nothing, so steering would silently
+        # never fire; fail at load like the effort check instead.
+        if not isinstance(authors, list) or not all(isinstance(a, str) for a in authors):
+            raise ValueError(f"{path}: steer_authors must be a list of id strings")
+        raw["steer_authors"] = tuple(authors)
     cfg = Config(repos=repos, **raw)
     # launch() passes a per-phase effort to --effort for every session, so a typo here would
     # crash the tick for all issues with an opaque CLI error; fail at load instead.

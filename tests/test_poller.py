@@ -335,6 +335,8 @@ def test_forward_steer_author_comments(rt):
         ("NF-1-test", "The owner replied on Linear: owner says hi"),
         ("NF-1-test", "A steering agent replied on Linear: hermes nudge"),
     ]
+    c = ledger.get_claim(rt.con, "NF-1")
+    assert c is not None and c.last_comment_at == "2026-10-09T10:07:00Z"
 
 
 def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
