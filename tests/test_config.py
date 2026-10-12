@@ -31,6 +31,13 @@ def test_effort_for_maps_phase_to_config():
     assert cfg.effort_for("fix") == "medium"
 
 
+def test_bad_effort_level_is_an_error(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('impl_effort = "mediium"\n' + EXAMPLE.read_text())
+    with pytest.raises(ValueError, match="impl_effort.*mediium"):
+        load(p)
+
+
 def test_missing_repos_is_an_error(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text(EXAMPLE.read_text().split("[repos.backend]")[0])

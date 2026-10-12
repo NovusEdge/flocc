@@ -3,6 +3,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
 _PATH_KEYS = (
     "state_root",
     "worktree_root",
@@ -97,4 +99,11 @@ def load(path: Path) -> Config:
     for key in _PATH_KEYS:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()
-    return Config(repos=repos, **raw)
+    cfg = Config(repos=repos, **raw)
+    # launch() passes a per-phase effort to --effort for every session, so a typo here would
+    # crash the tick for all issues with an opaque CLI error; fail at load instead.
+    for key in ("tester_effort", "impl_effort", "review_effort"):
+        value = getattr(cfg, key)
+        if value not in _EFFORT_LEVELS:
+            raise ValueError(f"{path}: {key} {value!r} is not one of {', '.join(_EFFORT_LEVELS)}")
+    return cfg
