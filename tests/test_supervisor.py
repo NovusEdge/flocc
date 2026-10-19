@@ -7,11 +7,12 @@ import pytest
 from linear_agents import ledger
 from linear_agents.agentblock import IssueSettings, settings_to_json
 from linear_agents.context import state_dir
+from linear_agents.grants import Grants, add_comment, for_phase
 from linear_agents.ledger import Claim
 from linear_agents.linear import LinearError
 from linear_agents.publisher import PublishResult
 from linear_agents.runtime import Runtime
-from linear_agents.supervisor import LaunchError, supervise
+from linear_agents.supervisor import QUESTION_WAIT_S, LaunchError, supervise
 from linear_agents.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
@@ -454,6 +455,7 @@ def test_wall_clock(rt):
 def test_high_context_requests_handoff_once(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
+    (state_dir(rt.cfg, "NF-1") / "compacted").touch()
     write_status(state_dir(rt.cfg, "NF-1"), usage_status(ctx=70))
     supervise(rt, current(rt))
     supervise(rt, current(rt))
@@ -522,3 +524,100 @@ def test_review_is_bounded_by_review_wall_clock_s(rt):
     rt.now = lambda: 100.0 + 61
     supervise(rt, current(rt))
     assert current(rt).state == "done" and "wall-clock" in ledger.pending_digest(rt.con)[-1][2]
+
+
+def env_of(argv):
+    end = argv.index("/bin/sh")
+    return dict(x.split("=", 1) for x in argv[2:end])
+
+
+def test_phase_sessions_share_one_run_id_across_relaunches(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt)
+    supervise(rt, current(rt))
+    started = current(rt).started_at
+    env = env_of(rt.sessions.started[-1][1])
+    assert env["LINEAR_AGENTS_RUN"] == f"impl@{started}"
+    assert env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "1"
+    assert env["CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS"] == "1"
+    rt.sessions.alive_names.clear()
+    supervise(rt, current(rt))  # a crash relaunch of the same phase
+    assert env_of(rt.sessions.started[-1][1])["LINEAR_AGENTS_RUN"] == f"impl@{started}"
+
+
+def test_only_implementer_and_fix_sessions_use_remote_control(rt):
+    add(rt)
+    supervise(rt, current(rt))  # tester relaunch
+    assert "--remote-control" not in rt.sessions.started[-1][1]
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt)
+    supervise(rt, current(rt))  # implementer
+    assert "--remote-control" in rt.sessions.started[-1][1]
+
+
+def test_launch_records_block_grants_without_beating_comment_grants(rt):
+    add(rt, settings_json=settings_to_json(IssueSettings(allow="launches 12")))
+    path = state_dir(rt.cfg, "NF-1") / "grants.json"
+    from_comment = Grants(launches=20)
+    add_comment(path, from_comment, "impl")
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt)
+    supervise(rt, current(rt))
+    assert for_phase(path, "impl").launches == 20
+
+
+def test_unlisted_installed_plugins_are_disabled_at_launch(rt):
+    rt.cfg.agent_plugins_file.write_text("docket@NovusEdge\n")
+    rt.cfg.installed_plugins_file.write_text(
+        json.dumps({"plugins": {"docket@NovusEdge": [], "glowup@glowup": []}})
+    )
+    add(rt)
+    supervise(rt, current(rt))  # not alive: relaunch
+    argv = rt.sessions.started[-1][1]
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings["enabledPlugins"] == {"glowup@glowup": False}
+
+
+def test_no_handoff_before_the_first_compaction(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    write_status(d, usage_status(ctx=70))
+    supervise(rt, current(rt))
+    assert rt.sessions.sent == []
+    (d / "compacted").touch()
+    supervise(rt, current(rt))
+    assert len(rt.sessions.sent) == 1 and "handoff" in rt.sessions.sent[0][1]
+
+
+def test_relaunch_clears_compaction_and_question_markers(rt):
+    add(rt)
+    d = state_dir(rt.cfg, "NF-1")
+    for name in ("compacted", "asking", "asking-escalated"):
+        (d / name).write_text("{}")
+    supervise(rt, current(rt))  # not alive: relaunch
+    for name in ("compacted", "asking", "asking-escalated"):
+        assert not (d / name).exists()
+
+
+def test_a_stale_question_is_escalated_once(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "asking").write_text(
+        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
+    )
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    (esc,) = rt.notifier.sent
+    assert esc.tier == 2 and "A or B?" in esc.summary
+
+
+def test_a_fresh_question_is_not_escalated(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []

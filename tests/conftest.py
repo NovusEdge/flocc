@@ -29,6 +29,8 @@ def tmp_cfg(tmp_path):
         ledger_path=tmp_path / "l.sqlite",
         agent_gh_token_file=token,
         claude_json=tmp_path / ".claude.json",
+        agent_plugins_file=tmp_path / "agent-plugins.txt",
+        installed_plugins_file=tmp_path / "installed_plugins.json",
     )
 
 

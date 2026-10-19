@@ -14,6 +14,8 @@ _PATH_KEYS = (
     "agent_gh_token_file",
     "publish_gh_token_file",
     "claude_json",
+    "agent_plugins_file",
+    "installed_plugins_file",
 )
 
 
@@ -73,6 +75,11 @@ class Config:
     steer_authors: tuple[str, ...] = ()
     # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
     claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
+    # The plugins agent sessions get; None means deploy/agent-plugins.txt in the service repo.
+    agent_plugins_file: Path | None = None
+    installed_plugins_file: Path = field(
+        default_factory=lambda: Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    )
 
     def effort_for(self, phase: str) -> str:
         if phase == "test":

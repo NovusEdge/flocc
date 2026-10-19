@@ -4,14 +4,23 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from linear_agents import grants as grants_mod
 from linear_agents import ledger
 from linear_agents.agentblock import settings_from_json
 from linear_agents.context import phase_prompt, state_dir
 from linear_agents.escalation import Escalation, scoped
+from linear_agents.gate import clear_question
 from linear_agents.ledger import Claim
 from linear_agents.linear import LinearError
 from linear_agents.publisher import review_comment
-from linear_agents.sessions import claude_argv, clean_env, session_name, trust_folders
+from linear_agents.sessions import (
+    allowed_plugins,
+    claude_argv,
+    clean_env,
+    installed_plugins,
+    session_name,
+    trust_folders,
+)
 from linear_agents.usage import context_pct, latest_usage, read_status
 
 HANDOFF_ASK = (
@@ -20,6 +29,7 @@ HANDOFF_ASK = (
 )
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
+QUESTION_WAIT_S = 7200
 PUBLISH_TRIES = 3
 POST_TRIES = 3
 _VERDICT = re.compile(
@@ -37,7 +47,16 @@ def _record_usage(rt, key: str, phase: str, event: str) -> None:
         ledger.add_usage(rt.con, key, phase, event, u.five_hour_pct, u.weekly_pct, rt.now())
 
 
-def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
+def _disabled_plugins(rt) -> tuple[str, ...]:
+    cfg = rt.cfg
+    listed = cfg.agent_plugins_file or cfg.plugin_dir.parent / "deploy" / "agent-plugins.txt"
+    allowed = allowed_plugins(listed)
+    if allowed is None:
+        return ()
+    return tuple(p for p in installed_plugins(cfg.installed_plugins_file) if p not in allowed)
+
+
+def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | None = None) -> None:
     token = rt.cfg.agent_gh_token_file
     if not token.exists() or not token.read_text().strip():
         raise LaunchError(f"{token} is missing or empty; agents get their GitHub token from it")
@@ -45,25 +64,45 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
     # Before the deletes below: the outgoing session's status file is the freshest usage reading.
     _record_usage(rt, claim.issue_key, phase, "start")
     name = session_name(claim.issue_key, phase)
+    start = claim.started_at if started_at is None else started_at
     env = clean_env(
         {
             "LINEAR_AGENTS_STATE": str(d),
             "LINEAR_AGENTS_CONFIG": str(rt.config_path),
             "LINEAR_AGENTS_PHASE": phase,
+            # Handoffs and crash relaunches of one phase share its launch budget.
+            "LINEAR_AGENTS_RUN": f"{phase}@{start}",
+            "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
+            "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS": "1",
         }
     )
     settings = settings_from_json(claim.settings_json)
+    if settings.allow:
+        grants_mod.set_block(d / "grants.json", grants_mod.parse_allow(settings.allow))
+    granted = grants_mod.for_phase(d / "grants.json", phase)
     if phase == "review":
         settings = replace(settings, model=rt.cfg.review_model)
     if settings.effort is None:
         settings = replace(settings, effort=rt.cfg.effort_for(phase))
     prompt = phase_prompt(phase, claim.issue_key, extra)
-    argv = claude_argv(rt.cfg, name, settings, prompt, env, rt.claude_exe, rt.exe)
+    argv = claude_argv(
+        rt.cfg,
+        name,
+        settings,
+        prompt,
+        env,
+        rt.claude_exe,
+        rt.exe,
+        grants=granted,
+        disabled_plugins=_disabled_plugins(rt),
+        remote_control=phase in ("impl", "fix"),
+    )
     # After everything above that can raise. The previous session's markers would be taken for
     # the new one's, and its context reading would ask the new session to hand off at once.
     markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
-    for leftover in (*_MARKERS, "status.json"):
+    for leftover in (*_MARKERS, "status.json", "compacted"):
         (d / leftover).unlink(missing_ok=True)
+    clear_question(d)
     # Both keys: for a worktree, trust may be keyed on the main checkout's root instead.
     repo = rt.cfg.repos.get(claim.repo)
     trust_folders(rt.cfg.claude_json, [claim.worktree, *([repo.path] if repo else [])])
@@ -130,6 +169,7 @@ def _pr_url(rt, claim: Claim) -> str:
 def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> None:
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
+    start = rt.now()
     usage = latest_usage(rt.cfg.state_root, rt.now())
     if usage is not None and (
         usage.five_hour_pct >= rt.cfg.five_hour_max_pct or usage.weekly_pct >= rt.cfg.weekly_max_pct
@@ -146,13 +186,13 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
             f"# Review {key}: {title}\n\nPR: {url}\n\nThe diff is in {d / 'pr.diff'}.\n\n"
             f"## Issue description, including the acceptance criteria\n\n{description}\n"
         )
-        launch(rt, claim, "review")
+        launch(rt, claim, "review", started_at=start)
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
         print(f"{key}: review not started: {exc}", file=sys.stderr)
         ledger.add_digest(rt.con, key, f"review not started ({exc}); PR: {url}", rt.now())
         ledger.update_claim(rt.con, key, state="done")
         return
-    ledger.update_claim(rt.con, key, phase="review", restarts=0, started_at=rt.now())
+    ledger.update_claim(rt.con, key, phase="review", restarts=0, started_at=start)
 
 
 def _finish_review(rt, claim: Claim) -> None:
@@ -210,9 +250,10 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             return
         if claim.base_sha is not None:
             ledger.remember_tests(rt.con, key, claim.base_sha, head)
-        launch(rt, claim, "impl")
+        start = rt.now()
+        launch(rt, claim, "impl", started_at=start)
         ledger.update_claim(
-            rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=rt.now()
+            rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=start
         )
         return
     issue = rt.linear.issue(key)
@@ -235,10 +276,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     elif result.status == "check_failed" and claim.fix_attempts == 0:
         extra = f"The check failed with:\n\n{result.detail}"
         (state_dir(rt.cfg, key) / FIX_CONTEXT).write_text(extra)
-        launch(rt, claim, "fix", extra=extra)
-        ledger.update_claim(
-            rt.con, key, phase="fix", fix_attempts=1, restarts=0, started_at=rt.now()
-        )
+        start = rt.now()
+        launch(rt, claim, "fix", extra=extra, started_at=start)
+        ledger.update_claim(rt.con, key, phase="fix", fix_attempts=1, restarts=0, started_at=start)
     elif result.status == "check_failed":
         _block(
             rt,
@@ -256,6 +296,31 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             "If the test change is wrong, revert it on the branch, then run"
             f" linear-agents release --keep-worktree {key}",
         )
+
+
+def _check_question(rt, claim: Claim, d: Path) -> None:
+    asking = d / "asking"
+    if not asking.exists() or (d / "asking-escalated").exists():
+        return
+    try:
+        q = json.loads(asking.read_text())
+        at, text = float(q["at"]), str(q.get("question", ""))
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if rt.now() - at < QUESTION_WAIT_S:
+        return
+    esc = scoped(
+        Escalation(
+            2,
+            "question",
+            f"Unanswered question in the Claude app: {text}",
+            "Answer it in the Claude app, or reply on this issue",
+            waiting=True,
+        ),
+        claim.issue_key,
+    )
+    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
+    (d / "asking-escalated").touch()
 
 
 def supervise(rt, claim: Claim) -> None:
@@ -303,8 +368,15 @@ def supervise(rt, claim: Claim) -> None:
         _record_usage(rt, key, claim.phase, "end")
         ledger.update_claim(rt.con, key, state="timed_out")
         return
+    _check_question(rt, claim, d)
     pct = context_pct(read_status(d) or {})
     requested = d / "handoff-requested"
-    if pct is not None and pct >= rt.cfg.context_restart_pct and not requested.exists():
+    # One compaction first: the handoff applies only once the session has compacted.
+    if (
+        pct is not None
+        and pct >= rt.cfg.context_restart_pct
+        and (d / "compacted").exists()
+        and not requested.exists()
+    ):
         rt.sessions.send(name, HANDOFF_ASK.format(pct=pct))
         requested.touch()
