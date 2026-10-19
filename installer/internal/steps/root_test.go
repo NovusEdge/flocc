@@ -26,7 +26,7 @@ func scriptedSecrets(e *Env, s *answers.Secrets) {
 
 func TestPackagesCheckNamesMissingTools(t *testing.T) {
 	f := host.NewFake()
-	for _, tool := range []string{"git", "tmux", "curl", "node"} {
+	for _, tool := range []string{"git", "tmux", "curl", "node", "make", "cc"} {
 		f.On("sh -c command -v "+tool, 0, "/usr/bin/"+tool)
 	}
 	done, detail, _ := Packages{}.Check(context.Background(), testEnv(t, f))
@@ -37,7 +37,7 @@ func TestPackagesCheckNamesMissingTools(t *testing.T) {
 
 func TestPackagesApplyInstallsOnlyMissingTools(t *testing.T) {
 	f := host.NewFake().On("pacman -Syu --noconfirm --needed github-cli nodejs", 0, "")
-	for _, tool := range []string{"git", "tmux", "curl"} {
+	for _, tool := range []string{"git", "tmux", "curl", "make", "cc"} {
 		f.On("sh -c command -v "+tool, 0, "/usr/bin/"+tool)
 	}
 	e := testEnv(t, f)
@@ -55,7 +55,9 @@ func TestPackagesApplyAddsGHRepoOnRHELOnly(t *testing.T) {
 		f := host.NewFake().
 			On("dnf install -y dnf-plugins-core", 0, "").
 			On("dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo", 0, "").
-			On("dnf install -y git tmux curl gh nodejs", 0, "")
+			On("dnf install -y git tmux curl gh nodejs", 0, "").
+			On("sh -c command -v make", 0, "/usr/bin/make").
+			On("sh -c command -v cc", 0, "/usr/bin/cc")
 		e := testEnv(t, f)
 		e.Distro = c.distro
 		if err := (Packages{}).Apply(context.Background(), e); err != nil {
@@ -64,6 +66,21 @@ func TestPackagesApplyAddsGHRepoOnRHELOnly(t *testing.T) {
 		if f.Ran("dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo") != c.repo {
 			t.Fatalf("%s: repo added = %v", c.distro.ID, !c.repo)
 		}
+	}
+}
+
+func TestPackagesInstallsBuildToolsWhenMissing(t *testing.T) {
+	f := host.NewFake().On("pacman -Syu --noconfirm --needed make gcc", 0, "")
+	for _, tool := range []string{"git", "tmux", "curl", "gh", "node"} {
+		f.On("sh -c command -v "+tool, 0, "/usr/bin/"+tool)
+	}
+	e := testEnv(t, f)
+	e.Distro = host.Distro{ID: "arch", Manager: host.Pacman}
+	if err := (Packages{}).Apply(context.Background(), e); err != nil {
+		t.Fatalf("%v; calls %v", err, f.Calls)
+	}
+	if !f.Ran("pacman -Syu --noconfirm --needed make gcc") {
+		t.Fatalf("build tools not installed; calls %v", f.Calls)
 	}
 }
 

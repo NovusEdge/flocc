@@ -8,7 +8,8 @@ import (
 	"github.com/NovusEdge/linear-agents/installer/internal/host"
 )
 
-var tools = []string{"git", "tmux", "curl", "gh", "node"}
+// make and cc: repos' ./setup builds native code (nimblefox compiles pgvector).
+var tools = []string{"git", "tmux", "curl", "gh", "node", "make", "cc"}
 
 // pkgName maps a tool to its package; only missing tools are installed, since reinstalling
 // curl on RHEL 9 conflicts with its default curl-minimal.
@@ -16,6 +17,8 @@ func pkgName(m host.Manager, tool string) string {
 	switch {
 	case tool == "node":
 		return "nodejs"
+	case tool == "cc":
+		return "gcc"
 	case tool == "gh" && m == host.Pacman:
 		return "github-cli"
 	}
