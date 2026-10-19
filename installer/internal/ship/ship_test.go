@@ -160,6 +160,26 @@ func TestReadAllowlistSkipsCommentsAndBlanks(t *testing.T) {
 	}
 }
 
+func TestAllowlistWithOnlyCommentsShipsNoPlugins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-plugins.txt")
+	if err := os.WriteFile(path, []byte("# nothing yet\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	allow, err := readAllowlist(path)
+	if err != nil || allow == nil || len(allow) != 0 {
+		t.Fatalf("want a non-nil empty list, got %#v %v", allow, err)
+	}
+	writeJSON(t, filepath.Join(dir, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"docket@NovusEdge": true}})
+	writeJSON(t, filepath.Join(dir, "plugins/known_marketplaces.json"), map[string]any{
+		"NovusEdge": map[string]any{"source": map[string]string{"source": "github", "repo": "NovusEdge/docket"}},
+	})
+	p, err := planPlugins(dir, allow, func(string) (bool, error) { return false, nil })
+	if err != nil || len(p.List.Plugins) != 0 {
+		t.Fatalf("want no plugins, got %+v %v", p.List, err)
+	}
+}
+
 func TestResolveTargetPlainIsPassedThrough(t *testing.T) {
 	d, err := resolveTarget(context.Background(), "la-smoke", "/none", nil, waiter{})
 	if err != nil || d.SSH != "la-smoke" || len(d.Opts) != 0 {

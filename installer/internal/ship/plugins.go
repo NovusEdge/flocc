@@ -19,7 +19,7 @@ type planned struct {
 }
 
 // readAllowlist returns the plugin names in path; a missing file returns nil, which planPlugins
-// treats as "no allowlist".
+// treats as "no allowlist". An existing file with no names returns an empty, non-nil slice.
 func readAllowlist(path string) ([]string, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -28,7 +28,8 @@ func readAllowlist(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	// Non-nil even when empty: a file with only comments means no plugins, not no allowlist.
+	out := []string{}
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "#") {
