@@ -56,6 +56,11 @@ def test_bad_blocks(line, msg):
         parse_settings(f"```agent\n{line}\n```\n")
 
 
+def test_a_huge_allow_number_is_a_block_error():
+    with pytest.raises(BlockError, match="launches"):
+        parse_settings(f"```agent\nallow: launches {'9' * 5000}\n```\n")
+
+
 def test_unclosed_block_is_an_error():
     with pytest.raises(BlockError, match="closing"):
         parse_settings("```agent\nmodel: opus\n\n## Acceptance criteria\n\n- works\n")

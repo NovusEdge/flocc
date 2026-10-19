@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _LINE = re.compile(r"^[ \t]*allow:[ \t]*(.+)$", re.IGNORECASE | re.MULTILINE)
-_NUMBER = re.compile(r"[0-9]+")
+_NUMBER = re.compile(r"[0-9]{1,6}")
 
 
 class GrantError(ValueError):

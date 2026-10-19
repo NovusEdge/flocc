@@ -28,6 +28,12 @@ def test_parse_allow_errors_name_the_item(bad):
     assert bad in str(exc.value)
 
 
+@pytest.mark.parametrize("word", ["launches", "fix-rounds"])
+def test_a_huge_number_is_a_grant_error_not_a_plain_value_error(word):
+    with pytest.raises(GrantError, match=word):
+        parse_allow(f"{word} {'9' * 5000}")
+
+
 def test_allow_lines_only_at_line_start():
     body = "thanks!\n  Allow: launches 4\nplease allow: agent x\nallow:agent code-mapper"
     assert allow_lines(body) == ["launches 4", "agent code-mapper"]
