@@ -29,8 +29,9 @@ asks me in the Claude app.
 - A session compacts at most once; after that the existing handoff takes over.
 - A blocking decision reaches me as a question in the Claude app; an unanswered one also becomes an
   escalation after two hours.
-- `just ship` installs only an allowlisted set of plugins on a host, agent sessions load only
-  those, and a fresh host needs no interactive step to enable Remote Control.
+- `just ship` installs only an allowlisted set of plugins on a host, and agent sessions load only
+  those.
+- Only implementer and fix sessions register with Remote Control.
 - A finished run's Claude Code scratchpads are gone, and nothing in `/tmp/claude-<uid>` outlives
   two days untouched.
 
@@ -236,9 +237,9 @@ A missing grant never stops a run; it makes it slower or asks me.
 
 ## Questions to the owner
 
-Sessions run with Remote Control, and the installer turns on "Push when actions required", so an
-`AskUserQuestion` in a host session shows up in the Claude app with a push notification and I can
-answer it there. Agents use it for decisions they cannot go on without (the cases that were
+Implementer and fix sessions run with Remote Control, and the installer turns on "Push when actions
+required", so an `AskUserQuestion` in one of them shows up in the Claude app with a push
+notification and I can answer it there. Agents use it for decisions they cannot go on without (the cases that were
 `--tier 2 --waiting` escalations); a reversible choice still goes through `escalate` with a
 default, so the run does not stall.
 
@@ -280,13 +281,18 @@ product and design plugins are left out. superpowers' `subagent-driven-developme
 the gate refuses those, and the implementer skill states the catalogue route instead. If that
 proves noisy, superpowers comes off the list.
 
-## No-TUI Remote Control
+## Remote Control for implementer and fix sessions only
 
-The Claude step of the installer writes `remoteControlAtStartup: true` into the service user's
-`~/.claude/settings.json` with the push settings it already writes, and the login note drops its
-"Accept Enable Remote Control" line. The documentation does not say whether this skips the
-one-time consent prompt; the check is a fresh VM from images:debian/13 shipped with
-`--skip-interactive` after a login, then one launched session showing in the Claude app.
+Every session started with `--remote-control` registers in the Claude app, and the app announces
+each one; with a tester, an implementer and a reviewer per issue, plus restarts, that was too many
+notifications on the first night. `claude_argv` passes `--remote-control <name>` only for the
+`impl` and `fix` phases, the long ones I watch and steer and the ones that ask blocking
+questions. Tester and reviewer sessions run without it; `just attach` still shows them, and a
+tester that needs a decision escalates with `--waiting` instead of asking.
+
+`remoteControlAtStartup` is not used: it would connect every session on the host, the tester and
+reviewer included. The one-time "Enable Remote Control" consent stays a step of the first
+interactive login.
 
 ## Scratchpad cleanup
 
@@ -311,7 +317,6 @@ on them:
 - Whether `maxTurns`, `effort` and `background` are honoured for plugin agents (only `hooks`,
   `mcpServers` and `permissionMode` are documented as ignored).
 - How `enabledPlugins` from `--settings` merges with user settings.
-- Whether `remoteControlAtStartup` skips the consent prompt.
 - Whether an `AskUserQuestion` in a Remote Control session sends a push to my phone.
 - The exact spelling of `onFailure`; the gate's own exit 2 does not depend on it.
 - Whether parallel `PreToolUse` calls run concurrently; the `flock` makes the gate correct either
@@ -336,13 +341,14 @@ on them:
   including an unknown item; launch grants scoped to a phase; a comment grant winning over the
   block; a rerun starting without the old comment grants.
 - `claude_argv`: the new environment, deny rules, `enabledPlugins` from the allowlist,
-  `LINEAR_AGENTS_RUN`, and `disableWorkflows` lifted only by a workflow grant.
+  `LINEAR_AGENTS_RUN`, `disableWorkflows` lifted only by a workflow grant, and
+  `--remote-control` only for `impl` and `fix`.
 - Supervisor: no handoff before `compacted`; handoff at the threshold after it; `compacted`
   cleared at launch.
 - Cleanup: recorded scratchpads removed when a claim leaves `running`, not while it runs, and never
   a path outside a full session scratch directory.
 - `linear-agents status`: launches against budget for each live claim.
 - Installer: `planPlugins` with the allowlist, including a listed plugin that is not enabled; the
-  2.1.295 minimum; `remoteControlAtStartup`; the tmpfiles step.
+  2.1.295 minimum; the tmpfiles step.
 - On the host, once: a real implementer run that launches `task-implementer` and `wave-reviewer`,
   a refused general-purpose launch in `launches.jsonl`, and the checks under Unconfirmed.

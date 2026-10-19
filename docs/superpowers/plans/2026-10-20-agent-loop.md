@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Host agent sessions delegate only to catalogue subagents within per-run, per-phase budgets enforced by a fail-closed gate, take grants from the agent block or owner comments, ask blocking questions in the Claude app, compact once before handoff, load an allowlisted plugin set, enable Remote Control without the TUI and clean up their scratchpads.
+**Goal:** Host agent sessions delegate only to catalogue subagents within per-run, per-phase budgets enforced by a fail-closed gate, take grants from the agent block or owner comments, ask blocking questions in the Claude app, compact once before handoff, load an allowlisted plugin set, connect to Remote Control only in the implementer and fix phases, and clean up their scratchpads.
 
 **Architecture:** A pure decision module (`gate.py`) holds the catalogue budgets and rules; a thin CLI wraps it as Claude Code hooks (`gate`, `gate --stopped`, `gate --answered`, `session-start`) that read and append `<state_dir>/launches.jsonl` under a `flock`. Grants live in `<state_dir>/grants.json` (`grants.py`), written by the supervisor from the agent block and by `forward_comments` from owner comments, and resolved per phase. `claude_argv` and `launch()` add the environment, deny rules and plugin overrides; the supervisor gates the handoff on a compaction marker and escalates stale questions; the installer gains the plugin allowlist, settings and a tmpfiles step.
 
@@ -1247,7 +1247,9 @@ In `plugin/skills/escalate/SKILL.md`, add a section after the tier table:
 ## Asking the owner directly
 
 For a decision you cannot go on without (what tier 2 `--waiting` was for), ask with
-`AskUserQuestion`: the owner gets a push in the Claude app and answers there. First record it:
+`AskUserQuestion`: the owner gets a push in the Claude app and answers there. Only implementer and
+fix sessions are connected to the app; a tester or reviewer escalates with `--tier 2 --waiting`
+instead. First record it:
 `linear-agents escalate --tier 3 --cause asked:<topic> --summary '<the question>'`. Give two to
 four options with your recommendation first. If nobody answers within two hours the service
 escalates it again. For a reversible choice, do not ask: escalate with `--default` and carry on.
@@ -1287,7 +1289,7 @@ git commit -s -m "Ship the subagent catalogue, gate hooks and skill changes in t
 - Produces:
   - `Config.agent_plugins_file: Path | None = None` (None → `plugin_dir.parent / "deploy" / "agent-plugins.txt"`), `Config.installed_plugins_file: Path` (default `~/.claude/plugins/installed_plugins.json`); both in `_PATH_KEYS`.
   - `installed_plugins(path: Path) -> tuple[str, ...]`; `allowed_plugins(path: Path) -> tuple[str, ...] | None`
-  - `claude_argv(..., grants: Grants = Grants(), disabled_plugins: tuple[str, ...] = ())`
+  - `claude_argv(..., grants: Grants = Grants(), disabled_plugins: tuple[str, ...] = (), remote_control: bool = True)`; `launch()` passes `remote_control=phase in ("impl", "fix")`
   - `launch(rt, claim, phase, extra="", started_at: float | None = None)`; environment adds `LINEAR_AGENTS_RUN=<phase>@<start>`, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1`.
   - `QUESTION_WAIT_S = 7200`
 
@@ -1337,6 +1339,12 @@ def test_unlisted_plugins_are_disabled():
     assert s["enabledPlugins"] == {"glowup@glowup": False}
 
 
+def test_remote_control_can_be_left_off():
+    assert "--remote-control" in argv_with()
+    argv = argv_with(remote_control=False)
+    assert "--remote-control" not in argv and argv[argv.index("--name") + 1] == "NF-1"
+
+
 def test_installed_and_allowed_plugin_files(tmp_path):
     inst = tmp_path / "installed_plugins.json"
     inst.write_text(json.dumps({"plugins": {"a@m": [{"scope": "user"}], "b@m": []}}))
@@ -1369,6 +1377,16 @@ def test_phase_sessions_share_one_run_id_across_relaunches(rt):
     rt.sessions.alive_names.clear()
     supervise(rt, current(rt))  # a crash relaunch of the same phase
     assert env_of(rt.sessions.started[-1][1])["LINEAR_AGENTS_RUN"] == f"impl@{started}"
+
+
+def test_only_implementer_and_fix_sessions_use_remote_control(rt):
+    add(rt)
+    supervise(rt, current(rt))  # tester relaunch
+    assert "--remote-control" not in rt.sessions.started[-1][1]
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt)
+    supervise(rt, current(rt))  # implementer
+    assert "--remote-control" in rt.sessions.started[-1][1]
 
 
 def test_launch_records_block_grants_without_beating_comment_grants(rt):
@@ -1500,6 +1518,27 @@ In `claude_argv`, add parameters `grants: Grants = Grants()` and `disabled_plugi
         session_settings["enabledPlugins"] = {p: False for p in disabled_plugins}
 ```
 
+and replace the fixed `"--remote-control", name,` pair in the argv list with a conditional, keeping `--name`:
+
+```python
+    argv = [
+        "/usr/bin/env",
+        "-i",
+        *(f"{k}={v}" for k, v in env.items()),
+        "/bin/sh",
+        "-c",
+        _WRAPPER,
+        str(cfg.agent_gh_token_file),
+        claude_exe,
+        prompt,
+        # The Claude app announces every Remote Control session; only the long phases get one.
+        *(["--remote-control", name] if remote_control else []),
+        "--name",
+        name,
+        # ...the remaining flags unchanged
+    ]
+```
+
 `src/linear_agents/supervisor.py` (imports at the top: `time` is not needed; add `from linear_agents import grants as grants_mod`, `from linear_agents.gate import clear_question`, and `allowed_plugins`, `installed_plugins` from `linear_agents.sessions`):
 
 ```python
@@ -1536,7 +1575,7 @@ In `launch`, add `started_at: float | None = None` and:
     granted = grants_mod.for_phase(d / "grants.json", phase)
 ```
 
-pass `grants=granted, disabled_plugins=_disabled_plugins(rt)` to `claude_argv`; change the leftover delete to `for leftover in (*_MARKERS, "status.json", "compacted"):` and call `clear_question(d)` right after it.
+pass `grants=granted, disabled_plugins=_disabled_plugins(rt), remote_control=phase in ("impl", "fix")` to `claude_argv`; change the leftover delete to `for leftover in (*_MARKERS, "status.json", "compacted"):` and call `clear_question(d)` right after it.
 
 At the three phase transitions (`_finish_phase` test→impl, `_finish_phase` check→fix, `_start_review`), compute `start = rt.now()` once, pass `started_at=start` to `launch`, and use `started_at=start` in the matching `ledger.update_claim`.
 
@@ -1978,12 +2017,6 @@ func TestMinimumClaudeIsTheGateVersion(t *testing.T) {
 	}
 }
 
-func TestPushSettingsTurnOnRemoteControlAtStartup(t *testing.T) {
-	out, err := mergePushSettings(nil)
-	if err != nil || !strings.Contains(string(out), `"remoteControlAtStartup": true`) {
-		t.Fatalf("%s %v", out, err)
-	}
-}
 ```
 
 `installer/internal/steps/scratch_test.go`:
@@ -2094,7 +2127,7 @@ func readAllowlist(path string) ([]string, error) {
 	plan, err := planPlugins(configDir, allow, private)
 ```
 
-`installer/internal/steps/claude.go`: `var minClaude = [3]int{2, 1, 295}` with the comment "The gate hook's onFailure setting needs this version."; the check message `"needs 2.1.295"`; add `"remoteControlAtStartup": true` to `pushSettings` and change its comment to "the /config push toggles, and Remote Control for every session without the consent prompt"; drop step 2 ("Accept Enable Remote Control") from `loginNote` and renumber the rest. Update `TestClaudeCheck` or any test that asserts the old version text.
+`installer/internal/steps/claude.go`: `var minClaude = [3]int{2, 1, 295}` with the comment "The gate hook's onFailure setting needs this version."; the check message `"needs 2.1.295"`. Leave `pushSettings` and `loginNote` as they are: `remoteControlAtStartup` would connect every session, and the consent step stays in the login. Update `TestClaudeCheck` or any test that asserts the old version text.
 
 `installer/internal/steps/scratch.go`:
 
@@ -2254,5 +2287,5 @@ Then check each Unconfirmed item on the host and record the answer and date in t
 2. Workflow input: in a session with a `workflow` grant, start a workflow and read the logged `what` in `launches.jsonl`; if empty, record which field carries the name and update `subject()`.
 3. `maxTurns` / `effort` honoured for plugin agents: run `linear-agents:source-finder` once and check its transcript stays under 20 turns.
 4. `enabledPlugins` merge: run `/plugin` in a host session and confirm glowup is disabled.
-5. `AskUserQuestion` push: in a host session, ask a question and confirm the phone gets a push.
-6. `remoteControlAtStartup`: on a fresh images:debian/13 VM, ship with `--skip-interactive` after a login and confirm a launched session appears in the Claude app without a prompt.
+5. `AskUserQuestion` push: in an implementer session, ask a question and confirm the phone gets a push.
+6. Remote Control scope: confirm a tester session does not appear in the Claude app and the implementer that follows does.
