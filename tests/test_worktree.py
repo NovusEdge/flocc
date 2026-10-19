@@ -90,6 +90,17 @@ def test_setup_gets_a_throwaway_cache_beside_the_worktree(origin, tmp_path, body
     assert not cache.exists()
 
 
+def test_shared_cache_is_kept_for_the_next_setup(origin, tmp_path):
+    root = tmp_path / "wt"
+    push_setup(origin, RECORD)
+    prepare_worktree(RepoConfig(origin), root, "NF-3", shared_uv_cache=True)
+    cache = root.resolve() / ".uv-cache"
+    assert (root / "seen.txt").read_text().split() == [str(cache), "hardlink"]
+    push_setup(origin, f'test -f "$UV_CACHE_DIR/pkg"\n{RECORD}')
+    prepare_worktree(RepoConfig(origin), root, "NF-4", shared_uv_cache=True)
+    assert (cache / "pkg").exists()
+
+
 def test_cache_is_removed_when_setup_times_out(origin, tmp_path):
     push_setup(origin, 'mkdir -p "$UV_CACHE_DIR"; sleep 30')
     with pytest.raises(subprocess.TimeoutExpired):

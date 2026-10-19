@@ -190,7 +190,11 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     cause = f"{issue.key}:prepare"
     try:
         path, branch, base = prepare_worktree(
-            cfg.repos[repo], cfg.worktree_root, issue.key, setup_timeout_s=cfg.setup_timeout_s
+            cfg.repos[repo],
+            cfg.worktree_root,
+            issue.key,
+            setup_timeout_s=cfg.setup_timeout_s,
+            shared_uv_cache=cfg.shared_uv_cache,
         )
     except (subprocess.SubprocessError, OSError) as exc:  # nothing is claimed yet
         # A tier 2 escalation labels and comments every time it is sent, and a broken ./setup

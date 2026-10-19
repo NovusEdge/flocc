@@ -60,6 +60,9 @@ class Config:
     check_timeout_s: int = 1800
     setup_timeout_s: int = 900
     min_free_disk_gb: float = 2.0
+    # One uv cache under worktree_root kept across setups, for hosts whose disk can hold it; the
+    # default throwaway cache per setup downloads every package again each time.
+    shared_uv_cache: bool = False
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     commit_trailer: bool = True
     # Hosts sharing a Linear team each map only some repos, so an issue for another host's repo
