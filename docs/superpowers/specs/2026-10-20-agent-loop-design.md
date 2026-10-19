@@ -35,7 +35,8 @@ stays the default; a subagent is the exception.
 
 ## Evidence
 
-From 21 days of my transcripts (251 sessions, about 2,265 subagent calls):
+From 21 days of my transcripts (251 sessions, about 2,265 subagent calls); the full, dated
+analysis is `docs/research/2026-10-20-dev-flow-patterns.md`:
 
 - Prompts are already templates. Half point at a contract or brief file, and 647 forbid nested
   spawning. Recurring prompts: per-task implementer, per-task reviewer, fix re-reviewer, a tester
@@ -57,11 +58,13 @@ it.
 
 | Agent | Model | Tools | Used for |
 |---|---|---|---|
-| `source-finder` | Haiku | WebSearch, WebFetch | Finding sources on a library, API or service before relying on it or adding it |
-| `source-reader` | Sonnet | WebFetch, Read | Reading the sources `source-finder` returned and answering a stated question |
-| `code-mapper` | Sonnet | Read, Grep, Glob, read-only Bash | Mapping where something lives in a large repo; returns paths and a short account |
-| `task-implementer` | Sonnet | Read, Edit, Write, Bash | Implementing one task from the implementer's plan, with tests first |
-| `task-reviewer` | Opus | Read, Grep, Glob, read-only Bash | Reviewing one implemented task against its task text and the acceptance criteria |
+| `source-finder` | Haiku | WebSearch, WebFetch | Finding dated, URL-cited sources on a library, API or service; no conclusions |
+| `source-reader` | Sonnet | WebSearch, WebFetch, Read | Reading what `source-finder` returned and answering the stated question, with citations |
+| `code-mapper` | Sonnet | Read, Grep, Glob, read-only Bash | Mapping where something lives in a large repo before planning; returns paths and a short account |
+| `plan-reviewer` | Opus | Read, Grep, Glob | One adversarial read of the implementer's plan against the acceptance criteria and the tester's tests |
+| `task-implementer` | Sonnet | Read, Edit, Write, Bash | Implementing one task from its brief file; also makes the fixes a review asks for |
+| `wave-reviewer` | Opus | Read, Grep, Glob, read-only Bash, `git diff` | Reviewing one wave of tasks against their briefs: requirements first, then quality; writes findings, edits nothing |
+| `fix-rereviewer` | Sonnet | Read, `git diff`, one focused test run | Verdicting each finding of a fix round against the fix diff, nothing else |
 
 The tester and reviewer phases are already separate sessions, so the catalogue has no tester or
 whole-branch reviewer agent.
@@ -74,12 +77,32 @@ session (a handoff starts a new count).
 | Phase | Allowed agents | Launches | Workflows |
 |---|---|---|---|
 | test | `source-finder`, `source-reader` | 2 | none |
-| impl | `task-implementer` (at most 4 running at once), `task-reviewer`, `code-mapper`, `source-finder`, `source-reader` | 6 | none |
+| impl | `task-implementer` (at most 4 running at once), `wave-reviewer`, `fix-rereviewer`, `plan-reviewer`, `code-mapper`, `source-finder`, `source-reader` | 10 | none |
 | review | none | 0 | none |
 
-The implementer skill changes to match my pattern: implement each task through
-`task-implementer`, then `task-reviewer`; on a failed review, one fix by the same route. A second
-fix round needs a grant.
+Ten covers a typical run in my pattern: a plan review, four task implementers in one or two
+waves, a review per wave, one fix and its re-review, and a lookup or two.
+
+## Working style the agents carry
+
+My way of working is specific, and the catalogue and skills encode it rather than leaving it to
+the agent's defaults. Each rule below comes from the transcript analysis; the right-hand column
+says where it lives.
+
+| Rule | From | Lives in |
+|---|---|---|
+| Sonnet implements, Opus reviews; the implementer makes every edit, a reviewer only writes findings | "subagent driven using sonnet pls" (58 messages), "we always want the implementr model to do the edits review only generates a review" | Agent files' `model` and `tools` (reviewers get no Edit or Write) |
+| Review per wave, not per task | "opus review agent on task waves if possible not on each task" | `wave-reviewer` description; implementer skill |
+| One fix round, then escalate | "how many re-reviews and fix passes bro", "one fix round max" | Implementer skill; `fix-rounds` grant |
+| A plan gets one independent Opus read before building | "opus review the spec then we do planning" (45 messages) | `plan-reviewer`; implementer skill: plan, review, then build |
+| Research is a pair: Haiku finds dated, cited sources, Sonnet reads them | "haiku for finding sources, sonnet for reading" | `source-finder`, `source-reader` prompts, which also carry today's date |
+| Subagent prompts point at a brief file, not a paraphrase | 1,145 of 2,265 prompts point at a contract or brief | Implementer skill writes each task's brief to `<state_dir>/briefs/task-N.md` and passes the path |
+| No subagent spawns its own | "please make it so that agents dont spawn more subagents" | Spawn depth 1, the gate, and a line in every agent file |
+| Do small work yourself; don't delegate or ask about what you can just do | "why didnt you just write it yourself?", "you can add tests-amended yourself why do you gotta ask me?" | Implementer skill: one-file or few-line changes are done inline; `task-implementer` is for plan tasks |
+| No heavy local runs from subagents (Unity, long builds, training) | "NEVER let subagetns run unity shit" | Agent files' prompts; `task-implementer` runs only the repo's focused tests |
+| Close agents when done; nothing idles in the background | "shut down the agents that are done", "check for any other shit that's idle" | Only `source-finder` and `source-reader` may run in the background; implementer skill stops finished agents |
+| Fable only when I ask, Haiku only for finding sources, no non-Claude models | "pls use fable only when i explicitly ask for it", "bruh dont do codex reviews" | Agent files' pinned models with `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; anything else needs a grant |
+| A workflow is for a big plan, never for a single check | "lets not do workflow for every small thing" | Workflows off; `workflow sdd-waves` grant |
 
 ## Enforcement
 
