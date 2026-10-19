@@ -65,7 +65,11 @@ def free_disk_gb(path: Path) -> float:
 
 
 def prepare_worktree(
-    repo: RepoConfig, worktree_root: Path, key: str, setup_timeout_s: float = 900
+    repo: RepoConfig,
+    worktree_root: Path,
+    key: str,
+    setup_timeout_s: float = 900,
+    shared_uv_cache: bool = False,
 ) -> tuple[Path, str, str]:
     branch = f"agent/{key.lower()}"
     worktree_root.mkdir(parents=True, exist_ok=True)
@@ -107,7 +111,9 @@ def prepare_worktree(
         # A kept worktree may hold the previous run's uncommitted work; only what setup adds counts.
         before = _status(path)
         # It runs under the tick lock, which every later tick waits on.
-        code, out = _run_setup(path, worktree_root.resolve() / f".uv-cache-{key}", setup_timeout_s)
+        # The shared name must not match reap_worktrees' ".uv-cache-*" glob, or every tick deletes it.
+        cache = worktree_root.resolve() / (".uv-cache" if shared_uv_cache else f".uv-cache-{key}")
+        code, out = _run_setup(path, cache, setup_timeout_s, keep_cache=shared_uv_cache)
         if code is None:
             raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr=out)
         if code != 0:
@@ -122,13 +128,17 @@ def prepare_worktree(
     return path, branch, base
 
 
-def _run_setup(path: Path, cache: Path, timeout_s: float) -> tuple[int | None, str]:
-    # A cache per setup, deleted after it, because uv's shared ~/.cache/uv grew to 5.6 GB on a 10 GB
-    # disk and cannot be pruned while any session's `uv run` holds its lock (UV_LOCK_TIMEOUT does not
-    # shorten that wait). It sits beside the worktree so uv can still link rather than copy. The
-    # venv survives the deletion because hardlinked files keep their data; uv's symlink mode would
-    # not, so the mode is pinned.
+def _run_setup(
+    path: Path, cache: Path, timeout_s: float, keep_cache: bool = False
+) -> tuple[int | None, str]:
+    # By default a cache per setup, deleted after it, because uv's shared ~/.cache/uv grew to 5.6 GB
+    # on a 10 GB disk and cannot be pruned while any session's `uv run` holds its lock
+    # (UV_LOCK_TIMEOUT does not shorten that wait). It sits beside the worktree so uv can still link
+    # rather than copy. The venv survives the deletion because hardlinked files keep their data;
+    # uv's symlink mode would not, so the mode is pinned.
     env = {**os.environ, "UV_CACHE_DIR": str(cache), "UV_LINK_MODE": "hardlink"}
+    if keep_cache:
+        return run_bounded(["./setup"], path, timeout_s, env)
     shutil.rmtree(cache, ignore_errors=True)
     try:
         return run_bounded(["./setup"], path, timeout_s, env)

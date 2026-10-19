@@ -126,6 +126,11 @@ Three things limit it:
   changes, new files included, keeps its worktree. A removed worktree is recreated from the kept
   branch if the issue is rerun.
 
+On a host with room to spare, `shared_uv_cache = true` replaces the throwaway caches with one
+`<worktree_root>/.uv-cache` kept across setups, so only the first setup of a dependency set
+downloads it. Nothing prunes that cache; `min_free_disk_gb` still holds new starts when it fills
+the disk.
+
 The cache change covers uv inside `./setup` only. Sessions still use `~/.cache/uv`, and the npm,
 pnpm, pip and mise caches are not managed.
 

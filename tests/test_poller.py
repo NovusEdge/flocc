@@ -80,7 +80,7 @@ class PollLinear:
 
 @pytest.fixture
 def rt(tmp_cfg, tmp_path, monkeypatch):
-    def fake_prepare(repo, root, key, setup_timeout_s):
+    def fake_prepare(repo, root, key, setup_timeout_s, shared_uv_cache):
         path = root / key
         path.mkdir(parents=True, exist_ok=True)
         return path, f"agent/{key.lower()}", "sha0"
@@ -422,7 +422,7 @@ def test_launch_failure_leaves_the_issue_unclaimed(rt):
 
 
 def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
-    def failing(repo, root, key, setup_timeout_s):
+    def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.CalledProcessError(1, ["./setup"], stderr="setup: npm is missing\n")
 
     monkeypatch.setattr("linear_agents.poller.prepare_worktree", failing)
@@ -434,7 +434,7 @@ def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
 
 
 def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
-    def slow(repo, root, key, setup_timeout_s):
+    def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
 
     monkeypatch.setattr("linear_agents.poller.prepare_worktree", slow)
@@ -678,8 +678,11 @@ def test_reap_keeps_a_timed_out_worktree_holding_only_an_untracked_file(origin, 
 def test_reap_clears_caches_a_killed_setup_left(rt):
     stale = rt.cfg.worktree_root / ".uv-cache-NF-1"
     (stale / "wheels").mkdir(parents=True)
+    shared = rt.cfg.worktree_root / ".uv-cache"
+    (shared / "wheels").mkdir(parents=True)
     reap_worktrees(rt)
     assert not stale.exists()
+    assert shared.exists()
 
 
 def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monkeypatch):
