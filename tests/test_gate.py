@@ -1,4 +1,20 @@
-from linear_agents.gate import BUDGETS, decide
+import json
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
+from linear_agents.gate import (
+    BUDGETS,
+    LOG,
+    Budget,
+    clear_question,
+    decide,
+    launches_used,
+    note_question,
+    record_session,
+    record_stop,
+    run_gate,
+)
 from linear_agents.grants import Grants
 
 NO_GRANTS = Grants()
@@ -86,3 +102,97 @@ def test_repeat_refusal_is_keyed_by_rule_and_agent():
     assert "already escalated" in again.reason and "escalate --tier" not in again.reason
     other = d(agent("code-mapper"), launched=99, refused={("launches", "task-implementer")})
     assert "linear-agents escalate" in other.reason
+
+
+def test_only_grantable_refusals_offer_escalation():
+    assert "linear-agents escalate" not in d(agent(), running=BUDGETS["impl"].running).reason
+    assert "cannot be granted" in d(agent(model="opus")).reason
+    assert "linear-agents escalate" in d(agent(), launched=99).reason
+    assert "linear-agents escalate" in d(agent("code-mapper"), phase="test").reason
+
+
+def test_budgets_are_pinned():
+    assert BUDGETS["test"] == Budget(("source-finder", "source-reader"), 2, 2)
+    assert BUDGETS["impl"] == Budget(
+        (
+            "task-implementer",
+            "wave-reviewer",
+            "fix-rereviewer",
+            "plan-reviewer",
+            "code-mapper",
+            "source-finder",
+            "source-reader",
+        ),
+        10,
+        4,
+    )
+    assert BUDGETS["fix"] == Budget(("task-implementer", "fix-rereviewer"), 2, 1)
+    assert BUDGETS["review"] == Budget((), 0, 0)
+
+
+def events(state):
+    out = []
+    for line in (state / LOG).read_text().splitlines():
+        try:
+            out.append(json.loads(line)["event"])
+        except ValueError:
+            continue
+    return out
+
+
+def test_run_gate_logs_and_counts_per_run(tmp_path):
+    for _ in range(BUDGETS["fix"].launches):
+        assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
+        record_stop(tmp_path, "fix@1", 0.0, "linear-agents:task-implementer")
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0)
+    assert run_gate(agent(), tmp_path, "fix", "fix@2", 0.0) is None, "a new run starts a new count"
+    assert launches_used(tmp_path, "fix@1") == 2
+
+
+def test_running_resets_at_session_start_not_at_compaction(tmp_path):
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0)  # running limit 1
+    record_session(tmp_path, "fix@1", 1.0)
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 2.0) is None
+
+
+def test_a_workflow_stop_does_not_free_a_catalogue_slot(tmp_path):
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
+    record_stop(tmp_path, "fix@1", 1.0, "some-workflow-agent")
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 2.0)
+
+
+def test_ignored_tools_are_not_logged(tmp_path):
+    assert run_gate({"tool_name": "TaskList", "tool_input": {}}, tmp_path, "impl", "r", 0.0) is None
+    assert not (tmp_path / LOG).exists()
+
+
+def test_torn_line_is_skipped_and_the_next_entry_kept(tmp_path):
+    (tmp_path / LOG).write_text('{"at": 0, "run": "fix@1", "event": "launch"}\n{"at": 1, "ru')
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 2.0)  # 1 running already
+    assert events(tmp_path)[-1] == "refused"
+
+
+def _race(state: str) -> bool:
+    return run_gate(agent(), Path(state), "fix", "fix@1", 0.0) is None
+
+
+def test_processes_racing_for_the_last_slot(tmp_path):
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
+    record_stop(tmp_path, "fix@1", 0.0, "task-implementer")
+    ctx = multiprocessing.get_context("fork")
+    with ProcessPoolExecutor(max_workers=8, mp_context=ctx) as pool:
+        results = list(pool.map(_race, [str(tmp_path)] * 8))
+    assert results.count(True) == 1
+
+
+def test_question_marker(tmp_path):
+    payload = {
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [{"question": "A or B?"}]},
+    }
+    note_question(tmp_path, payload, 5.0)
+    assert json.loads((tmp_path / "asking").read_text()) == {"at": 5.0, "question": "A or B?"}
+    (tmp_path / "asking-escalated").touch()
+    clear_question(tmp_path)
+    assert not (tmp_path / "asking").exists() and not (tmp_path / "asking-escalated").exists()

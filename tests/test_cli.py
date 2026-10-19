@@ -1,6 +1,10 @@
+import io
+import json
+
 from linear_agents import ledger
 from linear_agents.cli import main
 from linear_agents.config import load
+from linear_agents.grants import Grants, set_block
 from linear_agents.linear import LinearError
 from linear_agents.runtime import Runtime
 from tests.fakes import FakeNotifier, FakeSessions
@@ -95,3 +99,74 @@ def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, ca
     assert not (tmp_path / "done.json").exists()
     (tmp_path / "review.md").write_text("Verdict: approve\n")
     assert main(["review-done"]) == 0 and (tmp_path / "done.json").exists()
+
+
+def gate_env(monkeypatch, tmp_path, phase="review"):
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
+    monkeypatch.setenv("LINEAR_AGENTS_PHASE", phase)
+    monkeypatch.setenv("LINEAR_AGENTS_RUN", f"{phase}@1")
+
+
+def test_gate_command_denies_with_hook_json(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path)
+    payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "linear-agents:source-finder"}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert main(["gate"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_gate_refuses_with_exit_2_when_it_breaks(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+
+    def boom(*a, **kw):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr("linear_agents.gate.run_gate", boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Agent", "tool_input": {}}'))
+    assert main(["gate"]) == 2
+    assert "disk gone" in capsys.readouterr().err
+
+
+def test_gate_without_a_state_dir_refuses(monkeypatch, capsys):
+    monkeypatch.delenv("LINEAR_AGENTS_STATE", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Agent", "tool_input": {}}'))
+    assert main(["gate"]) == 2
+
+
+def test_gate_records_and_clears_a_question(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+    q = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Q?"}]}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
+    assert main(["gate"]) == 0 and (tmp_path / "asking").exists()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
+    assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
+
+
+def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+    (tmp_path / "status.json").write_text("{}")
+    payload = {"source": "compact", "scratchpad_dir": "/tmp/claude-1000/x/s1/scratchpad"}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert main(["session-start"]) == 0
+    assert (tmp_path / "compacted").exists() and not (tmp_path / "status.json").exists()
+    assert (tmp_path / "scratchpads").read_text().splitlines() == [payload["scratchpad_dir"]]
+    assert not (tmp_path / "launches.jsonl").exists(), "compaction is not a new session"
+
+
+def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"source": "startup"}'))
+    assert main(["session-start"]) == 0
+    assert '"event": "session"' in (tmp_path / "launches.jsonl").read_text()
+
+
+def test_context_prints_the_phase_grants(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+    set_block(tmp_path / "grants.json", Grants(launches=12, fix_rounds=2))
+    main(["context"])
+    out = capsys.readouterr().out
+    assert "## Grants" in out and "launches 12" in out and "fix-rounds 2" in out

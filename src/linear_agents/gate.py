@@ -1,6 +1,11 @@
+import fcntl
+import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
-from linear_agents.grants import Grants
+from linear_agents.grants import Grants, for_phase
 
 PREFIX = "linear-agents:"
 GENERAL = "general-purpose"
@@ -28,6 +33,8 @@ BUDGETS = {
     "review": Budget((), 0, 0),
 }
 CATALOGUE = frozenset(a for b in BUDGETS.values() for a in b.agents)
+GRANTABLE = frozenset({"not-allowed", "launches", "workflow"})
+LOG = "launches.jsonl"
 
 
 @dataclass(frozen=True)
@@ -46,7 +53,9 @@ def subject(payload: dict) -> str:
 
 
 def _refuse(rule: str, what: str, why: str, refused: set[tuple[str, str]]) -> Decision:
-    if (rule, what) in refused:
+    if rule not in GRANTABLE:
+        tail = "This cannot be granted; carry on without it."
+    elif (rule, what) in refused:
         tail = "This was already escalated in this run; do not retry it or escalate again."
     else:
         tail = ESCALATE.format(rule=rule)
@@ -92,3 +101,90 @@ def decide(
         why = f"{running} agents are still running; wait for one to finish."
         return _refuse("running", what, why, refused)
     return Decision(True, "allowed", what)
+
+
+@contextmanager
+def _locked(state: Path) -> Iterator[None]:
+    state.mkdir(parents=True, exist_ok=True)
+    with (state / f"{LOG}.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _entries(state: Path, run: str | None) -> list[dict]:
+    path = state / LOG
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text().splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:  # a hook killed mid-write leaves a torn line
+            continue
+        if isinstance(e, dict) and e.get("run") == run:
+            out.append(e)
+    return out
+
+
+def _append(state: Path, entry: dict) -> None:
+    path = state / LOG
+    with path.open("ab") as f:
+        # After a torn line, start on a fresh one so this entry is not glued to the fragment.
+        if f.tell() and path.read_bytes()[-1:] != b"\n":
+            f.write(b"\n")
+        f.write((json.dumps(entry) + "\n").encode())
+
+
+def _counts(entries: list[dict], counted: set[str]) -> tuple[int, int, set[tuple[str, str]]]:
+    launched = sum(e.get("event") == "launch" for e in entries)
+    refused = {
+        (e.get("rule", ""), e.get("what", "")) for e in entries if e.get("event") == "refused"
+    }
+    # Agents end with their session, so only what happened since the last session start counts.
+    last = max((i for i, e in enumerate(entries) if e.get("event") == "session"), default=-1)
+    since = entries[last + 1 :]
+    started = sum(e.get("event") == "launch" for e in since)
+    stopped = sum(e.get("event") == "stop" and e.get("what") in counted for e in since)
+    return launched, max(started - stopped, 0), refused
+
+
+def run_gate(
+    payload: dict, state: Path, phase: str | None, run: str | None, now: float
+) -> str | None:
+    if payload.get("tool_name") not in GATED_TOOLS:
+        return None
+    with _locked(state):
+        grants = for_phase(state / "grants.json", phase or "")
+        counted = set(CATALOGUE) | set(grants.agents)
+        launched, running, refused = _counts(_entries(state, run), counted)
+        dec = decide(payload, phase, grants, launched, running, refused)
+        event = "launch" if dec.allowed else "refused"
+        _append(state, {"at": now, "run": run, "event": event, "what": dec.what, "rule": dec.rule})
+    return None if dec.allowed else dec.reason
+
+
+def record_stop(state: Path, run: str | None, now: float, agent_type: str) -> None:
+    what = agent_type.removeprefix(PREFIX)
+    with _locked(state):
+        _append(state, {"at": now, "run": run, "event": "stop", "what": what, "rule": ""})
+
+
+def record_session(state: Path, run: str | None, now: float) -> None:
+    with _locked(state):
+        _append(state, {"at": now, "run": run, "event": "session", "what": "", "rule": ""})
+
+
+def launches_used(state: Path, run: str) -> int:
+    return sum(e.get("event") == "launch" for e in _entries(state, run))
+
+
+def note_question(state: Path, payload: dict, now: float) -> None:
+    questions = (payload.get("tool_input") or {}).get("questions") or [{}]
+    text = str(questions[0].get("question", "")) if isinstance(questions[0], dict) else ""
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "asking").write_text(json.dumps({"at": now, "question": text}))
+
+
+def clear_question(state: Path) -> None:
+    for name in ("asking", "asking-escalated"):
+        (state / name).unlink(missing_ok=True)

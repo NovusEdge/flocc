@@ -6,6 +6,7 @@ import pytest
 from linear_agents import ledger, usage
 from linear_agents.cli import main
 from linear_agents.config import load
+from linear_agents.gate import run_gate
 from linear_agents.status import collect, last_tick, systemd_tick
 from tests.fakes import FakeSessions
 from tests.paths import EXAMPLE
@@ -156,3 +157,18 @@ def test_status_json_writes_nothing(cfg, tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["claims"] == [] and report["mode"] in ("systemd", "loop")
     assert not cfg.ledger_path.exists() and not cfg.state_root.exists()
+
+
+def test_claims_carry_launches_against_budget(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, make("NF-1"))
+    state = cfg.state_root / "NF-1"
+    run_gate(
+        {"tool_name": "Agent", "tool_input": {"subagent_type": "source-finder"}},
+        state,
+        "test",
+        "test@0.0",
+        1.0,
+    )
+    (row,) = collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"]
+    assert (row["launches"], row["launch_limit"]) == (1, 2)
