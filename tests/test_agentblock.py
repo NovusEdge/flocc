@@ -80,3 +80,11 @@ def test_acceptance_criteria(text, expected):
 def test_json_round_trip():
     s = parse_settings(FULL)
     assert settings_from_json(settings_to_json(s)) == s
+
+
+def test_allow_key_is_kept_raw_and_validated():
+    s = parse_settings("```agent\nallow: launches 4, agent code-mapper\n```")
+    assert s.allow == "launches 4, agent code-mapper"
+    assert settings_from_json(settings_to_json(s)).allow == s.allow
+    with pytest.raises(BlockError, match="allow"):
+        parse_settings("```agent\nallow: launches lots\n```")
