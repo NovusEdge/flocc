@@ -14,9 +14,11 @@ Make the committed tests pass by implementing the behavior.
   the defaults.
 - Plan first: write `plan.md` in your state directory with numbered tasks, the paths each task
   touches, and its tests. Tasks that share a path go in different waves; a wave holds at most four
-  tasks. Fit the plan to your launch budget (10 unless a grant says otherwise: one plan review,
-  one implementer per task, one reviewer per wave, one fix and its re-review); if it cannot fit,
-  ask for `launches` before building.
+  tasks. Fit the plan to your launch budget (10 unless a grant says otherwise): one plan review,
+  one implementer per task, one reviewer per wave, one fix and its re-review, plus any
+  `code-mapper` launch and the `source-finder` / `source-reader` pair, which count too. If the plan
+  cannot fit, ask for more before building: escalate with `--cause grant:launches` and the number
+  you need, or ask the owner (implementer sessions can) for an `allow: launches N` comment.
 - With four or more tasks, have `linear-agents:plan-reviewer` read the plan once before building,
   and fix what it finds. With fewer, check the plan against the acceptance criteria yourself.
 - Write each task's brief to `briefs/task-N.md` in your state directory: its requirements, the
@@ -24,23 +26,26 @@ Make the committed tests pass by implementing the behavior.
   the brief's path, every plan task included, even if there is only one.
 - After each wave, write its `git diff` and test output to `waves/N.diff` and `waves/N.tests`
   in your state directory, and have one `linear-agents:wave-reviewer` review the wave.
-- Findings get one fix round: the same `task-implementer` route, then one
-  `linear-agents:fix-rereviewer` on the fix diff. A second round needs a `fix-rounds` grant;
-  without one, escalate what is left.
+- Findings get one fix round per run, across all waves: the same `task-implementer` route, then
+  one `linear-agents:fix-rereviewer` on the fix diff. A second round needs a `fix-rounds` grant;
+  without one, escalate the findings left after the first round.
 - When you start `source-finder` or `source-reader`, put today's date in the task.
 - Do small work yourself: a change outside the plan's tasks that fits in a few lines is not a task.
 - While a wave runs, commit your own work with `linear-agents commit -m '<message>' -- <paths>`,
   never a bare `git commit`, which would take the implementers' half-done files.
-- Never pass `model` or `isolation` when starting an agent, and never start general-purpose agents,
-  workflows or teammates unless "Grants" lists them. Never run `claude` from the shell. The gate
-  refuses these and says how to ask.
+- Start general-purpose agents and workflows only when "Grants" lists them. Never start
+  teammates, never pass `model` or `isolation` when starting an agent, and never run `claude` from
+  the shell; no grant allows these. The gate refuses agent and workflow launches it does not
+  allow and says whether a grant can help; a permission rule, not the gate, blocks `claude` in
+  the shell.
 - Run the repo's check (usually `just check`) before finishing.
 - Never push or open a PR; the service does that.
 - Finish with `linear-agents done --summary '<what changed and why, for the PR body>'`.
 
 ## Fix phase
 
-When the service starts you to fix a failed check, the plan steps above do not apply. Fix the
-failure inline; if it is more than a few lines, use one `linear-agents:task-implementer` with a
-brief and one `linear-agents:fix-rereviewer` on its diff, which is all the fix phase allows. Then
-run the check and finish with `linear-agents done`.
+When the service starts you to fix a failed check, the plan, the plan review, waves and wave
+review do not apply. Fix the failure inline; if it is more than a few lines, write the brief to
+`briefs/fix.md` in your state directory and start one `linear-agents:task-implementer` on it. Then
+write its diff to `waves/fix.diff` and start one `linear-agents:fix-rereviewer` on that file; this
+is all the fix phase allows. Then run the check and finish with `linear-agents done`.
