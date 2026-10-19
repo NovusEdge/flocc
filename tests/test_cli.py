@@ -1,5 +1,7 @@
 import io
 import json
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -234,3 +236,23 @@ def test_context_prints_the_phase_grants(tmp_path, monkeypatch, capsys):
     main(["context"])
     out = capsys.readouterr().out
     assert "## Grants" in out and "launches 12" in out and "fix-rounds 2" in out
+
+
+def test_parallel_commits_take_only_their_own_paths(origin, monkeypatch):
+    monkeypatch.chdir(origin)
+    for name in ("a1.txt", "a2.txt", "b1.txt", "b2.txt"):
+        (origin / name).write_text(name)
+    jobs = [("A", ["a1.txt", "a2.txt"]), ("B", ["b1.txt", "b2.txt"])]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = list(pool.map(lambda job: main(["commit", "-m", job[0], "--", *job[1]]), jobs))
+    assert codes == [0, 0]
+    for msg, files in (("A", {"a1.txt", "a2.txt"}), ("B", {"b1.txt", "b2.txt"})):
+        log = ["git", "log", "-1", "--format=%H", f"--grep=^{msg}$"]
+        sha = subprocess.run(log, cwd=origin, capture_output=True, text=True, check=True)
+        show = ["git", "show", "--name-only", "--format=", sha.stdout.strip()]
+        shown = subprocess.run(show, cwd=origin, capture_output=True, text=True, check=True)
+        assert set(shown.stdout.split()) == files
+
+
+def test_commit_needs_paths(capsys):
+    assert main(["commit", "-m", "x", "--"]) == 2

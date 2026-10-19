@@ -1,4 +1,5 @@
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -289,6 +290,25 @@ def cmd_handoff_ready(args) -> int:
     return 0
 
 
+def cmd_commit(args) -> int:
+    from linear_agents.worktree import git
+
+    paths = [p for p in args.paths if p != "--"]
+    if not paths:
+        print("commit: name the paths to commit after --", file=sys.stderr)
+        return 2
+    git_dir = Path(git("rev-parse", "--absolute-git-dir", cwd=Path.cwd()))
+    # Parallel task-implementers share one worktree and its index: one commit at a time, each
+    # with only its own paths.
+    with (git_dir / "la-commit.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        added = subprocess.run(["git", "add", "--", *paths], check=False)
+        if added.returncode:
+            return added.returncode
+        commit = ["git", "commit", "-m", args.message, "--", *paths]
+        return subprocess.run(commit, check=False).returncode
+
+
 def _config(args):
     path = Path(args.config) if args.config else default_config_path()
     try:
@@ -407,6 +427,7 @@ COMMANDS = {
     "context": cmd_context,
     "gate": cmd_gate,
     "session-start": cmd_session_start,
+    "commit": cmd_commit,
     "done": cmd_done,
     "review-done": cmd_review_done,
     "handoff-ready": cmd_handoff_ready,
@@ -450,6 +471,9 @@ def build_parser() -> argparse.ArgumentParser:
     which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
     which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
     add("session-start", "Hook: record compaction and the scratchpad, print the context")
+    com = add("commit", "Commit only the given paths, one commit at a time per worktree")
+    com.add_argument("-m", dest="message", required=True, help="commit message")
+    com.add_argument("paths", nargs=argparse.REMAINDER, help="-- then the paths to commit")
     done = add("done", "Mark the work done")
     done.add_argument("--summary", required=True, help="what was done")
     add("review-done", "Mark the review done (reads review.md)")
