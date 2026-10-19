@@ -358,6 +358,45 @@ def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
     assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
 
 
+def test_a_reply_is_held_while_a_question_is_open_and_delivered_after(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True),
+        ]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "asking").write_text("{}")
+    before = ledger.get_claim(rt.con, "NF-1")
+    forward_comments(rt)
+    after = ledger.get_claim(rt.con, "NF-1")
+    assert rt.sessions.sent == [] and before is not None and after is not None
+    assert after.last_comment_at == before.last_comment_at
+    assert not (d / "grants.json").exists()
+    (d / "asking").unlink()
+    forward_comments(rt)
+    assert [body for _, body in rt.sessions.sent] == [
+        "The owner replied on Linear: allow: launches 4"
+    ]
+    assert for_phase(d / "grants.json", "test").launches == 4
+
+
+def test_an_open_question_does_not_hold_other_claims(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    ledger.insert_claim(rt.con, make("NF-2", ()))
+    rt.linear.replies = {
+        "id-NF-2": [Comment("c1", "use B", "2026-10-09T10:00:00Z", mine=True)],
+    }
+    rt.sessions.alive_names.update({"NF-1-test", "NF-2-test"})
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "asking").write_text("{}")
+    forward_comments(rt)
+    assert rt.sessions.sent == [("NF-2-test", "The owner replied on Linear: use B")]
+
+
 def test_owner_and_steer_author_allow_comments_grant_for_the_running_phase(rt):
     rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
     ledger.insert_claim(rt.con, make("NF-1", ()))

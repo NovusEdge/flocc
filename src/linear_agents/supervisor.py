@@ -299,7 +299,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         )
 
 
-def _check_question(rt, claim: Claim, d: Path) -> None:
+def _check_question(rt, claim: Claim, d: Path, name: str) -> None:
     asking = d / "asking"
     if not asking.exists() or (d / "asking-escalated").exists():
         return
@@ -315,7 +315,8 @@ def _check_question(rt, claim: Claim, d: Path) -> None:
             2,
             "question",
             f"Unanswered question in the Claude app: {text}",
-            "Answer it in the Claude app, or reply on this issue",
+            f"Answer it in the Claude app (Remote Control session {name});"
+            " a reply on this issue is delivered after the question is answered.",
             waiting=True,
         ),
         claim.issue_key,
@@ -371,14 +372,15 @@ def supervise(rt, claim: Claim) -> None:
         return
     pct = context_pct(read_status(d) or {})
     requested = d / "handoff-requested"
-    # One compaction first: the handoff applies only once the session has compacted.
+    # One compaction first: the handoff applies only once the session has compacted. Not while a
+    # question is open: the keystrokes could select an option in its dialog.
     if (
-        pct is not None
+        not (d / "asking").exists()
+        and pct is not None
         and pct >= rt.cfg.context_restart_pct
         and (d / "compacted").exists()
         and not requested.exists()
     ):
         rt.sessions.send(name, HANDOFF_ASK.format(pct=pct))
         requested.touch()
-    # Last: a Linear outage while escalating must not skip the handoff request above.
-    _check_question(rt, claim, d)
+    _check_question(rt, claim, d, name)

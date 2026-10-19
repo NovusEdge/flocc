@@ -614,6 +614,35 @@ def test_a_stale_question_is_escalated_once(rt):
     assert esc.tier == 2 and "A or B?" in esc.summary
 
 
+def test_no_handoff_is_requested_while_a_question_is_open(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    write_status(d, usage_status(ctx=70))
+    (d / "compacted").touch()
+    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
+    supervise(rt, current(rt))
+    assert rt.sessions.sent == [] and not (d / "handoff-requested").exists()
+    (d / "asking").unlink()
+    supervise(rt, current(rt))
+    assert len(rt.sessions.sent) == 1 and (d / "handoff-requested").exists()
+
+
+def test_the_question_escalation_says_to_answer_in_the_app(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "asking").write_text(
+        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
+    )
+    supervise(rt, current(rt))
+    (esc,) = rt.notifier.sent
+    assert esc.action == (
+        "Answer it in the Claude app (Remote Control session NF-1-test);"
+        " a reply on this issue is delivered after the question is answered."
+    )
+
+
 def test_a_fresh_question_is_not_escalated(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
@@ -662,23 +691,6 @@ def test_a_malformed_question_file_is_ignored(rt, content):
     (state_dir(rt.cfg, "NF-1") / "asking").write_text(content)
     supervise(rt, current(rt))
     assert rt.notifier.sent == []
-
-
-def test_a_failing_escalation_does_not_skip_the_handoff_request(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "compacted").touch()
-    write_status(d, usage_status(ctx=70))
-    (d / "asking").write_text(json.dumps({"at": -QUESTION_WAIT_S, "question": "A or B?"}))
-
-    def down(key):
-        raise LinearError("down")
-
-    rt.linear.issue = down
-    with pytest.raises(LinearError):
-        supervise(rt, current(rt))
-    assert len(rt.sessions.sent) == 1
 
 
 def test_review_and_fix_launches_carry_their_own_run_id_and_remote_control(rt):

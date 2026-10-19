@@ -413,8 +413,12 @@ def forward_comments(rt) -> dict[str, LinearError]:
                 who = None
             if who and not comment.body.startswith(BOT_PREFIX):
                 # A dead session is relaunched by the next tick's supervisor, which delivers
-                # this reply and the ones after it.
-                if not rt.sessions.alive(name):
+                # this reply and the ones after it. While a question is open, typing into the
+                # pane could select an option in the dialog, so the reply waits for the answer.
+                if (
+                    not rt.sessions.alive(name)
+                    or (state_dir(rt.cfg, claim.issue_key) / "asking").exists()
+                ):
                     break
                 rt.sessions.send(name, f"{who} replied on Linear: {comment.body}")
                 # After delivery: a dead session breaks out above with last_comment_at unmoved, so
