@@ -11,6 +11,7 @@ from linear_agents.escalation import Notifier
 from linear_agents.grants import Grants, for_phase, set_block
 from linear_agents.linear import BOT_PREFIX, Comment, Issue, LinearError
 from linear_agents.poller import (
+    clean_scratchpads,
     forward_comments,
     maybe_digest,
     poll,
@@ -754,3 +755,39 @@ def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monke
     monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert calls == []
+
+
+def pads(rt, key, lines):
+    d = state_dir(rt.cfg, key)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "scratchpads").write_text("".join(f"{x}\n" for x in lines))
+    return d
+
+
+def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    done_pad = root / "proj" / "s1" / "scratchpad"
+    live_pad = root / "proj" / "s2" / "scratchpad"
+    done_pad.mkdir(parents=True)
+    live_pad.mkdir(parents=True)
+    ledger.insert_claim(rt.con, make("NF-1", (), state="blocked"))
+    ledger.insert_claim(rt.con, make("NF-2", ()))
+    d1 = pads(rt, "NF-1", [done_pad])
+    pads(rt, "NF-2", [live_pad])
+    clean_scratchpads(rt)
+    assert not done_pad.exists() and live_pad.exists()
+    assert not (d1 / "scratchpads").exists()
+
+
+def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    project = root / "proj"
+    (project / "s1" / "scratchpad").mkdir(parents=True)
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
+    pads(rt, "NF-1", [root, project, project / "s1", outside, "", "/", f"{project}/../.."])
+    clean_scratchpads(rt)
+    assert root.exists() and (project / "s1" / "scratchpad").exists() and outside.exists()

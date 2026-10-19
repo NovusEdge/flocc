@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import sys
@@ -103,6 +104,35 @@ def reap_worktrees(rt) -> None:
             git("worktree", "remove", "--force", claim.worktree, cwd=rt.cfg.repos[claim.repo].path)
         except (subprocess.CalledProcessError, OSError, KeyError) as exc:
             print(f"reap: worktree {claim.worktree} not removed: {exc}", file=sys.stderr)
+
+
+def scratch_root() -> Path:
+    return Path(f"/tmp/claude-{os.getuid()}")
+
+
+def _scratch_path(line: str) -> Path | None:
+    if not line.strip():
+        return None
+    root = scratch_root()
+    try:
+        rel = Path(line.strip()).resolve().relative_to(root)
+    except ValueError:
+        return None
+    # <project>/<session>/<scratchpad>: anything shorter is shared by other sessions.
+    return root / rel if len(rel.parts) >= 3 else None
+
+
+def clean_scratchpads(rt) -> None:
+    """Removes the Claude Code scratchpads of claims that are no longer running."""
+    for listing in rt.cfg.state_root.glob("*/scratchpads"):
+        claim = ledger.get_claim(rt.con, listing.parent.name)
+        if claim is not None and claim.state == "running":
+            continue
+        for line in listing.read_text().splitlines():
+            path = _scratch_path(line)
+            if path is not None:
+                shutil.rmtree(path, ignore_errors=True)
+        listing.unlink(missing_ok=True)
 
 
 def poll(rt) -> None:
