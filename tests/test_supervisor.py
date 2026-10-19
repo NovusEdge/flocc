@@ -638,6 +638,23 @@ def test_launch_applies_block_grants_to_the_session(rt):
     assert raw["block"]["agents"] == ["general-purpose"]
 
 
+def test_launch_tells_the_gate_which_grants_the_session_started_with(rt):
+    add(rt, settings_json=settings_to_json(IssueSettings(allow="agent general-purpose")))
+    path = state_dir(rt.cfg, "NF-1") / "grants.json"
+    add_comment(path, Grants(workflows=("big-build",), agents=("code-mapper",)), "impl")
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt)
+    supervise(rt, current(rt))
+    env = env_of(rt.sessions.started[-1][1])
+    assert env["LINEAR_AGENTS_LAUNCH_GRANTS"] == "agent:general-purpose,workflow:big-build"
+
+
+def test_launch_without_flag_grants_sets_an_empty_value(rt):
+    add(rt)
+    supervise(rt, current(rt))
+    assert env_of(rt.sessions.started[-1][1])["LINEAR_AGENTS_LAUNCH_GRANTS"] == ""
+
+
 @pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
 def test_a_malformed_question_file_is_ignored(rt, content):
     add(rt)

@@ -120,6 +120,37 @@ def test_gate_command_denies_with_hook_json(tmp_path, monkeypatch, capsys):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def test_gate_allows_a_flag_grant_only_for_the_session_launched_with_it(
+    tmp_path, monkeypatch, capsys
+):
+    gate_env(monkeypatch, tmp_path, "impl")
+    set_block(tmp_path / "grants.json", Grants(agents=("general-purpose",)))
+    payload = json.dumps({"tool_name": "Agent", "tool_input": {"prompt": "p"}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    assert main(["gate"]) == 0
+    assert (
+        "next handoff"
+        in json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"]
+    )
+    monkeypatch.setenv("LINEAR_AGENTS_LAUNCH_GRANTS", "agent:general-purpose")
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    assert main(["gate"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_a_question_is_never_blocked_by_bookkeeping(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("linear_agents.gate.note_question", boom)
+    q = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Q?"}]}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
+    assert main(["gate"]) == 1
+    assert "disk gone" in capsys.readouterr().err
+
+
 def test_gate_refuses_with_exit_2_when_it_breaks(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path, "impl")
 

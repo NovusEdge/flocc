@@ -43,6 +43,16 @@ def parse_allow(text: str) -> Grants:
     return Grants(launches, tuple(agents), tuple(workflows), fix_rounds)
 
 
+def launch_flags(g: Grants) -> frozenset[str]:
+    # The grants whose effect is fixed by the flags a session starts with: the general-purpose
+    # deny rule and disableWorkflows. A grant that arrives later does not take effect until a
+    # new session starts, so the gate allows only what the session was launched with.
+    return frozenset(
+        (["agent:general-purpose"] if "general-purpose" in g.agents else [])
+        + [f"workflow:{w}" for w in g.workflows]
+    )
+
+
 def allow_lines(body: str) -> list[str]:
     return [m.group(1).strip() for m in _LINE.finditer(body)]
 

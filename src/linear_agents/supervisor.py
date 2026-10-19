@@ -9,7 +9,7 @@ from linear_agents import ledger
 from linear_agents.agentblock import settings_from_json
 from linear_agents.context import phase_prompt, state_dir
 from linear_agents.escalation import Escalation, scoped
-from linear_agents.gate import clear_question, run_id
+from linear_agents.gate import LAUNCH_GRANTS_ENV, clear_question, run_id
 from linear_agents.ledger import Claim
 from linear_agents.linear import LinearError
 from linear_agents.publisher import review_comment
@@ -80,6 +80,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | No
     if settings.allow:
         grants_mod.set_block(d / "grants.json", grants_mod.parse_allow(settings.allow))
     granted = grants_mod.for_phase(d / "grants.json", phase)
+    env[LAUNCH_GRANTS_ENV] = ",".join(sorted(grants_mod.launch_flags(granted)))
     if phase == "review":
         settings = replace(settings, model=rt.cfg.review_model)
     if settings.effort is None:

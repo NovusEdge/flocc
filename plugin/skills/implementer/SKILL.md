@@ -11,10 +11,12 @@ Make the committed tests pass by implementing the behavior.
 - Claim paths before editing them: `linear-agents claim '<glob>'`. A rejected claim names the
   issue that holds it; message that session or escalate.
 - Run `linear-agents context` and read "Grants" before planning; it lists what you may do beyond
-  the defaults.
+  the defaults. Grants that change launch flags (general-purpose agents, workflows) apply from the
+  next session start; until then the gate refuses them, even when "Grants" lists them.
 - Plan first: write `plan.md` in your state directory with numbered tasks, the paths each task
   touches, and its tests. Tasks that share a path go in different waves; a wave holds at most four
-  tasks. Fit the plan to your launch budget (10 unless a grant says otherwise): one plan review,
+  tasks. Fit the plan to your launch budget, the phase's total launches (10 unless a grant says
+  otherwise; a workflow counts as one): one plan review,
   one implementer per task, one reviewer per wave, one fix and its re-review, plus any
   `code-mapper` launch and the `source-finder` / `source-reader` pair, which count too. If the plan
   cannot fit, ask for more before building: escalate with `--cause grant:launches` and the number
@@ -34,8 +36,8 @@ Make the committed tests pass by implementing the behavior.
 - While a wave runs, commit your own work with `linear-agents commit -m '<message>' -- <paths>`,
   never a bare `git commit`, which would take the implementers' half-done files.
 - Start general-purpose agents and workflows only when "Grants" lists them. Never start
-  teammates, never pass `model` or `isolation` when starting an agent, and never run `claude` from
-  the shell; no grant allows these. The gate refuses agent and workflow launches it does not
+  teammates, never pass `model`, `effort`, `isolation`, `name` or `team_name` when starting an
+  agent, and never run `claude` from the shell; no grant allows these. The gate refuses agent and workflow launches it does not
   allow and says whether a grant can help; a permission rule, not the gate, blocks `claude` in
   the shell.
 - Run the repo's check (usually `just check`) before finishing.
@@ -48,4 +50,6 @@ When the service starts you to fix a failed check, the plan, the plan review, wa
 review do not apply. Fix the failure inline; if it is more than a few lines, write the brief to
 `briefs/fix.md` in your state directory and start one `linear-agents:task-implementer` on it. Then
 write its diff to `waves/fix.diff` and start one `linear-agents:fix-rereviewer` on that file; this
-is all the fix phase allows. Then run the check and finish with `linear-agents done`.
+is all the fix phase allows. Give `fix-rereviewer` the failed check output
+(`check-failure.md` in your state directory) as the single finding. Then run the check and finish
+with `linear-agents done`.

@@ -216,9 +216,15 @@ def cmd_gate(args) -> int:
         state = _state_dir()
         payload = _hook_input(strict=True)
         if payload.get("tool_name") == "AskUserQuestion":
-            gate.note_question(state, payload, time.time())
+            # A question spends nothing, so a bookkeeping failure must not refuse it.
+            try:
+                gate.note_question(state, payload, time.time())
+            except Exception as exc:  # noqa: BLE001
+                print(f"linear-agents gate could not record the question: {exc}", file=sys.stderr)
+                return 1
             return 0
-        reason = gate.run_gate(payload, state, phase, run, time.time())
+        flags = frozenset(filter(None, os.environ.get(gate.LAUNCH_GRANTS_ENV, "").split(",")))
+        reason = gate.run_gate(payload, state, phase, run, time.time(), flags)
         if reason is not None:
             out = {
                 "hookSpecificOutput": {

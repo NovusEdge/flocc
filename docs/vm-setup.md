@@ -144,7 +144,7 @@ pnpm, pip and mise caches are not managed.
 
 By default a session may launch only the agents in `plugin/agents/`, and only as often as its
 phase allows; grants (below) can add `general-purpose` or a named workflow. The budgets (which
-agents, how many launches, how many running at once) are in
+agents, the phase's total launches, how many running at once) are in
 `src/linear_agents/gate.py`; the review phase gets none. A hook refuses any other launch and tells
 the agent why. Every launch, allowed or refused, is appended to `<state_dir>/launches.jsonl`, and
 `linear-agents status` shows each running claim's count as `launches N/limit`.
@@ -161,7 +161,9 @@ in the agent block applies to the implementer phase; from a comment it applies t
 running when the comment arrives. `fix-rounds` raises the implementer's fix rounds.
 
 The items `agent general-purpose` and `workflow <name>` change the session's launch flags, so
-from a comment they take effect at the next handoff; the other items apply within one tick.
+from a comment they take effect at the next handoff; the other items apply within one tick. Until
+the handoff the gate refuses them with the rule `next-session`. A granted workflow starts once per
+run and counts as one launch. `launches N` is the phase's total launches, workflows included.
 Comment grants do not survive a release: a new claim discards them and rewrites only the agent
 block's `allow:` line. To keep a grant across a release, put it in the agent block.
 

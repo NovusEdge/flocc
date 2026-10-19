@@ -35,6 +35,7 @@ BUDGETS = {
 }
 CATALOGUE = frozenset(a for b in BUDGETS.values() for a in b.agents)
 GRANTABLE = frozenset({"not-allowed", "launches", "workflow"})
+LAUNCH_GRANTS_ENV = "LINEAR_AGENTS_LAUNCH_GRANTS"
 LOG = "launches.jsonl"
 
 
@@ -53,14 +54,30 @@ def subject(payload: dict) -> str:
     return str(args.get("subagent_type") or GENERAL).removeprefix(PREFIX)
 
 
-def _refuse(rule: str, what: str, why: str, refused: set[tuple[str, str]]) -> Decision:
-    if rule not in GRANTABLE:
+def _refuse(
+    rule: str, what: str, why: str, refused: set[tuple[str, str]], tail: str | None = None
+) -> Decision:
+    if tail is None and rule not in GRANTABLE:
         tail = "This cannot be granted; carry on without it."
-    elif (rule, what) in refused:
+    elif tail is None and (rule, what) in refused:
         tail = "This was already escalated in this run; do not retry it or escalate again."
-    else:
+    elif tail is None:
         tail = ESCALATE.format(rule=rule)
     return Decision(False, rule, what, f"linear-agents gate: {why} {tail}")
+
+
+_FINAL = "This cannot be granted; carry on without it."
+
+
+def _used(phase: str | None, launched: int, limit: int) -> str:
+    return f"the {phase} phase used {launched} of its {limit} launches."
+
+
+def _next_session(item: str, what: str, refused: set[tuple[str, str]]) -> Decision:
+    # The grant is recorded, but this session started with the deny rule or disableWorkflows,
+    # so Claude Code would refuse the call after the gate allowed it and no stop would follow.
+    why = f"{item} is granted, but the grant applies from the next handoff, not this session."
+    return _refuse("next-session", what, why, refused, "Carry on without it until then.")
 
 
 def decide(
@@ -70,6 +87,8 @@ def decide(
     launched: int,
     running: int,
     refused: set[tuple[str, str]],
+    flags: frozenset[str],
+    started: frozenset[str],
 ) -> Decision:
     tool = payload.get("tool_name")
     if tool not in GATED_TOOLS:
@@ -81,23 +100,41 @@ def decide(
     if payload.get("agent_id"):
         return _refuse("nested", what, "subagents may not start agents or workflows.", refused)
     args = payload.get("tool_input") or {}
+    limit = grants.launches if grants.launches is not None else budget.launches
     if tool == "Workflow":
         if not what or what not in grants.workflows:
             return _refuse("workflow", what, f"workflow {what!r} has no grant.", refused)
+        if f"workflow:{what}" not in flags:
+            return _next_session(f"workflow {what!r}", what, refused)
+        if what in started:
+            why = f"workflow {what!r} was already started in this run."
+            return _refuse("workflow", what, why, refused, _FINAL)
+        if launched >= limit:
+            return _refuse("launches", what, _used(phase, launched, limit), refused)
         return Decision(True, "allowed", what)
     if args.get("model"):
-        return _refuse("model", what, "agent files fix the model; drop `model`.", refused)
+        why = "agent files fix the model."
+        return _refuse(
+            "model", what, why, refused, "Retry without `model`; the agent file sets it."
+        )
+    if args.get("effort"):
+        why = "agent files fix the effort."
+        tail = "Retry without `effort`; the agent file sets it."
+        return _refuse("effort", what, why, refused, tail)
     if args.get("team_name") or args.get("name"):
-        return _refuse("teammate", what, "named teammates are not allowed here.", refused)
+        why = "named teammates are not allowed here."
+        return _refuse("teammate", what, why, refused, "Retry without `name` and `team_name`.")
     if args.get("isolation"):
-        return _refuse("isolation", what, "agents share the claimed worktree.", refused)
+        why = "agents share the claimed worktree."
+        return _refuse("isolation", what, why, refused, "Retry without `isolation`.")
     if what not in budget.agents and what not in grants.agents:
         names = ", ".join(PREFIX + a for a in budget.agents) or "none"
         why = f"{what} is not allowed in the {phase} phase (allowed: {names})."
         return _refuse("not-allowed", what, why, refused)
-    limit = grants.launches if grants.launches is not None else budget.launches
+    if what == GENERAL and f"agent:{GENERAL}" not in flags:
+        return _next_session(f"agent {GENERAL}", what, refused)
     if launched >= limit:
-        return _refuse("launches", what, f"the {phase} phase used its {limit} launches.", refused)
+        return _refuse("launches", what, _used(phase, launched, limit), refused)
     if running >= budget.running:
         why = f"{running} agents are still running; wait for one to finish."
         return _refuse("running", what, why, refused)
@@ -163,15 +200,22 @@ def _line(at: float, run: str | None, phase: str | None, event: str, what: str, 
 
 
 def run_gate(
-    payload: dict, state: Path, phase: str | None, run: str | None, now: float
+    payload: dict,
+    state: Path,
+    phase: str | None,
+    run: str | None,
+    now: float,
+    flags: frozenset[str] = frozenset(),
 ) -> str | None:
     if payload.get("tool_name") not in GATED_TOOLS:
         return None
     with _locked(state):
         grants = for_phase(state / "grants.json", phase or "")
         counted = set(CATALOGUE) | set(grants.agents)
-        launched, running, refused = _counts(_entries(state, run), counted)
-        dec = decide(payload, phase, grants, launched, running, refused)
+        entries = _entries(state, run)
+        launched, running, refused = _counts(entries, counted)
+        started = frozenset(str(e.get("what")) for e in entries if e.get("event") == "launch")
+        dec = decide(payload, phase, grants, launched, running, refused, flags, started)
         event = "launch" if dec.allowed else "refused"
         _append(state, _line(now, run, phase, event, dec.what, dec.rule))
     return None if dec.allowed else dec.reason
