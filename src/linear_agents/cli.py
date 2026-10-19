@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from linear_agents import ledger, usage
+from linear_agents import gate, ledger, usage
 from linear_agents.config import default_config_path, load
 from linear_agents.escalation import Escalation, validate
 from linear_agents.grants import for_phase
@@ -176,54 +176,64 @@ def cmd_context(args) -> int:
     return 0
 
 
-def _hook_input() -> dict:
+def _hook_input(strict: bool = False) -> dict:
+    """Strict raises on input that is not a JSON object; lenient gives {} for it."""
     raw = "" if sys.stdin.isatty() else sys.stdin.read()
     try:
-        data = json.loads(raw) if raw.strip() else {}
+        data = json.loads(raw)
     except ValueError:
+        if strict:
+            raise
         return {}
-    return data if isinstance(data, dict) else {}
+    if isinstance(data, dict):
+        return data
+    if strict:
+        raise ValueError("hook input is not a JSON object")
+    return {}
 
 
 def cmd_gate(args) -> int:
-    from linear_agents import gate
-
+    run = os.environ.get("LINEAR_AGENTS_RUN")
+    phase = os.environ.get("LINEAR_AGENTS_PHASE")
+    # Exit 2 on SubagentStop blocks the stop and keeps the agent alive, so bookkeeping
+    # failures exit 1, which Claude Code treats as non-blocking.
+    if args.stopped or args.answered:
+        try:
+            state = _state_dir()
+            if args.stopped:
+                agent_type = str(_hook_input().get("agent_type", ""))
+                gate.record_stop(state, run, time.time(), agent_type, phase)
+            else:
+                gate.clear_question(state)
+        except Exception as exc:  # noqa: BLE001 - must not block the stop
+            print(f"linear-agents gate could not record the event: {exc}", file=sys.stderr)
+            return 1
+        return 0
     # Exit 2 refuses a PreToolUse call in every Claude Code version, whatever the hook's
     # onFailure setting does; any error of the gate's own must refuse, never allow.
     try:
         state = _state_dir()
-        run = os.environ.get("LINEAR_AGENTS_RUN")
-        payload = _hook_input()
-        if args.stopped:
-            gate.record_stop(state, run, time.time(), str(payload.get("agent_type", "")))
-            return 0
-        if args.answered:
-            gate.clear_question(state)
-            return 0
+        payload = _hook_input(strict=True)
         if payload.get("tool_name") == "AskUserQuestion":
             gate.note_question(state, payload, time.time())
             return 0
-        phase = os.environ.get("LINEAR_AGENTS_PHASE")
         reason = gate.run_gate(payload, state, phase, run, time.time())
+        if reason is not None:
+            out = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+            print(json.dumps(out))
     except Exception as exc:  # noqa: BLE001 - see above
         print(f"linear-agents gate failed, so the launch is refused: {exc}", file=sys.stderr)
         return 2
-    if reason is not None:
-        out = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        }
-        print(json.dumps(out))
     return 0
 
 
-def cmd_session_start(args) -> int:
-    from linear_agents.gate import record_session
-
-    state = _state_dir()
+def _session_bookkeeping(state: Path) -> None:
     state.mkdir(parents=True, exist_ok=True)
     payload = _hook_input()
     if payload.get("source") == "compact":
@@ -232,7 +242,8 @@ def cmd_session_start(args) -> int:
         (state / "status.json").unlink(missing_ok=True)
     else:
         # Background agents survive compaction, so only a real start resets the running count.
-        record_session(state, os.environ.get("LINEAR_AGENTS_RUN"), time.time())
+        run = os.environ.get("LINEAR_AGENTS_RUN")
+        gate.record_session(state, run, time.time(), os.environ.get("LINEAR_AGENTS_PHASE"))
     pad = payload.get("scratchpad_dir")
     if isinstance(pad, str) and pad:
         known = state / "scratchpads"
@@ -240,6 +251,14 @@ def cmd_session_start(args) -> int:
         if pad not in listed:
             with known.open("a") as f:
                 f.write(pad + "\n")
+
+
+def cmd_session_start(args) -> int:
+    # The context is the hook's output; a bookkeeping failure must not take it away.
+    try:
+        _session_bookkeeping(_state_dir())
+    except Exception as exc:  # noqa: BLE001
+        print(f"linear-agents session-start bookkeeping failed: {exc}", file=sys.stderr)
     return cmd_context(args)
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from linear_agents import ledger, usage
 from linear_agents.config import Config
-from linear_agents.gate import BUDGETS, launches_used
+from linear_agents.gate import BUDGETS, launches_used, run_id
 from linear_agents.grants import for_phase
 from linear_agents.sessions import session_name
 
@@ -101,7 +101,7 @@ def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
     state_dir = cfg.state_root / claim.issue_key
     status = usage.read_status(state_dir)
     updated = _mtime(state_dir / "status.json")
-    run = f"{claim.phase}@{claim.started_at}"
+    run = run_id(claim.phase, claim.started_at)
     budget = BUDGETS.get(claim.phase)
     granted = for_phase(state_dir / "grants.json", claim.phase).launches
     limit = granted if granted is not None else (budget.launches if budget else 0)

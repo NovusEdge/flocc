@@ -1,5 +1,6 @@
 import fcntl
 import json
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -127,12 +128,17 @@ def _entries(state: Path, run: str | None) -> list[dict]:
 
 
 def _append(state: Path, entry: dict) -> None:
-    path = state / LOG
-    with path.open("ab") as f:
+    with (state / LOG).open("a+b") as f:
         # After a torn line, start on a fresh one so this entry is not glued to the fragment.
-        if f.tell() and path.read_bytes()[-1:] != b"\n":
-            f.write(b"\n")
+        if f.seek(0, 2):
+            f.seek(-1, 2)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
         f.write((json.dumps(entry) + "\n").encode())
+
+
+def run_id(phase: str, started_at: float) -> str:
+    return f"{phase}@{started_at}"
 
 
 def _counts(entries: list[dict], counted: set[str]) -> tuple[int, int, set[tuple[str, str]]]:
@@ -143,9 +149,17 @@ def _counts(entries: list[dict], counted: set[str]) -> tuple[int, int, set[tuple
     # Agents end with their session, so only what happened since the last session start counts.
     last = max((i for i, e in enumerate(entries) if e.get("event") == "session"), default=-1)
     since = entries[last + 1 :]
-    started = sum(e.get("event") == "launch" for e in since)
-    stopped = sum(e.get("event") == "stop" and e.get("what") in counted for e in since)
-    return launched, max(started - stopped, 0), refused
+    # Per type, so a stop with no matching launch (or a workflow's) frees no other type's slot.
+    running = 0
+    for kind in counted:
+        started = sum(e.get("event") == "launch" and e.get("what") == kind for e in since)
+        stopped = sum(e.get("event") == "stop" and e.get("what") == kind for e in since)
+        running += max(started - stopped, 0)
+    return launched, running, refused
+
+
+def _line(at: float, run: str | None, phase: str | None, event: str, what: str, rule: str) -> dict:
+    return {"at": at, "run": run, "phase": phase, "event": event, "what": what, "rule": rule}
 
 
 def run_gate(
@@ -159,19 +173,20 @@ def run_gate(
         launched, running, refused = _counts(_entries(state, run), counted)
         dec = decide(payload, phase, grants, launched, running, refused)
         event = "launch" if dec.allowed else "refused"
-        _append(state, {"at": now, "run": run, "event": event, "what": dec.what, "rule": dec.rule})
+        _append(state, _line(now, run, phase, event, dec.what, dec.rule))
     return None if dec.allowed else dec.reason
 
 
-def record_stop(state: Path, run: str | None, now: float, agent_type: str) -> None:
-    what = agent_type.removeprefix(PREFIX)
+def record_stop(
+    state: Path, run: str | None, now: float, agent_type: str, phase: str | None = None
+) -> None:
     with _locked(state):
-        _append(state, {"at": now, "run": run, "event": "stop", "what": what, "rule": ""})
+        _append(state, _line(now, run, phase, "stop", agent_type.removeprefix(PREFIX), ""))
 
 
-def record_session(state: Path, run: str | None, now: float) -> None:
+def record_session(state: Path, run: str | None, now: float, phase: str | None = None) -> None:
     with _locked(state):
-        _append(state, {"at": now, "run": run, "event": "session", "what": "", "rule": ""})
+        _append(state, _line(now, run, phase, "session", "", ""))
 
 
 def launches_used(state: Path, run: str) -> int:
@@ -182,7 +197,12 @@ def note_question(state: Path, payload: dict, now: float) -> None:
     questions = (payload.get("tool_input") or {}).get("questions") or [{}]
     text = str(questions[0].get("question", "")) if isinstance(questions[0], dict) else ""
     state.mkdir(parents=True, exist_ok=True)
-    (state / "asking").write_text(json.dumps({"at": now, "question": text}))
+    # A fresh question has not been escalated yet, whatever an earlier one was.
+    (state / "asking-escalated").unlink(missing_ok=True)
+    # The supervisor polls this file; a rename keeps it from reading a half-written one.
+    tmp = state / "asking.tmp"
+    tmp.write_text(json.dumps({"at": now, "question": text}))
+    os.replace(tmp, state / "asking")
 
 
 def clear_question(state: Path) -> None:

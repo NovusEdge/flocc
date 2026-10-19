@@ -1,6 +1,8 @@
 import io
 import json
 
+import pytest
+
 from linear_agents import ledger
 from linear_agents.cli import main
 from linear_agents.config import load
@@ -155,12 +157,74 @@ def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
     assert not (tmp_path / "launches.jsonl").exists(), "compaction is not a new session"
 
 
-def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch):
+def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
     monkeypatch.setattr("sys.stdin", io.StringIO('{"source": "startup"}'))
     assert main(["session-start"]) == 0
-    assert '"event": "session"' in (tmp_path / "launches.jsonl").read_text()
+    line = json.loads((tmp_path / "launches.jsonl").read_text())
+    assert (line["event"], line["phase"], line["run"]) == ("session", "impl", "impl@1")
+    assert "## Grants" in capsys.readouterr().out
+
+
+def test_session_start_prints_the_context_when_bookkeeping_fails(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("linear_agents.gate.record_session", boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"source": "startup"}'))
+    assert main(["session-start"]) == 0
+    captured = capsys.readouterr()
+    assert "## Grants" in captured.out and "disk gone" in captured.err
+
+
+@pytest.mark.parametrize("flag", ["--stopped", "--answered"])
+def test_bookkeeping_failures_never_exit_2(tmp_path, monkeypatch, capsys, flag):
+    gate_env(monkeypatch, tmp_path, "impl")
+
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("linear_agents.gate.record_stop", boom)
+    monkeypatch.setattr("linear_agents.gate.clear_question", boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "linear-agents:code-mapper"}'))
+    assert main(["gate", flag]) == 1
+    err = capsys.readouterr().err
+    assert "disk gone" in err and "refused" not in err
+
+
+def test_stopped_records_the_agent_type_and_phase(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "linear-agents:code-mapper"}'))
+    assert main(["gate", "--stopped"]) == 0
+    line = json.loads((tmp_path / "launches.jsonl").read_text())
+    assert (line["event"], line["what"], line["phase"]) == ("stop", "code-mapper", "impl")
+
+
+@pytest.mark.parametrize("stdin", ["", "   ", "{not json", "[1, 2]", "null"])
+def test_gate_refuses_input_it_cannot_read(tmp_path, monkeypatch, stdin):
+    gate_env(monkeypatch, tmp_path, "impl")
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
+    assert main(["gate"]) == 2
+
+
+def test_gate_refuses_when_it_cannot_print_the_denial(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path)
+    payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "linear-agents:source-finder"}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    real_print = print
+
+    def broken_stdout(*a, file=None, **kw):
+        if file is None:
+            raise BrokenPipeError
+        real_print(*a, file=file, **kw)
+
+    monkeypatch.setattr("builtins.print", broken_stdout)
+    assert main(["gate"]) == 2
 
 
 def test_context_prints_the_phase_grants(tmp_path, monkeypatch, capsys):
