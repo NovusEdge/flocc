@@ -15,3 +15,6 @@ Write tests for the issue's acceptance criteria and nothing else.
   from it: which test covers which criterion, how to run them, the commit hash, and anything about
   the code you learned that the implementer would otherwise rediscover.
 - Finish with `linear-agents done --summary '<which criteria each test covers>'`.
+- To look up how an unfamiliar library or API behaves, use `linear-agents:source-finder` and then
+  `linear-agents:source-reader`, with today's date in the task; you have two launches. Start no
+  other agents.

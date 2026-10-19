@@ -12,6 +12,16 @@ Most uncertainty is yours to resolve. Escalate only by this table.
 | 3 | Something the owner should read later: a reversible choice you made, a limitation | `--tier 3 --cause <id> --summary '...'` |
 | 4 | Anything else | Do not escalate |
 
+## Asking the owner directly
+
+For a decision you cannot go on without (what tier 2 `--waiting` was for), ask with
+`AskUserQuestion`: the owner gets a push in the Claude app and answers there. Only implementer and
+fix sessions are connected to the app; a tester or reviewer escalates with `--tier 2 --waiting`
+instead. First record it:
+`linear-agents escalate --tier 3 --cause asked:<topic> --summary '<the question>'`. Give two to
+four options with your recommendation first. If nobody answers within two hours the service
+escalates it again. For a reversible choice, do not ask: escalate with `--default` and carry on.
+
 Rules:
 
 - `--cause` is a stable identifier for the underlying problem (`setup-missing-redis`, not a

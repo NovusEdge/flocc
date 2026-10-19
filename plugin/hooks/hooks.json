@@ -1,7 +1,24 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "linear-agents context" } ] }
+      { "hooks": [ { "type": "command", "command": "linear-agents session-start" } ] }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task|Workflow|AskUserQuestion",
+        "hooks": [
+          { "type": "command", "command": "linear-agents gate", "timeout": 10, "onFailure": "block" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ]
+      }
+    ],
+    "SubagentStop": [
+      { "hooks": [ { "type": "command", "command": "linear-agents gate --stopped" } ] }
     ]
   }
 }
