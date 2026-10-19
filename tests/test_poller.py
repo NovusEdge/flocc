@@ -788,6 +788,55 @@ def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
     outside = tmp_path / "keep"
     outside.mkdir()
     ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
-    pads(rt, "NF-1", [root, project, project / "s1", outside, "", "/", f"{project}/../.."])
+    (project / "s2" / "scratchpad").mkdir(parents=True)
+    listed = [root, project, project / "s1", outside, "", "/", f"{project}/../.."]
+    pads(rt, "NF-1", [*listed, project / "s2" / "scratchpad"])
     clean_scratchpads(rt)
     assert root.exists() and (project / "s1" / "scratchpad").exists() and outside.exists()
+    assert not (project / "s2" / "scratchpad").exists()
+
+
+def test_cleanup_does_not_follow_links(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    other = root / "proj" / "s2" / "scratchpad"
+    other.mkdir(parents=True)
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    s1 = root / "proj" / "s1"
+    s1.mkdir(parents=True)
+    in_tree = s1 / "scratchpad"
+    in_tree.symlink_to(other)
+    out_tree = s1 / "elsewhere"
+    out_tree.symlink_to(outside)
+    via_parent = s1 / "up"
+    via_parent.symlink_to(root / "proj" / "s2")
+    ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
+    pads(rt, "NF-1", [in_tree, out_tree, via_parent / "scratchpad"])
+    clean_scratchpads(rt)
+    assert other.exists() and outside.exists()
+
+
+def test_cleanup_covers_a_listing_with_no_claim(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    pad = root / "proj" / "s1" / "scratchpad"
+    pad.mkdir(parents=True)
+    d = pads(rt, "NF-7", [pad])
+    clean_scratchpads(rt)
+    assert not pad.exists() and not (d / "scratchpads").exists()
+
+
+def test_cleanup_skips_an_unreadable_listing(rt, tmp_path, monkeypatch, capsys):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    pad = root / "proj" / "s1" / "scratchpad"
+    pad.mkdir(parents=True)
+    (state_dir(rt.cfg, "NF-1") / "scratchpads").mkdir(parents=True)
+    bad = state_dir(rt.cfg, "NF-2")
+    bad.mkdir(parents=True)
+    (bad / "scratchpads").write_bytes(b"\xff\xfe\n")
+    pads(rt, "NF-3", [pad])
+    clean_scratchpads(rt)
+    assert not pad.exists()
+    assert capsys.readouterr().err.count("not cleaned") == 2

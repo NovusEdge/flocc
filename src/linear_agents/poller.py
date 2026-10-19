@@ -114,12 +114,16 @@ def _scratch_path(line: str) -> Path | None:
     if not line.strip():
         return None
     root = scratch_root()
+    path = Path(line.strip())
     try:
-        rel = Path(line.strip()).resolve().relative_to(root)
+        rel = path.resolve().relative_to(root.resolve())
     except ValueError:
         return None
+    # A link or ".." in the listed path would make the delete land on another session's pad.
+    if path != root / rel:
+        return None
     # <project>/<session>/<scratchpad>: anything shorter is shared by other sessions.
-    return root / rel if len(rel.parts) >= 3 else None
+    return path if len(rel.parts) >= 3 else None
 
 
 def clean_scratchpads(rt) -> None:
@@ -128,11 +132,15 @@ def clean_scratchpads(rt) -> None:
         claim = ledger.get_claim(rt.con, listing.parent.name)
         if claim is not None and claim.state == "running":
             continue
-        for line in listing.read_text().splitlines():
-            path = _scratch_path(line)
-            if path is not None:
-                shutil.rmtree(path, ignore_errors=True)
-        listing.unlink(missing_ok=True)
+        # A bad listing must not abort the tick: poll comes after this.
+        try:
+            for line in listing.read_text().splitlines():
+                path = _scratch_path(line)
+                if path is not None:
+                    shutil.rmtree(path, ignore_errors=True)
+            listing.unlink(missing_ok=True)
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"scratchpads: {listing} not cleaned: {exc}", file=sys.stderr)
 
 
 def poll(rt) -> None:
