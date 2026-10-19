@@ -1,0 +1,7 @@
+# Plugins agent sessions on linear-agents hosts get, one name@marketplace per line.
+# `just ship` installs only these; sessions disable any other installed plugin.
+docket@NovusEdge
+superpowers@claude-plugins-official
+software-architecture@software-architecture
+ponytail@ponytail
+curt@curt

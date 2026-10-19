@@ -38,6 +38,12 @@ func writeInstalled(t *testing.T, e *Env, json string) {
 	os.WriteFile(e.HomePath(".claude/plugins/installed_plugins.json"), []byte(json), 0o644)
 }
 
+func TestMinimumClaudeIsTheGateVersion(t *testing.T) {
+	if minClaude != [3]int{2, 1, 295} {
+		t.Fatalf("minClaude %v", minClaude)
+	}
+}
+
 func TestClaudeCheck(t *testing.T) {
 	f := host.NewFake().
 		On(claudeBin+" --version", 0, "2.1.295 (Claude Code)\n").
