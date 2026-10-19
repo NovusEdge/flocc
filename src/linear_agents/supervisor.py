@@ -9,7 +9,7 @@ from linear_agents import ledger
 from linear_agents.agentblock import settings_from_json
 from linear_agents.context import phase_prompt, state_dir
 from linear_agents.escalation import Escalation, scoped
-from linear_agents.gate import clear_question
+from linear_agents.gate import clear_question, run_id
 from linear_agents.ledger import Claim
 from linear_agents.linear import LinearError
 from linear_agents.publisher import review_comment
@@ -71,7 +71,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | No
             "LINEAR_AGENTS_CONFIG": str(rt.config_path),
             "LINEAR_AGENTS_PHASE": phase,
             # Handoffs and crash relaunches of one phase share its launch budget.
-            "LINEAR_AGENTS_RUN": f"{phase}@{start}",
+            "LINEAR_AGENTS_RUN": run_id(phase, start),
             "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
             "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS": "1",
         }
@@ -368,7 +368,6 @@ def supervise(rt, claim: Claim) -> None:
         _record_usage(rt, key, claim.phase, "end")
         ledger.update_claim(rt.con, key, state="timed_out")
         return
-    _check_question(rt, claim, d)
     pct = context_pct(read_status(d) or {})
     requested = d / "handoff-requested"
     # One compaction first: the handoff applies only once the session has compacted.
@@ -380,3 +379,5 @@ def supervise(rt, claim: Claim) -> None:
     ):
         rt.sessions.send(name, HANDOFF_ASK.format(pct=pct))
         requested.touch()
+    # Last: a Linear outage while escalating must not skip the handoff request above.
+    _check_question(rt, claim, d)

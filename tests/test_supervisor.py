@@ -621,3 +621,62 @@ def test_a_fresh_question_is_not_escalated(rt):
     (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
     supervise(rt, current(rt))
     assert rt.notifier.sent == []
+
+
+def settings_of(argv):
+    return json.loads(argv[argv.index("--settings") + 1])
+
+
+def test_launch_applies_block_grants_to_the_session(rt):
+    add(rt, settings_json=settings_to_json(IssueSettings(allow="agent general-purpose")))
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt)
+    supervise(rt, current(rt))
+    deny = settings_of(rt.sessions.started[-1][1])["permissions"]["deny"]
+    assert "Agent(general-purpose)" not in deny
+    raw = json.loads((state_dir(rt.cfg, "NF-1") / "grants.json").read_text())
+    assert raw["block"]["agents"] == ["general-purpose"]
+
+
+@pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
+def test_a_malformed_question_file_is_ignored(rt, content):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    (state_dir(rt.cfg, "NF-1") / "asking").write_text(content)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+def test_a_failing_escalation_does_not_skip_the_handoff_request(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "compacted").touch()
+    write_status(d, usage_status(ctx=70))
+    (d / "asking").write_text(json.dumps({"at": -QUESTION_WAIT_S, "question": "A or B?"}))
+
+    def down(key):
+        raise LinearError("down")
+
+    rt.linear.issue = down
+    with pytest.raises(LinearError):
+        supervise(rt, current(rt))
+    assert len(rt.sessions.sent) == 1
+
+
+def test_review_and_fix_launches_carry_their_own_run_id_and_remote_control(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))  # check fails: fix
+    c = current(rt)
+    argv = rt.sessions.started[-1][1]
+    assert c.phase == "fix" and env_of(argv)["LINEAR_AGENTS_RUN"] == f"fix@{c.started_at}"
+    assert "--remote-control" in argv
+    rt.publish_fn = lambda c, t, s: PublishResult("opened", url="https://pr/1")
+    done(rt)
+    supervise(rt, current(rt))  # PR opens: review
+    c = current(rt)
+    argv = rt.sessions.started[-1][1]
+    assert c.phase == "review" and env_of(argv)["LINEAR_AGENTS_RUN"] == f"review@{c.started_at}"
+    assert "--remote-control" not in argv
