@@ -170,7 +170,8 @@ block's `allow:` line. To keep a grant across a release, put it in the agent blo
 The implementer and fix sessions are the only ones connected to Remote Control. When one of them
 needs an answer it asks with `AskUserQuestion`, which is meant to arrive in the Claude app with a
 push. That is not yet confirmed on a host. A question left unanswered for two hours is escalated
-by the service as tier 2 regardless.
+by the service as tier 2 regardless. While a question is open, a reply on the issue is held and
+delivered after the question is answered, and the context handoff request waits too.
 
 Implementer and fix sessions still use `linear-agents escalate`, with a default, for reversible
 choices. Tester and reviewer sessions are not on Remote Control and escalate with `--waiting` for

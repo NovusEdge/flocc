@@ -172,14 +172,17 @@ refuses the parameter.
    is allowed without logging. Otherwise the gate reads its state under a `flock` on
    `<state_dir>/launches.jsonl.lock` and refuses when any of these holds:
    - the call comes from inside a subagent (`agent_id` present);
-   - `tool_input.model` is set;
+   - `tool_input.model` or `tool_input.effort` is set (the reason says to retry without it);
    - `tool_input.team_name` or `tool_input.name` is set (a teammate);
    - `tool_input.isolation` is set;
    - `subagent_type` is outside the phase's allowed list, unless granted; a missing
      `subagent_type` counts as `general-purpose`;
-   - the run has used its launches, unless granted;
+   - it is `general-purpose` or a workflow that is granted but was not in the grants the session
+     was launched with (`LINEAR_AGENTS_LAUNCH_GRANTS`): rule `next-session`;
+   - the run has used its launches, unless granted; a granted workflow spends one launch;
    - the phase's running count is at its limit;
-   - it is a `Workflow` call that no grant names;
+   - it is a `Workflow` call that no grant names, or a granted workflow already started in this
+     run;
    - `LINEAR_AGENTS_PHASE` is unset or unknown.
    Otherwise it allows the launch and logs it. A missing or unparseable `grants.json` counts as no
    grants. The gate makes no network call and does not open the ledger.
@@ -249,7 +252,9 @@ default, so the run does not stall.
   the question text, and a `PostToolUse` hook on `AskUserQuestion` removes it.
 - The supervisor checks `asking` on each tick; a question older than two hours is sent once as a
   tier 2 escalation with the question text, in case the push did not reach me. My answer in the
-  app or on Linear both unblock it: the comment is forwarded into the session as now.
+  app or on Linear both unblock it. While `asking` exists, the supervisor neither forwards a
+  Linear reply into the pane nor types the handoff request, since keystrokes could select an
+  option in the dialog; a reply is held and delivered once the question is answered.
 - The wall clock keeps running while a question waits.
 
 ## Context: one compaction, then handoff
@@ -321,6 +326,15 @@ on them:
 - The exact spelling of `onFailure`; the gate's own exit 2 does not depend on it.
 - Whether parallel `PreToolUse` calls run concurrently; the `flock` makes the gate correct either
   way.
+- Whether `SubagentStop` carries `agent_type`: a catalogue agent's `stop` line in `launches.jsonl`
+  needs a non-empty `what` to free its slot.
+- What keystrokes do in an open `AskUserQuestion` dialog in a host session. The hold on forwarded
+  comments and handoff requests while `asking` exists assumes they can select an option; if they
+  cannot, the hold can go.
+- Whether a failed `Agent` call (refused by a permission rule after the gate allowed it) fires
+  `PostToolUseFailure`.
+- Whether the `Workflow` tool's `name` is a free label the agent chooses. If so, a `workflow
+  <name>` grant does not restrict what runs.
 
 ## Testing
 
