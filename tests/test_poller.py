@@ -8,6 +8,7 @@ from linear_agents import ledger
 from linear_agents.config import RepoConfig, load
 from linear_agents.context import state_dir
 from linear_agents.escalation import Notifier
+from linear_agents.grants import Grants, for_phase, set_block
 from linear_agents.linear import BOT_PREFIX, Comment, Issue, LinearError
 from linear_agents.poller import (
     forward_comments,
@@ -354,6 +355,63 @@ def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
     rt.sessions.alive_names.add("NF-1-test")
     forward_comments(rt)
     assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
+
+
+def test_owner_and_steer_author_allow_comments_grant_for_the_running_phase(rt):
+    rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "go ahead\nallow: launches 4", "2026-10-09T10:00:00Z", mine=True),
+            Comment("c2", "allow: agent code-mapper", "2026-10-09T10:01:00Z", author="hermes-id"),
+            Comment("c3", "allow: agent general-purpose", "2026-10-09T10:02:00Z", author="x"),
+        ]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    forward_comments(rt)
+    path = state_dir(rt.cfg, "NF-1") / "grants.json"
+    assert for_phase(path, "test") == Grants(launches=4, agents=("code-mapper",))
+    assert for_phase(path, "impl").launches is None
+    assert rt.sessions.sent[0][1].startswith("The owner replied on Linear: go ahead")
+
+
+def test_bad_allow_comment_is_answered_once_and_keeps_grants(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "allow: launches 9", "2026-10-09T10:00:00Z", mine=True),
+            Comment("c2", "allow: launches lots", "2026-10-09T10:01:00Z", mine=True),
+        ]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    forward_comments(rt)
+    # Real Linear returns each comment once (last_comment_at advances); PollLinear ignores it.
+    assert for_phase(state_dir(rt.cfg, "NF-1") / "grants.json", "test").launches == 9
+    replies = [body for _, body in rt.linear.comments if "launches lots" in body]
+    assert len(replies) == 1
+
+
+def test_grants_wait_for_a_live_session(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True)]
+    }
+    forward_comments(rt)  # session down: nothing applied, nothing advanced
+    assert not (state_dir(rt.cfg, "NF-1") / "grants.json").exists()
+
+
+def test_a_new_claim_starts_without_the_last_claims_state(rt):
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir(parents=True)
+    from_before = Grants(launches=5)
+    set_block(d / "grants.json", from_before)
+    for name in ("scratchpads", "compacted", "asking"):
+        (d / name).write_text("x")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    for name in ("scratchpads", "compacted", "asking"):
+        assert not (d / name).exists()
+    assert for_phase(d / "grants.json", "impl").launches is None
 
 
 def test_escalations_sent_before_a_failure_are_not_resent(rt):
