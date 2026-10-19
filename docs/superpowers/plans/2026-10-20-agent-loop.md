@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Host agent sessions delegate only to catalogue subagents within per-run, per-phase budgets enforced by a fail-closed gate, with grants from the agent block or owner comments, one compaction before handoff, an allowlisted plugin set, no-TUI Remote Control and scratchpad cleanup.
+**Goal:** Host agent sessions delegate only to catalogue subagents within per-run, per-phase budgets enforced by a fail-closed gate, take grants from the agent block or owner comments, ask blocking questions in the Claude app, compact once before handoff, load an allowlisted plugin set, enable Remote Control without the TUI and clean up their scratchpads.
 
-**Architecture:** A pure decision module (`gate.py`) holds the catalogue budgets and rules; a thin CLI wraps it as Claude Code hooks (`gate`, `gate --stopped`, `session-start`) that read and append `<state_dir>/launches.jsonl` under a `flock`. Grants live in `<state_dir>/grants.json`, written by the supervisor from the agent block at launch and by `forward_comments` from owner comments. `claude_argv` and `launch()` add the environment, deny rules and plugin overrides; the installer gains the plugin allowlist, settings and a tmpfiles step.
+**Architecture:** A pure decision module (`gate.py`) holds the catalogue budgets and rules; a thin CLI wraps it as Claude Code hooks (`gate`, `gate --stopped`, `gate --answered`, `session-start`) that read and append `<state_dir>/launches.jsonl` under a `flock`. Grants live in `<state_dir>/grants.json` (`grants.py`), written by the supervisor from the agent block and by `forward_comments` from owner comments, and resolved per phase. `claude_argv` and `launch()` add the environment, deny rules and plugin overrides; the supervisor gates the handoff on a compaction marker and escalates stale questions; the installer gains the plugin allowlist, settings and a tmpfiles step.
 
-**Tech Stack:** Python 3.13 (uv, pytest, ruff, pyrefly), Go installer (`go test`), Claude Code 2.1.295+ hooks and plugin agents.
+**Tech Stack:** Python 3.13 (uv, pytest, ruff with line length 100, pyrefly), Go installer (`go test`), Claude Code 2.1.295+ hooks and plugin agents.
 
 **Spec:** `docs/superpowers/specs/2026-10-20-agent-loop-design.md`
 
@@ -16,21 +16,23 @@
 - Claude Code minimum on hosts: 2.1.295 (was 2.1.293).
 - Catalogue agent names are `linear-agents:<name>`; the gate also accepts the bare `<name>`.
 - Budgets, verbatim: test 2 launches / 2 running (`source-finder`, `source-reader`); impl 10 / 4 (`task-implementer`, `wave-reviewer`, `fix-rereviewer`, `plan-reviewer`, `code-mapper`, `source-finder`, `source-reader`); fix 2 / 1 (`task-implementer`, `fix-rereviewer`); review 0 / 0.
-- Models, verbatim: `source-finder` haiku; `source-reader`, `code-mapper`, `task-implementer`, `fix-rereviewer` sonnet; `plan-reviewer`, `wave-reviewer` opus.
+- Models and effort, verbatim: `source-finder` haiku/low; `source-reader`, `code-mapper`, `task-implementer`, `fix-rereviewer` sonnet/medium; `plan-reviewer`, `wave-reviewer` opus/high.
 - Do not set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`.
-- Grants come only from the agent block, the owner's comments (`comment.mine`) and `steer_authors`.
-- The gate makes no network call and does not open the ledger.
-- Scratchpad cleanup deletes only paths under `/tmp/claude-`.
+- Grants come only from the agent block, the owner's comments (`comment.mine`) and `steer_authors`. A comment `launches` grant applies to the phase running when it arrives; a block `launches` grant applies to `impl`; other grants apply to the claim. A comment grant wins over the block.
+- The gate makes no network call, does not open the ledger, and refuses (exit 2) on any error of its own.
+- Scratchpad cleanup deletes only `/tmp/claude-<uid>/<a>/<b>/<c...>` paths (three or more levels below the uid root).
+- A question unanswered for 7200 s becomes one tier 2 escalation.
+- Put every import at the top of its module, including in tests (ruff E402); one statement per line (E702).
 - Commits: `git commit -s`, no `Co-Authored-By`, no AI attribution.
 - Every task ends green on `uv run pytest -q`, `uv run ruff check`, `uv run ruff format --check`, `uv run pyrefly check` and, for Go tasks, `go test ./...`.
 
 ## Review Focus
 
 1. A launch naming `task-implementer` without the `linear-agents:` prefix must be treated as the same catalogue agent, not refused as unknown (Task 2 test `test_bare_name_matches_catalogue`).
-2. A truncated last line in `launches.jsonl` (a hook killed mid-write) must not crash the gate or the counts; it is skipped (Task 3 test `test_gate_skips_a_torn_log_line`).
-3. Two gate calls racing for the last launch slot must not both be allowed (Task 3 test `test_concurrent_gates_share_the_last_slot`).
-4. An owner comment with `Allow:` in another case, or `allow:` after other text on the line, follows one rule: only a line that starts with `allow:` (case-insensitive, after leading spaces) grants (Task 1 test `test_allow_lines_only_at_line_start`).
-5. A recorded scratchpad path outside `/tmp/claude-` (a corrupted or hand-edited record) must never be deleted (Task 8 test `test_cleanup_never_deletes_outside_tmp_claude`).
+2. A truncated last line in `launches.jsonl` (a hook killed mid-write) must neither crash the gate nor swallow the next entry (Task 3 test `test_torn_line_is_skipped_and_the_next_entry_kept`).
+3. Two separate processes racing for the last launch slot must not both be allowed (Task 3 test `test_processes_racing_for_the_last_slot`).
+4. An owner comment with `Allow:` in another case is a grant; `allow:` after other text on a line is not (Task 1 test `test_allow_lines_only_at_line_start`).
+5. A recorded scratchpad path that is the uid root, a project directory, outside the tree, or blank must never be deleted (Task 8 test `test_cleanup_only_removes_full_session_paths`).
 
 ---
 
@@ -39,40 +41,51 @@
 **Files:**
 - Create: `src/linear_agents/grants.py`
 - Modify: `src/linear_agents/agentblock.py` (`_KEYS`, `IssueSettings`, `parse_settings`, `settings_from_json`)
-- Test: `tests/test_grants.py`, `tests/test_agentblock.py`
+- Test: `tests/test_grants.py` (create), `tests/test_agentblock.py`
 
 **Interfaces:**
 - Produces:
   - `class GrantError(ValueError)`
   - `@dataclass(frozen=True) class Grants: launches: int | None = None; agents: tuple[str, ...] = (); workflows: tuple[str, ...] = (); fix_rounds: int | None = None`
-  - `parse_allow(text: str) -> Grants` (raises `GrantError`)
-  - `allow_lines(body: str) -> list[str]` (the text after `allow:` for each granting line)
-  - `merge(a: Grants, b: Grants) -> Grants` (b's numbers win when set; names unioned, order kept)
-  - `read(path: Path) -> Grants` (missing or unparseable file → `Grants()`)
-  - `write(path: Path, g: Grants) -> None`
-  - `IssueSettings.allow: str | None = None` (raw `allow` text, validated at parse)
+  - `parse_allow(text: str) -> Grants` (raises `GrantError` whose message contains the offending item)
+  - `allow_lines(body: str) -> list[str]`
+  - `merge(a: Grants, b: Grants) -> Grants` (b's numbers win when set; names unioned in order)
+  - `set_block(path: Path, g: Grants) -> None` (records the agent block's grants; keeps comment grants)
+  - `add_comment(path: Path, g: Grants, phase: str) -> None` (merges a comment's grants; its `launches` is stored for `phase`)
+  - `for_phase(path: Path, phase: str) -> Grants` (missing or corrupt file → `Grants()`)
+  - `IssueSettings.allow: str | None = None`
 
 - [ ] **Step 1: Write the failing tests**
 
 `tests/test_grants.py`:
 
 ```python
-import json
-
 import pytest
 
-from linear_agents.grants import GrantError, Grants, allow_lines, merge, parse_allow, read, write
+from linear_agents.grants import (
+    GrantError,
+    Grants,
+    add_comment,
+    allow_lines,
+    for_phase,
+    merge,
+    parse_allow,
+    set_block,
+)
 
 
 def test_parse_allow_reads_every_item():
-    g = parse_allow("launches 10, agent general-purpose, workflow sdd-waves, fix-rounds 2")
-    assert g == Grants(launches=10, agents=("general-purpose",), workflows=("sdd-waves",), fix_rounds=2)
+    g = parse_allow("launches 10, agent general-purpose, workflow big-build, fix-rounds 2")
+    assert g == Grants(
+        launches=10, agents=("general-purpose",), workflows=("big-build",), fix_rounds=2
+    )
 
 
-def test_parse_allow_rejects_unknown_and_malformed_items():
-    for bad in ("launches ten", "agents x", "fix-rounds", "workflow"):
-        with pytest.raises(GrantError):
-            parse_allow(bad)
+@pytest.mark.parametrize("bad", ["launches ten", "launches ²", "agents x", "fix-rounds", "workflow"])
+def test_parse_allow_errors_name_the_item(bad):
+    with pytest.raises(GrantError, match=bad.split()[0]) as exc:
+        parse_allow(bad)
+    assert bad in str(exc.value)
 
 
 def test_allow_lines_only_at_line_start():
@@ -86,21 +99,32 @@ def test_merge_later_numbers_win_and_names_union():
     assert merge(a, b) == Grants(launches=8, agents=("a", "b"), fix_rounds=2)
 
 
-def test_read_missing_or_corrupt_is_no_grants(tmp_path):
-    assert read(tmp_path / "none.json") == Grants()
+def test_missing_or_corrupt_file_is_no_grants(tmp_path):
+    assert for_phase(tmp_path / "none.json", "impl") == Grants()
     bad = tmp_path / "grants.json"
     bad.write_text("{half")
-    assert read(bad) == Grants()
+    assert for_phase(bad, "impl") == Grants()
 
 
-def test_write_then_read_round_trips(tmp_path):
-    g = Grants(launches=3, workflows=("sdd-waves",))
-    write(tmp_path / "grants.json", g)
-    assert read(tmp_path / "grants.json") == g
-    assert json.loads((tmp_path / "grants.json").read_text())["launches"] == 3
+def test_block_launches_apply_to_impl_only(tmp_path):
+    p = tmp_path / "grants.json"
+    set_block(p, Grants(launches=14, agents=("code-mapper",)))
+    assert for_phase(p, "impl") == Grants(launches=14, agents=("code-mapper",))
+    assert for_phase(p, "test") == Grants(agents=("code-mapper",))
+
+
+def test_comment_launches_are_scoped_to_their_phase_and_beat_the_block(tmp_path):
+    p = tmp_path / "grants.json"
+    set_block(p, Grants(launches=10, fix_rounds=1))
+    add_comment(p, Grants(launches=16, fix_rounds=2), "impl")
+    add_comment(p, Grants(launches=3), "fix")
+    set_block(p, Grants(launches=10, fix_rounds=1))  # a relaunch rewrites the block
+    assert for_phase(p, "impl") == Grants(launches=16, fix_rounds=2)
+    assert for_phase(p, "fix").launches == 3
+    assert for_phase(p, "test").launches is None
 ```
 
-Add to `tests/test_agentblock.py`:
+Add to `tests/test_agentblock.py` (imports at the top of the file):
 
 ```python
 def test_allow_key_is_kept_raw_and_validated():
@@ -110,8 +134,6 @@ def test_allow_key_is_kept_raw_and_validated():
     with pytest.raises(BlockError, match="allow"):
         parse_settings("```agent\nallow: launches lots\n```")
 ```
-
-(Import `settings_from_json`, `settings_to_json` and `BlockError` in that file if not already imported.)
 
 - [ ] **Step 2: Run the tests to see them fail**
 
@@ -126,10 +148,11 @@ Expected: FAIL, `ModuleNotFoundError: linear_agents.grants` and `unknown keys ['
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 _LINE = re.compile(r"^[ \t]*allow:[ \t]*(.+)$", re.IGNORECASE | re.MULTILINE)
+_NUMBER = re.compile(r"[0-9]+")
 
 
 class GrantError(ValueError):
@@ -144,12 +167,6 @@ class Grants:
     fix_rounds: int | None = None
 
 
-def _count(word: str, value: str) -> int:
-    if not value.isdigit():
-        raise GrantError(f"allow: {word} needs a number, got {value!r}")
-    return int(value)
-
-
 def parse_allow(text: str) -> Grants:
     launches = fix_rounds = None
     agents: list[str] = []
@@ -159,10 +176,13 @@ def parse_allow(text: str) -> Grants:
             continue
         word, _, value = item.partition(" ")
         value = value.strip()
-        if word == "launches":
-            launches = _count(word, value)
-        elif word == "fix-rounds":
-            fix_rounds = _count(word, value)
+        if word in ("launches", "fix-rounds"):
+            if not _NUMBER.fullmatch(value):
+                raise GrantError(f"allow: {item!r} needs a whole number")
+            if word == "launches":
+                launches = int(value)
+            else:
+                fix_rounds = int(value)
         elif word in ("agent", "workflow") and value and " " not in value:
             (agents if word == "agent" else workflows).append(value)
         else:
@@ -187,41 +207,89 @@ def merge(a: Grants, b: Grants) -> Grants:
     )
 
 
-def read(path: Path) -> Grants:
-    # The gate fails closed on its own errors, so a damaged file must read as "no grants",
-    # not raise.
+def _load(path: Path) -> dict:
+    # The gate refuses on its own errors, so a damaged file reads as "no grants", never raises.
     try:
         raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _save(path: Path, raw: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(raw))
+    os.replace(tmp, path)
+
+
+def _grants(raw: dict) -> Grants:
+    try:
         return Grants(
             launches=raw.get("launches"),
             agents=tuple(raw.get("agents", ())),
             workflows=tuple(raw.get("workflows", ())),
             fix_rounds=raw.get("fix_rounds"),
         )
-    except (OSError, ValueError, AttributeError, TypeError):
+    except (AttributeError, TypeError):
         return Grants()
 
 
-def write(path: Path, g: Grants) -> None:
-    tmp = path.with_name(f"{path.name}.tmp")
-    tmp.write_text(json.dumps(asdict(g)))
-    os.replace(tmp, path)
+def _without_launches(g: Grants) -> Grants:
+    return Grants(None, g.agents, g.workflows, g.fix_rounds)
+
+
+def set_block(path: Path, g: Grants) -> None:
+    raw = _load(path)
+    raw["block"] = {
+        "launches": g.launches,
+        "agents": list(g.agents),
+        "workflows": list(g.workflows),
+        "fix_rounds": g.fix_rounds,
+    }
+    _save(path, raw)
+
+
+def add_comment(path: Path, g: Grants, phase: str) -> None:
+    raw = _load(path)
+    c = raw.get("comments") if isinstance(raw.get("comments"), dict) else {}
+    launches = c.get("launches") if isinstance(c.get("launches"), dict) else {}
+    if g.launches is not None:
+        launches[phase] = g.launches
+    merged = merge(_grants({**c, "launches": None}), _without_launches(g))
+    raw["comments"] = {
+        "launches": launches,
+        "agents": list(merged.agents),
+        "workflows": list(merged.workflows),
+        "fix_rounds": merged.fix_rounds,
+    }
+    _save(path, raw)
+
+
+def for_phase(path: Path, phase: str) -> Grants:
+    raw = _load(path)
+    block = _grants(raw.get("block") or {})
+    comments_raw = raw.get("comments") if isinstance(raw.get("comments"), dict) else {}
+    launches = comments_raw.get("launches")
+    per_phase = launches if isinstance(launches, dict) else {}
+    comments = _grants({**comments_raw, "launches": per_phase.get(phase)})
+    # A launch grant in the agent block is for the implementer, which spends the budget.
+    base = block if phase == "impl" else _without_launches(block)
+    return merge(base, comments)
 ```
 
-In `src/linear_agents/agentblock.py`: add `"allow"` to `_KEYS`; add `allow: str | None = None` to `IssueSettings`; in `parse_settings`, before the `return`:
+In `src/linear_agents/agentblock.py`: add `"allow"` to `_KEYS`; add `allow: str | None = None` to `IssueSettings`; add `from linear_agents.grants import GrantError, parse_allow` to the imports; in `parse_settings`, before the `return`:
 
 ```python
     allow = values.get("allow") or None
     if allow is not None:
-        from linear_agents.grants import GrantError, parse_allow
-
         try:
             parse_allow(allow)
         except GrantError as exc:
             raise BlockError(f"agent block: {exc}") from exc
 ```
 
-and pass `allow=allow` in the returned `IssueSettings`. In `settings_from_json`, add `allow=raw.get("allow")`.
+pass `allow=allow` in the returned `IssueSettings`, and in `settings_from_json` add `allow=raw.get("allow")`.
 
 - [ ] **Step 4: Run the tests**
 
@@ -232,7 +300,7 @@ Expected: PASS
 
 ```bash
 git add src/linear_agents/grants.py src/linear_agents/agentblock.py tests/test_grants.py tests/test_agentblock.py
-git commit -s -m "Parse subagent grants from the agent block"
+git commit -s -m "Parse subagent grants and scope launch grants to a phase"
 ```
 
 ---
@@ -241,18 +309,17 @@ git commit -s -m "Parse subagent grants from the agent block"
 
 **Files:**
 - Create: `src/linear_agents/gate.py`
-- Test: `tests/test_gate.py`
+- Test: `tests/test_gate.py` (create)
 
 **Interfaces:**
-- Consumes: `Grants` from Task 1.
+- Consumes: `Grants` (Task 1).
 - Produces:
   - `@dataclass(frozen=True) class Budget: agents: tuple[str, ...]; launches: int; running: int`
-  - `BUDGETS: dict[str, Budget]`
-  - `PREFIX = "linear-agents:"`
-  - `@dataclass(frozen=True) class Decision: allowed: bool; rule: str; reason: str = ""`
-  - `decide(payload: dict, phase: str | None, grants: Grants, launched: int, running: int, refused_rules: set[str]) -> Decision`
-    - `launched`: allowed launches in this run; `running`: those not yet stopped; `refused_rules`: rules already refused in this run.
-  - `ESCALATE` (the escalation command template, used in reasons)
+  - `BUDGETS: dict[str, Budget]`; `CATALOGUE: frozenset[str]` (every agent in any budget)
+  - `PREFIX = "linear-agents:"`; `GATED_TOOLS = frozenset({"Agent", "Task", "Workflow"})`
+  - `@dataclass(frozen=True) class Decision: allowed: bool; rule: str; what: str = ""; reason: str = ""`
+  - `subject(payload: dict) -> str` (the bare agent name, `general-purpose` when missing, or the workflow name)
+  - `decide(payload: dict, phase: str | None, grants: Grants, launched: int, running: int, refused: set[tuple[str, str]]) -> Decision` — `refused` holds `(rule, subject)` pairs already refused in this run.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -279,6 +346,10 @@ def test_bare_name_matches_catalogue():
     assert d(agent("task-implementer")).allowed
 
 
+def test_tools_outside_the_gate_are_allowed():
+    assert d({"tool_name": "TaskCreate", "tool_input": {}}, phase=None).allowed
+
+
 def test_call_from_inside_a_subagent_is_refused():
     p = agent()
     p["agent_id"] = "a1"
@@ -289,9 +360,10 @@ def test_per_call_model_is_refused():
     assert d(agent(model="opus")).rule == "model"
 
 
-def test_teammates_are_refused():
+def test_teammates_and_isolation_are_refused():
     assert d(agent(team_name="t")).rule == "teammate"
     assert d(agent(name="helper")).rule == "teammate"
+    assert d(agent(isolation="worktree")).rule == "isolation"
 
 
 def test_missing_subagent_type_is_general_purpose():
@@ -317,11 +389,11 @@ def test_running_limit():
 
 
 def test_workflow_needs_a_named_grant():
-    wf = {"tool_name": "Workflow", "tool_input": {"name": "sdd-waves"}}
+    wf = {"tool_name": "Workflow", "tool_input": {"name": "big-build"}}
     assert d(wf).rule == "workflow"
-    assert d(wf, grants=Grants(workflows=("sdd-waves",))).allowed
+    assert d(wf, grants=Grants(workflows=("big-build",))).allowed
     unnamed = {"tool_name": "Workflow", "tool_input": {"script": "..."}}
-    assert d(unnamed, grants=Grants(workflows=("sdd-waves",))).rule == "workflow"
+    assert d(unnamed, grants=Grants(workflows=("big-build",))).rule == "workflow"
 
 
 def test_unknown_or_missing_phase_is_refused():
@@ -333,11 +405,13 @@ def test_review_phase_allows_nothing():
     assert d(agent("linear-agents:source-finder"), phase="review").rule == "not-allowed"
 
 
-def test_first_refusal_points_at_escalate_and_a_repeat_says_stop():
+def test_repeat_refusal_is_keyed_by_rule_and_agent():
     first = d(agent(), launched=99)
     assert "linear-agents escalate" in first.reason
-    again = d(agent(), launched=99, refused={"launches"})
+    again = d(agent(), launched=99, refused={("launches", "task-implementer")})
     assert "already escalated" in again.reason and "escalate --tier" not in again.reason
+    other = d(agent("code-mapper"), launched=99, refused={("launches", "task-implementer")})
+    assert "linear-agents escalate" in other.reason
 ```
 
 - [ ] **Step 2: Run the tests to see them fail**
@@ -356,6 +430,7 @@ from linear_agents.grants import Grants
 
 PREFIX = "linear-agents:"
 GENERAL = "general-purpose"
+GATED_TOOLS = frozenset({"Agent", "Task", "Workflow"})
 ESCALATE = (
     "If the run needs it, escalate once: linear-agents escalate --tier 2 --cause grant:{rule}"
     " --summary '<why it is needed>' --default '<doing it without>' --deadline-min 120,"
@@ -371,38 +446,37 @@ class Budget:
 
 
 _RESEARCH = ("source-finder", "source-reader")
+_IMPL = ("task-implementer", "wave-reviewer", "fix-rereviewer", "plan-reviewer", "code-mapper")
 BUDGETS = {
     "test": Budget(_RESEARCH, 2, 2),
-    "impl": Budget(
-        (
-            "task-implementer",
-            "wave-reviewer",
-            "fix-rereviewer",
-            "plan-reviewer",
-            "code-mapper",
-            *_RESEARCH,
-        ),
-        10,
-        4,
-    ),
+    "impl": Budget((*_IMPL, *_RESEARCH), 10, 4),
     "fix": Budget(("task-implementer", "fix-rereviewer"), 2, 1),
     "review": Budget((), 0, 0),
 }
+CATALOGUE = frozenset(a for b in BUDGETS.values() for a in b.agents)
 
 
 @dataclass(frozen=True)
 class Decision:
     allowed: bool
     rule: str
+    what: str = ""
     reason: str = ""
 
 
-def _refuse(rule: str, why: str, refused: set[str]) -> Decision:
-    if rule in refused:
+def subject(payload: dict) -> str:
+    args = payload.get("tool_input") or {}
+    if payload.get("tool_name") == "Workflow":
+        return str(args.get("name") or "")
+    return str(args.get("subagent_type") or GENERAL).removeprefix(PREFIX)
+
+
+def _refuse(rule: str, what: str, why: str, refused: set[tuple[str, str]]) -> Decision:
+    if (rule, what) in refused:
         tail = "This was already escalated in this run; do not retry it or escalate again."
     else:
         tail = ESCALATE.format(rule=rule)
-    return Decision(False, rule, f"linear-agents gate: {why} {tail}")
+    return Decision(False, rule, what, f"linear-agents gate: {why} {tail}")
 
 
 def decide(
@@ -411,36 +485,40 @@ def decide(
     grants: Grants,
     launched: int,
     running: int,
-    refused_rules: set[str],
+    refused: set[tuple[str, str]],
 ) -> Decision:
+    tool = payload.get("tool_name")
+    if tool not in GATED_TOOLS:
+        return Decision(True, "ignored")
+    what = subject(payload)
     budget = BUDGETS.get(phase or "")
     if budget is None:
-        return _refuse("phase", f"no budget for phase {phase!r}.", refused_rules)
+        return _refuse("phase", what, f"no budget for phase {phase!r}.", refused)
     if payload.get("agent_id"):
-        return _refuse("nested", "subagents may not start subagents or workflows.", refused_rules)
+        return _refuse("nested", what, "subagents may not start agents or workflows.", refused)
     args = payload.get("tool_input") or {}
-    if payload.get("tool_name") == "Workflow":
-        name = args.get("name")
-        if not name or name not in grants.workflows:
-            return _refuse("workflow", f"workflow {name!r} has no grant.", refused_rules)
-        return Decision(True, "allowed")
+    if tool == "Workflow":
+        if not what or what not in grants.workflows:
+            return _refuse("workflow", what, f"workflow {what!r} has no grant.", refused)
+        return Decision(True, "allowed", what)
     if args.get("model"):
-        return _refuse("model", "agent files fix the model; drop the model parameter.", refused_rules)
+        return _refuse("model", what, "agent files fix the model; drop `model`.", refused)
     if args.get("team_name") or args.get("name"):
-        return _refuse("teammate", "named teammates are not allowed in host sessions.", refused_rules)
-    sub = (args.get("subagent_type") or GENERAL).removeprefix(PREFIX)
-    if sub not in budget.agents and sub not in grants.agents:
-        allowed = ", ".join(PREFIX + a for a in budget.agents) or "none"
-        return _refuse("not-allowed", f"{sub} is not allowed in the {phase} phase (allowed: {allowed}).", refused_rules)
+        return _refuse("teammate", what, "named teammates are not allowed here.", refused)
+    if args.get("isolation"):
+        return _refuse("isolation", what, "agents share the claimed worktree.", refused)
+    if what not in budget.agents and what not in grants.agents:
+        names = ", ".join(PREFIX + a for a in budget.agents) or "none"
+        why = f"{what} is not allowed in the {phase} phase (allowed: {names})."
+        return _refuse("not-allowed", what, why, refused)
     limit = grants.launches if grants.launches is not None else budget.launches
     if launched >= limit:
-        return _refuse("launches", f"the {phase} phase has used its {limit} launches.", refused_rules)
+        return _refuse("launches", what, f"the {phase} phase used its {limit} launches.", refused)
     if running >= budget.running:
-        return _refuse("running", f"{running} agents are still running; wait for one to finish.", refused_rules)
-    return Decision(True, "allowed")
+        why = f"{running} agents are still running; wait for one to finish."
+        return _refuse("running", what, why, refused)
+    return Decision(True, "allowed", what)
 ```
-
-(Wrap any line over the repo's ruff line length when formatting.)
 
 - [ ] **Step 4: Run the tests**
 
@@ -456,85 +534,122 @@ git commit -s -m "Decide subagent launches against per-phase budgets"
 
 ---
 
-### Task 3: Gate hook commands and the launch log
+### Task 3: Gate hook commands, the launch log and status
 
 **Files:**
-- Modify: `src/linear_agents/gate.py` (add the log and hook entry points)
-- Modify: `src/linear_agents/cli.py` (`gate`, `session-start` commands; `context` prints grants)
-- Test: `tests/test_gate.py`, `tests/test_cli.py`
+- Modify: `src/linear_agents/gate.py` (log and hook entry points), `src/linear_agents/cli.py` (`gate`, `session-start`; `context` prints grants; `status` prints launches), `src/linear_agents/status.py` (`_claim_row`)
+- Test: `tests/test_gate.py`, `tests/test_cli.py`, `tests/test_status.py`
 
 **Interfaces:**
-- Consumes: `decide`, `BUDGETS` (Task 2); `grants.read` (Task 1).
+- Consumes: `decide`, `subject`, `BUDGETS`, `CATALOGUE` (Task 2); `for_phase` (Task 1).
 - Produces:
   - `LOG = "launches.jsonl"`
-  - `run_gate(payload: dict, state: Path, phase: str | None, run: str | None, now: float) -> dict | None` — returns the hook output dict to print for a refusal, `None` to allow; appends one log line either way.
-  - `record_stop(state: Path, run: str | None, now: float) -> None`
+  - `run_gate(payload: dict, state: Path, phase: str | None, run: str | None, now: float) -> str | None` — the refusal reason, or `None` to allow; logs gated calls.
+  - `record_stop(state: Path, run: str | None, now: float, agent_type: str) -> None`
   - `record_session(state: Path, run: str | None, now: float) -> None`
-  - CLI: `linear-agents gate [--stopped]` (hook stdin JSON), `linear-agents session-start` (hook stdin JSON; prints the context).
-  - Log line shape: `{"at": float, "run": str, "event": "launch"|"refused"|"stop"|"session", "what": str, "rule": str}`
+  - `launches_used(state: Path, run: str) -> int`
+  - `note_question(state: Path, payload: dict, now: float) -> None`; `clear_question(state: Path) -> None` (files `asking`, `asking-escalated`)
+  - CLI: `linear-agents gate [--stopped | --answered]`, `linear-agents session-start`.
+  - Log line: `{"at": float, "run": str|None, "event": "launch"|"refused"|"stop"|"session", "what": str, "rule": str}`
+  - Status row keys: `"launches"`, `"launch_limit"`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_gate.py`:
+Add to `tests/test_gate.py` (imports at the top):
 
 ```python
 import json
-import threading
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
-from linear_agents.gate import LOG, record_session, record_stop, run_gate
+from linear_agents.gate import (
+    LOG,
+    clear_question,
+    launches_used,
+    note_question,
+    record_session,
+    record_stop,
+    run_gate,
+)
 
 
-def lines(state):
-    return [json.loads(x) for x in (state / LOG).read_text().splitlines()]
+def events(state):
+    out = []
+    for line in (state / LOG).read_text().splitlines():
+        try:
+            out.append(json.loads(line)["event"])
+        except ValueError:
+            continue
+    return out
 
 
 def test_run_gate_logs_and_counts_per_run(tmp_path):
     for _ in range(BUDGETS["fix"].launches):
         assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
-        record_stop(tmp_path, "fix@1", 0.0)
-    out = run_gate(agent(), tmp_path, "fix", "fix@1", 0.0)
-    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        record_stop(tmp_path, "fix@1", 0.0, "linear-agents:task-implementer")
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0)
     assert run_gate(agent(), tmp_path, "fix", "fix@2", 0.0) is None, "a new run starts a new count"
-    assert [e["event"] for e in lines(tmp_path)].count("refused") == 1
+    assert launches_used(tmp_path, "fix@1") == 2
 
 
-def test_running_count_resets_at_session_start(tmp_path):
+def test_running_resets_at_session_start_not_at_compaction(tmp_path):
     assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
-    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0)["hookSpecificOutput"]
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0)  # running limit 1
     record_session(tmp_path, "fix@1", 1.0)
-    # The launch budget (2) is not spent by the refused call; the running slot came back.
     assert run_gate(agent(), tmp_path, "fix", "fix@1", 2.0) is None
 
 
-def test_gate_skips_a_torn_log_line(tmp_path):
+def test_a_workflow_stop_does_not_free_a_catalogue_slot(tmp_path):
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
+    record_stop(tmp_path, "fix@1", 1.0, "some-workflow-agent")
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 2.0)
+
+
+def test_ignored_tools_are_not_logged(tmp_path):
+    assert run_gate({"tool_name": "TaskList", "tool_input": {}}, tmp_path, "impl", "r", 0.0) is None
+    assert not (tmp_path / LOG).exists()
+
+
+def test_torn_line_is_skipped_and_the_next_entry_kept(tmp_path):
     (tmp_path / LOG).write_text('{"at": 0, "run": "fix@1", "event": "launch"}\n{"at": 1, "ru')
-    assert run_gate(agent(), tmp_path, "fix", "fix@1", 2.0) is None
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 2.0)  # 1 running already
+    assert events(tmp_path)[-1] == "refused"
 
 
-def test_concurrent_gates_share_the_last_slot(tmp_path):
-    results = []
-    threads = [
-        threading.Thread(target=lambda: results.append(run_gate(agent(), tmp_path, "test-like", "r", 0.0)))
-        for _ in range(8)
-    ]
-    BUDGETS["test-like"] = BUDGETS["fix"]
-    try:
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-    finally:
-        del BUDGETS["test-like"]
-    assert results.count(None) == 1
+def _race(state: str) -> bool:
+    return run_gate(agent(), Path(state), "fix", "fix@1", 0.0) is None
+
+
+def test_processes_racing_for_the_last_slot(tmp_path):
+    assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
+    record_stop(tmp_path, "fix@1", 0.0, "task-implementer")
+    ctx = multiprocessing.get_context("fork")
+    with ProcessPoolExecutor(max_workers=8, mp_context=ctx) as pool:
+        results = list(pool.map(_race, [str(tmp_path)] * 8))
+    assert results.count(True) == 1
+
+
+def test_question_marker(tmp_path):
+    payload = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "A or B?"}]}}
+    note_question(tmp_path, payload, 5.0)
+    assert json.loads((tmp_path / "asking").read_text()) == {"at": 5.0, "question": "A or B?"}
+    (tmp_path / "asking-escalated").touch()
+    clear_question(tmp_path)
+    assert not (tmp_path / "asking").exists() and not (tmp_path / "asking-escalated").exists()
 ```
 
-Add to `tests/test_cli.py` (follow that file's existing `main([...])` and `monkeypatch.setenv` style):
+Add to `tests/test_cli.py` (imports `io`, `json` at the top):
 
 ```python
-def test_gate_command_denies_with_hook_json(tmp_path, monkeypatch, capsys):
+def gate_env(monkeypatch, tmp_path, phase="review"):
     monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "review")
-    monkeypatch.setenv("LINEAR_AGENTS_RUN", "review@1")
+    monkeypatch.setenv("LINEAR_AGENTS_PHASE", phase)
+    monkeypatch.setenv("LINEAR_AGENTS_RUN", f"{phase}@1")
+
+
+def test_gate_command_denies_with_hook_json(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path)
     payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "linear-agents:source-finder"}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert main(["gate"]) == 0
@@ -542,47 +657,91 @@ def test_gate_command_denies_with_hook_json(tmp_path, monkeypatch, capsys):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_session_start_marks_compaction_and_records_the_scratchpad(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
+def test_gate_refuses_with_exit_2_when_it_breaks(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+
+    def boom(*a, **kw):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr("linear_agents.gate.run_gate", boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Agent", "tool_input": {}}'))
+    assert main(["gate"]) == 2
+    assert "disk gone" in capsys.readouterr().err
+
+
+def test_gate_without_a_state_dir_refuses(monkeypatch, capsys):
+    monkeypatch.delenv("LINEAR_AGENTS_STATE", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Agent", "tool_input": {}}'))
+    assert main(["gate"]) == 2
+
+
+def test_gate_records_and_clears_a_question(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+    q = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Q?"}]}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
+    assert main(["gate"]) == 0 and (tmp_path / "asking").exists()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
+    assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
+
+
+def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
     (tmp_path / "status.json").write_text("{}")
-    payload = {"source": "compact", "scratchpad_dir": "/tmp/claude-1000/x/s1"}
+    payload = {"source": "compact", "scratchpad_dir": "/tmp/claude-1000/x/s1/scratchpad"}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert main(["session-start"]) == 0
     assert (tmp_path / "compacted").exists() and not (tmp_path / "status.json").exists()
-    assert (tmp_path / "scratchpads").read_text().splitlines() == ["/tmp/claude-1000/x/s1"]
+    assert (tmp_path / "scratchpads").read_text().splitlines() == [payload["scratchpad_dir"]]
+    assert not (tmp_path / "launches.jsonl").exists(), "compaction is not a new session"
 
 
-def test_context_prints_current_grants(tmp_path, monkeypatch, capsys):
-    from linear_agents.grants import Grants, write
-
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
+def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
-    write(tmp_path / "grants.json", Grants(launches=12, fix_rounds=2))
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"source": "startup"}'))
+    assert main(["session-start"]) == 0
+    assert '"event": "session"' in (tmp_path / "launches.jsonl").read_text()
+
+
+def test_context_prints_the_phase_grants(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+    set_block(tmp_path / "grants.json", Grants(launches=12, fix_rounds=2))
     main(["context"])
     out = capsys.readouterr().out
     assert "## Grants" in out and "launches 12" in out and "fix-rounds 2" in out
 ```
 
-(Add `import io` and `import json` to `tests/test_cli.py` if missing.)
+(`from linear_agents.grants import Grants, set_block` at the top.)
+
+Add to `tests/test_status.py`:
+
+```python
+def test_claims_carry_launches_against_budget(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, make("NF-1"))
+    state = cfg.state_root / "NF-1"
+    run_gate(
+        {"tool_name": "Agent", "tool_input": {"subagent_type": "source-finder"}},
+        state, "test", "test@0.0", 1.0,
+    )
+    (row,) = collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"]
+    assert (row["launches"], row["launch_limit"]) == (1, 2)
+```
+
+(`from linear_agents.gate import run_gate` at the top. `make()` gives phase `test` and `started_at=0.0`, so the run is `test@0.0`.)
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `uv run pytest tests/test_gate.py tests/test_cli.py -q`
-Expected: FAIL, `ImportError: cannot import name 'run_gate'` and `invalid choice: 'gate'`.
+Run: `uv run pytest tests/test_gate.py tests/test_cli.py tests/test_status.py -q`
+Expected: FAIL, `ImportError: cannot import name 'run_gate'`, `invalid choice: 'gate'`, `KeyError: 'launches'`.
 
 - [ ] **Step 3: Implement**
 
-Append to `src/linear_agents/gate.py`:
+Add to `src/linear_agents/gate.py` (new imports at the top: `fcntl`, `json`, `contextlib.contextmanager`, `pathlib.Path`, and `from linear_agents.grants import for_phase`):
 
 ```python
-import fcntl
-import json
-from contextlib import contextmanager
-from pathlib import Path
-
-from linear_agents import grants as grants_mod
-
 LOG = "launches.jsonl"
 
 
@@ -602,7 +761,7 @@ def _entries(state: Path, run: str | None) -> list[dict]:
     for line in path.read_text().splitlines():
         try:
             e = json.loads(line)
-        except ValueError:  # a hook killed mid-write leaves a torn last line
+        except ValueError:  # a hook killed mid-write leaves a torn line
             continue
         if isinstance(e, dict) and e.get("run") == run:
             out.append(e)
@@ -610,57 +769,72 @@ def _entries(state: Path, run: str | None) -> list[dict]:
 
 
 def _append(state: Path, entry: dict) -> None:
-    with (state / LOG).open("a") as f:
-        f.write(json.dumps(entry) + "\n")
+    path = state / LOG
+    with path.open("ab") as f:
+        # After a torn line, start on a fresh one so this entry is not glued to the fragment.
+        if f.tell() and path.read_bytes()[-1:] != b"\n":
+            f.write(b"\n")
+        f.write((json.dumps(entry) + "\n").encode())
 
 
-def _counts(entries: list[dict]) -> tuple[int, int, set[str]]:
-    launched = sum(e["event"] == "launch" for e in entries)
-    refused = {e.get("rule", "") for e in entries if e["event"] == "refused"}
-    # Running agents end with their session, so only launches since the last session start count.
-    last = max((i for i, e in enumerate(entries) if e["event"] == "session"), default=-1)
+def _counts(entries: list[dict], counted: set[str]) -> tuple[int, int, set[tuple[str, str]]]:
+    launched = sum(e.get("event") == "launch" for e in entries)
+    refused = {(e.get("rule", ""), e.get("what", "")) for e in entries if e.get("event") == "refused"}
+    # Agents end with their session, so only what happened since the last session start counts.
+    last = max((i for i, e in enumerate(entries) if e.get("event") == "session"), default=-1)
     since = entries[last + 1 :]
-    running = sum(e["event"] == "launch" for e in since) - sum(e["event"] == "stop" for e in since)
-    return launched, max(running, 0), refused
+    started = sum(e.get("event") == "launch" for e in since)
+    stopped = sum(e.get("event") == "stop" and e.get("what") in counted for e in since)
+    return launched, max(started - stopped, 0), refused
 
 
-def run_gate(payload: dict, state: Path, phase: str | None, run: str | None, now: float) -> dict | None:
-    args = payload.get("tool_input") or {}
-    what = args.get("subagent_type") or args.get("name") or payload.get("tool_name", "")
-    with _locked(state):
-        launched, running, refused = _counts(_entries(state, run))
-        g = grants_mod.read(state / "grants.json")
-        dec = decide(payload, phase, g, launched, running, refused)
-        event = "launch" if dec.allowed else "refused"
-        _append(state, {"at": now, "run": run, "event": event, "what": what, "rule": dec.rule})
-    if dec.allowed:
+def run_gate(
+    payload: dict, state: Path, phase: str | None, run: str | None, now: float
+) -> str | None:
+    if payload.get("tool_name") not in GATED_TOOLS:
         return None
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": dec.reason,
-        }
-    }
-
-
-def record_stop(state: Path, run: str | None, now: float) -> None:
     with _locked(state):
-        _append(state, {"at": now, "run": run, "event": "stop", "what": "", "rule": ""})
+        grants = for_phase(state / "grants.json", phase or "")
+        counted = set(CATALOGUE) | set(grants.agents)
+        launched, running, refused = _counts(_entries(state, run), counted)
+        dec = decide(payload, phase, grants, launched, running, refused)
+        event = "launch" if dec.allowed else "refused"
+        _append(state, {"at": now, "run": run, "event": event, "what": dec.what, "rule": dec.rule})
+    return None if dec.allowed else dec.reason
+
+
+def record_stop(state: Path, run: str | None, now: float, agent_type: str) -> None:
+    what = agent_type.removeprefix(PREFIX)
+    with _locked(state):
+        _append(state, {"at": now, "run": run, "event": "stop", "what": what, "rule": ""})
 
 
 def record_session(state: Path, run: str | None, now: float) -> None:
     with _locked(state):
         _append(state, {"at": now, "run": run, "event": "session", "what": "", "rule": ""})
-```
 
-(Move the new imports to the top of the module.)
+
+def launches_used(state: Path, run: str) -> int:
+    return sum(e.get("event") == "launch" for e in _entries(state, run))
+
+
+def note_question(state: Path, payload: dict, now: float) -> None:
+    questions = (payload.get("tool_input") or {}).get("questions") or [{}]
+    text = str(questions[0].get("question", "")) if isinstance(questions[0], dict) else ""
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "asking").write_text(json.dumps({"at": now, "question": text}))
+
+
+def clear_question(state: Path) -> None:
+    for name in ("asking", "asking-escalated"):
+        (state / name).unlink(missing_ok=True)
+```
 
 In `src/linear_agents/cli.py`:
 
 ```python
 def _hook_input() -> dict:
-    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    raw = "" if sys.stdin.isatty() else sys.stdin.read()
     try:
         data = json.loads(raw) if raw.strip() else {}
     except ValueError:
@@ -669,16 +843,35 @@ def _hook_input() -> dict:
 
 
 def cmd_gate(args) -> int:
-    from linear_agents.gate import record_stop, run_gate
+    from linear_agents import gate
 
-    state = _state_dir()
-    run = os.environ.get("LINEAR_AGENTS_RUN")
-    payload = _hook_input()
-    if args.stopped:
-        record_stop(state, run, time.time())
-        return 0
-    out = run_gate(payload, state, os.environ.get("LINEAR_AGENTS_PHASE"), run, time.time())
-    if out is not None:
+    # Exit 2 refuses a PreToolUse call in every Claude Code version, whatever the hook's
+    # onFailure setting does; any error of the gate's own must refuse, never allow.
+    try:
+        state = _state_dir()
+        run = os.environ.get("LINEAR_AGENTS_RUN")
+        payload = _hook_input()
+        if args.stopped:
+            gate.record_stop(state, run, time.time(), str(payload.get("agent_type", "")))
+            return 0
+        if args.answered:
+            gate.clear_question(state)
+            return 0
+        if payload.get("tool_name") == "AskUserQuestion":
+            gate.note_question(state, payload, time.time())
+            return 0
+        reason = gate.run_gate(payload, state, os.environ.get("LINEAR_AGENTS_PHASE"), run, time.time())
+    except Exception as exc:  # noqa: BLE001 - see above
+        print(f"linear-agents gate failed, so the launch is refused: {exc}", file=sys.stderr)
+        return 2
+    if reason is not None:
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
         print(json.dumps(out))
     return 0
 
@@ -689,10 +882,14 @@ def cmd_session_start(args) -> int:
     state = _state_dir()
     state.mkdir(parents=True, exist_ok=True)
     payload = _hook_input()
-    if payload.get("source") == "compact":
+    source = payload.get("source")
+    if source == "compact":
         # status.json still holds the pre-compaction reading; the supervisor would hand off at once.
         (state / "compacted").touch()
         (state / "status.json").unlink(missing_ok=True)
+    else:
+        # Background agents survive compaction, so only a real start resets the running count.
+        record_session(state, os.environ.get("LINEAR_AGENTS_RUN"), time.time())
     pad = payload.get("scratchpad_dir")
     if isinstance(pad, str) and pad:
         known = state / "scratchpads"
@@ -700,42 +897,50 @@ def cmd_session_start(args) -> int:
         if pad not in listed:
             with known.open("a") as f:
                 f.write(pad + "\n")
-    record_session(state, os.environ.get("LINEAR_AGENTS_RUN"), time.time())
     return cmd_context(args)
 ```
 
-`_state_dir()` raises `KeyError` when `LINEAR_AGENTS_STATE` is unset; that exit is non-zero, which the hook's `onFailure: block` turns into a refusal (Task 4).
-
-In `cmd_context`, after the peers block:
+In `cmd_context`, after the peers block (import `for_phase` from `linear_agents.grants` at the top of the module):
 
 ```python
-    from linear_agents.grants import read as read_grants
-
-    g = read_grants(state / "grants.json")
+    g = for_phase(state / "grants.json", os.environ.get("LINEAR_AGENTS_PHASE", ""))
     items = [f"launches {g.launches}"] if g.launches is not None else []
     items += [f"agent {a}" for a in g.agents] + [f"workflow {w}" for w in g.workflows]
     items += [f"fix-rounds {g.fix_rounds}"] if g.fix_rounds is not None else []
     print(f"## Grants\n\n{', '.join(items) or 'none'}.\n")
 ```
 
-Register in `COMMANDS` (`"gate": cmd_gate`, `"session-start": cmd_session_start`) and in `build_parser`:
+Register `"gate": cmd_gate` and `"session-start": cmd_session_start` in `COMMANDS`, and in `build_parser`:
 
 ```python
-    gate = add("gate", "PreToolUse hook: allow or refuse a subagent or workflow launch")
-    gate.add_argument("--stopped", action="store_true", help="SubagentStop hook: record a finished agent")
-    add("session-start", "SessionStart hook: record compaction and the scratchpad, print the context")
+    gate = add("gate", "Hook: allow or refuse a subagent or workflow launch, track questions")
+    which = gate.add_mutually_exclusive_group()
+    which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
+    which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
+    add("session-start", "Hook: record compaction and the scratchpad, print the context")
 ```
+
+In `src/linear_agents/status.py` `_claim_row` (imports `BUDGETS`, `launches_used` from `linear_agents.gate` and `for_phase` from `linear_agents.grants` at the top):
+
+```python
+    run = f"{claim.phase}@{claim.started_at}"
+    budget = BUDGETS.get(claim.phase)
+    granted = for_phase(state_dir / "grants.json", claim.phase).launches
+    limit = granted if granted is not None else (budget.launches if budget else 0)
+```
+
+and add `"launches": launches_used(state_dir, run), "launch_limit": limit` to the returned dict. In `cmd_status`, print ` launches {c['launches']}/{c['launch_limit']}` at the end of each claim line.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `uv run pytest tests/test_gate.py tests/test_cli.py -q`
+Run: `uv run pytest -q`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/linear_agents/gate.py src/linear_agents/cli.py tests/test_gate.py tests/test_cli.py
-git commit -s -m "Add the gate and session-start hook commands with a per-run launch log"
+git add src/linear_agents/gate.py src/linear_agents/cli.py src/linear_agents/status.py tests/test_gate.py tests/test_cli.py tests/test_status.py
+git commit -s -m "Add the gate and session-start hooks, a per-run launch log and status counts"
 ```
 
 ---
@@ -743,13 +948,12 @@ git commit -s -m "Add the gate and session-start hook commands with a per-run la
 ### Task 4: Plugin catalogue, hooks and skills
 
 **Files:**
-- Create: `plugin/agents/source-finder.md`, `plugin/agents/source-reader.md`, `plugin/agents/code-mapper.md`, `plugin/agents/plan-reviewer.md`, `plugin/agents/task-implementer.md`, `plugin/agents/wave-reviewer.md`, `plugin/agents/fix-rereviewer.md`
-- Modify: `plugin/hooks/hooks.json`, `plugin/skills/implementer/SKILL.md`, `plugin/skills/tester/SKILL.md`, `src/linear_agents/context.py` (`_COMMANDS`)
-- Test: `tests/test_plugin.py` (create)
+- Create: `plugin/agents/source-finder.md`, `plugin/agents/source-reader.md`, `plugin/agents/code-mapper.md`, `plugin/agents/plan-reviewer.md`, `plugin/agents/task-implementer.md`, `plugin/agents/wave-reviewer.md`, `plugin/agents/fix-rereviewer.md`, `tests/test_plugin.py`
+- Modify: `plugin/hooks/hooks.json`, `plugin/skills/implementer/SKILL.md`, `plugin/skills/tester/SKILL.md`, `plugin/skills/handoff/SKILL.md`, `plugin/skills/escalate/SKILL.md`, `src/linear_agents/context.py` (`_COMMANDS`, `phase_prompt` for `fix`)
 
 **Interfaces:**
-- Consumes: `BUDGETS`, `PREFIX` (Task 2); `gate`, `session-start` commands (Task 3).
-- Produces: agent files whose `name` matches every name in `BUDGETS`.
+- Consumes: `BUDGETS`, `CATALOGUE` (Task 2); hook commands (Task 3).
+- Produces: one agent file per name in `CATALOGUE`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -759,47 +963,54 @@ git commit -s -m "Add the gate and session-start hook commands with a per-run la
 import json
 from pathlib import Path
 
-from linear_agents.gate import BUDGETS
+from linear_agents.context import phase_prompt
+from linear_agents.gate import CATALOGUE
 
 PLUGIN = Path(__file__).parent.parent / "plugin"
-MODELS = {
-    "source-finder": "haiku",
-    "source-reader": "sonnet",
-    "code-mapper": "sonnet",
-    "plan-reviewer": "opus",
-    "task-implementer": "sonnet",
-    "wave-reviewer": "opus",
-    "fix-rereviewer": "sonnet",
+SPEC = {
+    "source-finder": ("haiku", "low"),
+    "source-reader": ("sonnet", "medium"),
+    "code-mapper": ("sonnet", "medium"),
+    "plan-reviewer": ("opus", "high"),
+    "task-implementer": ("sonnet", "medium"),
+    "wave-reviewer": ("opus", "high"),
+    "fix-rereviewer": ("sonnet", "medium"),
 }
 
 
 def frontmatter(path: Path) -> dict[str, str]:
     head = path.read_text().split("---")[1]
-    return {k.strip(): v.strip() for k, _, v in (ln.partition(":") for ln in head.splitlines()) if k.strip()}
+    pairs = (line.partition(":") for line in head.splitlines())
+    return {k.strip(): v.strip() for k, _, v in pairs if k.strip()}
 
 
-def test_every_budgeted_agent_has_a_file_with_its_model():
-    names = {a for b in BUDGETS.values() for a in b.agents}
-    assert names == MODELS.keys()
-    for name, model in MODELS.items():
+def test_every_catalogue_agent_has_a_file_with_its_model_and_effort():
+    assert set(CATALOGUE) == SPEC.keys()
+    for name, (model, effort) in SPEC.items():
         fm = frontmatter(PLUGIN / "agents" / f"{name}.md")
-        assert fm["name"] == name and fm["model"] == model
+        assert (fm["name"], fm["model"], fm["effort"]) == (name, model, effort)
 
 
 def test_reviewers_and_mappers_cannot_edit_or_run_shell():
     for name in ("code-mapper", "plan-reviewer", "wave-reviewer", "fix-rereviewer"):
-        tools = frontmatter(PLUGIN / "agents" / f"{name}.md")["tools"]
-        assert not {"Edit", "Write", "Bash"} & {t.strip() for t in tools.split(",")}
+        tools = {t.strip() for t in frontmatter(PLUGIN / "agents" / f"{name}.md")["tools"].split(",")}
+        assert not {"Edit", "Write", "Bash"} & tools
 
 
-def test_hooks_gate_fails_closed_and_session_start_uses_the_new_command():
+def test_hooks():
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
     pre = hooks["PreToolUse"][0]
-    assert pre["matcher"] == "Agent|Task|Workflow"
-    gate = pre["hooks"][0]
-    assert gate["command"] == "linear-agents gate" and gate["onFailure"] == "block"
+    assert pre["matcher"] == "Agent|Task|Workflow|AskUserQuestion"
+    assert pre["hooks"][0]["command"] == "linear-agents gate"
+    assert pre["hooks"][0]["onFailure"] == "block"
+    assert hooks["PostToolUse"][0]["matcher"] == "AskUserQuestion"
+    assert hooks["PostToolUse"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
     assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "linear-agents gate --stopped"
     assert hooks["SessionStart"][0]["hooks"][0]["command"] == "linear-agents session-start"
+
+
+def test_fix_prompt_points_at_the_fix_section():
+    assert "Fix phase" in phase_prompt("fix", "NF-1", "check output")
 ```
 
 - [ ] **Step 2: Run the test to see it fail**
@@ -807,7 +1018,7 @@ def test_hooks_gate_fails_closed_and_session_start_uses_the_new_command():
 Run: `uv run pytest tests/test_plugin.py -q`
 Expected: FAIL, `FileNotFoundError` for `plugin/agents/source-finder.md`.
 
-- [ ] **Step 3: Write the agent files, hooks and skill changes**
+- [ ] **Step 3: Write the files**
 
 `plugin/hooks/hooks.json`:
 
@@ -819,10 +1030,16 @@ Expected: FAIL, `FileNotFoundError` for `plugin/agents/source-finder.md`.
     ],
     "PreToolUse": [
       {
-        "matcher": "Agent|Task|Workflow",
+        "matcher": "Agent|Task|Workflow|AskUserQuestion",
         "hooks": [
           { "type": "command", "command": "linear-agents gate", "timeout": 10, "onFailure": "block" }
         ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ]
       }
     ],
     "SubagentStop": [
@@ -832,46 +1049,51 @@ Expected: FAIL, `FileNotFoundError` for `plugin/agents/source-finder.md`.
 }
 ```
 
-`plugin/agents/source-finder.md`:
+Agent files (each exactly as below):
+
+`plugin/agents/source-finder.md`
 
 ```markdown
 ---
 name: source-finder
 description: Find dated, URL-cited sources on one library, API or service question. Use before relying on or adding a dependency. Finds sources only; source-reader reads them.
 model: haiku
+effort: low
 tools: WebSearch, WebFetch
 maxTurns: 20
 ---
 
-You are finding sources, not writing conclusions. The question is in your task. Return at most
-eight sources as a list: URL, publication or last-updated date, and one line on what it covers.
-Prefer official docs, release notes and maintainers' posts over blogs. Today's date is in your
-task; mark anything older than a year. Do not write files. Do not start subagents.
+You are finding sources, not writing conclusions. The question and today's date are in your
+task. Return at most eight sources as a list: URL, publication or last-updated date, and one line
+on what it covers. Prefer official docs, release notes and maintainers' posts over blogs; mark
+anything older than a year. Do not write files. Do not start subagents.
 ```
 
-`plugin/agents/source-reader.md`:
+`plugin/agents/source-reader.md`
 
 ```markdown
 ---
 name: source-reader
 description: Read the sources source-finder returned and answer the stated question with citations. Use only after source-finder.
 model: sonnet
+effort: medium
 tools: WebSearch, WebFetch, Read
 maxTurns: 30
 ---
 
-Read each source in your task and answer its question. Every claim carries the URL and date it
-came from; say plainly what the sources do not settle. Keep the answer under 400 words. Do not
-write files. Do not start subagents.
+Read each source in your task and answer its question; today's date is in your task. Every claim
+carries the URL and date it came from; say plainly what the sources do not settle. Keep the
+answer under 400 words. Do not write files. Do not start subagents.
 ```
 
-`plugin/agents/code-mapper.md`:
+`plugin/agents/code-mapper.md`
 
 ```markdown
 ---
 name: code-mapper
 description: Map where something lives in a large repo before planning. Use when the plan needs paths you cannot find with a couple of searches yourself.
 model: sonnet
+effort: medium
 tools: Read, Grep, Glob
 maxTurns: 30
 ---
@@ -881,31 +1103,33 @@ sentences on how the pieces connect. Read excerpts, not whole large files. Chang
 start subagents.
 ```
 
-`plugin/agents/plan-reviewer.md`:
+`plugin/agents/plan-reviewer.md`
 
 ```markdown
 ---
 name: plan-reviewer
 description: One adversarial read of the implementer's plan, for plans of four or more tasks, before any building starts.
 model: opus
+effort: high
 tools: Read, Grep, Glob
 maxTurns: 30
 ---
 
 Review the plan at the path in your task against the issue's acceptance criteria and the tester's
 committed tests (paths in your task). Look for criteria with no task, tasks that touch the same
-paths but are scheduled in parallel, missing tests, and steps an implementer would have to guess.
-Return findings ranked blocker / should-fix / nit, each with evidence and a concrete fix. Edit
-nothing. Do not start subagents.
+paths in one wave, missing tests, a plan that will not fit its launch budget, and steps an
+implementer would have to guess. Return findings ranked blocker / should-fix / nit, each with
+evidence and a concrete fix. Edit nothing. Do not start subagents.
 ```
 
-`plugin/agents/task-implementer.md`:
+`plugin/agents/task-implementer.md`
 
 ```markdown
 ---
 name: task-implementer
 description: Implement one task of the implementer's plan from its brief file, and make the fixes a wave review asks for. Plan tasks always go through this agent, even a single one.
 model: sonnet
+effort: medium
 tools: Read, Edit, Write, Bash, Grep, Glob
 maxTurns: 80
 ---
@@ -913,17 +1137,18 @@ maxTurns: 80
 Your brief is the file named in your task; it is your requirements, including the paths you own.
 Write the test first when the brief asks for new behaviour, then the code. Edit only your paths.
 Run only the focused tests your brief names; never run Unity, long builds, training or the full
-suite. Commit only your paths with `linear-agents commit -m '<message>' -- <paths>`. Never push.
-Report what you changed and the test output. Do not start subagents.
+suite. Commit only your paths with `linear-agents commit -m '<message>' -- <paths>`, never a bare
+`git commit`. Never push. Report what you changed and the test output. Do not start subagents.
 ```
 
-`plugin/agents/wave-reviewer.md`:
+`plugin/agents/wave-reviewer.md`
 
 ```markdown
 ---
 name: wave-reviewer
 description: Review one wave of implemented tasks against their briefs, once per wave, not per task.
 model: opus
+effort: high
 tools: Read, Grep, Glob
 maxTurns: 40
 ---
@@ -934,13 +1159,14 @@ should-fix / nit, each with the file and line and a concrete fix. You write find
 implementer makes every edit. Do not start subagents.
 ```
 
-`plugin/agents/fix-rereviewer.md`:
+`plugin/agents/fix-rereviewer.md`
 
 ```markdown
 ---
 name: fix-rereviewer
 description: Verdict each finding of one fix round against the fix diff file, and nothing else.
 model: sonnet
+effort: medium
 tools: Read, Grep, Glob
 maxTurns: 20
 ---
@@ -950,20 +1176,23 @@ made worse, with the line that shows it. Review nothing outside the findings. Ed
 not start subagents.
 ```
 
-Replace the bullet list in `plugin/skills/implementer/SKILL.md` with:
+Replace the body of `plugin/skills/implementer/SKILL.md` (keep its frontmatter) with:
 
 ```markdown
 Make the committed tests pass by implementing the behavior.
 
 - Do not edit, delete or skip any file the tester committed. The service rejects the run if you
-  do. If you believe a test is wrong, do not edit it: escalate with `--tier 2 --waiting`, state
-  the test change you propose in `--summary`, and keep working only on parts that do not depend
-  on that test.
+  do. If you believe a test is wrong, do not edit it: ask the owner (see the escalate skill), state
+  the test change you propose, and keep working only on parts that do not depend on that test.
 - Claim paths before editing them: `linear-agents claim '<glob>'`. A rejected claim names the
   issue that holds it; message that session or escalate.
+- Run `linear-agents context` and read "Grants" before planning; it lists what you may do beyond
+  the defaults.
 - Plan first: write `plan.md` in your state directory with numbered tasks, the paths each task
   touches, and its tests. Tasks that share a path go in different waves; a wave holds at most four
-  tasks.
+  tasks. Fit the plan to your launch budget (10 unless a grant says otherwise: one plan review,
+  one implementer per task, one reviewer per wave, one fix and its re-review); if it cannot fit,
+  ask for `launches` before building.
 - With four or more tasks, have `linear-agents:plan-reviewer` read the plan once before building,
   and fix what it finds. With fewer, check the plan against the acceptance criteria yourself.
 - Write each task's brief to `briefs/task-N.md` in your state directory: its requirements, the
@@ -972,29 +1201,66 @@ Make the committed tests pass by implementing the behavior.
 - After each wave, write its `git diff` and test output to `waves/N.diff` and `waves/N.tests`
   in your state directory, and have one `linear-agents:wave-reviewer` review the wave.
 - Findings get one fix round: the same `task-implementer` route, then one
-  `linear-agents:fix-rereviewer` on the fix diff. A second round needs a `fix-rounds` grant (see
-  `linear-agents context`); without one, escalate what is left.
+  `linear-agents:fix-rereviewer` on the fix diff. A second round needs a `fix-rounds` grant;
+  without one, escalate what is left.
+- When you start `source-finder` or `source-reader`, put today's date in the task.
 - Do small work yourself: a change outside the plan's tasks that fits in a few lines is not a task.
-- Never pass `model` when starting an agent, never start general-purpose agents, workflows or
-  teammates, and never run `claude` from the shell. The gate refuses them and says how to ask.
+- While a wave runs, commit your own work with `linear-agents commit -m '<message>' -- <paths>`,
+  never a bare `git commit`, which would take the implementers' half-done files.
+- Never pass `model` or `isolation` when starting an agent, and never start general-purpose agents,
+  workflows or teammates unless "Grants" lists them. Never run `claude` from the shell. The gate
+  refuses these and says how to ask.
 - Run the repo's check (usually `just check`) before finishing.
 - Never push or open a PR; the service does that.
 - Finish with `linear-agents done --summary '<what changed and why, for the PR body>'`.
+
+## Fix phase
+
+When the service starts you to fix a failed check, the plan steps above do not apply. Fix the
+failure inline; if it is more than a few lines, use one `linear-agents:task-implementer` with a
+brief and one `linear-agents:fix-rereviewer` on its diff, which is all the fix phase allows. Then
+run the check and finish with `linear-agents done`.
 ```
 
 Append to `plugin/skills/tester/SKILL.md`:
 
 ```markdown
 - To look up how an unfamiliar library or API behaves, use `linear-agents:source-finder` and then
-  `linear-agents:source-reader`; you have two launches. Start no other agents.
+  `linear-agents:source-reader`, with today's date in the task; you have two launches. Start no
+  other agents.
 ```
 
-In `src/linear_agents/context.py` `_COMMANDS`, add:
+Replace the last paragraph of `plugin/skills/handoff/SKILL.md` with:
+
+```markdown
+If you started agents, wait until they have all finished before handing off; a handoff kills the
+session and every agent it is running. In `handoff.md`, also record `plan.md`'s path, the waves
+done, and the wave in progress.
+
+Commit any work in progress with `linear-agents commit -m '<message>' -- <paths>`. Then run
+`linear-agents handoff-ready` and stop.
+```
+
+In `plugin/skills/escalate/SKILL.md`, add a section after the tier table:
+
+```markdown
+## Asking the owner directly
+
+For a decision you cannot go on without (what tier 2 `--waiting` was for), ask with
+`AskUserQuestion`: the owner gets a push in the Claude app and answers there. First record it:
+`linear-agents escalate --tier 3 --cause asked:<topic> --summary '<the question>'`. Give two to
+four options with your recommendation first. If nobody answers within two hours the service
+escalates it again. For a reversible choice, do not ask: escalate with `--default` and carry on.
+```
+
+In `src/linear_agents/context.py`, add to `_COMMANDS`:
 
 ```python
-- `linear-agents commit -m '<message>' -- <paths>` to commit only your paths (task-implementer).
-- `linear-agents context` also lists your subagent grants under "Grants".
+- `linear-agents commit -m '<message>' -- <paths>` to commit only those paths.
+- "Grants" below lists what you may do beyond the defaults; the gate refuses anything else.
 ```
+
+and change the `fix` branch of `phase_prompt` to say "Follow the implementer skill's Fix phase section, fix the failure below, then run linear-agents done."
 
 - [ ] **Step 4: Run the tests**
 
@@ -1010,56 +1276,64 @@ git commit -s -m "Ship the subagent catalogue, gate hooks and skill changes in t
 
 ---
 
-### Task 5: Session settings and launch environment
+### Task 5: Config paths, session settings, launch environment and supervisor
 
 **Files:**
-- Modify: `src/linear_agents/sessions.py` (`_DENY`, `claude_argv`, new `installed_plugins`, `allowed_plugins`)
-- Modify: `src/linear_agents/supervisor.py` (`launch`, phase transitions, context check)
-- Test: `tests/test_sessions.py`, `tests/test_supervisor.py`
+- Modify: `src/linear_agents/config.py`, `tests/conftest.py` (`tmp_cfg`), `src/linear_agents/sessions.py`, `src/linear_agents/supervisor.py`
+- Test: `tests/test_sessions.py`, `tests/test_supervisor.py`, `tests/test_config.py`
 
 **Interfaces:**
-- Consumes: `Grants`, `parse_allow`, `merge`, `read`, `write` (Task 1).
+- Consumes: `set_block`, `for_phase`, `parse_allow`, `Grants` (Task 1); `clear_question` (Task 3).
 - Produces:
-  - `claude_argv(cfg, name, settings, prompt, env, claude_exe, exe, grants: Grants = Grants(), disabled_plugins: tuple[str, ...] = ())`
-  - `installed_plugins(path: Path) -> tuple[str, ...]` (ids in `installed_plugins.json`; missing or bad file → `()`)
-  - `allowed_plugins(path: Path) -> tuple[str, ...] | None` (lines of `deploy/agent-plugins.txt`; missing file → `None`, meaning "no override")
-  - `launch(rt, claim, phase, extra="", started_at: float | None = None)`; environment gains `LINEAR_AGENTS_RUN=<phase>@<started_at>`, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1`.
+  - `Config.agent_plugins_file: Path | None = None` (None → `plugin_dir.parent / "deploy" / "agent-plugins.txt"`), `Config.installed_plugins_file: Path` (default `~/.claude/plugins/installed_plugins.json`); both in `_PATH_KEYS`.
+  - `installed_plugins(path: Path) -> tuple[str, ...]`; `allowed_plugins(path: Path) -> tuple[str, ...] | None`
+  - `claude_argv(..., grants: Grants = Grants(), disabled_plugins: tuple[str, ...] = ())`
+  - `launch(rt, claim, phase, extra="", started_at: float | None = None)`; environment adds `LINEAR_AGENTS_RUN=<phase>@<start>`, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1`.
+  - `QUESTION_WAIT_S = 7200`
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_sessions.py`:
+In `tests/conftest.py` `tmp_cfg`, add to the `replace(...)`:
 
 ```python
-from linear_agents.grants import Grants
-from linear_agents.sessions import allowed_plugins, installed_plugins
+        agent_plugins_file=tmp_path / "agent-plugins.txt",
+        installed_plugins_file=tmp_path / "installed_plugins.json",
+```
 
+Add to `tests/test_config.py` `test_example_loads_with_defaults`:
 
+```python
+    assert cfg.agent_plugins_file is None
+    assert cfg.installed_plugins_file.name == "installed_plugins.json"
+```
+
+Add to `tests/test_sessions.py` (imports at the top):
+
+```python
 def settings_of(argv):
     return json.loads(argv[argv.index("--settings") + 1])
 
 
-def test_settings_deny_general_purpose_questions_and_nested_claude():
-    s = settings_of(claude_argv(CFG, "NF-1", IssueSettings(), "p", env={}, claude_exe="c", exe="x"))
+def argv_with(**kw):
+    return claude_argv(CFG, "NF-1", IssueSettings(), "p", env={}, claude_exe="c", exe="x", **kw)
+
+
+def test_settings_deny_general_purpose_and_nested_claude_but_allow_questions():
+    s = settings_of(argv_with())
     deny = s["permissions"]["deny"]
-    for rule in ("Agent(general-purpose)", "AskUserQuestion", "Bash(claude:*)"):
-        assert rule in deny
+    assert "Agent(general-purpose)" in deny and "Bash(claude:*)" in deny
+    assert "AskUserQuestion" not in deny
     assert s["disableWorkflows"] is True
 
 
 def test_grants_lift_the_matching_launch_flags():
-    g = Grants(agents=("general-purpose",), workflows=("sdd-waves",))
-    s = settings_of(claude_argv(CFG, "NF-1", IssueSettings(), "p", env={}, claude_exe="c", exe="x", grants=g))
+    s = settings_of(argv_with(grants=Grants(agents=("general-purpose",), workflows=("w",))))
     assert "Agent(general-purpose)" not in s["permissions"]["deny"]
     assert s["disableWorkflows"] is False
 
 
 def test_unlisted_plugins_are_disabled():
-    s = settings_of(
-        claude_argv(
-            CFG, "NF-1", IssueSettings(), "p", env={}, claude_exe="c", exe="x",
-            disabled_plugins=("glowup@glowup",),
-        )
-    )
+    s = settings_of(argv_with(disabled_plugins=("glowup@glowup",)))
     assert s["enabledPlugins"] == {"glowup@glowup": False}
 
 
@@ -1074,12 +1348,12 @@ def test_installed_and_allowed_plugin_files(tmp_path):
     assert allowed_plugins(tmp_path / "none.txt") is None
 ```
 
-Add to `tests/test_supervisor.py`:
+Add to `tests/test_supervisor.py` (imports at the top: `from linear_agents.grants import for_phase`; `from linear_agents.supervisor import QUESTION_WAIT_S`):
 
 ```python
 def env_of(argv):
-    i = argv.index("-i")
-    return dict(x.split("=", 1) for x in argv[i + 1 :] if "=" in x and not x.startswith("/"))
+    end = argv.index("/bin/sh")
+    return dict(x.split("=", 1) for x in argv[2:end])
 
 
 def test_phase_sessions_share_one_run_id_across_relaunches(rt):
@@ -1093,18 +1367,30 @@ def test_phase_sessions_share_one_run_id_across_relaunches(rt):
     assert env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "1"
     assert env["CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS"] == "1"
     rt.sessions.alive_names.clear()
-    supervise(rt, current(rt))  # crash relaunch of the same phase
+    supervise(rt, current(rt))  # a crash relaunch of the same phase
     assert env_of(rt.sessions.started[-1][1])["LINEAR_AGENTS_RUN"] == f"impl@{started}"
 
 
-def test_launch_writes_block_grants(rt):
+def test_launch_records_block_grants_without_beating_comment_grants(rt):
     add(rt, settings_json=settings_to_json(IssueSettings(allow="launches 12")))
+    path = state_dir(rt.cfg, "NF-1") / "grants.json"
+    from_comment = Grants(launches=20)
+    add_comment(path, from_comment, "impl")
     rt.sessions.alive_names.add("NF-1-test")
     done(rt)
     supervise(rt, current(rt))
-    from linear_agents.grants import read
+    assert for_phase(path, "impl").launches == 20
 
-    assert read(state_dir(rt.cfg, "NF-1") / "grants.json").launches == 12
+
+def test_unlisted_installed_plugins_are_disabled_at_launch(rt):
+    rt.cfg.agent_plugins_file.write_text("docket@NovusEdge\n")
+    rt.cfg.installed_plugins_file.write_text(
+        json.dumps({"plugins": {"docket@NovusEdge": [], "glowup@glowup": []}})
+    )
+    add(rt)
+    supervise(rt, current(rt))  # not alive: relaunch
+    settings = json.loads(rt.sessions.started[-1][1][rt.sessions.started[-1][1].index("--settings") + 1])
+    assert settings["enabledPlugins"] == {"glowup@glowup": False}
 
 
 def test_no_handoff_before_the_first_compaction(rt):
@@ -1119,28 +1405,58 @@ def test_no_handoff_before_the_first_compaction(rt):
     assert len(rt.sessions.sent) == 1 and "handoff" in rt.sessions.sent[0][1]
 
 
-def test_relaunch_clears_the_compaction_marker(rt):
+def test_relaunch_clears_compaction_and_question_markers(rt):
     add(rt)
     d = state_dir(rt.cfg, "NF-1")
-    (d / "compacted").touch()
-    supervise(rt, current(rt))  # session not alive: relaunch
-    assert not (d / "compacted").exists()
+    for name in ("compacted", "asking", "asking-escalated"):
+        (d / name).write_text("{}")
+    supervise(rt, current(rt))  # not alive: relaunch
+    for name in ("compacted", "asking", "asking-escalated"):
+        assert not (d / name).exists()
+
+
+def test_a_stale_question_is_escalated_once(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "asking").write_text(json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"}))
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    (esc,) = rt.notifier.sent
+    assert esc.tier == 2 and "A or B?" in esc.summary
+
+
+def test_a_fresh_question_is_not_escalated(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
 ```
 
-Change `test_high_context_requests_handoff_once` to touch `state_dir(rt.cfg, "NF-1") / "compacted"` before the first `supervise`.
+(Also import `Grants` and `add_comment` from `linear_agents.grants` at the top.) Change `test_high_context_requests_handoff_once` to touch `state_dir(rt.cfg, "NF-1") / "compacted"` before its first `supervise`.
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `uv run pytest tests/test_sessions.py tests/test_supervisor.py -q`
-Expected: FAIL on the new tests (`ImportError: installed_plugins`, missing env keys, handoff sent before compaction).
+Run: `uv run pytest tests/test_sessions.py tests/test_supervisor.py tests/test_config.py -q`
+Expected: FAIL on the new tests (unknown config fields, `ImportError: installed_plugins`, missing env keys, handoff before compaction, no question escalation).
 
 - [ ] **Step 3: Implement**
 
-`src/linear_agents/sessions.py`:
+`src/linear_agents/config.py`: add `"agent_plugins_file"` and `"installed_plugins_file"` to `_PATH_KEYS`, and to `Config`:
 
 ```python
-from linear_agents.grants import Grants
+    # The plugins agent sessions get; None means deploy/agent-plugins.txt in the service repo.
+    agent_plugins_file: Path | None = None
+    installed_plugins_file: Path = field(
+        default_factory=lambda: Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    )
+```
 
+`src/linear_agents/sessions.py` (import `Grants` from `linear_agents.grants` at the top):
+
+```python
 _DENY = [
     "Bash(git commit --no-verify:*)",
     "Bash(git commit -n:*)",
@@ -1149,8 +1465,6 @@ _DENY = [
     "Bash(git commit * -n)",
     # A second claude process is a session the gate and the usage caps never see.
     "Bash(claude:*)",
-    # Unattended, a question waits for nobody until the wall clock; agents escalate instead.
-    "AskUserQuestion",
 ]
 _GENERAL_DENY = "Agent(general-purpose)"
 
@@ -1165,11 +1479,11 @@ def installed_plugins(path: Path) -> tuple[str, ...]:
 def allowed_plugins(path: Path) -> tuple[str, ...] | None:
     if not path.exists():
         return None
-    lines = (ln.strip() for ln in path.read_text().splitlines())
-    return tuple(ln for ln in lines if ln and not ln.startswith("#"))
+    lines = (line.strip() for line in path.read_text().splitlines())
+    return tuple(line for line in lines if line and not line.startswith("#"))
 ```
 
-In `claude_argv`, add parameters `grants: Grants = Grants()` and `disabled_plugins: tuple[str, ...] = ()`, and build the settings as:
+In `claude_argv`, add parameters `grants: Grants = Grants()` and `disabled_plugins: tuple[str, ...] = ()`, and build:
 
 ```python
     deny = list(_DENY)
@@ -1186,22 +1500,22 @@ In `claude_argv`, add parameters `grants: Grants = Grants()` and `disabled_plugi
         session_settings["enabledPlugins"] = {p: False for p in disabled_plugins}
 ```
 
-`src/linear_agents/supervisor.py`:
+`src/linear_agents/supervisor.py` (imports at the top: `time` is not needed; add `from linear_agents import grants as grants_mod`, `from linear_agents.gate import clear_question`, and `allowed_plugins`, `installed_plugins` from `linear_agents.sessions`):
 
 ```python
-from linear_agents import grants as grants_mod
-from linear_agents.sessions import allowed_plugins, installed_plugins
+QUESTION_WAIT_S = 7200
 
 
 def _disabled_plugins(rt) -> tuple[str, ...]:
-    allowed = allowed_plugins(rt.cfg.plugin_dir.parent / "deploy" / "agent-plugins.txt")
+    cfg = rt.cfg
+    listed = cfg.agent_plugins_file or cfg.plugin_dir.parent / "deploy" / "agent-plugins.txt"
+    allowed = allowed_plugins(listed)
     if allowed is None:
         return ()
-    installed = installed_plugins(Path.home() / ".claude" / "plugins" / "installed_plugins.json")
-    return tuple(p for p in installed if p not in allowed)
+    return tuple(p for p in installed_plugins(cfg.installed_plugins_file) if p not in allowed)
 ```
 
-In `launch`, add the `started_at: float | None = None` parameter and:
+In `launch`, add `started_at: float | None = None` and:
 
 ```python
     start = claim.started_at if started_at is None else started_at
@@ -1217,22 +1531,50 @@ In `launch`, add the `started_at: float | None = None` parameter and:
         }
     )
     settings = settings_from_json(claim.settings_json)
-    granted = grants_mod.read(d / "grants.json")
     if settings.allow:
-        granted = grants_mod.merge(granted, grants_mod.parse_allow(settings.allow))
+        grants_mod.set_block(d / "grants.json", grants_mod.parse_allow(settings.allow))
+    granted = grants_mod.for_phase(d / "grants.json", phase)
 ```
 
-pass `grants=granted, disabled_plugins=_disabled_plugins(rt)` to `claude_argv`, and after the marker deletes:
+pass `grants=granted, disabled_plugins=_disabled_plugins(rt)` to `claude_argv`; change the leftover delete to `for leftover in (*_MARKERS, "status.json", "compacted"):` and call `clear_question(d)` right after it.
+
+At the three phase transitions (`_finish_phase` test→impl, `_finish_phase` check→fix, `_start_review`), compute `start = rt.now()` once, pass `started_at=start` to `launch`, and use `started_at=start` in the matching `ledger.update_claim`.
+
+In `supervise`, before the context check add:
 
 ```python
-    grants_mod.write(d / "grants.json", granted)
+    _check_question(rt, claim, d)
 ```
 
-Change the leftover delete to `for leftover in (*_MARKERS, "status.json", "compacted"):`.
+with:
 
-At the three phase transitions in `_finish_phase` and `_start_review`, compute `start = rt.now()` once, pass `started_at=start` to `launch`, and use `started_at=start` in the matching `ledger.update_claim`.
+```python
+def _check_question(rt, claim: Claim, d: Path) -> None:
+    asking = d / "asking"
+    if not asking.exists() or (d / "asking-escalated").exists():
+        return
+    try:
+        q = json.loads(asking.read_text())
+        at, text = float(q["at"]), str(q.get("question", ""))
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if rt.now() - at < QUESTION_WAIT_S:
+        return
+    esc = scoped(
+        Escalation(
+            2,
+            "question",
+            f"Unanswered question in the Claude app: {text}",
+            "Answer it in the Claude app, or reply on this issue",
+            waiting=True,
+        ),
+        claim.issue_key,
+    )
+    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
+    (d / "asking-escalated").touch()
+```
 
-In `supervise`, change the context check to:
+and change the context check to:
 
 ```python
     pct = context_pct(read_status(d) or {})
@@ -1254,7 +1596,7 @@ Expected: PASS (all tests)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/linear_agents/sessions.py src/linear_agents/supervisor.py tests/test_sessions.py tests/test_supervisor.py
+git add src/linear_agents/config.py src/linear_agents/sessions.py src/linear_agents/supervisor.py tests/conftest.py tests/test_config.py tests/test_sessions.py tests/test_supervisor.py
 git commit -s -m "Launch sessions with run ids, subagent limits, grants and the plugin allowlist"
 ```
 
@@ -1267,29 +1609,28 @@ git commit -s -m "Launch sessions with run ids, subagent limits, grants and the 
 - Test: `tests/test_poller.py`
 
 **Interfaces:**
-- Consumes: `allow_lines`, `parse_allow`, `merge`, `read`, `write`, `GrantError` (Task 1).
-- Produces: `grants.json` updated from comments; `_start` clears `grants.json`, `scratchpads` and `compacted` left by a previous claim.
+- Consumes: `allow_lines`, `parse_allow`, `add_comment`, `for_phase`, `GrantError` (Task 1).
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_poller.py`:
+Add to `tests/test_poller.py` (imports at the top: `from linear_agents.grants import Grants, for_phase, set_block`):
 
 ```python
-from linear_agents.grants import read as read_grants
-
-
-def test_owner_allow_comment_grants_and_is_still_forwarded(rt):
+def test_owner_and_steer_author_allow_comments_grant_for_the_running_phase(rt):
+    rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
     ledger.insert_claim(rt.con, make("NF-1", ()))
     rt.linear.replies = {
         "id-NF-1": [
-            Comment("c1", "go ahead\nallow: launches 14", "2026-10-09T10:00:00Z", mine=True),
-            Comment("c2", "allow: agent general-purpose", "2026-10-09T10:01:00Z", mine=False, author="x"),
+            Comment("c1", "go ahead\nallow: launches 4", "2026-10-09T10:00:00Z", mine=True),
+            Comment("c2", "allow: agent code-mapper", "2026-10-09T10:01:00Z", author="hermes-id"),
+            Comment("c3", "allow: agent general-purpose", "2026-10-09T10:02:00Z", author="x"),
         ]
     }
     rt.sessions.alive_names.add("NF-1-test")
     forward_comments(rt)
-    g = read_grants(state_dir(rt.cfg, "NF-1") / "grants.json")
-    assert g.launches == 14 and g.agents == ()
+    path = state_dir(rt.cfg, "NF-1") / "grants.json"
+    assert for_phase(path, "test") == Grants(launches=4, agents=("code-mapper",))
+    assert for_phase(path, "impl").launches is None
     assert rt.sessions.sent[0][1].startswith("The owner replied on Linear: go ahead")
 
 
@@ -1303,66 +1644,75 @@ def test_bad_allow_comment_is_answered_once_and_keeps_grants(rt):
     }
     rt.sessions.alive_names.add("NF-1-test")
     forward_comments(rt)
-    assert read_grants(state_dir(rt.cfg, "NF-1") / "grants.json").launches == 9
-    assert any("launches lots" in body for _, body in rt.linear.comments)
-```
+    # Real Linear returns each comment once (last_comment_at advances); PollLinear ignores it.
+    assert for_phase(state_dir(rt.cfg, "NF-1") / "grants.json", "test").launches == 9
+    replies = [body for _, body in rt.linear.comments if "launches lots" in body]
+    assert len(replies) == 1
 
-(If `PollLinear` does not record comments as `rt.linear.comments` of `(issue_id, body)`, use the attribute it does record them in; check `tests/test_poller.py`'s `PollLinear`.)
 
-```python
-def test_a_new_claim_starts_without_the_last_claims_grants(rt):
+def test_grants_wait_for_a_live_session(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {"id-NF-1": [Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True)]}
+    forward_comments(rt)  # session down: nothing applied, nothing advanced
+    assert not (state_dir(rt.cfg, "NF-1") / "grants.json").exists()
+
+
+def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir(parents=True)
-    for name in ("grants.json", "scratchpads", "compacted"):
-        (d / name).write_text("{}")
+    from_before = Grants(launches=5)
+    set_block(d / "grants.json", from_before)
+    for name in ("scratchpads", "compacted", "asking"):
+        (d / name).write_text("x")
     rt.linear.ready = [issue()]
     poll(rt)
-    assert not (d / "scratchpads").exists() and not (d / "compacted").exists()
-    assert read_grants(d / "grants.json").launches is None
+    for name in ("scratchpads", "compacted", "asking"):
+        assert not (d / name).exists()
+    assert for_phase(d / "grants.json", "impl").launches is None
 ```
+
+(`replace` from `dataclasses` is already imported in that file; if not, add it at the top.)
 
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `uv run pytest tests/test_poller.py -q`
-Expected: FAIL on the three new tests.
+Expected: FAIL on the four new tests.
 
 - [ ] **Step 3: Implement**
 
-In `forward_comments`, inside `if who and not comment.body.startswith(BOT_PREFIX):` and before the alive check:
-
-```python
-                _apply_grants(rt, claim, comment.body)
-```
-
-with:
+In `src/linear_agents/poller.py` (imports at the top: `from linear_agents.grants import GrantError, add_comment, allow_lines, parse_allow`):
 
 ```python
 def _apply_grants(rt, claim: Claim, body: str) -> None:
     path = state_dir(rt.cfg, claim.issue_key) / "grants.json"
-    current = grants_read(path)
     for line in allow_lines(body):
         try:
-            current = merge(current, parse_allow(line))
+            add_comment(path, parse_allow(line), claim.phase)
         except GrantError as exc:
             try:
                 rt.linear.comment(claim.issue_id, f"{BOT_PREFIX} grant not applied: {exc}")
             except LinearError as err:
                 print(f"{claim.issue_key}: grant reply not posted: {err}", file=sys.stderr)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    grants_write(path, current)
 ```
 
-Imports: `from linear_agents.grants import GrantError, allow_lines, merge, parse_allow` and `from linear_agents.grants import read as grants_read, write as grants_write`.
-
-In `_start`, next to the `handoff.md` move:
+In `forward_comments`, apply grants after the comment is delivered, so a dead session (the loop `break`s and `last_comment_at` stays) neither applies nor answers it twice:
 
 ```python
-    # A previous claim's grants, scratchpads and compaction belong to that run.
-    for stale in ("grants.json", "scratchpads", "compacted"):
-        (d / stale).unlink(missing_ok=True)
+            if who and not comment.body.startswith(BOT_PREFIX):
+                if not rt.sessions.alive(name):
+                    break
+                rt.sessions.send(name, f"{who} replied on Linear: {comment.body}")
+                _apply_grants(rt, claim, comment.body)
 ```
 
-(Task 8's cleanup runs earlier in the same tick, so the listing is already acted on when `_start` removes it.)
+In `_start`, replace the state reset next to the `handoff.md` move with:
+
+```python
+    # A previous claim's grants, scratchpads, compaction and question belong to that run; the
+    # agent block's grants are written again at launch.
+    for stale in ("grants.json", "scratchpads", "compacted", "asking", "asking-escalated"):
+        (d / stale).unlink(missing_ok=True)
+```
 
 - [ ] **Step 4: Run the tests**
 
@@ -1389,47 +1739,40 @@ git commit -s -m "Take subagent grants from the owner's allow comments"
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/test_cli.py`:
+Add to `tests/test_cli.py` (imports at the top: `subprocess`, `from concurrent.futures import ThreadPoolExecutor`):
 
 ```python
-import threading
-import subprocess
-
-
 def test_parallel_commits_take_only_their_own_paths(origin, monkeypatch):
     monkeypatch.chdir(origin)
     for name in ("a1.txt", "a2.txt", "b1.txt", "b2.txt"):
         (origin / name).write_text(name)
-
-    def commit(msg, paths):
-        assert main(["commit", "-m", msg, "--", *paths]) == 0
-
-    t1 = threading.Thread(target=commit, args=("A", ["a1.txt", "a2.txt"]))
-    t2 = threading.Thread(target=commit, args=("B", ["b1.txt", "b2.txt"]))
-    t1.start(); t2.start(); t1.join(); t2.join()
+    jobs = [("A", ["a1.txt", "a2.txt"]), ("B", ["b1.txt", "b2.txt"])]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = list(pool.map(lambda job: main(["commit", "-m", job[0], "--", *job[1]]), jobs))
+    assert codes == [0, 0]
     for msg, files in (("A", {"a1.txt", "a2.txt"}), ("B", {"b1.txt", "b2.txt"})):
-        sha = subprocess.run(
-            ["git", "log", "-1", "--format=%H", f"--grep=^{msg}$"], cwd=origin,
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        shown = subprocess.run(
-            ["git", "show", "--name-only", "--format=", sha], cwd=origin,
-            capture_output=True, text=True, check=True,
-        ).stdout.split()
-        assert set(shown) == files
+        log = ["git", "log", "-1", "--format=%H", f"--grep=^{msg}$"]
+        sha = subprocess.run(log, cwd=origin, capture_output=True, text=True, check=True)
+        show = ["git", "show", "--name-only", "--format=", sha.stdout.strip()]
+        shown = subprocess.run(show, cwd=origin, capture_output=True, text=True, check=True)
+        assert set(shown.stdout.split()) == files
+
+
+def test_commit_needs_paths(capsys):
+    assert main(["commit", "-m", "x", "--"]) == 2
 ```
 
-- [ ] **Step 2: Run the test to see it fail**
+- [ ] **Step 2: Run the tests to see them fail**
 
-Run: `uv run pytest tests/test_cli.py -q -k parallel_commits`
+Run: `uv run pytest tests/test_cli.py -q -k commit`
 Expected: FAIL, `invalid choice: 'commit'`.
 
 - [ ] **Step 3: Implement**
 
+In `src/linear_agents/cli.py` (import `fcntl` at the top):
+
 ```python
 def cmd_commit(args) -> int:
-    import fcntl
-
     from linear_agents.worktree import git
 
     paths = [p for p in args.paths if p != "--"]
@@ -1437,14 +1780,15 @@ def cmd_commit(args) -> int:
         print("commit: name the paths to commit after --", file=sys.stderr)
         return 2
     git_dir = Path(git("rev-parse", "--absolute-git-dir", cwd=Path.cwd()))
-    # Parallel task-implementers share one worktree and its index; one commit at a time, each
+    # Parallel task-implementers share one worktree and its index: one commit at a time, each
     # with only its own paths.
     with (git_dir / "la-commit.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         added = subprocess.run(["git", "add", "--", *paths], check=False)
         if added.returncode:
             return added.returncode
-        return subprocess.run(["git", "commit", "-m", args.message, "--", *paths], check=False).returncode
+        commit = ["git", "commit", "-m", args.message, "--", *paths]
+        return subprocess.run(commit, check=False).returncode
 ```
 
 Register `"commit": cmd_commit` and:
@@ -1472,30 +1816,30 @@ git commit -s -m "Add a locked commit helper for parallel implementers"
 ### Task 8: Scratchpad cleanup
 
 **Files:**
-- Modify: `src/linear_agents/poller.py` (new `clean_scratchpads`), `src/linear_agents/tick.py` (call it after `reap_worktrees`)
+- Modify: `src/linear_agents/poller.py` (`scratch_root`, `clean_scratchpads`), `src/linear_agents/tick.py`
 - Test: `tests/test_poller.py`
 
 **Interfaces:**
-- Consumes: `<state_dir>/scratchpads` written by `session-start` (Task 3).
-- Produces: `clean_scratchpads(rt) -> None`.
+- Consumes: `<state_dir>/scratchpads` (Task 3).
+- Produces: `scratch_root() -> Path`; `clean_scratchpads(rt) -> None`.
 
 - [ ] **Step 1: Write the failing tests**
 
+Add to `tests/test_poller.py` (import `clean_scratchpads` from `linear_agents.poller` at the top):
+
 ```python
-from linear_agents.poller import clean_scratchpads
-
-
-def pads(rt, key, paths):
+def pads(rt, key, lines):
     d = state_dir(rt.cfg, key)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "scratchpads").write_text("".join(f"{p}\n" for p in paths))
+    (d / "scratchpads").write_text("".join(f"{x}\n" for x in lines))
     return d
 
 
 def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypatch):
-    monkeypatch.setattr("linear_agents.poller.SCRATCH_PREFIX", str(tmp_path / "claude-"))
-    done_pad = tmp_path / "claude-1000" / "a" / "s1"
-    live_pad = tmp_path / "claude-1000" / "b" / "s2"
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    done_pad = root / "proj" / "s1" / "scratchpad"
+    live_pad = root / "proj" / "s2" / "scratchpad"
     done_pad.mkdir(parents=True)
     live_pad.mkdir(parents=True)
     ledger.insert_claim(rt.con, make("NF-1", (), state="blocked"))
@@ -1507,13 +1851,17 @@ def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypa
     assert not (d1 / "scratchpads").exists()
 
 
-def test_cleanup_never_deletes_outside_tmp_claude(rt, tmp_path):
+def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    project = root / "proj"
+    (project / "s1" / "scratchpad").mkdir(parents=True)
     outside = tmp_path / "keep"
     outside.mkdir()
     ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
-    pads(rt, "NF-1", [outside, "/", "/tmp/claude-1000/../etc"])
+    pads(rt, "NF-1", [root, project, project / "s1", outside, "", "/", f"{project}/../.."])
     clean_scratchpads(rt)
-    assert outside.exists()
+    assert root.exists() and (project / "s1" / "scratchpad").exists() and outside.exists()
 ```
 
 - [ ] **Step 2: Run the tests to see them fail**
@@ -1523,10 +1871,23 @@ Expected: FAIL, `ImportError: cannot import name 'clean_scratchpads'`.
 
 - [ ] **Step 3: Implement**
 
-In `src/linear_agents/poller.py`:
+In `src/linear_agents/poller.py` (import `os` at the top):
 
 ```python
-SCRATCH_PREFIX = "/tmp/claude-"
+def scratch_root() -> Path:
+    return Path(f"/tmp/claude-{os.getuid()}")
+
+
+def _scratch_path(line: str) -> Path | None:
+    if not line.strip():
+        return None
+    root = scratch_root()
+    try:
+        rel = Path(line.strip()).resolve().relative_to(root)
+    except ValueError:
+        return None
+    # <project>/<session>/<scratchpad>: anything shorter is shared by other sessions.
+    return root / rel if len(rel.parts) >= 3 else None
 
 
 def clean_scratchpads(rt) -> None:
@@ -1536,9 +1897,8 @@ def clean_scratchpads(rt) -> None:
         if claim is not None and claim.state == "running":
             continue
         for line in listing.read_text().splitlines():
-            path = Path(line.strip()).resolve()
-            # Only Claude Code's own scratch tree; a damaged record must not reach anything else.
-            if str(path).startswith(SCRATCH_PREFIX) and path != Path(SCRATCH_PREFIX).parent:
+            path = _scratch_path(line)
+            if path is not None:
                 shutil.rmtree(path, ignore_errors=True)
         listing.unlink(missing_ok=True)
 ```
@@ -1559,11 +1919,11 @@ git commit -s -m "Remove a finished run's Claude Code scratchpads"
 
 ---
 
-### Task 9: Installer: plugin allowlist, Claude settings, tmpfiles, build tools
+### Task 9: Installer: plugin allowlist, Claude settings, tmpfiles
 
 **Files:**
 - Create: `deploy/agent-plugins.txt`, `installer/internal/steps/scratch.go`, `installer/internal/steps/scratch_test.go`
-- Modify: `installer/internal/ship/plugins.go`, `installer/internal/ship/ship.go:80`, `installer/internal/ship/ship_test.go`, `installer/internal/steps/claude.go` (`minClaude`, `pushSettings`, `loginNote`, the version message), `installer/internal/steps/claude_test.go`, `installer/internal/steps/list.go`, `installer/internal/steps/packages.go`, `installer/internal/steps/root_test.go`
+- Modify: `installer/internal/ship/plugins.go`, `installer/internal/ship/ship.go:80`, `installer/internal/ship/ship_test.go`, `installer/internal/steps/claude.go`, `installer/internal/steps/claude_test.go`, `installer/internal/steps/list.go`
 
 **Interfaces:**
 - Produces:
@@ -1573,7 +1933,7 @@ git commit -s -m "Remove a finished run's Claude Code scratchpads"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `installer/internal/ship/ship_test.go`, change the existing call to `planPlugins(dir, nil, func...)` and add:
+In `installer/internal/ship/ship_test.go`, change the existing call to `planPlugins(dir, nil, func...)` and add (imports `os`, `strings` if missing):
 
 ```go
 func TestPlanPluginsKeepsOnlyTheAllowlist(t *testing.T) {
@@ -1596,7 +1956,9 @@ func TestPlanPluginsKeepsOnlyTheAllowlist(t *testing.T) {
 
 func TestReadAllowlistSkipsCommentsAndBlanks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent-plugins.txt")
-	os.WriteFile(path, []byte("# agents\ndocket@NovusEdge\n\ncurt@curt\n"), 0o644)
+	if err := os.WriteFile(path, []byte("# agents\ndocket@NovusEdge\n\ncurt@curt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	got, err := readAllowlist(path)
 	if err != nil || !slices.Equal(got, []string{"docket@NovusEdge", "curt@curt"}) {
 		t.Fatalf("%v %v", got, err)
@@ -1607,12 +1969,19 @@ func TestReadAllowlistSkipsCommentsAndBlanks(t *testing.T) {
 }
 ```
 
-In `installer/internal/steps/claude_test.go`, extend `TestClaudeApplyWritesPushSettings` (or add a test) to assert the written settings contain `"remoteControlAtStartup": true`, and add:
+In `installer/internal/steps/claude_test.go`, add:
 
 ```go
 func TestMinimumClaudeIsTheGateVersion(t *testing.T) {
 	if minClaude != [3]int{2, 1, 295} {
 		t.Fatalf("minClaude %v", minClaude)
+	}
+}
+
+func TestPushSettingsTurnOnRemoteControlAtStartup(t *testing.T) {
+	out, err := mergePushSettings(nil)
+	if err != nil || !strings.Contains(string(out), `"remoteControlAtStartup": true`) {
+		t.Fatalf("%s %v", out, err)
 	}
 }
 ```
@@ -1656,12 +2025,10 @@ func TestScratchIsSkippedInLoopMode(t *testing.T) {
 }
 ```
 
-In `installer/internal/steps/root_test.go`, update `TestPackagesCheckNamesMissingTools` so the fake also answers `command -v make` and `command -v cc`, and add a case that a host missing them reports `missing: make, cc` and installs `make gcc`.
-
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `go test ./installer/...`
-Expected: FAIL (wrong `planPlugins` arity, missing `readAllowlist`, `Scratch`, version).
+Expected: FAIL (wrong `planPlugins` arity, missing `readAllowlist`, `Scratch`, version, setting).
 
 - [ ] **Step 3: Implement**
 
@@ -1677,7 +2044,7 @@ ponytail@ponytail
 curt@curt
 ```
 
-`installer/internal/ship/plugins.go`: add the `allow []string` parameter; after building `names`, when `allow != nil`:
+`installer/internal/ship/plugins.go` (add `errors` to the imports): add the `allow []string` parameter; after `slices.Sort(names)`:
 
 ```go
 	if allow != nil {
@@ -1727,7 +2094,7 @@ func readAllowlist(path string) ([]string, error) {
 	plan, err := planPlugins(configDir, allow, private)
 ```
 
-`installer/internal/steps/claude.go`: `var minClaude = [3]int{2, 1, 295}` with its comment changed to "The gate hook's onFailure needs this version."; the version message `"needs 2.1.295"`; add `"remoteControlAtStartup": true` to `pushSettings` (rename the comment to "the /config toggles and Remote Control at startup"); drop step 2 from `loginNote` and renumber.
+`installer/internal/steps/claude.go`: `var minClaude = [3]int{2, 1, 295}` with the comment "The gate hook's onFailure setting needs this version."; the check message `"needs 2.1.295"`; add `"remoteControlAtStartup": true` to `pushSettings` and change its comment to "the /config push toggles, and Remote Control for every session without the consent prompt"; drop step 2 ("Accept Enable Remote Control") from `loginNote` and renumber the rest. Update `TestClaudeCheck` or any test that asserts the old version text.
 
 `installer/internal/steps/scratch.go`:
 
@@ -1774,8 +2141,6 @@ func (Scratch) Apply(ctx context.Context, e *Env) error {
 
 `installer/internal/steps/list.go`: `RootSteps` returns `[]Step{Packages{}, Tailscale{}, User{}, Scratch{}}`.
 
-`installer/internal/steps/packages.go`: `var tools = []string{"git", "tmux", "curl", "gh", "node", "make", "cc"}`, and in `pkgName` add `case tool == "cc": return "gcc"`. Add a comment on `tools`: repos' ./setup builds native extensions (pgvector in nimblefox) and needs make and a C compiler.
-
 - [ ] **Step 4: Run the tests**
 
 Run: `go test ./... && uv run pytest -q`
@@ -1790,10 +2155,69 @@ git commit -s -m "Ship only allowlisted plugins, enable Remote Control and add s
 
 ---
 
-### Task 10: Docs, ledger and host verification
+### Task 10: Host build tools (outside the spec)
+
+Hosts need `make` and a C compiler: nimblefox's `./setup` builds pgvector from source, and `la-nimble` failed NF-211's setup without them on 2026-10-19. This is a separate commit so it can be reviewed and reverted on its own.
 
 **Files:**
-- Modify: `docs/vm-setup.md`, `deploy/config.example.toml` (no new key; check the comments still match), `docs/superpowers/specs/2026-10-20-agent-loop-design.md` (Unconfirmed results)
+- Modify: `installer/internal/steps/packages.go`, `installer/internal/steps/root_test.go`
+
+- [ ] **Step 1: Update the tests**
+
+In `installer/internal/steps/root_test.go`:
+- `TestPackagesCheckNamesMissingTools`: also answer `sh -c command -v make` and `sh -c command -v cc` with exit 0, so the detail stays `missing: gh`.
+- `TestPackagesApplyInstallsOnlyMissingTools`: also answer `make` and `cc` with exit 0, so the expected `pacman -Syu --noconfirm --needed github-cli nodejs` call is unchanged.
+- `TestPackagesApplyAddsGHRepoOnRHELOnly`: also answer `make` and `cc` with exit 0.
+- Add:
+
+```go
+func TestPackagesInstallsBuildToolsWhenMissing(t *testing.T) {
+	f := host.NewFake().On("pacman -Syu --noconfirm --needed make gcc", 0, "")
+	for _, tool := range []string{"git", "tmux", "curl", "gh", "node"} {
+		f.On("sh -c command -v "+tool, 0, "/usr/bin/"+tool)
+	}
+	e := testEnv(t, f)
+	e.Distro = host.Distro{ID: "arch", Manager: host.Pacman}
+	if err := (Packages{}).Apply(context.Background(), e); err != nil {
+		t.Fatalf("%v; calls %v", err, f.Calls)
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `go test ./installer/internal/steps/`
+Expected: FAIL in `TestPackagesInstallsBuildToolsWhenMissing`.
+
+- [ ] **Step 3: Implement**
+
+In `installer/internal/steps/packages.go`:
+
+```go
+// make and cc: repos' ./setup builds native code (nimblefox compiles pgvector).
+var tools = []string{"git", "tmux", "curl", "gh", "node", "make", "cc"}
+```
+
+and in `pkgName` add `case tool == "cc": return "gcc"`.
+
+- [ ] **Step 4: Run the tests**
+
+Run: `go test ./...`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add installer/internal/steps/packages.go installer/internal/steps/root_test.go
+git commit -s -m "Install make and a C compiler on hosts"
+```
+
+---
+
+### Task 11: Docs and host verification
+
+**Files:**
+- Modify: `docs/vm-setup.md`, `docs/superpowers/specs/2026-10-20-agent-loop-design.md` (Unconfirmed results)
 
 - [ ] **Step 1: Document**
 
@@ -1806,28 +2230,29 @@ In `docs/vm-setup.md`, add under "What the installer cannot do":
   there must be enabled on your desktop, or `just ship` stops and names it.
 ```
 
-and a section "Subagents in agent sessions" with three sentences: the catalogue lives in `plugin/agents/`, the budgets in `src/linear_agents/gate.py`, every launch is logged in `<state_dir>/launches.jsonl`, and grants are an `allow:` line in the agent block or in a comment.
+and a short section "Subagents in agent sessions": the catalogue lives in `plugin/agents/`, the budgets in `src/linear_agents/gate.py`, every launch is logged in `<state_dir>/launches.jsonl` and counted in `linear-agents status`, grants are an `allow:` line in the agent block or in a comment, and blocking questions arrive in the Claude app.
 
-- [ ] **Step 2: Ship and verify on la-nimble**
+Commit:
 
-Run, from the desktop, once the branch is merged:
+```bash
+git add docs/vm-setup.md
+git commit -s -m "Document subagent limits, the plugin allowlist and the desktop scratch rule"
+```
+
+- [ ] **Step 2 (owner or main session, not a subagent): ship and verify on la-nimble**
+
+After the branch is merged, run from the desktop:
 
 ```bash
 just ship root@la-nimble --skip-interactive
 just host root@la-nimble claude --version
 ```
 
-Then check each Unconfirmed item on the host, recording the answer in the spec's Unconfirmed section (replace the list item with the result and the date):
+Then check each Unconfirmed item on the host and record the answer and date in the spec's Unconfirmed section:
 
-1. `onFailure` key spelling: start a session in a scratch worktree with `LINEAR_AGENTS_STATE` unset and confirm an `Agent` call is refused (the gate exits non-zero). If it is allowed, the key is wrong: fix `hooks.json` from the hooks doc and repeat.
-2. Workflow input: in a host session with a `workflow` grant, start a workflow and read the logged `what` field in `launches.jsonl`; if the name is absent, record which field carries it and update `decide`.
-3. `maxTurns` / `effort` honoured for plugin agents: run `linear-agents:source-finder` once and check its transcript's turn count stays under 20.
+1. `onFailure`: temporarily break the gate (`chmod -x` on the `linear-agents` entry point in a scratch session's PATH copy) and confirm an `Agent` call is refused; restore it.
+2. Workflow input: in a session with a `workflow` grant, start a workflow and read the logged `what` in `launches.jsonl`; if empty, record which field carries the name and update `subject()`.
+3. `maxTurns` / `effort` honoured for plugin agents: run `linear-agents:source-finder` once and check its transcript stays under 20 turns.
 4. `enabledPlugins` merge: run `/plugin` in a host session and confirm glowup is disabled.
-5. `remoteControlAtStartup`: on a fresh images:debian/13 VM, ship with `--skip-interactive` after a login and confirm a launched session appears in the Claude app without a prompt.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add docs deploy
-git commit -s -m "Document subagent limits, the plugin allowlist and the desktop scratch rule"
-```
+5. `AskUserQuestion` push: in a host session, ask a question and confirm the phone gets a push.
+6. `remoteControlAtStartup`: on a fresh images:debian/13 VM, ship with `--skip-interactive` after a login and confirm a launched session appears in the Claude app without a prompt.
