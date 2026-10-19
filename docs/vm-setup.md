@@ -55,7 +55,9 @@ daytona stop la-smoke
   system directories, add them to `Environment=PATH` in `deploy/linear-agents.service` and to
   `loopCommand` in `installer/internal/steps/run.go`.
 - On your desktop, add the same scratchpad backstop the installer writes on hosts:
-  `echo 'e /tmp/claude-* - - - 2d' | sudo tee /etc/tmpfiles.d/claude-scratch.conf`.
+  `echo 'e /tmp/claude-* - - - 2d' | sudo tee /etc/tmpfiles.d/claude-scratch.conf`. The service
+  deletes a run's recorded scratchpads when its claim stops running; this line catches anything
+  left over. Loop-mode hosts have no tmpfiles timer and rely on the service alone.
 - `deploy/agent-plugins.txt` decides which of your plugins agent sessions get. A plugin listed
   there must be enabled on your desktop, or `just ship` stops and names it.
 
@@ -140,8 +142,9 @@ pnpm, pip and mise caches are not managed.
 
 ## Subagents in agent sessions
 
-A session may launch only the agents in `plugin/agents/`, and only as often as its phase allows.
-The budgets (which agents, how many launches, how many running at once) are in
+By default a session may launch only the agents in `plugin/agents/`, and only as often as its
+phase allows; grants (below) can add `general-purpose` or a named workflow. The budgets (which
+agents, how many launches, how many running at once) are in
 `src/linear_agents/gate.py`; the review phase gets none. A hook refuses any other launch and tells
 the agent why. Every launch, allowed or refused, is appended to `<state_dir>/launches.jsonl`, and
 `linear-agents status` shows each running claim's count as `launches N/limit`.
@@ -153,14 +156,23 @@ issue (a `steer_authors` comment works too). Items are comma-separated:
 allow: launches 14, agent code-mapper, workflow <name>, fix-rounds 2
 ```
 
-A comment is applied once the supervisor has delivered it to the live session. The items
-`agent general-purpose` and `workflow <name>` change the session's launch flags, so they take
-effect at the next session start (a handoff, or `linear-agents release`); the other items apply
-within one tick.
+A comment is applied once the supervisor has delivered it to the live session. A `launches` grant
+in the agent block applies to the implementer phase; from a comment it applies to the phase
+running when the comment arrives. `fix-rounds` raises the implementer's fix rounds.
+
+The items `agent general-purpose` and `workflow <name>` change the session's launch flags, so
+from a comment they take effect at the next handoff; the other items apply within one tick.
+Comment grants do not survive a release: a new claim discards them and rewrites only the agent
+block's `allow:` line. To keep a grant across a release, put it in the agent block.
 
 The implementer and fix sessions are the only ones connected to Remote Control. When one of them
-needs an answer it asks with `AskUserQuestion`, and the question arrives in the Claude app, with a
-push if the phone has them on. Other phases escalate through `linear-agents escalate` as before.
+needs an answer it asks with `AskUserQuestion`, which is meant to arrive in the Claude app with a
+push. That is not yet confirmed on a host. A question left unanswered for two hours is escalated
+by the service as tier 2 regardless.
+
+Implementer and fix sessions still use `linear-agents escalate`, with a default, for reversible
+choices. Tester and reviewer sessions are not on Remote Control and escalate with `--waiting` for
+decisions that block them.
 
 ## Upgrading
 
