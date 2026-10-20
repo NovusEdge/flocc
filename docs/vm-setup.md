@@ -130,8 +130,8 @@ host off the topic your phone follows.
 The import reads each key from the host's secret files and checks it as a paste is checked
 before storing it, printing "Took the ..." with a GitHub token's expiry or the Linear key's
 account and teams, never a value. The import opens the SSH connection in the terminal first, so a
-Tailscale check-mode approval link shows; without a terminal it fails with a message saying so
-instead of hanging. If the connection drops partway, it stops with "run flocc host import again"
+Tailscale check-mode approval link shows; without a terminal, a host that needs a prompt fails
+within 30 seconds with a message saying so. If the connection drops partway, it stops with "run flocc host import again"
 instead of asking for a new token, because GitHub shows a token only once. A host token that does
 not cover a repo is not taken; the message names the token. On
 github.com/settings/personal-access-tokens open it, Edit, fix the repository access, then run the
@@ -181,9 +181,8 @@ ones, and only then stores them and writes them into every host's secret files o
 during the checks changes nothing. It lists the hosts it could not reach. Once those are up, run
 the command again, paste nothing and answer yes to "Push the stored keys to ... again?", or run
 `flocc ship -H <host>`, which replaces a host's key file whenever the desktop's key differs, so it
-brings that host's keys in line with the desktop. Like `host import` and `-H all`, rotate opens
-each host's SSH connection in the terminal first, so a Tailscale check-mode approval link shows;
-without a terminal it fails with a message saying so instead of hanging. Do not revoke the old token until the sessions running now have ended:
+brings that host's keys in line with the desktop. Like `host import`, rotate opens each host's
+SSH connection in the terminal first, so a Tailscale check-mode approval link shows. Do not revoke the old token until the sessions running now have ended:
 each reads `GH_TOKEN` when it starts. `flocc status -H all` shows the new expiry after each host's
 next daily token check. `flocc keys rotate linear` does the same for the Linear key.
 
@@ -203,9 +202,12 @@ Without `-H` the host is `$FLOCC_HOST`, then the only host, then, for a command 
 key, the host whose `flocc status --json` holds that claim. `-H` is taken from anywhere before
 `--`, so an argument that is literally `-H` goes after `--`. `-H all` runs only `status`, `doctor`
 and `logs` (without `-f`). SSH to a host, `flocc ship` and `flocc login` included, shares one
-connection per host for ten minutes, so a Tailscale check-mode approval covers a whole run;
-`-H all` opens each host's connection in the terminal first so the approval link shows, and
-without a terminal it fails with a message instead of hanging.
+connection per host for ten minutes, so a Tailscale check-mode approval covers a whole run.
+`flocc ship`, `host import`, `keys rotate`, `doctor` and `logs` under `-H all`, and the lookup of
+the host holding an issue open that connection in the terminal first, so the approval link shows.
+Without a terminal, a host that needs a prompt fails within 30 seconds with a message saying so.
+`status -H all` does not open connections first: a host waiting on an approval shows as
+unreachable there, and `flocc -H <name> status` brings up its link.
 `flocc status` for one host also shows its Claude login (full, token-only, none or unknown) and
 the GitHub token expiries. `ship`, `login`, `keys` and `host` are desktop commands; the host's
 `flocc` refuses them. The `just` host recipes still work and run these commands; they go in 0.6.0.

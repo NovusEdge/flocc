@@ -32,9 +32,11 @@ One `flocc` command on the desktop; keys are made once, checked when pasted and 
   `--stage-only DIR` and `--answers FILE`.
 - `flocc ship -H <host>` replaces a host's key file when the desktop's key differs, so it brings
   the host's keys in line with the desktop; it is the fallback when `keys rotate` could not reach
-  a host. `host import`, `keys rotate` and `-H all` first open the SSH connection in the
-  terminal, so a Tailscale check-mode approval link shows; without a terminal they fail with a
-  message saying so instead of hanging.
+  a host. `flocc ship`, `host import`, `keys rotate`, `doctor` and `logs` under `-H all`, and the
+  lookup of the host holding an issue first open the SSH connection in the terminal, so a
+  Tailscale check-mode approval link shows. Without a terminal, a host that needs a prompt fails
+  within 30 seconds with a message saying so instead of hanging. `status -H all` does not open
+  connections first; a host waiting on an approval shows there as unreachable.
 - The agent token asks for Actions and Commit statuses read instead of Checks, which
   fine-grained tokens do not have. An agent token imported from a pre-0.5.0 host has neither:
   on github.com/settings/personal-access-tokens add Actions (read) and Commit statuses (read)
