@@ -1,0 +1,5 @@
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Link: <https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member&page=1>; rel="prev", <https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member&page=1>; rel="first"
+
+[{"name":"b","html_url":"https://github.com/o/b","default_branch":"trunk","private":false,"size":3,"owner":{"login":"o"}}]
