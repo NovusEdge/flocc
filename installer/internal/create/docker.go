@@ -22,14 +22,16 @@ var dockerRules = [][]string{
 // dockerUnit re-adds the rules after every Docker start (PartOf restarts it with Docker). It has
 // no ExecStop: a stopped Docker leaves FORWARD at DROP, so removing the rules then would cut the
 // VM off. systemd expands $name in Exec lines, so the shell's variable is $$t. ip6tables is
-// skipped where Docker made no IPv6 DOCKER-USER chain.
+// skipped where Docker made no IPv6 DOCKER-USER chain. Any rule left out fails the unit, whose
+// status is all a boot leaves to see.
 func dockerUnit() string {
 	var start []string
 	for i := len(dockerRules) - 1; i >= 0; i-- {
 		r := strings.Join(dockerRules[i], " ")
-		start = append(start, "$$t -C DOCKER-USER "+r+" 2>/dev/null || $$t -I DOCKER-USER "+r)
+		start = append(start, "$$t -C DOCKER-USER "+r+" 2>/dev/null || $$t -I DOCKER-USER "+r+" || rc=1")
 	}
-	loop := "for t in iptables ip6tables; do $$t -L DOCKER-USER -n >/dev/null 2>&1 || continue; "
+	loop := "rc=0; for t in iptables ip6tables; do " +
+		"[ $$t = iptables ] || $$t -L DOCKER-USER -n >/dev/null 2>&1 || continue; "
 	return "[Unit]\n" +
 		"Description=Let Incus VMs on " + Bridge + " through Docker's forward drop (flocc)\n" +
 		"After=docker.service\n" +
@@ -37,7 +39,7 @@ func dockerUnit() string {
 		"\n[Service]\n" +
 		"Type=oneshot\n" +
 		"RemainAfterExit=yes\n" +
-		"ExecStart=/bin/sh -c '" + loop + strings.Join(start, "; ") + "; done'\n" +
+		"ExecStart=/bin/sh -c '" + loop + strings.Join(start, "; ") + "; done; exit $$rc'\n" +
 		"\n[Install]\n" +
 		"WantedBy=docker.service\n"
 }
@@ -115,10 +117,9 @@ func (d Docker) Apply(ctx context.Context, e *Env) error {
 	if _, err := e.must(ctx, tee); err != nil {
 		return err
 	}
-	// Only this oneshot is restarted (ExecStop, then ExecStart). docker.service never is: on
-	// 2026-10-20 a Docker restart killed another session's image build on the shared laptop.
-	// With Docker stopped the oneshot stays inactive: once active it would not run again at
-	// Docker's start.
+	// Only this oneshot is restarted. docker.service never is: on 2026-10-20 a Docker restart
+	// killed another session's image build on the shared laptop. With Docker stopped the oneshot
+	// stays inactive: once active it would not run again at Docker's start.
 	steps := [][]string{{"daemon-reload"}, {"enable", dockerUnitName}}
 	if running {
 		steps = append(steps, []string{"restart", dockerUnitName})
