@@ -157,7 +157,7 @@ func TestAnIssueKeyNoHostOrTwoHostsHoldIsAnError(t *testing.T) {
 	if code := run(context.Background(), d, []string{"release", "NF-12"}); code == 0 || len(f.interactive) != 0 {
 		t.Fatalf("exit %d %v", code, f.interactive)
 	}
-	if msg := errb.String(); !strings.Contains(msg, "no reachable host holds NF-12") || !strings.Contains(msg, "unreachable: c") || !strings.Contains(msg, "-H") {
+	if msg := errb.String(); !strings.Contains(msg, "no reachable host holds NF-12") || !strings.Contains(msg, "unreachable: c: exit 255: ssh: connect to host root@c: No route to host") || !strings.Contains(msg, "-H") {
 		t.Fatal(msg)
 	}
 	f.out["root@a"], f.out["root@b"], f.out["root@c"] = holdsNF12, holdsNF12, holdsNF12
@@ -194,13 +194,34 @@ func TestSSHGetsATerminalOnlyWhenStdinIsOne(t *testing.T) {
 }
 
 func TestDashHAllRunsOnlyReadOnlyCommands(t *testing.T) {
-	for _, args := range [][]string{{"release", "NF-1"}, {"tick"}, {"logs", "-f"}, {"logs", "--follow"}} {
+	for _, args := range [][]string{{"release", "NF-1"}, {"tick"}, {"logs", "-f"}, {"logs", "--follow"}, {"logs", "--fo"}, {"logs", "--foll"}, {"logs", "-fn5"}, {"logs", "-n5", "-f"}} {
 		d, f, _, errb := hostDeps(t, "a")
 		if code := run(context.Background(), d, append([]string{"-H", "all"}, args...)); code != 2 || len(f.runs)+len(f.interactive) != 0 {
 			t.Errorf("%v: exit %d, ran %v %v", args, code, f.runs, f.interactive)
 		}
 		if errb.Len() == 0 {
 			t.Errorf("%v: no reason given", args)
+		}
+	}
+}
+
+func TestDashHAllLogsWithoutFollowRunsEverywhere(t *testing.T) {
+	d, f, _, _ := hostDeps(t, "a")
+	f.out["root@a"] = "line\n"
+	if code := run(context.Background(), d, []string{"-H", "all", "logs", "-n", "5", "--fix"}); code != 0 || len(f.runs) != 1 {
+		t.Fatalf("exit %d %v", code, f.runs)
+	}
+}
+
+func TestDashHAllGivesEveryHostAConnectTimeout(t *testing.T) {
+	d, f, _, _ := hostDeps(t, "a", "b")
+	run(context.Background(), d, []string{"-H", "all", "doctor"})
+	if len(f.runs) != 2 {
+		t.Fatalf("%v", f.runs)
+	}
+	for _, c := range f.runs {
+		if !strings.Contains(c.String(), "-o ConnectTimeout=10 ") {
+			t.Errorf("no ConnectTimeout: %s", c)
 		}
 	}
 }
