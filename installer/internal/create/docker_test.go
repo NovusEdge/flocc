@@ -23,9 +23,9 @@ const (
 func dockerMachine(daemon string, installed bool) *host.Fake {
 	f := host.NewFake().
 		On("systemctl is-active --quiet docker.service", 0, "").
-		On("cat "+daemonJSON, 0, daemon)
+		On("sudo -n cat "+daemonJSON, 0, daemon)
 	if installed {
-		f.On("cat "+dockerUnitPath, 0, dockerUnit()).
+		f.On("sudo -n cat "+dockerUnitPath, 0, dockerUnit()).
 			On("systemctl is-enabled --quiet "+dockerUnitName, 0, "").
 			On("sudo -n iptables -C DOCKER-USER -i incusbr0 -j ACCEPT", 0, "").
 			On("sudo -n iptables -C DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", 0, "")
@@ -109,7 +109,7 @@ func TestDockerStoppedWithTheUnitEnabledPasses(t *testing.T) {
 	f := host.NewFake().
 		On("systemctl is-active --quiet docker.service", 3, "").
 		On("systemctl is-active --quiet docker.socket", 0, "").
-		On("cat "+dockerUnitPath, 0, dockerUnit()).
+		On("sudo -n cat "+dockerUnitPath, 0, dockerUnit()).
 		On("systemctl is-enabled --quiet "+dockerUnitName, 0, "")
 	e, _ := testEnv(f)
 	ok, detail, _ := Docker{}.Check(context.Background(), e)
@@ -258,16 +258,43 @@ func TestDockerUnitStartAddsNothingTwice(t *testing.T) {
 	}
 }
 
-func TestDockerUnitStopRemovesTheRules(t *testing.T) {
-	want := []string{
-		"iptables -L DOCKER-USER -n",
-		"iptables -D DOCKER-USER -i incusbr0 -j ACCEPT",
-		"iptables -D DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-		"ip6tables -L DOCKER-USER -n",
+// A stopped Docker leaves FORWARD at DROP, so the rules must outlive it.
+func TestDockerUnitKeepsTheRulesWhenDockerStops(t *testing.T) {
+	u := dockerUnit()
+	if strings.Contains(u, "ExecStop") || strings.Contains(u, " -D ") {
+		t.Fatalf("removes the rules:\n%s", u)
 	}
-	if got := runUnitScript(t, "ExecStop", "0"); !slices.Equal(got, want) {
-		t.Fatalf("%q", got)
+}
+
+// daemon.json may be 0600, and tee under the owner's umask 077 leaves the unit 0600.
+func TestDockerReadsItsFilesAsRoot(t *testing.T) {
+	f := dockerMachine(daemonNftables, false).
+		On("cat "+daemonJSON, 1, "").
+		On("cat "+dockerUnitPath, 1, "")
+	e, _ := testEnv(f)
+	if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || !strings.Contains(detail, "nftables") {
+		t.Fatalf("%v %q", ok, detail)
 	}
+	f = dockerMachine(daemonDefault, true).On("cat "+dockerUnitPath, 1, "")
+	e, _ = testEnv(f)
+	if ok, detail, _ := (Docker{}).Check(context.Background(), e); !ok {
+		t.Fatalf("%q", detail)
+	}
+	for _, c := range f.Calls {
+		if strings.HasPrefix(c, "cat ") {
+			t.Errorf("read without sudo: %s", c)
+		}
+	}
+	dockerUntouched(t, f.Calls)
+}
+
+func TestDockerWithoutDaemonJSONUsesIptables(t *testing.T) {
+	f := dockerMachine(daemonDefault, true).On("sudo -n cat "+daemonJSON, 1, "")
+	e, _ := testEnv(f)
+	if ok, detail, _ := (Docker{}).Check(context.Background(), e); !ok || !strings.Contains(detail, "iptables backend") {
+		t.Fatalf("%v %q", ok, detail)
+	}
+	dockerUntouched(t, f.Calls)
 }
 
 func TestDockerBackend(t *testing.T) {
