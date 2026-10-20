@@ -9,6 +9,7 @@ import pytest
 from linear_agents import ledger
 from linear_agents.agentblock import IssueSettings, settings_to_json
 from linear_agents.context import state_dir
+from linear_agents.gate import record_session, record_stop, run_gate, run_id
 from linear_agents.grants import Grants, add_comment, for_phase
 from linear_agents.ledger import Claim
 from linear_agents.linear import LinearError
@@ -642,10 +643,36 @@ def test_a_session_idle_for_less_than_the_threshold_is_left_alone(rt):
     assert rt.notifier.sent == []
 
 
-def test_a_session_woken_since_it_went_idle_is_left_alone(rt):
+def test_a_status_rewrite_does_not_postpone_the_escalation(rt):
+    # A cache expiry or a rate-limit reset rewrites status.json while the session sits idle.
     d = idle_session(rt)
     write_status(d, usage_status())
     os.utime(d / "status.json", (time.time(), time.time()))
+    supervise(rt, current(rt))
+    assert len(rt.notifier.sent) == 1
+
+
+def agent_call(name):
+    return {"tool_name": "Agent", "tool_input": {"subagent_type": f"linear-agents:{name}"}}
+
+
+def test_a_session_waiting_on_background_agents_is_left_alone(rt):
+    d = idle_session(rt)
+    run = run_id("test", current(rt).started_at)
+    record_session(d, run, 0.0, "test")
+    assert run_gate(agent_call("source-finder"), d, "test", run, 1.0) is None
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+    record_stop(d, run, 2.0, "source-finder", "test")
+    supervise(rt, current(rt))
+    assert len(rt.notifier.sent) == 1
+
+
+def test_a_session_that_already_escalated_and_waits_is_left_alone(rt):
+    d = idle_session(rt)
+    (d / "idle").write_text(
+        json.dumps({"at": 100.0 - IDLE_S, "message": "m", "waiting_on_owner": True})
+    )
     supervise(rt, current(rt))
     assert rt.notifier.sent == []
 

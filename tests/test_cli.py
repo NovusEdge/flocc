@@ -273,6 +273,7 @@ def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
     assert (tmp_path / "compacted").exists() and not (tmp_path / "status.json").exists()
     assert (tmp_path / "scratchpads").read_text().splitlines() == [payload["scratchpad_dir"]]
     assert not (tmp_path / "launches.jsonl").exists(), "compaction is not a new session"
+    assert not (tmp_path / "last-stop").exists()
 
 
 def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch, capsys):
@@ -283,6 +284,7 @@ def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch, capsy
     line = json.loads((tmp_path / "launches.jsonl").read_text())
     assert (line["event"], line["phase"], line["run"]) == ("session", "impl", "impl@1")
     assert "## Grants" in capsys.readouterr().out
+    assert (tmp_path / "last-stop").exists()
 
 
 def test_session_start_prints_the_context_when_bookkeeping_fails(tmp_path, monkeypatch, capsys):

@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from linear_agents.context import phase_prompt
@@ -51,8 +53,24 @@ def test_hooks():
     assert hooks["PostToolUseFailure"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
     stop = [h["command"] for h in hooks["Stop"][0]["hooks"]]
     assert stop == ["linear-agents gate --answered", "linear-agents idle"]
+    # The idle marker means "the last event was a Stop", so any later activity removes it.
+    clear = '[ -z "$LINEAR_AGENTS_STATE" ] || rm -f "$LINEAR_AGENTS_STATE/idle"'
+    ungated = [e for e in hooks["PreToolUse"] if "matcher" not in e]
+    assert [h["command"] for e in ungated for h in e["hooks"]] == [clear]
+    assert [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]] == [clear]
     assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "linear-agents gate --stopped"
     assert hooks["SessionStart"][0]["hooks"][0]["command"] == "linear-agents session-start"
+
+
+def test_the_idle_clearing_hook_removes_only_the_marker(tmp_path):
+    hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
+    command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
+    (tmp_path / "idle").touch()
+    (tmp_path / "idle-escalated").touch()
+    env = {"PATH": os.environ["PATH"], "LINEAR_AGENTS_STATE": str(tmp_path)}
+    subprocess.run(command, shell=True, env=env, check=True)
+    assert not (tmp_path / "idle").exists() and (tmp_path / "idle-escalated").exists()
+    subprocess.run(command, shell=True, env={"PATH": env["PATH"]}, check=True)
 
 
 def test_fix_prompt_points_at_the_fix_section():

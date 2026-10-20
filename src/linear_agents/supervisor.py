@@ -9,7 +9,13 @@ from linear_agents import ledger
 from linear_agents.agentblock import settings_from_json
 from linear_agents.context import phase_prompt, state_dir
 from linear_agents.escalation import Escalation, scoped
-from linear_agents.gate import LAUNCH_GRANTS_ENV, clear_idle, clear_question, run_id
+from linear_agents.gate import (
+    LAUNCH_GRANTS_ENV,
+    clear_idle,
+    clear_question,
+    run_id,
+    running_agents,
+)
 from linear_agents.ledger import Claim
 from linear_agents.linear import LinearError
 from linear_agents.publisher import review_comment
@@ -338,18 +344,20 @@ def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
     try:
         raw = json.loads(idle.read_text())
         at, message = float(raw["at"]), str(raw.get("message", ""))
+        waiting = raw.get("waiting_on_owner") is True
     except (OSError, ValueError, KeyError, TypeError):
         return
     escalated = d / "idle-escalated"
-    if escalated.exists() and escalated.read_text() == str(at):
+    if waiting or (escalated.exists() and escalated.read_text() == str(at)):
         return
-    # The status line rewrites status.json while the session is active, so a later mtime means a
-    # comment or a finished background shell woke it after the Stop hook wrote `idle`.
-    status = d / "status.json"
-    since = max(at, status.stat().st_mtime) if status.exists() else at
-    if rt.now() - since < rt.cfg.idle_escalate_s:
+    # Hooks remove `idle` when the session acts again, so one that is left was written by the
+    # last Stop. status.json is no wake signal: the status line also rewrites it on cache expiry
+    # and rate-limit resets, and goes quiet while the session waits on background agents.
+    if rt.now() - at < rt.cfg.idle_escalate_s:
         return
-    minutes = int((rt.now() - since) / 60)
+    if running_agents(d, run_id(claim.phase, claim.started_at), claim.phase):
+        return
+    minutes = int((rt.now() - at) / 60)
     esc = scoped(
         Escalation(
             2,

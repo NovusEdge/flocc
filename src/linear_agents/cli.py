@@ -296,6 +296,7 @@ def _session_bookkeeping(state: Path) -> None:
     else:
         # Background agents survive compaction, so only a real start resets the running count.
         run = os.environ.get("LINEAR_AGENTS_RUN")
+        (state / gate.LAST_STOP).touch()
         gate.record_session(state, run, time.time(), os.environ.get("LINEAR_AGENTS_PHASE"))
     pad = payload.get("scratchpad_dir")
     if isinstance(pad, str) and pad:
