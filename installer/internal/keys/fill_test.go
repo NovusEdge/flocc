@@ -31,8 +31,11 @@ func (s logStore) Set(k Slot, v string) error {
 	return nil
 }
 
-// script answers the prompts in order; an exhausted list gives an empty paste or the default.
+// script answers the prompts in order. An exhausted secrets list gives an empty paste; an
+// exhausted confirms list fails the test, because a default of true on "Check the same paste
+// again?" would otherwise repeat until go test times out. newFixture sets t.
 type script struct {
+	t        *testing.T
 	secrets  []string
 	confirms []bool
 }
@@ -46,9 +49,10 @@ func (s *script) Secret(string, string) (string, error) {
 	return v, nil
 }
 
-func (s *script) Confirm(_ string, def bool) (bool, error) {
+func (s *script) Confirm(title string, _ bool) (bool, error) {
 	if len(s.confirms) == 0 {
-		return def, nil
+		s.t.Helper()
+		s.t.Fatalf("unscripted confirm: %q", title)
 	}
 	v := s.confirms[0]
 	s.confirms = s.confirms[1:]
@@ -68,6 +72,7 @@ type fixture struct {
 func newFixture(t *testing.T, gh, lin *replay.Server, p *script) *fixture {
 	t.Helper()
 	f := &fixture{}
+	p.t = t
 	f.store = logStore{m: map[Slot]string{}, events: &f.events}
 	ntfy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -106,7 +111,7 @@ var (
 
 func TestFillAsksForEachKeyInOrderAndStoresIt(t *testing.T) {
 	f := newFixture(t, ghServer(t, userOK), linServer(t, "viewer-ok.http"),
-		&script{secrets: []string{"lin_api_k", "github_pat_agent", "github_pat_publish"}})
+		&script{secrets: []string{"lin_api_k", "github_pat_agent", "github_pat_publish"}, confirms: []bool{true}})
 	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +224,17 @@ func TestALinearOutageRechecksTheSamePasteAndStoresNothing(t *testing.T) {
 	}
 }
 
+// A 400 validation error or a 404 is Linear refusing the call, not an outage: a second check of
+// the same paste would fail the same way, so the owner is not offered one.
+func TestALinearErrorThatIsNoOutageOffersNoRecheck(t *testing.T) {
+	lin := linServer(t, "validation-error.http")
+	f := newFixture(t, nil, lin, &script{secrets: []string{"lin_api_k"}})
+	err := Fill(context.Background(), f.env, Mapped{}, []Slot{Linear})
+	if !errors.Is(err, ErrStopped) || f.store.m[Linear] != "" || len(lin.Requests) != 1 {
+		t.Fatalf("%v %v %d", err, f.store.m, len(lin.Requests))
+	}
+}
+
 func TestAGitHubOutageIsNotABadToken(t *testing.T) {
 	gh := ghServer(t, replay.Route{Method: "GET", Path: "/user", File: "refs-ratelimited.http"})
 	p := &script{secrets: []string{"github_pat_a", "github_pat_never"}, confirms: []bool{false}}
@@ -275,6 +291,18 @@ func TestAGitHubPageForTwoOwnersNamesBoth(t *testing.T) {
 	u, _ := url.Parse(raw)
 	if u.Query().Has("target_name") || !strings.Contains(help, "o and p") || !strings.Contains(help, "one owner") {
 		t.Fatalf("%s\n%s", raw, help)
+	}
+}
+
+func TestReplaceKeepsAKeyLeftEmptyAndStoresANewOne(t *testing.T) {
+	f := newFixture(t, ghServer(t, userOK), nil, &script{secrets: []string{"github_pat_new", ""}})
+	f.store.m[Agent], f.store.m[Publish] = "github_pat_old", "github_pat_pub"
+	changed, err := Replace(context.Background(), f.env, Mapped{}, []Slot{Agent, Publish})
+	if err != nil || len(changed) != 1 || changed[0] != Agent {
+		t.Fatalf("%v %v", changed, err)
+	}
+	if f.store.m[Agent] != "github_pat_new" || f.store.m[Publish] != "github_pat_pub" {
+		t.Fatalf("%v", f.store.m)
 	}
 }
 
