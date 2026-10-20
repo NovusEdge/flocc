@@ -29,14 +29,13 @@ func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 
 func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 	root, dir, cfg := t.TempDir(), t.TempDir(), t.TempDir()
-	os.MkdirAll(filepath.Join(root, "build"), 0o755)
-	os.WriteFile(filepath.Join(root, "build", "flocc-setup-linux-amd64"), []byte("bin"), 0o755)
 	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"x@X": true}})
 	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{
 		"X": map[string]any{"source": map[string]string{"source": "github", "repo": "o/x"}, "installLocation": "/m/X"}})
 	f := host.NewFake().
 		On("git -C "+root+" config user.name", 0, "Ada L\n").
 		On("git -C "+root+" config user.email", 0, "ada@example.test\n").
+		On("go build -o "+dir+"/flocc-setup ./installer/cmd/flocc-setup", 0, "").
 		On("git -C "+root+" bundle create "+dir+"/flocc.bundle HEAD", 0, "").
 		On("git -C /m/X archive --format=tar -o "+dir+"/mp-X.tar HEAD", 0, "").
 		On("git -C /m/X rev-parse HEAD", 0, "abc\n")
@@ -56,6 +55,44 @@ func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 	}
 	if len(got.Marketplaces) != 1 || got.Marketplaces[0].Archive != "mp-X.tar" || got.Marketplaces[0].Commit != "abc" {
 		t.Fatalf("%s", b)
+	}
+}
+
+// cmdLog keeps every command whole, Dir and Env included, which the Fake's string keys drop.
+type cmdLog struct {
+	*host.Fake
+	cmds []host.Cmd
+}
+
+func (c *cmdLog) Run(ctx context.Context, cmd host.Cmd) (host.Result, error) {
+	c.cmds = append(c.cmds, cmd)
+	return c.Fake.Run(ctx, cmd)
+}
+
+func TestStageFilesBuildsTheInstallerForTheHostArch(t *testing.T) {
+	root, dir, cfg := t.TempDir(), t.TempDir(), t.TempDir()
+	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{})
+	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{})
+	f := &cmdLog{Fake: host.NewFake().
+		On("git -C "+root+" config user.name", 0, "Ada L\n").
+		On("git -C "+root+" config user.email", 0, "ada@example.test\n").
+		On("go build -o "+dir+"/flocc-setup ./installer/cmd/flocc-setup", 0, "").
+		On("git -C "+root+" bundle create "+dir+"/flocc.bundle HEAD", 0, "")}
+	if err := stageFiles(context.Background(), f, root, dir, "arm64", cfg, func(string) (bool, error) { return false, nil }); err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(f.cmds, func(c host.Cmd) bool { return c.Name == "go" })
+	if i < 0 {
+		t.Fatalf("no go build: %v", f.Calls)
+	}
+	build := f.cmds[i]
+	for _, want := range []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64"} {
+		if !slices.Contains(build.Env, want) {
+			t.Fatalf("%s missing from %q", want, build.Env)
+		}
+	}
+	if build.Dir != root {
+		t.Fatalf("built in %q, not the repo root", build.Dir)
 	}
 }
 
@@ -303,11 +340,13 @@ func TestStageFilesFailsWithoutAnOwnerIdentity(t *testing.T) {
 	}
 }
 
-// stageOK accepts git and scp, whose arguments hold the random stage directory.
+// stageOK accepts git, go and scp, whose arguments hold the random stage directory.
 type stageOK struct{ *host.Fake }
 
 func (s *stageOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 	switch c.Name {
+	case "go":
+		return host.Result{}, nil
 	case "git":
 		if slices.Contains(c.Args, "config") {
 			return host.Result{Stdout: "x@x.test\n"}, nil
@@ -323,8 +362,6 @@ func (s *stageOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 func shipRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, "build"), 0o755)
-	os.WriteFile(filepath.Join(root, "build", "flocc-setup-linux-amd64"), []byte("bin"), 0o755)
 	cfg := t.TempDir()
 	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{})
 	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{})
