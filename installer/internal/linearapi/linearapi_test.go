@@ -1,9 +1,12 @@
 package linearapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -76,6 +79,95 @@ func TestCanWriteRefusesAReadOnlyKey(t *testing.T) {
 	_, c := writeServer(t, "update-forbidden.http")
 	err := CanWrite(context.Background(), c, "NF-186")
 	if err == nil || !strings.Contains(err.Error(), "cannot write") || !strings.Contains(err.Error(), "Full access") {
+		t.Fatal(err)
+	}
+}
+
+func TestRejectedKeyAndOutageAreToldApart(t *testing.T) {
+	for _, tc := range []struct {
+		file         string
+		status       int
+		rejected     bool
+		unavailable  bool
+		keyAdviceOut bool
+	}{
+		{"bad-key.http", 400, true, false, false},
+		{"unavailable.http", 503, false, true, true},
+		{"too-many-requests.http", 429, false, true, true},
+		{"rate-limited.http", 400, false, true, true},
+		{"bad-gateway.http", 502, false, true, true},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			_, c := serve(t, tc.file)
+			_, err := CheckKey(context.Background(), c, []string{"NF"})
+			var le *Error
+			if !errors.As(err, &le) || le.Status != tc.status {
+				t.Fatalf("%v", err)
+			}
+			if errors.Is(err, ErrKeyRejected) != tc.rejected || errors.Is(err, ErrUnavailable) != tc.unavailable {
+				t.Fatalf("rejected=%v unavailable=%v: %v", errors.Is(err, ErrKeyRejected), errors.Is(err, ErrUnavailable), err)
+			}
+			if tc.keyAdviceOut && (strings.Contains(err.Error(), "Full access") || !strings.Contains(err.Error(), "could not check Linear")) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestCanWriteDoesNotBlameTheKeyForAnOutage(t *testing.T) {
+	for _, update := range []string{"unavailable.http", "too-many-requests.http", "rate-limited.http"} {
+		_, c := writeServer(t, update)
+		err := CanWrite(context.Background(), c, "NF-186")
+		if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrKeyRejected) || strings.Contains(err.Error(), "Full access") {
+			t.Fatalf("%s: %v", update, err)
+		}
+	}
+}
+
+func TestCanWriteBlamesTheKeyWhenLinearRefusesIt(t *testing.T) {
+	_, c := writeServer(t, "update-forbidden.http")
+	if err := CanWrite(context.Background(), c, "NF-186"); !errors.Is(err, ErrKeyRejected) {
+		t.Fatal(err)
+	}
+}
+
+func TestATransportFailureIsUnavailable(t *testing.T) {
+	s := replay.New(t, "testdata")
+	url := s.URL + "/graphql"
+	s.Close()
+	c := &Client{URL: url, Key: "lin_api_test", HTTP: s.Client()}
+	if _, err := c.Viewer(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatal(err)
+	}
+}
+
+func TestCanWriteWritesNothingWhenTheReadFails(t *testing.T) {
+	s := replay.New(t, "testdata", replay.Route{Method: "POST", Path: "/graphql", Body: "issue(id", File: "issue-not-found.http"})
+	c := &Client{URL: s.URL + "/graphql", Key: "lin_api_test", HTTP: s.Client()}
+	if err := CanWrite(context.Background(), c, "NF-9999"); !errors.Is(err, ErrNotFound) || len(s.Requests) != 1 {
+		t.Fatalf("%v %d", err, len(s.Requests))
+	}
+}
+
+func TestCanWriteWritesNothingWhenLinearReturnsNoIssue(t *testing.T) {
+	s := replay.New(t, "testdata", replay.Route{Method: "POST", Path: "/graphql", Body: "issue(id", File: "issue-null.http"})
+	c := &Client{URL: s.URL + "/graphql", Key: "lin_api_test", HTTP: s.Client()}
+	err := CanWrite(context.Background(), c, "NF-186")
+	if err == nil || len(s.Requests) != 1 {
+		t.Fatalf("%v %d", err, len(s.Requests))
+	}
+}
+
+func TestAReplyOverTheLimitIsRefused(t *testing.T) {
+	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":{"viewer":{"name":"`))
+		w.Write(bytes.Repeat([]byte("a"), maxReply))
+		w.Write([]byte(`"}}}`))
+	}))
+	defer big.Close()
+	c := &Client{URL: big.URL, Key: "lin_api_test", HTTP: big.Client()}
+	_, err := c.Viewer(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "over 4 MiB") || !errors.Is(err, ErrUnavailable) {
 		t.Fatal(err)
 	}
 }

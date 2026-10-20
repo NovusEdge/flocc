@@ -39,8 +39,41 @@ type Issue struct{ ID, Key, Title, StateType string }
 
 func (i Issue) Open() bool { return i.StateType != "completed" && i.StateType != "canceled" }
 
+// ErrKeyRejected and ErrUnavailable classify an *Error with errors.Is. A rejected key is the
+// owner's to replace; an unavailable Linear (no answer, 5xx, rate limit, unreadable reply) is
+// worth retrying, and says nothing about the key.
+var (
+	ErrKeyRejected = errors.New("Linear rejected the key")
+	ErrUnavailable = errors.New("Linear is unavailable")
+)
+
+// Error is a failed call: Status is the HTTP status (0 when no reply arrived) and Code the first
+// GraphQL extensions.code, such as AUTHENTICATION_ERROR, FORBIDDEN or RATELIMITED.
+type Error struct {
+	Status    int
+	Code      string
+	Message   string
+	malformed bool
+	cause     error
+}
+
+func (e *Error) Error() string { return e.Message }
+func (e *Error) Unwrap() error { return e.cause }
+
+func (e *Error) Is(target error) bool {
+	switch target {
+	case ErrKeyRejected:
+		return e.Code == "AUTHENTICATION_ERROR" || e.Code == "FORBIDDEN" || e.Status == 401 || e.Status == 403
+	case ErrUnavailable:
+		return e.Status == 0 || e.Status >= 500 || e.Status == 429 || e.Code == "RATELIMITED" || e.malformed
+	}
+	return false
+}
+
+const maxReply = 4 << 20
+
 // do posts one query. Linear reports a bad key and rate limits as HTTP 400 with a JSON error
-// list, so the body decides, not the status.
+// list, so the error list decides before the status does.
 func (c *Client) do(ctx context.Context, query string, vars map[string]any, out any) error {
 	body, err := json.Marshal(map[string]any{"query": query, "variables": vars})
 	if err != nil {
@@ -54,26 +87,43 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, out 
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return &Error{Message: "Linear did not answer: " + err.Error(), cause: err}
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	status := resp.StatusCode
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxReply+1))
 	if err != nil {
-		return err
+		return &Error{Status: status, Message: fmt.Sprintf("Linear HTTP %d: reading the reply: %v", status, err), cause: err}
+	}
+	if len(raw) > maxReply {
+		return &Error{Status: status, Message: fmt.Sprintf("Linear HTTP %d: reply over %d MiB", status, maxReply>>20), malformed: true}
 	}
 	var env struct {
 		Data   json.RawMessage
-		Errors []struct{ Message string }
+		Errors []struct {
+			Message    string
+			Extensions struct{ Code string }
+		}
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return fmt.Errorf("Linear HTTP %d: unreadable reply", resp.StatusCode)
+		return &Error{Status: status, Message: fmt.Sprintf("Linear HTTP %d: unreadable reply", status), malformed: true}
 	}
 	if len(env.Errors) > 0 {
 		msgs := make([]string, len(env.Errors))
+		var code string
 		for i, e := range env.Errors {
 			msgs[i] = e.Message
+			if code == "" {
+				code = e.Extensions.Code
+			}
 		}
-		return fmt.Errorf("Linear: %s", strings.Join(msgs, "; "))
+		return &Error{Status: status, Code: code, Message: "Linear: " + strings.Join(msgs, "; ")}
+	}
+	if status < 200 || status > 299 {
+		return &Error{Status: status, Message: fmt.Sprintf("Linear HTTP %d", status)}
+	}
+	if len(env.Data) == 0 {
+		return &Error{Status: status, Message: fmt.Sprintf("Linear HTTP %d: reply has no data", status), malformed: true}
 	}
 	return json.Unmarshal(env.Data, out)
 }
@@ -197,12 +247,27 @@ func (c *Client) CreateLabel(ctx context.Context, teamID, name string) error {
 func CanWrite(ctx context.Context, c *Client, issueKey string) error {
 	is, err := c.Issue(ctx, issueKey)
 	if err != nil {
-		return err
+		return explain(err, "was refused by Linear")
+	}
+	if is.ID == "" {
+		return fmt.Errorf("could not check Linear: it returned no issue for %s", issueKey)
 	}
 	if err := c.SetTitle(ctx, is.ID, is.Title); err != nil {
-		return fmt.Errorf("the key cannot write to %s (%v); make one with Full access", issueKey, err)
+		return explain(err, "cannot write to "+issueKey)
 	}
 	return nil
+}
+
+// explain tells the owner to replace the key only when Linear refused it; an outage or a rate
+// limit must not send them to remake a good key.
+func explain(err error, rejected string) error {
+	switch {
+	case errors.Is(err, ErrKeyRejected):
+		return fmt.Errorf("the key %s (%w); make one with Full access", rejected, err)
+	case errors.Is(err, ErrNotFound):
+		return err
+	}
+	return fmt.Errorf("could not check Linear: %w", err)
 }
 
 // CheckKey reads the viewer and its teams; every team key in teams must be visible, and with
@@ -210,7 +275,7 @@ func CanWrite(ctx context.Context, c *Client, issueKey string) error {
 func CheckKey(ctx context.Context, c *Client, teams []string) (Viewer, error) {
 	v, err := c.Viewer(ctx)
 	if err != nil {
-		return v, err
+		return v, explain(err, "was refused by Linear")
 	}
 	var seen []string
 	for _, t := range v.Teams {
