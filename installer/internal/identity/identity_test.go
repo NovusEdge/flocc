@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 func TestFromRepoReadsNameAndEmail(t *testing.T) {

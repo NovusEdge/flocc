@@ -8,11 +8,11 @@ import subprocess
 import time
 from pathlib import Path
 
-from linear_agents import ledger, usage
-from linear_agents.config import Config
-from linear_agents.gate import BUDGETS, launches_used, run_id
-from linear_agents.grants import for_phase
-from linear_agents.sessions import session_name
+from flocc import ledger, usage
+from flocc.config import Config
+from flocc.gate import BUDGETS, launches_used, run_id
+from flocc.grants import for_phase
+from flocc.sessions import session_name
 
 _TICK = re.compile(r"^--- tick (\S+)Z$")
 _EXIT = re.compile(r"^--- exit (.*)$")
@@ -63,7 +63,7 @@ def systemd_tick(run=subprocess.run) -> dict | None:
     env = {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
     try:
         out = run(
-            ["systemctl", "--user", "show", "linear-agents.service", "-p", _SYSTEMD_PROPS],
+            ["systemctl", "--user", "show", "flocc.service", "-p", _SYSTEMD_PROPS],
             capture_output=True,
             text=True,
             env=env,

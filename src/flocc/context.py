@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from linear_agents.config import Config
-from linear_agents.ledger import Claim
-from linear_agents.linear import Issue
+from flocc.config import Config
+from flocc.ledger import Claim
+from flocc.linear import Issue
 
 _COMMANDS = """## Execution only
 
@@ -12,14 +12,14 @@ decision the spec leaves open, through the escalate skill.
 
 ## Commands
 
-- `linear-agents claim '<glob>'` before editing files outside your claimed paths.
-- `linear-agents context` to see this text again with the current peer list.
+- `flocc claim '<glob>'` before editing files outside your claimed paths.
+- `flocc context` to see this text again with the current peer list.
 - message a peer with `SendMessage` before escalating when your change affects theirs; see the coordinate skill.
-- `linear-agents escalate ...` when you need the owner; see the escalate skill.
-- `linear-agents done --summary '<one paragraph>'` when this phase is finished.
-- `linear-agents review-done` after writing review.md, in the review phase only.
-- `linear-agents handoff-ready` after writing handoff.md when asked to hand off.
-- `linear-agents commit -m '<message>' -- <paths>` to commit only those paths.
+- `flocc escalate ...` when you need the owner; see the escalate skill.
+- `flocc done --summary '<one paragraph>'` when this phase is finished.
+- `flocc review-done` after writing review.md, in the review phase only.
+- `flocc handoff-ready` after writing handoff.md when asked to hand off.
+- `flocc commit -m '<message>' -- <paths>` to commit only those paths.
 - "Grants" below lists what you may do beyond the defaults; the gate refuses anything else.
 """
 
@@ -44,23 +44,23 @@ def phase_prompt(phase: str, issue_key: str, extra: str = "") -> str:
         body = (
             f"You are the tester for {issue_key}. Follow the tester skill: write tests that"
             " pass only on correct behavior, commit them, write handoff.md for the"
-            " implementer, then run linear-agents done."
+            " implementer, then run flocc done."
         )
     elif phase == "impl":
         body = (
             f"You are the implementer for {issue_key}. Follow the implementer skill: make the"
-            " committed tests pass without changing them, then run linear-agents done."
+            " committed tests pass without changing them, then run flocc done."
         )
     elif phase == "review":
         body = (
             f"You are the reviewer for {issue_key}. Follow the reviewer skill: read"
             " review-input.md in your state directory, write review.md, then run"
-            " linear-agents review-done. Change nothing in the repo."
+            " flocc review-done. Change nothing in the repo."
         )
     else:
         body = (
             f"You are fixing {issue_key} after the service's check failed. Follow the"
             " implementer skill's Fix phase section, fix the failure below, then run"
-            " linear-agents done."
+            " flocc done."
         )
     return f"{body}\n\n{extra}".strip()

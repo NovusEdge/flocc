@@ -1,9 +1,9 @@
 from dataclasses import replace
 
-from linear_agents.admission import admit
-from linear_agents.agentblock import IssueSettings
-from linear_agents.config import load
-from linear_agents.usage import Usage
+from flocc.admission import admit
+from flocc.agentblock import IssueSettings
+from flocc.config import load
+from flocc.usage import Usage
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
 

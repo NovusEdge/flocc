@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 // shWords has sh parse line into words, the way the ssh user's shell parses the remote command.

@@ -9,14 +9,14 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/NovusEdge/linear-agents/deploy"
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/deploy"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/pelletier/go-toml/v2"
 )
 
 // Read on every fetch, so a replaced token takes effect without touching the clone.
-const credentialHelper = `!f() { test "$1" = get && printf 'username=x-access-token\npassword=%s\n' "$(cat "$HOME/.config/linear-agents/gh-agent.token")"; }; f`
+const credentialHelper = `!f() { test "$1" = get && printf 'username=x-access-token\npassword=%s\n' "$(cat "$HOME/.config/flocc/gh-agent.token")"; }; f`
 
 var (
 	repoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -52,7 +52,7 @@ func ServicePath(home string) string {
 // doctor's ok is false when the command could not run or exited non-zero; that can happen with
 // no FAIL line (missing binary, Python traceback), so callers must not read empty fails as healthy.
 func doctor(ctx context.Context, e *Env) (out string, fails []string, ok bool) {
-	r, err := e.Run.Run(ctx, host.Cmd{Name: e.Real(".local/bin/linear-agents"), Args: []string{"doctor"}, Env: []string{ServicePath(e.Home)}})
+	r, err := e.Run.Run(ctx, host.Cmd{Name: e.Real(".local/bin/flocc"), Args: []string{"doctor"}, Env: []string{ServicePath(e.Home)}})
 	for _, line := range strings.Split(r.Stdout, "\n") {
 		if strings.HasPrefix(line, "FAIL") {
 			fails = append(fails, line)
@@ -170,14 +170,14 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(e.HomePath(".config/linear-agents"), 0o700); err != nil {
+	if err := os.MkdirAll(e.HomePath(".config/flocc"), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(e.HomePath(".config/linear-agents/config.toml"), rendered, 0o600); err != nil {
+	if err := os.WriteFile(e.HomePath(".config/flocc/config.toml"), rendered, 0o600); err != nil {
 		return err
 	}
 	ntfy := "https://ntfy.sh/" + a.NtfyTopic
-	if _, err := e.Must(ctx, "curl", "-fsS", "-H", "Priority: 5", "-H", "Title: linear-agents", "-d", "test push from la-setup", ntfy); err != nil {
+	if _, err := e.Must(ctx, "curl", "-fsS", "-H", "Priority: 5", "-H", "Title: flocc", "-d", "test push from flocc-setup", ntfy); err != nil {
 		return err
 	}
 	arrived, err := e.UI.Confirm("Subscribe to "+ntfy+" in the ntfy app. Did the priority 5 test push arrive?", true)

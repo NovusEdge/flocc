@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/identity"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
 
 func archFor(unameM string) (string, error) {
@@ -27,7 +27,7 @@ func archFor(unameM string) (string, error) {
 	return "", fmt.Errorf("unsupported architecture %q", strings.TrimSpace(unameM))
 }
 
-const resetStage = "sudo rm -rf /tmp/la-setup && mkdir -p /tmp/la-setup"
+const resetStage = "sudo rm -rf /tmp/flocc-setup && mkdir -p /tmp/flocc-setup"
 
 func sshCmd(d Dest, tty bool, remote string) host.Cmd {
 	args := append([]string{}, d.Opts...)
@@ -67,14 +67,14 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn, 
 	if err := id.Write(filepath.Join(dir, "identity.json")); err != nil {
 		return err
 	}
-	bin, err := os.ReadFile(filepath.Join(root, "build", "la-setup-linux-"+arch))
+	bin, err := os.ReadFile(filepath.Join(root, "build", "flocc-setup-linux-"+arch))
 	if err != nil {
 		return fmt.Errorf("%w; run just build-setup", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "la-setup"), bin, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "flocc-setup"), bin, 0o755); err != nil {
 		return err
 	}
-	if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "linear-agents.bundle"), "HEAD"}}); err != nil {
+	if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "flocc.bundle"), "HEAD"}}); err != nil {
 		return err
 	}
 	allow, err := readAllowlist(filepath.Join(root, "deploy", "agent-plugins.txt"))
@@ -116,7 +116,7 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn, 
 }
 
 func Main(args []string) int {
-	fs := flag.NewFlagSet("la-setup ship", flag.ContinueOnError)
+	fs := flag.NewFlagSet("flocc-setup ship", flag.ContinueOnError)
 	skip := fs.Bool("skip-interactive", false, "pass --skip-interactive to the host")
 	answersIn := fs.String("answers", "", "answers file to copy and pass to the host")
 	stageOnly := fs.String("stage-only", "", "write the stage for linux/amd64 into this directory and stop")
@@ -142,7 +142,7 @@ func Main(args []string) int {
 		return 0
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: la-setup ship [--skip-interactive] [--answers FILE] <ssh-target|daytona:SANDBOX>")
+		fmt.Fprintln(os.Stderr, "usage: flocc-setup ship [--skip-interactive] [--answers FILE] <ssh-target|daytona:SANDBOX>")
 		return 2
 	}
 	home, _ := os.UserHomeDir()
@@ -180,7 +180,10 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersI
 	if err != nil {
 		return err
 	}
-	dir, err := os.MkdirTemp("", "la-ship-")
+	if err := refuseLegacy(ctx, r, dest); err != nil {
+		return err
+	}
+	dir, err := os.MkdirTemp("", "flocc-ship-")
 	if err != nil {
 		return err
 	}
@@ -188,14 +191,14 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersI
 	if err := stageFiles(ctx, r, root, dir, arch, answersIn, claudeConfigDir(), ghPrivate); err != nil {
 		return err
 	}
-	// A finished run leaves the stage root:linear-agents 750, so only sudo can clear it, and its
+	// A finished run leaves the stage root:flocc 750, so only sudo can clear it, and its
 	// password prompt needs the terminal.
 	if err := r.Interactive(ctx, sshCmd(dest, true, resetStage)); err != nil {
 		return err
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*"))
 	scp := append(append([]string{"-q"}, dest.Opts...), files...)
-	if _, err := host.Must(ctx, r, host.Cmd{Name: "scp", Args: append(scp, dest.SSH+":/tmp/la-setup/")}); err != nil {
+	if _, err := host.Must(ctx, r, host.Cmd{Name: "scp", Args: append(scp, dest.SSH+":/tmp/flocc-setup/")}); err != nil {
 		return err
 	}
 	return r.Interactive(ctx, sshCmd(dest, true, remoteCmd(answersIn, skip)))
@@ -203,9 +206,9 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersI
 
 func remoteCmd(answersIn string, skip bool) string {
 	// scp through the Daytona gateway drops the exec bit.
-	remote := "chmod 755 /tmp/la-setup/la-setup && sudo /tmp/la-setup/la-setup"
+	remote := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo /tmp/flocc-setup/flocc-setup"
 	if answersIn != "" {
-		remote += " --answers /tmp/la-setup/" + filepath.Base(answersIn)
+		remote += " --answers /tmp/flocc-setup/" + filepath.Base(answersIn)
 	}
 	if skip {
 		remote += " --skip-interactive"

@@ -6,11 +6,11 @@ from dataclasses import replace
 
 import pytest
 
-from linear_agents import doctor
-from linear_agents.config import load
-from linear_agents.doctor import Result
-from linear_agents.linear import Issue, LinearError
-from linear_agents.tokens import TokenRejected, can_write_contents
+from flocc import doctor
+from flocc.config import load
+from flocc.doctor import Result
+from flocc.linear import Issue, LinearError
+from flocc.tokens import TokenRejected, can_write_contents
 from tests.paths import EXAMPLE
 
 DAY = 86400
@@ -108,7 +108,7 @@ def test_claude_checks(monkeypatch):
 
 def test_tmux_check(tmux_server):
     assert doctor.tmux_check(tmux_server).status == "ok"
-    assert doctor.tmux_check("la-test-no-such-server").status == "fail"
+    assert doctor.tmux_check("flocc-test-no-such-server").status == "fail"
 
 
 class DoctorLinear:

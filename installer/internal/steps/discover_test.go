@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
 )
 
 func TestParseReposReadsConcatenatedPagesAndSkipsArchived(t *testing.T) {

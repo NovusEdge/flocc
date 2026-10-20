@@ -1,6 +1,6 @@
 import pytest
 
-from linear_agents.config import load, trailer_enabled
+from flocc.config import load, trailer_enabled
 from tests.paths import EXAMPLE
 
 

@@ -2,15 +2,19 @@ import subprocess
 import time
 from dataclasses import replace
 
-from linear_agents.config import RepoConfig
-from linear_agents.publisher import (
+import pytest
+
+from flocc import legacy
+from flocc.config import TRAILER, RepoConfig
+from flocc.publisher import (
     COMMENT_LIMIT,
+    BranchMoved,
     comment_on_pr,
     failure_excerpt,
     publish,
     review_comment,
 )
-from linear_agents.worktree import git, prepare_worktree
+from flocc.worktree import git, prepare_worktree
 from tests.test_ledger import make
 
 
@@ -67,6 +71,30 @@ def test_retry_reuses_the_open_pr(origin, tmp_path):
     gh = Gh(existing="https://github.com/o/r/pull/9\n")
     result = publish(claim, repo, "t", "s", token="t", runner=gh)
     assert result.url.endswith("/pull/9") and not any(c[2] == "create" for c in gh.calls)
+
+
+def test_a_push_rejected_because_the_branch_moved_says_so(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    other = tmp_path / "other-host"
+    subprocess.run(
+        ["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)],
+        check=True,
+        capture_output=True,
+    )
+    for k, v in (("user.name", "t"), ("user.email", "t@t")):
+        git("config", k, v, cwd=other)
+    git("checkout", "-qb", claim.branch, cwd=other)
+    (other / "theirs.txt").write_text("x\n")
+    git("add", ".", cwd=other)
+    git("commit", "-qm", "pushed from elsewhere", cwd=other)
+    git("push", "-q", "origin", claim.branch, cwd=other)
+    with pytest.raises(BranchMoved) as exc:
+        publish(claim, repo, "t", "s", token="t", runner=Gh())
+    assert str(exc.value) == (
+        "GitHub's copy of the branch has commits this one lacks"
+        " (another host or a person pushed, or a pushed commit was rewritten)"
+    )
+    assert "[rejected]" in exc.value.stderr
 
 
 def test_rejects_changed_tests(origin, tmp_path):
@@ -133,7 +161,7 @@ def test_failed_check_keeps_the_full_output(origin, tmp_path):
 
 
 def test_review_comment_wraps_the_review_verbatim():
-    assert review_comment("body\n") == "🤖 linear-agents review\n\nbody\n"
+    assert review_comment("body\n") == "🤖 flocc review\n\nbody\n"
 
 
 def test_review_comment_is_truncated_to_githubs_limit():
@@ -160,13 +188,23 @@ def _trailed_commit(path, name, trailer):
 
 def test_commits_without_the_trailer_are_listed_not_blocked(origin, tmp_path):
     repo, path, claim = setup_claim(origin, tmp_path)
-    _trailed_commit(path, "a.py", "Linear-Agents: NF-5 impl")
+    _trailed_commit(path, "a.py", "Flocc: NF-5 impl")
     _trailed_commit(path, "b.py", "")
     bare = git("rev-parse", "--short", "HEAD", cwd=path)
     result = publish(claim, repo, "t", "s", token="t", runner=Gh())
     tests = git("rev-parse", "--short", str(claim.tester_sha), cwd=path)
     assert result.status == "opened"
     assert set(result.untrailed) == {bare, tests}
+
+
+def test_commits_with_either_trailer_count_as_trailed(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    _trailed_commit(path, "a.py", f"{TRAILER}: NF-5 impl")
+    # A rerun of a branch la-nimble started holds commits with its trailer.
+    _trailed_commit(path, "b.py", f"{legacy.TRAILER}: NF-5 impl")
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh())
+    tests = git("rev-parse", "--short", str(claim.tester_sha), cwd=path)
+    assert result.untrailed == (tests,)
 
 
 def test_trailer_check_is_skipped_when_the_trailer_is_off(origin, tmp_path):

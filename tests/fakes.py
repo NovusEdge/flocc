@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from linear_agents.linear import Issue
+from flocc.linear import Issue
 
 ISSUE = Issue("u1", "NF-1", "Fix rounding", "desc", "https://l/NF-1", "started", (), None, "t1")
 

@@ -1,6 +1,6 @@
 # Must match state_root in the host's config.toml. Only status/logs on non-systemd
 # (loop) hosts read it; systemd hosts use journald.
-runlog := "~/.local/state/linear-agents/run.log"
+runlog := "~/.local/state/flocc/run.log"
 
 [private]
 default:
@@ -41,18 +41,18 @@ test-go:
 [group('dev')]
 check: lint test
 
-# Build la-setup for this machine and for linux amd64/arm64 hosts into build/
+# Build flocc-setup for this machine and for linux amd64/arm64 hosts into build/
 [group('build')]
 build-setup:
     mkdir -p build
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/la-setup-linux-amd64 ./installer
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o build/la-setup-linux-arm64 ./installer
-    go build -o build/la-setup ./installer
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/flocc-setup-linux-amd64 ./installer
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o build/flocc-setup-linux-arm64 ./installer
+    go build -o build/flocc-setup ./installer
 
 [private]
 build-desktop:
     mkdir -p build
-    go build -o build/la-setup ./installer
+    go build -o build/flocc-setup ./installer
 
 # Remove build/
 [group('build')]
@@ -62,49 +62,49 @@ clean:
 # Set up or upgrade a host: an ssh destination (a Tailscale name) or daytona:<sandbox>
 [group('host')]
 ship target *flags: build-setup
-    build/la-setup ship {{flags}} {{target}}
+    build/flocc-setup ship {{flags}} {{target}}
 
-# Run any command on the host as linear-agents, with the service PATH
+# Run any command on the host as flocc, with the service PATH
 [group('host')]
 [positional-arguments]
 host target *cmd: build-desktop
-    build/la-setup host "$@"
+    build/flocc-setup host "$@"
 
-# Run linear-agents doctor on the host
+# Run flocc doctor on the host
 [group('host')]
 doctor target: build-desktop
-    build/la-setup host {{target}} linear-agents doctor
+    build/flocc-setup host {{target}} flocc doctor
 
 # Show tmux sessions, the last run.log lines and the timer on the host
 [group('host')]
 status target: build-desktop
-    build/la-setup host {{target}} 'tmux -L linear-agents ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers linear-agents.timer; true'
+    build/flocc-setup host {{target}} 'tmux -L flocc ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers flocc.timer; true'
 
 # Show every host's loop, sessions, usage and disk in one table
 [group('host')]
 fleet-status *flags: build-desktop
-    build/la-setup fleet {{flags}}
+    build/flocc-setup fleet {{flags}}
 
 # Follow run.log, or the journal on a systemd host
 [group('host')]
 logs target: build-desktop
-    build/la-setup host {{target}} 'if [ -d /run/systemd/system ]; then journalctl --user -u linear-agents -f; else tail -f {{runlog}}; fi'
+    build/flocc-setup host {{target}} 'if [ -d /run/systemd/system ]; then journalctl --user -u flocc -f; else tail -f {{runlog}}; fi'
 
 # Attach read-only to a tmux session on the host
 [group('host')]
 attach target session: build-desktop
-    build/la-setup host {{target}} tmux -L linear-agents attach -r -t {{session}}
+    build/flocc-setup host {{target}} tmux -L flocc attach -r -t {{session}}
 
 # Run one tick by hand on the host
 [group('host')]
 tick target: build-desktop
-    build/la-setup host {{target}} linear-agents tick
+    build/flocc-setup host {{target}} flocc tick
 
 # Release a blocked or timed-out issue's claim on the host
 [group('host')]
 [positional-arguments]
 release target key *flags: build-desktop
-    t=$1; shift; build/la-setup host "$t" linear-agents release "$@"
+    t=$1; shift; build/flocc-setup host "$t" flocc release "$@"
 
 # Create a Daytona sandbox that never auto-stops
 [group('daytona')]

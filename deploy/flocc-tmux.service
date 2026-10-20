@@ -1,11 +1,11 @@
 [Unit]
-Description=tmux server for linear-agents sessions
+Description=tmux server for flocc sessions
 
 [Service]
 # -D keeps tmux in the foreground for systemd and turns exit-empty off, so the server outlives
 # its sessions. Ticks connect with -N and never start a server of their own.
-ExecStart=/usr/bin/tmux -L linear-agents -D
-ExecStop=/usr/bin/tmux -L linear-agents kill-server
+ExecStart=/usr/bin/tmux -L flocc -D
+ExecStop=/usr/bin/tmux -L flocc kill-server
 
 [Install]
 WantedBy=default.target

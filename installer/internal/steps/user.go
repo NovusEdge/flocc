@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const ServiceUser = "linear-agents"
+const ServiceUser = "flocc"
 
 var privileged = []string{"sudo", "wheel", "admin"}
 

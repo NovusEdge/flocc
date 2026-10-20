@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/ui"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 type fakeStep struct {

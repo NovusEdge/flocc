@@ -1,6 +1,6 @@
 import pytest
 
-from linear_agents.grants import (
+from flocc.grants import (
     GrantError,
     Grants,
     add_comment,

@@ -6,29 +6,30 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from linear_agents import ledger
-from linear_agents.admission import admit
-from linear_agents.agentblock import (
+from flocc import ledger, legacy
+from flocc.admission import admit
+from flocc.agentblock import (
     BlockError,
     has_acceptance_criteria,
     parse_settings,
     settings_to_json,
 )
-from linear_agents.config import trailer_enabled
-from linear_agents.context import state_dir, write_context
-from linear_agents.escalation import DEDUPE_S, Escalation, scoped
-from linear_agents.grants import GrantError, add_comment, allow_lines, parse_allow
-from linear_agents.ledger import Claim
-from linear_agents.linear import BOT_PREFIX, Issue, LinearError
-from linear_agents.sessions import session_name
-from linear_agents.supervisor import launch
-from linear_agents.usage import latest_usage
-from linear_agents.worktree import (
+from flocc.config import trailer_enabled
+from flocc.context import state_dir, write_context
+from flocc.escalation import DEDUPE_S, Escalation, scoped
+from flocc.grants import GrantError, add_comment, allow_lines, parse_allow
+from flocc.ledger import Claim
+from flocc.linear import BOT_PREFIX, Issue, LinearError
+from flocc.sessions import session_name
+from flocc.supervisor import launch
+from flocc.usage import latest_usage
+from flocc.worktree import (
     contains,
     git,
     has_uncommitted_changes,
     install_hook,
     prepare_worktree,
+    recover_tests,
 )
 
 COMMENT_ONCE_S = 365 * 24 * 3600
@@ -289,12 +290,19 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.
     phase, tester_sha = "test", None
+    base_branch = cfg.repos[repo].base_branch
     remembered = ledger.remembered_tests(rt.con, issue.key)
     # Tests already merged into the base belong to shipped work, and a reopened issue is new
     # work. After a merge commit, a branch cut fresh from the base contains them too.
-    if remembered and contains(path, remembered[1], f"origin/{cfg.repos[repo].base_branch}"):
+    if remembered and contains(path, remembered[1], f"origin/{base_branch}"):
         ledger.forget_tests(rt.con, issue.key)
         remembered = None
+    # A branch another host pushed holds its tester's commits, but this ledger has no record of
+    # them, and the publisher's guard and --accept-tests compare against that record.
+    if remembered is None:
+        remembered = recover_tests(path, base_branch, branch, issue.key)
+        if remembered:
+            ledger.remember_tests(rt.con, issue.key, *remembered)
     if remembered and contains(path, remembered[1]):
         (base, tester_sha), phase = remembered, "impl"
     claim = Claim(
@@ -419,7 +427,7 @@ def forward_comments(rt) -> dict[str, LinearError]:
                 who = "A steering agent"
             else:
                 who = None
-            if who and not comment.body.startswith(BOT_PREFIX):
+            if who and not comment.body.startswith((BOT_PREFIX, legacy.BOT_PREFIX)):
                 # A dead session is relaunched by the next tick's supervisor, which delivers
                 # this reply and the ones after it. While a question is open, typing into the
                 # pane could select an option in the dialog, so the reply waits for the answer.

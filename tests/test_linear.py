@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from linear_agents.linear import BOT_PREFIX, Linear, LinearError, http_transport
+from flocc.linear import BOT_PREFIX, Linear, LinearError, http_transport
 
 FIX = Path(__file__).parent / "fixtures"
 

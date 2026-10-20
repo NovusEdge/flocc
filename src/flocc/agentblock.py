@@ -2,7 +2,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 
-from linear_agents.grants import GrantError, parse_allow
+from flocc.grants import GrantError, parse_allow
 
 _OPEN = re.compile(r"^```agent[ \t]*$", re.MULTILINE)
 _BLOCK = re.compile(r"^```agent[ \t]*\n(.*?)^```", re.MULTILINE | re.DOTALL)

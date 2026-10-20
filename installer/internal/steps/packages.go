@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 // make and cc: repos' ./setup builds native code (nimblefox compiles pgvector).

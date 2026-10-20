@@ -4,7 +4,7 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/identity"
+	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
 
 // Identity gives the service user the owner's git author, so agent commits are the owner's.

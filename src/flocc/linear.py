@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 API = "https://api.linear.app/graphql"
-BOT_PREFIX = "🤖 linear-agents:"
+BOT_PREFIX = "🤖 flocc:"
 Transport = Callable[[str, dict], dict]
 
 _ISSUE_FIELDS = (

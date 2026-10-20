@@ -1,10 +1,10 @@
 import json
 from dataclasses import replace
 
-from linear_agents import ledger
-from linear_agents.cli import main
-from linear_agents.context import phase_prompt, state_dir, write_context
-from linear_agents.linear import Issue
+from flocc import ledger
+from flocc.cli import main
+from flocc.context import phase_prompt, state_dir, write_context
+from flocc.linear import Issue
 from tests.test_ledger import make
 
 ISSUE = Issue(
@@ -18,10 +18,10 @@ def test_context_lists_issue_and_commands(tmp_cfg):
     for needle in (
         "Fix rounding",
         "Round half-even.",
-        "linear-agents done",
-        "linear-agents escalate",
-        "linear-agents claim",
-        "linear-agents context",
+        "flocc done",
+        "flocc escalate",
+        "flocc claim",
+        "flocc context",
         "SendMessage",
         "coordinate skill",
     ):
@@ -36,15 +36,15 @@ def test_context_cli_prints_context_live_peers_and_handoff(tmp_cfg, monkeypatch,
     state.mkdir()
     (state / "context.md").write_text("CTX")
     (state / "handoff.md").write_text("NOTE")
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(state))
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_cfg.ledger_path))
+    monkeypatch.setenv("FLOCC_STATE", str(state))
+    monkeypatch.setenv("FLOCC_LEDGER", str(tmp_cfg.ledger_path))
     assert main(["context"]) == 0
     out = capsys.readouterr().out
     assert "CTX" in out and "NOTE" in out and "NF-2-test" in out and "NF-3" not in out
 
 
 def test_done_and_handoff_ready(tmp_path, monkeypatch):
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
     assert main(["done", "--summary", "tests written"]) == 0
     assert json.loads((tmp_path / "done.json").read_text())["summary"] == "tests written"
     assert main(["handoff-ready"]) == 1

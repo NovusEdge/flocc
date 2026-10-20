@@ -1,44 +1,44 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "linear-agents session-start" } ] }
+      { "hooks": [ { "type": "command", "command": "flocc session-start" } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "[ -z \"$LINEAR_AGENTS_STATE\" ] || rm -f \"$LINEAR_AGENTS_STATE/idle\"" } ] }
+      { "hooks": [ { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" } ] }
     ],
     "PreToolUse": [
       {
         "matcher": "Agent|Task|Workflow|AskUserQuestion",
         "hooks": [
-          { "type": "command", "command": "linear-agents gate", "timeout": 10, "onFailure": "block" }
+          { "type": "command", "command": "flocc gate", "timeout": 10, "onFailure": "block" }
         ]
       },
       {
-        "hooks": [ { "type": "command", "command": "[ -z \"$LINEAR_AGENTS_STATE\" ] || rm -f \"$LINEAR_AGENTS_STATE/idle\"" } ]
+        "hooks": [ { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" } ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "AskUserQuestion",
-        "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ]
+        "hooks": [ { "type": "command", "command": "flocc gate --answered" } ]
       }
     ],
     "PostToolUseFailure": [
       {
         "matcher": "AskUserQuestion",
-        "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ]
+        "hooks": [ { "type": "command", "command": "flocc gate --answered" } ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "linear-agents gate --answered" },
-          { "type": "command", "command": "linear-agents idle" }
+          { "type": "command", "command": "flocc gate --answered" },
+          { "type": "command", "command": "flocc idle" }
         ]
       }
     ],
     "SubagentStop": [
-      { "hooks": [ { "type": "command", "command": "linear-agents gate --stopped" } ] }
+      { "hooks": [ { "type": "command", "command": "flocc gate --stopped" } ] }
     ]
   }
 }

@@ -7,11 +7,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from linear_agents.config import Config
-from linear_agents.linear import Linear, LinearError, http_transport
-from linear_agents.sessions import SOCKET
-from linear_agents.tokens import WARN_DAYS, TokenRejected, can_write_contents, token_expiry
-from linear_agents.worktree import free_disk_gb
+from flocc.config import Config
+from flocc.linear import Linear, LinearError, http_transport
+from flocc.sessions import SOCKET
+from flocc.tokens import WARN_DAYS, TokenRejected, can_write_contents, token_expiry
+from flocc.worktree import free_disk_gb
 
 # Minimum claude version whose flags the launcher needs (--name, --remote-control).
 MIN_CLAUDE = (2, 1, 293)
@@ -126,7 +126,7 @@ def tmux_check(socket: str = SOCKET, run=subprocess.run) -> Result:
     out = run(["tmux", "-N", "-L", socket, "list-sessions"], capture_output=True, check=False)
     if out.returncode == 0:
         return Result("ok", "tmux", f"server on socket {socket}")
-    return Result("fail", "tmux", "no server; systemctl --user start linear-agents-tmux.service")
+    return Result("fail", "tmux", "no server; systemctl --user start flocc-tmux.service")
 
 
 def linear_checks(cfg: Config, linear) -> list[Result]:
@@ -192,7 +192,7 @@ def repo_checks(cfg: Config, run=subprocess.run) -> tuple[list[Result], str | No
 
 def path_checks(cfg: Config) -> list[Result]:
     results = []
-    for tool in ("git", "gh", "tmux", "linear-agents"):
+    for tool in ("git", "gh", "tmux", "flocc"):
         found = shutil.which(tool)
         results.append(Result("ok" if found else "fail", tool, found or "not on PATH"))
     manifest = cfg.plugin_dir / ".claude-plugin" / "plugin.json"

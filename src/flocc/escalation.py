@@ -4,8 +4,8 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 
-from linear_agents import ledger
-from linear_agents.linear import Issue
+from flocc import ledger
+from flocc.linear import Issue
 
 DEDUPE_S = 24 * 3600
 
@@ -91,7 +91,7 @@ class Notifier:
         now = self.now()
         seen = ledger.alert_seen(self.con, esc.cause, DEDUPE_S, now)
         actions = route(esc, seen)
-        title = f"{esc.issue_key or 'linear-agents'} T{esc.tier}"
+        title = f"{esc.issue_key or 'flocc'} T{esc.tier}"
         pushes = [a for a in actions if a.startswith("ntfy:")]
         for action in actions:
             if action in pushes:

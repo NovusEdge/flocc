@@ -175,7 +175,7 @@ func RandomTopic() string {
 		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
 		b[i] = chars[n.Int64()]
 	}
-	return "la-" + string(b)
+	return "flocc-" + string(b)
 }
 
 // OverlaySaved overlays a saved answers file. A bad saved topic is dropped and returned as

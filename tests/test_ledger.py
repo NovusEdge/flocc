@@ -1,7 +1,7 @@
 import pytest
 
-from linear_agents import ledger
-from linear_agents.ledger import Claim
+from flocc import ledger
+from flocc.ledger import Claim
 
 
 def make(key="NF-1", paths=("src/a/**",), state="running", worktree=None, repo="backend"):

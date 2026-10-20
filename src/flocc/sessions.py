@@ -3,11 +3,11 @@ import os
 import subprocess
 from pathlib import Path
 
-from linear_agents.agentblock import IssueSettings
-from linear_agents.config import Config
-from linear_agents.grants import Grants
+from flocc.agentblock import IssueSettings
+from flocc.config import Config
+from flocc.grants import Grants
 
-SOCKET = "linear-agents"
+SOCKET = "flocc"
 # --no-verify skips the pre-commit claim check and the commit-msg trailer. Flag order varies, so
 # the wildcard forms cover the flag anywhere after `git commit`; -n also arrives bundled (-nm).
 _DENY = [
@@ -52,7 +52,7 @@ def trust_folders(claude_json: Path, paths) -> None:
         return
     for p in missing:
         projects.setdefault(p, {})["hasTrustDialogAccepted"] = True
-    tmp = claude_json.with_name(f"{claude_json.name}.linear-agents.tmp")
+    tmp = claude_json.with_name(f"{claude_json.name}.flocc.tmp")
     # Mode 600 from the start: the file holds the account's OAuth state.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -142,7 +142,7 @@ class Sessions:
         self._run = runner
 
     def _tmux(self, *args: str, check=True):
-        # -N: the server belongs to linear-agents-tmux.service. A server started from here
+        # -N: the server belongs to flocc-tmux.service. A server started from here
         # would live in the tick's cgroup, which systemd kills when the oneshot tick exits.
         return self._run(
             ["tmux", "-N", "-L", self.socket, *args], check=check, capture_output=True, text=True

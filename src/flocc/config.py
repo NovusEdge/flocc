@@ -92,13 +92,18 @@ class Config:
         return self.impl_effort
 
 
+# Branch recovery finds the tester's commits by this key, so renaming it needs the old key kept
+# in legacy.py for branches already pushed.
+TRAILER = "Flocc"
+
+
 def trailer_enabled(cfg: Config, repo: RepoConfig) -> bool:
     return cfg.commit_trailer if repo.commit_trailer is None else repo.commit_trailer
 
 
 def default_config_path() -> Path:
-    env = os.environ.get("LINEAR_AGENTS_CONFIG")
-    return Path(env) if env else Path.home() / ".config" / "linear-agents" / "config.toml"
+    env = os.environ.get("FLOCC_CONFIG")
+    return Path(env) if env else Path.home() / ".config" / "flocc" / "config.toml"
 
 
 def _repo(config_path: Path, name: str, table: dict) -> RepoConfig:

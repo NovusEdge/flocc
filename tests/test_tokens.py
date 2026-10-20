@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from linear_agents import ledger
-from linear_agents.tokens import TokenRejected, check_tokens, token_expiry
+from flocc import ledger
+from flocc.tokens import TokenRejected, check_tokens, token_expiry
 from tests.fakes import FakeNotifier
 
 NOW = datetime(2027, 1, 10, 12, tzinfo=UTC).timestamp()

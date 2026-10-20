@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/identity"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
 
 func TestRemoteCmdMakesTheBinaryExecutable(t *testing.T) {
-	want := "chmod 755 /tmp/la-setup/la-setup && sudo /tmp/la-setup/la-setup --answers /tmp/la-setup/a.toml --skip-interactive"
+	want := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo /tmp/flocc-setup/flocc-setup --answers /tmp/flocc-setup/a.toml --skip-interactive"
 	if got := remoteCmd("/x/a.toml", true); got != want {
 		t.Fatalf("%q", got)
 	}
@@ -36,14 +36,14 @@ func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 func TestShipClearsTheStageWithSudoOnATerminal(t *testing.T) {
 	root := t.TempDir()
 	os.MkdirAll(filepath.Join(root, "build"), 0o755)
-	os.WriteFile(filepath.Join(root, "build", "la-setup-linux-amd64"), []byte("bin"), 0o755)
+	os.WriteFile(filepath.Join(root, "build", "flocc-setup-linux-amd64"), []byte("bin"), 0o755)
 	cfg := t.TempDir()
 	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{})
 	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{})
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 	f := &bundleOK{host.NewFake().On("ssh h uname -m", 0, "x86_64\n")}
 	ship(context.Background(), f, root, Dest{SSH: "h"}, "", false)
-	if !f.Ran("interactive: ssh -t h sudo rm -rf /tmp/la-setup && mkdir -p /tmp/la-setup") {
+	if !f.Ran("interactive: ssh -t h sudo rm -rf /tmp/flocc-setup && mkdir -p /tmp/flocc-setup") {
 		t.Fatalf("%v", f.Calls)
 	}
 }
@@ -64,14 +64,14 @@ func (b *bundleOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 	root, dir, cfg := t.TempDir(), t.TempDir(), t.TempDir()
 	os.MkdirAll(filepath.Join(root, "build"), 0o755)
-	os.WriteFile(filepath.Join(root, "build", "la-setup-linux-amd64"), []byte("bin"), 0o755)
+	os.WriteFile(filepath.Join(root, "build", "flocc-setup-linux-amd64"), []byte("bin"), 0o755)
 	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"x@X": true}})
 	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{
 		"X": map[string]any{"source": map[string]string{"source": "github", "repo": "o/x"}, "installLocation": "/m/X"}})
 	f := host.NewFake().
 		On("git -C "+root+" config user.name", 0, "Ada L\n").
 		On("git -C "+root+" config user.email", 0, "ada@example.test\n").
-		On("git -C "+root+" bundle create "+dir+"/linear-agents.bundle HEAD", 0, "").
+		On("git -C "+root+" bundle create "+dir+"/flocc.bundle HEAD", 0, "").
 		On("git -C /m/X archive --format=tar -o "+dir+"/mp-X.tar HEAD", 0, "").
 		On("git -C /m/X rev-parse HEAD", 0, "abc\n")
 	err := stageFiles(context.Background(), f, root, dir, "amd64", "", cfg, func(string) (bool, error) { return true, nil })
@@ -181,8 +181,8 @@ func TestAllowlistWithOnlyCommentsShipsNoPlugins(t *testing.T) {
 }
 
 func TestResolveTargetPlainIsPassedThrough(t *testing.T) {
-	d, err := resolveTarget(context.Background(), "la-smoke", "/none", nil, waiter{})
-	if err != nil || d.SSH != "la-smoke" || len(d.Opts) != 0 {
+	d, err := resolveTarget(context.Background(), "flocc-smoke", "/none", nil, waiter{})
+	if err != nil || d.SSH != "flocc-smoke" || len(d.Opts) != 0 {
 		t.Fatalf("%+v %v", d, err)
 	}
 }
@@ -198,7 +198,7 @@ func daytonaFake(t *testing.T, states ...string) (cfg string, srv *httptest.Serv
 			return
 		}
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/api/sandbox/la-smoke":
+		case r.Method == "GET" && r.URL.Path == "/api/sandbox/flocc-smoke":
 			json.NewEncoder(w).Encode(map[string]string{"id": "sb1", "state": states[0]})
 		case r.Method == "GET" && r.URL.Path == "/api/sandbox/sb1":
 			st := states[min(*polls, len(states)-1)]
@@ -244,7 +244,7 @@ func fakeWaiter() (w waiter, sleeps *int, progress *strings.Builder) {
 func TestResolveTargetDaytonaGetsAToken(t *testing.T) {
 	w, sleeps, progress := fakeWaiter()
 	cfg, srv, _, tokens := daytonaFake(t, "started")
-	d, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w)
+	d, err := resolveTarget(context.Background(), "daytona:flocc-smoke", cfg, srv.Client(), w)
 	if err != nil || d.SSH != "tok@ssh.example.test" || d.Token != "tok" || *tokens != 1 || *sleeps != 0 || progress.Len() != 0 {
 		t.Fatalf("%+v %v", d, err)
 	}
@@ -253,13 +253,13 @@ func TestResolveTargetDaytonaGetsAToken(t *testing.T) {
 func TestResolveTargetDaytonaWaitsForStarted(t *testing.T) {
 	w, sleeps, progress := fakeWaiter()
 	cfg, srv, polls, tokens := daytonaFake(t, "CREATING", "creating", "PULLING_SNAPSHOT", "STARTED")
-	if _, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w); err != nil {
+	if _, err := resolveTarget(context.Background(), "daytona:flocc-smoke", cfg, srv.Client(), w); err != nil {
 		t.Fatal(err)
 	}
 	if *polls != 4 || *sleeps != 3 || *tokens != 1 {
 		t.Fatalf("polls %d sleeps %d tokens %d", *polls, *sleeps, *tokens)
 	}
-	want := "ship: waiting for Daytona sandbox la-smoke (state creating)\nship: waiting for Daytona sandbox la-smoke (state pulling_snapshot)\n"
+	want := "ship: waiting for Daytona sandbox flocc-smoke (state creating)\nship: waiting for Daytona sandbox flocc-smoke (state pulling_snapshot)\n"
 	if progress.String() != want {
 		t.Fatalf("%q", progress.String())
 	}
@@ -267,8 +267,8 @@ func TestResolveTargetDaytonaWaitsForStarted(t *testing.T) {
 
 func TestResolveTargetDaytonaFailsAtOnce(t *testing.T) {
 	for state, want := range map[string]string{
-		"STOPPED":      "daytona start la-smoke",
-		"archived":     "daytona start la-smoke",
+		"STOPPED":      "daytona start flocc-smoke",
+		"archived":     "daytona start flocc-smoke",
 		"destroying":   "being deleted; create it again with daytona create",
 		"destroyed":    "was deleted; create it again with daytona create",
 		"build_failed": "build_failed",
@@ -277,7 +277,7 @@ func TestResolveTargetDaytonaFailsAtOnce(t *testing.T) {
 	} {
 		w, sleeps, _ := fakeWaiter()
 		cfg, srv, _, tokens := daytonaFake(t, state)
-		_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w)
+		_, err := resolveTarget(context.Background(), "daytona:flocc-smoke", cfg, srv.Client(), w)
 		if err == nil || !strings.Contains(err.Error(), want) || *tokens != 0 || *sleeps != 0 {
 			t.Errorf("%q: %v tokens %d sleeps %d", state, err, *tokens, *sleeps)
 		}
@@ -287,7 +287,7 @@ func TestResolveTargetDaytonaFailsAtOnce(t *testing.T) {
 func TestResolveTargetDaytonaWaitTimesOut(t *testing.T) {
 	w, _, progress := fakeWaiter()
 	cfg, srv, polls, tokens := daytonaFake(t, "creating")
-	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w)
+	_, err := resolveTarget(context.Background(), "daytona:flocc-smoke", cfg, srv.Client(), w)
 	if err == nil || !strings.Contains(err.Error(), "last state creating") || *tokens != 0 || *polls != 60 {
 		t.Fatalf("%v polls %d", err, *polls)
 	}
@@ -303,7 +303,7 @@ func TestResolveTargetDaytonaWaitStopsOnCancel(t *testing.T) {
 	// Cancel from inside the first sleep so the HTTP calls before it still succeed.
 	real := w.sleep
 	w.sleep = func(c context.Context, d time.Duration) error { cancel(); return real(c, d) }
-	_, err := resolveTarget(ctx, "daytona:la-smoke", cfg, srv.Client(), w)
+	_, err := resolveTarget(ctx, "daytona:flocc-smoke", cfg, srv.Client(), w)
 	if !errors.Is(err, context.Canceled) || *tokens != 0 {
 		t.Fatalf("%v", err)
 	}
@@ -312,7 +312,7 @@ func TestResolveTargetDaytonaWaitStopsOnCancel(t *testing.T) {
 func TestResolveTargetDaytonaRefusedLoginWhilePolling(t *testing.T) {
 	w, _, _ := fakeWaiter()
 	cfg, srv, _, tokens := daytonaFake(t, "creating", "401")
-	_, err := resolveTarget(context.Background(), "daytona:la-smoke", cfg, srv.Client(), w)
+	_, err := resolveTarget(context.Background(), "daytona:flocc-smoke", cfg, srv.Client(), w)
 	if err == nil || !strings.Contains(err.Error(), "daytona list to refresh") || *tokens != 0 {
 		t.Fatalf("%v", err)
 	}
@@ -341,6 +341,27 @@ func TestStageFilesFailsWithoutAnOwnerIdentity(t *testing.T) {
 	f := host.NewFake().On("git -C /r config user.name", 0, "\n").On("git -C /r config user.email", 0, "\n")
 	err := stageFiles(context.Background(), f, "/r", t.TempDir(), "amd64", "", t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "user.name") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestShipRefusesAHostThatRunsTheOldService(t *testing.T) {
+	f := host.NewFake().
+		On("ssh h uname -m", 0, "x86_64\n").
+		On("ssh h id -u "+legacyUser, 0, "998\n")
+	err := ship(context.Background(), f, t.TempDir(), Dest{SSH: "h"}, "", false)
+	if err == nil || !strings.Contains(err.Error(), "a second poller") {
+		t.Fatalf("%v", err)
+	}
+	if len(f.Calls) != 2 {
+		t.Fatalf("ran past the refusal: %v", f.Calls)
+	}
+	dest := Dest{SSH: "tok9@ssh.example.test", Token: "tok9"}
+	f = host.NewFake().
+		On("ssh tok9@ssh.example.test uname -m", 0, "x86_64\n").
+		On("ssh tok9@ssh.example.test id -u "+legacyUser, 0, "998\n")
+	err = ship(context.Background(), f, t.TempDir(), dest, "", false)
+	if err == nil || strings.Contains(err.Error(), "tok9") {
 		t.Fatalf("%v", err)
 	}
 }

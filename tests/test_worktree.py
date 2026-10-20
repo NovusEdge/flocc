@@ -4,16 +4,17 @@ import time
 
 import pytest
 
-from linear_agents import ledger
-from linear_agents.cli import main
-from linear_agents.config import RepoConfig
-from linear_agents.worktree import (
+from flocc import ledger, legacy
+from flocc.cli import main
+from flocc.config import TRAILER, RepoConfig
+from flocc.worktree import (
     changed_files,
     contains,
     free_disk_gb,
     git,
     install_hook,
     prepare_worktree,
+    recover_tests,
     run_bounded,
 )
 from tests.paths import EXAMPLE
@@ -48,6 +49,116 @@ def test_prepare_recovers_a_worktree_whose_directory_was_deleted(origin, tmp_pat
     again, again_branch, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     assert (again, again_branch, base) == (path, branch, head)
     assert (path / "t.txt").exists()
+
+
+def _other_host(tmp_path, key="NF-3"):
+    """A second clone of the remote, standing in for the host that ran the issue before."""
+    other = tmp_path / "other-host"
+    subprocess.run(
+        ["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)],
+        check=True,
+        capture_output=True,
+    )
+    for k, v in (("user.name", "t"), ("user.email", "t@t")):
+        git("config", k, v, cwd=other)
+    git("checkout", "-qb", f"agent/{key.lower()}", cwd=other)
+    return other
+
+
+def _commit(repo, name, trailer=""):
+    (repo / name).write_text(f"{name}\n")
+    git("add", name, cwd=repo)
+    git("commit", "-qm", f"{name}\n\n{trailer}".strip(), cwd=repo)
+    return git("rev-parse", "HEAD", cwd=repo)
+
+
+def _push(other):
+    git("push", "-qf", "origin", "HEAD", cwd=other)
+
+
+def _recover(origin, tmp_path):
+    path, branch, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    return recover_tests(path, "main", branch, "NF-3")
+
+
+def test_prepare_continues_a_branch_only_the_remote_has(origin, tmp_path):
+    other = _other_host(tmp_path)
+    head = _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    path, branch, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert (branch, base) == ("agent/nf-3", head)
+    assert (path / "t.txt").exists()
+
+
+def test_prepare_without_a_remote_branch_cuts_one_from_the_base(origin, tmp_path):
+    _, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert base == git("rev-parse", "origin/main", cwd=origin)
+
+
+def test_recover_tests_takes_the_first_run_of_test_commits(origin, tmp_path):
+    other = _other_host(tmp_path)
+    fork = git("rev-parse", "HEAD", cwd=other)
+    _commit(other, "t1.txt", f"{TRAILER}: NF-3 test")
+    last = _commit(other, "t2.txt", f"{legacy.TRAILER}: NF-3 test")
+    _commit(other, "impl.txt", f"{TRAILER}: NF-3 impl")
+    _commit(other, "t3.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    assert _recover(origin, tmp_path) == (fork, last)
+
+
+def test_recover_tests_ignores_a_test_trailer_after_an_implementer_commit(origin, tmp_path):
+    other = _other_host(tmp_path)
+    _commit(other, "impl.txt", f"{TRAILER}: NF-3 impl")
+    _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    assert _recover(origin, tmp_path) is None
+
+
+def test_recover_tests_follows_an_amended_tester_commit(origin, tmp_path):
+    other = _other_host(tmp_path)
+    fork = git("rev-parse", "HEAD", cwd=other)
+    _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    (other / "t.txt").write_text("amended\n")
+    git("commit", "-qa", "--amend", "--no-edit", cwd=other)
+    amended = git("rev-parse", "HEAD", cwd=other)
+    _push(other)
+    assert _recover(origin, tmp_path) == (fork, amended)
+
+
+def test_recover_tests_needs_the_issues_own_key(origin, tmp_path):
+    other = _other_host(tmp_path)
+    _commit(other, "t.txt", f"{TRAILER}: NF-30 test")
+    _push(other)
+    assert _recover(origin, tmp_path) is None
+
+
+def test_recover_tests_without_a_remote_branch_finds_nothing(origin, tmp_path):
+    assert _recover(origin, tmp_path) is None
+
+
+def test_recover_tests_after_the_base_was_merged_in(origin, tmp_path):
+    other = _other_host(tmp_path)
+    fork = git("rev-parse", "HEAD", cwd=other)
+    tests = _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    git("checkout", "-q", "main", cwd=other)
+    _commit(other, "main.txt")
+    git("push", "-q", "origin", "main", cwd=other)
+    git("checkout", "-q", "agent/nf-3", cwd=other)
+    git("merge", "-q", "--no-edit", "main", cwd=other)
+    _push(other)
+    # The merge moves the merge-base to main's new tip, but the tester's commit is not an
+    # ancestor of it, so the first-parent range still starts at the tests.
+    assert _recover(origin, tmp_path) == (fork, tests)
+
+
+def test_recover_tests_with_no_common_ancestor_finds_nothing(origin, tmp_path):
+    other = _other_host(tmp_path)
+    git("checkout", "-q", "--orphan", "lone", cwd=other)
+    git("rm", "-rfq", ".", cwd=other)
+    _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    git("push", "-qf", "origin", "HEAD:refs/heads/agent/nf-3", cwd=other)
+    assert _recover(origin, tmp_path) is None
 
 
 def test_prepare_recreates_a_worktree_removed_with_git(origin, tmp_path):
@@ -191,10 +302,10 @@ def _check_hook_blocks(origin, tmp_path, root):
     cfg = tmp_path / "c.toml"
     cfg.write_text(
         EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"', f'ledger_path = "{db}"'
+            'ledger_path = "~/.local/state/flocc/ledger.sqlite"', f'ledger_path = "{db}"'
         )
     )
-    exe = shutil.which("linear-agents")
+    exe = shutil.which("flocc")
     assert exe
     install_hook(path, tmp_path / "hooks", exe, cfg)
     (path / "src" / "billing").mkdir(parents=True)
@@ -219,11 +330,11 @@ def test_reinstalled_hook_still_chains_to_the_repo_hook_once(origin, tmp_path):
     cfg = tmp_path / "c.toml"
     cfg.write_text(
         EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"',
+            'ledger_path = "~/.local/state/flocc/ledger.sqlite"',
             f'ledger_path = "{tmp_path / "l.sqlite"}"',
         )
     )
-    exe = shutil.which("linear-agents")
+    exe = shutil.which("flocc")
     assert exe
     for _ in range(2):  # a rerun with --keep-worktree installs into the same worktree again
         install_hook(path, tmp_path / "hooks", exe, cfg)
@@ -240,11 +351,11 @@ def _commit_with_hooks(origin, tmp_path, trailer=True):
     cfg = tmp_path / "c.toml"
     cfg.write_text(
         EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"',
+            'ledger_path = "~/.local/state/flocc/ledger.sqlite"',
             f'ledger_path = "{tmp_path / "l.sqlite"}"',
         )
     )
-    exe = shutil.which("linear-agents")
+    exe = shutil.which("flocc")
     assert exe
     install_hook(path, tmp_path / "hooks", exe, cfg, trailer=trailer)
     return path
@@ -256,20 +367,20 @@ def _msg(path):
 
 def test_commit_msg_hook_adds_the_trailer_once(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "impl")
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     git("commit", "-qm", "ok", cwd=path)
-    assert _msg(path).count("Linear-Agents: NF-3 impl") == 1
+    assert _msg(path).count("Flocc: NF-3 impl") == 1
     git("commit", "-q", "--amend", "--no-edit", cwd=path)
-    assert _msg(path).count("Linear-Agents:") == 1
+    assert _msg(path).count("Flocc:") == 1
 
 
 def test_commit_msg_hook_keeps_signoff_and_strips_claude_attribution(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "test")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "test")
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     message = (
@@ -282,14 +393,14 @@ def test_commit_msg_hook_keeps_signoff_and_strips_claude_attribution(origin, tmp
     lines = _msg(path).splitlines()
     assert "Signed-off-by: Ada <a@example.test>" in lines
     assert "Co-Authored-By: Human <h@example.test>" in lines
-    assert "Linear-Agents: NF-3 test" in lines
+    assert "Flocc: NF-3 test" in lines
     assert not [ln for ln in lines if "claude" in ln.lower()]
 
 
 def test_commit_msg_hook_without_trailer_still_strips_attribution(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path, trailer=False)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "impl")
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     git("commit", "-q", "-m", "ok\n\nClaude-Session: https://claude.ai/code/x", cwd=path)
@@ -302,13 +413,13 @@ def test_hooks_chain_to_the_repos_own_commit_msg_and_other_hooks(origin, tmp_pat
         hook.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path / (name + ".log")}\n')
         hook.chmod(0o755)
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "impl")
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     git("commit", "-qm", "ok", cwd=path)
     assert "COMMIT_EDITMSG" in (tmp_path / "commit-msg.log").read_text()
-    assert "Linear-Agents: NF-3 impl" in _msg(path)
+    assert "Flocc: NF-3 impl" in _msg(path)
     git("push", "-q", "origin", "HEAD:refs/heads/pushed", cwd=path)
     assert "origin" in (tmp_path / "pre-push.log").read_text()
 
@@ -326,8 +437,8 @@ def test_reinstall_drops_stubs_for_hooks_the_repo_no_longer_has(origin, tmp_path
 
 def test_commit_msg_hook_adds_no_trailer_in_the_review_phase(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "review")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "review")
     msg = tmp_path / "msg"
     msg.write_text("x\n")
     assert main(["hook", "commit-msg", str(msg)]) == 0
@@ -337,12 +448,12 @@ def test_commit_msg_hook_adds_no_trailer_in_the_review_phase(origin, tmp_path, m
 
 def test_commit_msg_hook_leaves_a_hand_made_commit_alone(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.delenv("LINEAR_AGENTS_STATE", raising=False)
-    monkeypatch.delenv("LINEAR_AGENTS_PHASE", raising=False)
+    monkeypatch.delenv("FLOCC_STATE", raising=False)
+    monkeypatch.delenv("FLOCC_PHASE", raising=False)
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     git("commit", "-qm", "by hand", cwd=path)
-    assert "Linear-Agents" not in _msg(path)
+    assert "Flocc" not in _msg(path)
 
 
 def test_contains(origin, tmp_path):
@@ -363,8 +474,8 @@ def test_claim_cli(tmp_path, monkeypatch, capsys):
     con = ledger.connect(db)
     ledger.insert_claim(con, make("NF-3", ()))
     ledger.insert_claim(con, make("NF-4", ("src/billing/**",)))
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(db))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "NF-3"))
+    monkeypatch.setenv("FLOCC_LEDGER", str(db))
     assert main(["claim", "docs/*.md"]) == 0
     assert main(["claim", "src/b*"]) == 1
     assert "NF-4" in capsys.readouterr().err

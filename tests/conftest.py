@@ -5,15 +5,15 @@ from dataclasses import replace
 
 import pytest
 
-from linear_agents.config import load
-from linear_agents.worktree import git
+from flocc.config import load
+from flocc.worktree import git
 from tests.paths import EXAMPLE
 
 
 @pytest.fixture(autouse=True)
 def no_token_check(monkeypatch):
     # The tick's token check calls api.github.com; test_tokens.py covers it with fakes.
-    monkeypatch.setattr("linear_agents.tick.check_tokens", lambda rt: None)
+    monkeypatch.setattr("flocc.tick.check_tokens", lambda rt: None)
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def origin(tmp_path):
 def tmux_server():
     if not shutil.which("tmux"):
         pytest.skip("tmux not installed")
-    socket = f"la-test-{time.time_ns()}"
+    socket = f"flocc-test-{time.time_ns()}"
     proc = subprocess.Popen(
         ["tmux", "-L", socket, "-D"],
         stdin=subprocess.DEVNULL,

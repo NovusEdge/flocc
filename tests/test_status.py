@@ -3,11 +3,11 @@ import os
 
 import pytest
 
-from linear_agents import ledger, usage
-from linear_agents.cli import main
-from linear_agents.config import load
-from linear_agents.gate import run_gate
-from linear_agents.status import collect, last_tick, systemd_tick
+from flocc import ledger, usage
+from flocc.cli import main
+from flocc.config import load
+from flocc.gate import run_gate
+from flocc.status import collect, last_tick, systemd_tick
 from tests.fakes import FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -19,8 +19,8 @@ def cfg(tmp_path):
     path = tmp_path / "c.toml"
     path.write_text(
         EXAMPLE.read_text()
-        .replace('"~/.local/state/linear-agents/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
-        .replace("~/.local/state/linear-agents", str(tmp_path / "state"))
+        .replace('"~/.local/state/flocc/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
+        .replace("~/.local/state/flocc", str(tmp_path / "state"))
     )
     return load(path)
 
@@ -75,7 +75,7 @@ class FakeSystemctl:
         self.stdout = stdout
 
     def __call__(self, argv, **kwargs):
-        assert argv[:4] == ["systemctl", "--user", "show", "linear-agents.service"]
+        assert argv[:4] == ["systemctl", "--user", "show", "flocc.service"]
         assert kwargs["env"]["XDG_RUNTIME_DIR"].startswith("/run/user/")
         return type("R", (), {"stdout": self.stdout})()
 
@@ -131,7 +131,7 @@ def test_human_status_prints_tick_usage_and_disk(cfg, tmp_path, monkeypatch, cap
         usage={"five_hour_pct": 20, "weekly_pct": 30},
         disk={"free_bytes": 5 * 2**30},
     )
-    monkeypatch.setattr("linear_agents.status.collect", lambda cfg, sessions: full)
+    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions: full)
     assert main(["--config", path, "status"]) == 0
     out = capsys.readouterr().out
     assert "last tick 5m ago, ok" in out
@@ -139,13 +139,13 @@ def test_human_status_prints_tick_usage_and_disk(cfg, tmp_path, monkeypatch, cap
     assert "disk 5.0 GiB free" in out
 
     empty = _report()
-    monkeypatch.setattr("linear_agents.status.collect", lambda cfg, sessions: empty)
+    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions: empty)
     assert main(["--config", path, "status"]) == 0
     out = capsys.readouterr().out
     assert "last tick: none" in out and "usage: none yet" in out and "disk" not in out
 
     noage = _report(last_tick={"at": None, "exit": "0"})
-    monkeypatch.setattr("linear_agents.status.collect", lambda cfg, sessions: noage)
+    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions: noage)
     assert main(["--config", path, "status"]) == 0
     out = capsys.readouterr().out
     assert "last tick ok" in out and "ago" not in out

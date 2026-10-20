@@ -5,13 +5,26 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from linear_agents.config import RepoConfig
-from linear_agents.ledger import Claim
-from linear_agents.worktree import changed_files, git, run_bounded
+from flocc import legacy
+from flocc.config import TRAILER, RepoConfig
+from flocc.ledger import Claim
+from flocc.worktree import changed_files, git, run_bounded
 
 _TAIL = 3000
 _FAILURE = re.compile(r"error|fail|traceback|panic|exit code [1-9]", re.IGNORECASE)
 _NOISE = re.compile(r"warning", re.IGNORECASE)
+# git's words for a remote branch holding commits the push lacks; `[remote rejected]` (a hook or
+# branch protection) is a different failure.
+_MOVED = re.compile(r"\[rejected\].*\((non-fast-forward|fetch first)\)")
+
+
+# The same push is rejected until someone reconciles the branches, so retrying cannot help.
+class BranchMoved(subprocess.CalledProcessError):
+    def __str__(self) -> str:
+        return (
+            "GitHub's copy of the branch has commits this one lacks"
+            " (another host or a person pushed, or a pushed commit was rewritten)"
+        )
 
 
 @dataclass(frozen=True)
@@ -19,9 +32,7 @@ class PublishResult:
     status: str
     detail: str = ""
     url: str = ""
-    untrailed: tuple[
-        str, ...
-    ] = ()  # short SHAs of branch commits without the Linear-Agents trailer
+    untrailed: tuple[str, ...] = ()  # short SHAs of branch commits without the Flocc trailer
     log: str = ""  # the check's full output, when it ran and failed
 
 
@@ -84,30 +95,36 @@ def publish(
             f"{claim.base_sha}..{claim.branch}",
             "--format=%h",
             "--invert-grep",
-            "--grep=^Linear-Agents: ",
+            f"--grep=^{TRAILER}: ",
+            f"--grep=^{legacy.TRAILER}: ",
             cwd=wt,
         )
         untrailed = tuple(out.split())
     env = {**os.environ, "GH_TOKEN": token}
-    runner(
-        [
-            "git",
-            "-c",
-            "credential.helper=",
-            "-c",
-            "credential.helper=!gh auth git-credential",
-            "push",
-            "-q",
-            "-u",
-            "origin",
-            claim.branch,
-        ],
-        cwd=wt,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        runner(
+            [
+                "git",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.helper=!gh auth git-credential",
+                "push",
+                "-q",
+                "-u",
+                "origin",
+                claim.branch,
+            ],
+            cwd=wt,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        if _MOVED.search(exc.stderr or ""):
+            raise BranchMoved(exc.returncode, exc.cmd, exc.output, exc.stderr) from exc
+        raise
     # A publish retried after a later step failed finds the PR it already opened.
     existing = runner(
         [
@@ -155,7 +172,7 @@ def publish(
     return PublishResult("opened", url=pr.stdout.strip().splitlines()[-1], untrailed=untrailed)
 
 
-COMMENT_HEADER = "🤖 linear-agents review\n\n"
+COMMENT_HEADER = "🤖 flocc review\n\n"
 # GitHub rejects issue and PR comments past this many characters.
 COMMENT_LIMIT = 65_536
 _TRUNCATED = "\n\n[Truncated at GitHub's 65,536-character comment limit; full text is on the host.]"

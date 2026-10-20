@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 const serviceHome = "/home/" + steps.ServiceUser
@@ -33,7 +33,7 @@ func asServiceUser(command []string) string {
 // HostMain runs a command on a host as the service user and returns its exit code.
 func HostMain(args []string) int {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: la-setup host <ssh-target|daytona:SANDBOX> <command...>")
+		fmt.Fprintln(os.Stderr, "usage: flocc-setup host <ssh-target|daytona:SANDBOX> <command...>")
 		return 2
 	}
 	ctx := context.Background()

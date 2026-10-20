@@ -15,5 +15,5 @@ If you started agents, wait until they have all finished before handing off; a h
 session and every agent it is running. In `handoff.md`, also record `plan.md`'s path, the waves
 done, and the wave in progress.
 
-Commit any work in progress with `linear-agents commit -m '<message>' -- <paths>`. Then run
-`linear-agents handoff-ready` and stop.
+Commit any work in progress with `flocc commit -m '<message>' -- <paths>`. Then run
+`flocc handoff-ready` and stop.

@@ -1,9 +1,9 @@
 ---
 name: coordinate
-description: Use when another linear-agents session might be affected by what you found or are about to change
+description: Use when another flocc session might be affected by what you found or are about to change
 ---
 
-Run `linear-agents context` for the current list under "Peers in this repo"; it changes as
+Run `flocc context` for the current list under "Peers in this repo"; it changes as
 issues start and finish. Use `ListAgents` and pick the entries whose tmux session name matches a
 peer; ignore every other session on the machine.
 

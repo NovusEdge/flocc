@@ -2,11 +2,11 @@ import json
 
 import pytest
 
-from linear_agents import ledger
-from linear_agents.cli import main
-from linear_agents.config import load
-from linear_agents.escalation import Escalation, Notifier, ntfy_push, route, scoped, validate
-from linear_agents.linear import Issue
+from flocc import ledger
+from flocc.cli import main
+from flocc.config import load
+from flocc.escalation import Escalation, Notifier, ntfy_push, route, scoped, validate
+from flocc.linear import Issue
 from tests.paths import EXAMPLE
 
 CFG = load(EXAMPLE)
@@ -138,7 +138,7 @@ def test_ntfy_keeps_unicode_out_of_headers():
 
 
 def test_escalate_cli_appends_json(tmp_path, monkeypatch):
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
     rc = main(
         [
             "escalate",
@@ -162,7 +162,7 @@ def test_escalate_cli_appends_json(tmp_path, monkeypatch):
 
 
 def test_escalate_cli_rejects_tier2_without_default(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
     rc = main(["escalate", "--tier", "2", "--cause", "x", "--summary", "s", "--action", "a"])
     assert rc == 2 and "default" in capsys.readouterr().err
 

@@ -8,14 +8,14 @@ import sys
 import time
 from pathlib import Path, PurePosixPath
 
-from linear_agents import gate, ledger, usage
-from linear_agents.config import default_config_path, load
-from linear_agents.escalation import Escalation, validate
-from linear_agents.grants import for_phase
+from flocc import gate, ledger, usage
+from flocc.config import TRAILER, default_config_path, load
+from flocc.escalation import Escalation, validate
+from flocc.grants import for_phase
 
 
 def _state_dir() -> Path:
-    return Path(os.environ["LINEAR_AGENTS_STATE"])
+    return Path(os.environ["FLOCC_STATE"])
 
 
 def cmd_statusline(args) -> int:
@@ -58,7 +58,7 @@ def cmd_escalate(args) -> int:
 
 
 def _ledger(args):
-    env = os.environ.get("LINEAR_AGENTS_LEDGER")
+    env = os.environ.get("FLOCC_LEDGER")
     if env:
         return ledger.connect(env)
     path = Path(args.config) if args.config else default_config_path()
@@ -84,12 +84,12 @@ def _commit_msg(message_file: str, trailer_on: bool) -> int:
     _strip_attribution(message_file)
     if not trailer_on:
         return 0
-    key = os.environ.get("LINEAR_AGENTS_STATE")
-    phase = os.environ.get("LINEAR_AGENTS_PHASE")
+    key = os.environ.get("FLOCC_STATE")
+    phase = os.environ.get("FLOCC_PHASE")
     # A commit made by hand in the worktree has neither; it stays the owner's plain commit.
     if not key or not phase or phase == "review":
         return 0
-    trailer = f"Linear-Agents: {Path(key).name} {phase}"
+    trailer = f"{TRAILER}: {Path(key).name} {phase}"
     # doNothing matches on the key alone: an amend keeps the phase it was first committed in, and
     # never stacks a second copy. Rebase and cherry-pick skip commit-msg, so they keep it as is.
     subprocess.run(
@@ -109,7 +109,7 @@ def _commit_msg(message_file: str, trailer_on: bool) -> int:
 
 
 def cmd_hook(args) -> int:
-    from linear_agents.worktree import git
+    from flocc.worktree import git
 
     if args.name == "commit-msg":
         return _commit_msg(args.message_file, not args.no_trailer)
@@ -120,7 +120,7 @@ def cmd_hook(args) -> int:
     if mine is None:
         return 0
     if mine.phase == "review":
-        print("linear-agents: the review session is read-only; do not commit", file=sys.stderr)
+        print("flocc: the review session is read-only; do not commit", file=sys.stderr)
         return 1
     shared = _shared_paths(args, mine.repo)
     staged = [
@@ -134,7 +134,7 @@ def cmd_hook(args) -> int:
         return 0
     for name, owner in clash.items():
         print(
-            f"linear-agents: {name} is claimed by {owner}; message that session or escalate",
+            f"flocc: {name} is claimed by {owner}; message that session or escalate",
             file=sys.stderr,
         )
     return 1
@@ -202,7 +202,7 @@ def cmd_claim(args) -> int:
 
 
 def cmd_context(args) -> int:
-    from linear_agents.sessions import session_name
+    from flocc.sessions import session_name
 
     state = _state_dir()
     context = state / "context.md"
@@ -217,7 +217,7 @@ def cmd_context(args) -> int:
         f"## Peers in this repo\n\n{names}. ListAgents shows them under generated names; match"
         " on the tmux session name it lists. Message no other session.\n"
     )
-    g = for_phase(state / "grants.json", os.environ.get("LINEAR_AGENTS_PHASE", ""))
+    g = for_phase(state / "grants.json", os.environ.get("FLOCC_PHASE", ""))
     items = [f"launches {g.launches}"] if g.launches is not None else []
     items += [f"agent {a}" for a in g.agents] + [f"workflow {w}" for w in g.workflows]
     items += [f"fix-rounds {g.fix_rounds}"] if g.fix_rounds is not None else []
@@ -245,8 +245,8 @@ def _hook_input(strict: bool = False) -> dict:
 
 
 def cmd_gate(args) -> int:
-    run = os.environ.get("LINEAR_AGENTS_RUN")
-    phase = os.environ.get("LINEAR_AGENTS_PHASE")
+    run = os.environ.get("FLOCC_RUN")
+    phase = os.environ.get("FLOCC_PHASE")
     # Exit 2 on SubagentStop blocks the stop and keeps the agent alive, so bookkeeping
     # failures exit 1, which Claude Code treats as non-blocking.
     if args.stopped or args.answered:
@@ -258,7 +258,7 @@ def cmd_gate(args) -> int:
             else:
                 gate.clear_question(state)
         except Exception as exc:  # noqa: BLE001 - must not block the stop
-            print(f"linear-agents gate could not record the event: {exc}", file=sys.stderr)
+            print(f"flocc gate could not record the event: {exc}", file=sys.stderr)
             return 1
         return 0
     # Exit 2 refuses a PreToolUse call in every Claude Code version, whatever the hook's
@@ -271,7 +271,7 @@ def cmd_gate(args) -> int:
             try:
                 gate.note_question(state, payload, time.time())
             except Exception as exc:  # noqa: BLE001
-                print(f"linear-agents gate could not record the question: {exc}", file=sys.stderr)
+                print(f"flocc gate could not record the question: {exc}", file=sys.stderr)
                 return 1
             return 0
         flags = frozenset(filter(None, os.environ.get(gate.LAUNCH_GRANTS_ENV, "").split(",")))
@@ -286,7 +286,7 @@ def cmd_gate(args) -> int:
             }
             print(json.dumps(out))
     except Exception as exc:  # noqa: BLE001 - see above
-        print(f"linear-agents gate failed, so the launch is refused: {exc}", file=sys.stderr)
+        print(f"flocc gate failed, so the launch is refused: {exc}", file=sys.stderr)
         return 2
     return 0
 
@@ -296,7 +296,7 @@ def cmd_idle(args) -> int:
     try:
         gate.note_idle(_state_dir(), _hook_input(), time.time())
     except Exception as exc:  # noqa: BLE001 - must not block the stop
-        print(f"linear-agents idle could not record the stop: {exc}", file=sys.stderr)
+        print(f"flocc idle could not record the stop: {exc}", file=sys.stderr)
         return 1
     return 0
 
@@ -310,9 +310,9 @@ def _session_bookkeeping(state: Path) -> None:
         (state / "status.json").unlink(missing_ok=True)
     else:
         # Background agents survive compaction, so only a real start resets the running count.
-        run = os.environ.get("LINEAR_AGENTS_RUN")
+        run = os.environ.get("FLOCC_RUN")
         (state / gate.LAST_STOP).touch()
-        gate.record_session(state, run, time.time(), os.environ.get("LINEAR_AGENTS_PHASE"))
+        gate.record_session(state, run, time.time(), os.environ.get("FLOCC_PHASE"))
     pad = payload.get("scratchpad_dir")
     if isinstance(pad, str) and pad:
         known = state / "scratchpads"
@@ -327,7 +327,7 @@ def cmd_session_start(args) -> int:
     try:
         _session_bookkeeping(_state_dir())
     except Exception as exc:  # noqa: BLE001
-        print(f"linear-agents session-start bookkeeping failed: {exc}", file=sys.stderr)
+        print(f"flocc session-start bookkeeping failed: {exc}", file=sys.stderr)
     return cmd_context(args)
 
 
@@ -359,7 +359,7 @@ def cmd_handoff_ready(args) -> int:
 
 
 def cmd_commit(args) -> int:
-    from linear_agents.worktree import git
+    from flocc.worktree import git
 
     paths = [p for p in args.paths if p != "--"]
     if not paths:
@@ -368,7 +368,7 @@ def cmd_commit(args) -> int:
     git_dir = Path(git("rev-parse", "--absolute-git-dir", cwd=Path.cwd()))
     # Parallel task-implementers share one worktree and its index: one commit at a time, each
     # with only its own paths.
-    with (git_dir / "la-commit.lock").open("w") as lock:
+    with (git_dir / "flocc-commit.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         added = subprocess.run(["git", "add", "--", *paths], check=False)
         if added.returncode:
@@ -391,7 +391,7 @@ def _lock_path(cfg):
 
 
 def cmd_tick(args) -> int:
-    from linear_agents.tick import tick, tick_lock
+    from flocc.tick import tick, tick_lock
 
     cfg, path = _config(args)
     with tick_lock(_lock_path(cfg)) as held:
@@ -402,7 +402,7 @@ def cmd_tick(args) -> int:
 
 
 def cmd_run(args) -> int:
-    from linear_agents.tick import run_loop
+    from flocc.tick import run_loop
 
     cfg, _ = _config(args)
     config = ["--config", args.config] if args.config else []
@@ -411,8 +411,8 @@ def cmd_run(args) -> int:
 
 
 def cmd_release(args) -> int:
-    from linear_agents.poller import release_claim
-    from linear_agents.tick import build_runtime, tick_lock
+    from flocc.poller import release_claim
+    from flocc.tick import build_runtime, tick_lock
 
     cfg, path = _config(args)
     with tick_lock(_lock_path(cfg)) as held:
@@ -440,7 +440,7 @@ def cmd_release(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from linear_agents.doctor import run_doctor
+    from flocc.doctor import run_doctor
 
     cfg, path = _config(args)
     print(f"ok    config: {path}")
@@ -448,8 +448,8 @@ def cmd_doctor(args) -> int:
 
 
 def cmd_status(args) -> int:
-    from linear_agents.sessions import Sessions
-    from linear_agents.status import collect
+    from flocc.sessions import Sessions
+    from flocc.status import collect
 
     cfg, _ = _config(args)
     report = collect(cfg, Sessions())
@@ -520,12 +520,12 @@ COMMANDS = {
 def _version() -> str:
     from importlib.metadata import version
 
-    return version("linear-agents")
+    return version("flocc")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="linear-agents", description="Run Claude sessions on Linear issues."
+        prog="flocc", description="Run Claude sessions on Linear issues."
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
     parser.add_argument("--config", default=None, help="config file (default: standard path)")
