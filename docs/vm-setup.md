@@ -128,11 +128,16 @@ Run `flocc keys` before the import and it mints a new ntfy topic; the next ship 
 host off the topic your phone follows.
 
 The import reads each key from the host's secret files and checks it as a paste is checked
-before storing it, printing "Took the ..." with the key's expiry, never its value. If the
-connection drops partway, it stops with "run flocc host import again" instead of asking for a new
-token, because GitHub shows a token only once. A host token that does not cover a repo is not
-taken; the message names the token. On github.com/settings/personal-access-tokens open it, Edit,
-fix the repository access, then run the import again.
+before storing it, printing "Took the ..." with a GitHub token's expiry or the Linear key's
+account and teams, never a value. The import opens the SSH connection in the terminal first, so a
+Tailscale check-mode approval link shows; without a terminal it fails with a message saying so
+instead of hanging. If the connection drops partway, it stops with "run flocc host import again"
+instead of asking for a new token, because GitHub shows a token only once. A host token that does
+not cover a repo is not taken; the message names the token. On
+github.com/settings/personal-access-tokens open it, Edit, fix the repository access, then run the
+import again. An agent token from a host shipped before 0.5.0 also lacks Actions (read) and Commit
+statuses (read), which 0.5.0 asks for: add both to its permissions there; the token's value stays
+the same.
 
 `flocc keys` asks for each key it does not have yet, and only in a terminal: it reads with echo
 off, so a stdin that is not a terminal is refused. For each key it opens the page where the key
@@ -175,7 +180,10 @@ import -H <name>` builds the file from a host's own saved answers instead; `floc
 ones, and only then stores them and writes them into every host's secret files over SSH; Ctrl-C
 during the checks changes nothing. It lists the hosts it could not reach. Once those are up, run
 the command again, paste nothing and answer yes to "Push the stored keys to ... again?", or run
-`flocc ship -H <host>`. Do not revoke the old token until the sessions running now have ended:
+`flocc ship -H <host>`, which replaces a host's key file whenever the desktop's key differs, so it
+brings that host's keys in line with the desktop. Like `host import` and `-H all`, rotate opens
+each host's SSH connection in the terminal first, so a Tailscale check-mode approval link shows;
+without a terminal it fails with a message saying so instead of hanging. Do not revoke the old token until the sessions running now have ended:
 each reads `GH_TOKEN` when it starts. `flocc status -H all` shows the new expiry after each host's
 next daily token check. `flocc keys rotate linear` does the same for the Linear key.
 
@@ -195,7 +203,9 @@ Without `-H` the host is `$FLOCC_HOST`, then the only host, then, for a command 
 key, the host whose `flocc status --json` holds that claim. `-H` is taken from anywhere before
 `--`, so an argument that is literally `-H` goes after `--`. `-H all` runs only `status`, `doctor`
 and `logs` (without `-f`). SSH to a host, `flocc ship` and `flocc login` included, shares one
-connection per host for ten minutes, so a Tailscale check-mode approval covers a whole run.
+connection per host for ten minutes, so a Tailscale check-mode approval covers a whole run;
+`-H all` opens each host's connection in the terminal first so the approval link shows, and
+without a terminal it fails with a message instead of hanging.
 `flocc status` for one host also shows its Claude login (full, token-only, none or unknown) and
 the GitHub token expiries. `ship`, `login`, `keys` and `host` are desktop commands; the host's
 `flocc` refuses them. The `just` host recipes still work and run these commands; they go in 0.6.0.
@@ -245,14 +255,14 @@ If any differs, stop and ask the owner; do not restart Docker or Incus.
 They are broad: the VM can reach every service on the machine. `flocc host create` (0.6.0)
 replaces them with rules scoped to `incusbr0`.
 
-Size a new VM like the existing one and check the machine has room for both:
+Size a new VM like an existing one, if the machine has one, and check it has room for both:
 
 ```bash
-incus config show la-nimble --expanded | grep -E 'limits\.(cpu|memory)|size:'
+incus config show <existing-vm> --expanded | grep -E 'limits\.(cpu|memory)|size:'
 free -g
 ```
 
-Then, with la-nimble's `limits.cpu`, `limits.memory` and root disk `size` in place of the example
+Then, with that VM's `limits.cpu`, `limits.memory` and root disk `size` in place of the example
 values:
 
 ```bash
@@ -271,10 +281,12 @@ reach it over Tailscale SSH.
 
 ## What the installer cannot do
 
-- Linear: the labels `claude`, `escalation` and `needs-decision`, and a pinned digest issue,
-  must exist in the team. A label per mapped repo (named exactly as its `[repos.<name>]` key)
-  is optional: a repo without one is mapped but gets no issues. Doctor fails on the first
-  three and warns about missing repo labels.
+- Linear: pin the digest issue. `flocc host add` creates the digest issue and the labels
+  `claude`, `escalation`, `needs-decision` and one per mapped repo when they are missing, but
+  `host import` does not: a host file written by import or by hand needs them in the team already.
+  A repo's label is named exactly as its `[repos.<name>]` key; a repo without one is mapped but
+  gets no issues. Doctor fails on a missing `claude`, `escalation` or `needs-decision` label or
+  digest issue and warns about missing repo labels.
 - GitHub tokens are made in the browser. `flocc keys` opens each page with the permissions
   filled in and prints the repos to tick.
 - In the Tailscale admin console, disable key expiry for the host; an untagged node's key
@@ -290,7 +302,7 @@ reach it over Tailscale SSH.
 - `deploy/agent-plugins.txt` decides which of your plugins agent sessions get. A plugin listed
   there must be enabled on your desktop, or `flocc ship` stops and names it.
 
-Watch it from the desktop with `flocc -H <name> status` (sessions, last log lines, timer),
+Watch it from the desktop with `flocc -H <name> status` (claims, last tick, usage, disk, Claude login, token expiries),
 `flocc -H <name> logs -f` (the journal in systemd mode, `run.log` in loop mode) and
 `flocc -H <name> attach NF-123` (read-only tmux).
 
@@ -410,7 +422,13 @@ decisions that block them.
 agents' pre-commit hook, so commits in running sessions are refused. Add it before upgrading.
 
 A host must be on 0.3.0 or later before you ship 0.5.0 to it: 0.5.0 no longer reads the old names
-or refuses a host that still has them.
+or refuses a host that still has them. In particular, a branch whose tester commits carry only the
+trailer from before the rename (the old product name, then `: <KEY> test`) is no longer
+recognised, unless the host already recorded the tests. Finish or merge such issues on a 0.4.x
+host before upgrading it; CHANGELOG.md has the trailer's exact text.
+
+An agent token imported from a pre-0.5.0 host needs Actions (read) and Commit statuses (read)
+added to its permissions; see The desktop command.
 
 ## Smoke test
 

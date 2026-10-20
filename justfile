@@ -69,7 +69,7 @@ host name *cmd: build
 doctor name: build
     build/flocc -H {{name}} doctor
 
-# Show tmux sessions, the last run.log lines and the timer on the host
+# Show the host's claims, last tick, usage, disk, Claude login and token expiries
 [group('host')]
 status name: build
     build/flocc -H {{name}} status
