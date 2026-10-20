@@ -3,9 +3,11 @@ package steps
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,29 @@ import (
 )
 
 type Run struct{}
+
+// DoctorFailed is the Run step's error when doctor reports FAIL lines other than a pending
+// Claude login; the service phase still prints its summary for it.
+type DoctorFailed struct{ Fails []string }
+
+func (d *DoctorFailed) Error() string {
+	return fmt.Sprintf("doctor reports %s; fix them and run just ship again", plural(len(d.Fails), "FAIL line"))
+}
+
+const loginFail = "FAIL  claude login:"
+
+func withoutLogin(fails []string) []string {
+	return slices.DeleteFunc(slices.Clone(fails), func(f string) bool { return strings.HasPrefix(f, loginFail) })
+}
+
+// timerOn reports whether ticks run: the timer in systemd mode, the loop command in loop mode.
+func timerOn(ctx context.Context, e *Env) bool {
+	if e.Mode == Loop {
+		return strings.Contains(e.loopPane(ctx), "flocc run")
+	}
+	r, err := e.Run.Run(ctx, e.userctl("is-enabled", "--quiet", "flocc.timer"))
+	return err == nil && r.Code == 0
+}
 
 func (Run) Name() string { return "Run" }
 
@@ -36,7 +61,7 @@ func (e *Env) loopPane(ctx context.Context) string {
 
 func (Run) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if e.Mode == Loop {
-		if strings.Contains(e.loopPane(ctx), "flocc run") {
+		if timerOn(ctx, e) {
 			return true, "flocc-loop ticking", nil
 		}
 		return false, "loop not running", nil
@@ -51,7 +76,7 @@ func (Run) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if r, err := e.Run.Run(ctx, e.userctl("is-active", "--quiet", "flocc-tmux.service")); err != nil || r.Code != 0 {
 		return false, "tmux service not running", nil
 	}
-	if r, err := e.Run.Run(ctx, e.userctl("is-enabled", "--quiet", "flocc.timer")); err != nil || r.Code != 0 {
+	if !timerOn(ctx, e) {
 		return false, "timer not enabled", nil
 	}
 	return true, "timer enabled", nil
@@ -85,12 +110,21 @@ func (Run) Apply(ctx context.Context, e *Env) error {
 		}
 	}
 	out, fails, ok := doctor(ctx, e)
+	e.lastDoctor = &doctorResult{out: out, fails: fails, ok: ok}
 	e.UI.Note("flocc doctor", out)
-	if len(fails) > 0 {
-		return fmt.Errorf("doctor reports %s; fix them and run just ship again", plural(len(fails), "FAIL line"))
+	// A pending login fails doctor until just login runs, which starts the timer itself.
+	pending := slices.Contains(e.Pending, ClaudeLogin{}.Name())
+	others := fails
+	if pending {
+		others = withoutLogin(fails)
 	}
-	if !ok {
-		return fmt.Errorf("flocc doctor did not run cleanly; see its output above")
+	switch {
+	case len(others) > 0:
+		return &DoctorFailed{Fails: others}
+	case !ok && len(fails) == 0:
+		return errors.New("flocc doctor did not run cleanly; see its output above")
+	case pending:
+		return ErrPending
 	}
 	start, err := e.UI.Confirm("Doctor reports no FAIL line. Start ticking every 3 minutes?", true)
 	if err != nil {

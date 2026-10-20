@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -84,6 +85,14 @@ func TestRunAllPassesErrStoppedThrough(t *testing.T) {
 	a := &fakeStep{name: "a", applyErr: ErrStopped}
 	if err := RunAll(context.Background(), newEnv(scripted()), []Step{a}); !errors.Is(err, ErrStopped) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestRunAllRecordsPendingStepsAndGoesOn(t *testing.T) {
+	a, b := &fakeStep{name: "a", applyErr: ErrPending}, &fakeStep{name: "b"}
+	e := newEnv(scripted())
+	if err := RunAll(context.Background(), e, []Step{a, b}); err != nil || b.applied != 1 || !slices.Equal(e.Pending, []string{"a"}) {
+		t.Fatalf("err=%v b.applied=%d pending=%v", err, b.applied, e.Pending)
 	}
 }
 

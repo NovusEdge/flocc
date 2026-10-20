@@ -39,8 +39,12 @@ type Env struct {
 	Answers         *answers.Answers
 	AnswersPath     string
 	SkipInteractive bool
-	UID             int
-	Sleep           func(time.Duration)
+	// Pending names the steps whose Apply returned ErrPending in this run.
+	Pending []string
+	UID     int
+	Sleep   func(time.Duration)
+
+	lastDoctor *doctorResult // the Run step's doctor run, which Summarize reuses
 }
 
 func (e *Env) Path(p string) string       { return filepath.Join(e.Root, p) }
@@ -85,6 +89,10 @@ type Step interface {
 // ErrStopped ends a run without a failure, when I decline something only I can decide.
 var ErrStopped = errors.New("stopped")
 
+// ErrPending ends a step's Apply when its outcome needs the owner after the run, as the Claude
+// login does; RunAll records the step in Env.Pending and goes on.
+var ErrPending = errors.New("pending")
+
 func RunAll(ctx context.Context, e *Env, steps []Step) error {
 	statuses := make([]ui.StepStatus, len(steps))
 	var done []string
@@ -108,6 +116,10 @@ func RunAll(ctx context.Context, e *Env, steps []Step) error {
 			continue
 		}
 		if err := s.Apply(ctx, e); err != nil {
+			if errors.Is(err, ErrPending) {
+				e.Pending = append(e.Pending, s.Name())
+				continue
+			}
 			if errors.Is(err, ErrStopped) {
 				return err
 			}
