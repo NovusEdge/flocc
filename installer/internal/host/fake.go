@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"io"
 	"slices"
 )
 
@@ -11,12 +12,22 @@ type Fake struct {
 	Seqs      map[string][]Result
 	Calls     []string
 	Argv      [][]string // name and args of each Run, unjoined
+	Stdins    map[string]string
 
 	InteractiveErrs map[string]error
+	InteractiveOuts map[string]string
 }
 
 func NewFake() *Fake {
-	return &Fake{Responses: map[string]Result{}, Seqs: map[string][]Result{}, InteractiveErrs: map[string]error{}}
+	return &Fake{Responses: map[string]Result{}, Seqs: map[string][]Result{}, Stdins: map[string]string{},
+		InteractiveErrs: map[string]error{}, InteractiveOuts: map[string]string{}}
+}
+
+func (f *Fake) readStdin(c Cmd) {
+	if c.Stdin != nil {
+		b, _ := io.ReadAll(c.Stdin)
+		f.Stdins[c.String()] = string(b)
+	}
 }
 
 func (f *Fake) On(cmd string, code int, stdout string) *Fake {
@@ -32,6 +43,7 @@ func (f *Fake) OnSeq(cmd string, rs ...Result) *Fake {
 func (f *Fake) Run(_ context.Context, c Cmd) (Result, error) {
 	f.Calls = append(f.Calls, c.String())
 	f.Argv = append(f.Argv, append([]string{c.Name}, c.Args...))
+	f.readStdin(c)
 	if seq := f.Seqs[c.String()]; len(seq) > 0 {
 		r := seq[0]
 		if len(seq) > 1 {
@@ -51,8 +63,18 @@ func (f *Fake) OnInteractive(cmd string, err error) *Fake {
 	return f
 }
 
+// OnInteractiveOut makes Interactive write out to the command's Stdout.
+func (f *Fake) OnInteractiveOut(cmd, out string) *Fake {
+	f.InteractiveOuts[cmd] = out
+	return f
+}
+
 func (f *Fake) Interactive(_ context.Context, c Cmd) error {
 	f.Calls = append(f.Calls, "interactive: "+c.String())
+	f.readStdin(c)
+	if out, ok := f.InteractiveOuts[c.String()]; ok && c.Stdout != nil {
+		io.WriteString(c.Stdout, out)
+	}
 	return f.InteractiveErrs[c.String()]
 }
 

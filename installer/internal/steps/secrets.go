@@ -66,6 +66,23 @@ func secretPath(e *Env, s secretSpec) string {
 	return e.HomePath(filepath.Join(".config/flocc", s.file))
 }
 
+// KnownSecrets is every secret this run can hold: the scripted answers' and the values on disk,
+// which include what the interactive form just wrote. Output that leaves the host redacts them all.
+func (e *Env) KnownSecrets() []string {
+	var v []string
+	if e.Answers != nil {
+		v = e.Answers.Secrets.Values()
+	}
+	for _, s := range secretSpecs {
+		if b, err := os.ReadFile(secretPath(e, s)); err == nil {
+			if x := strings.TrimSpace(string(b)); x != "" {
+				v = append(v, x)
+			}
+		}
+	}
+	return v
+}
+
 func (Secrets) Check(_ context.Context, e *Env) (bool, string, error) {
 	for _, s := range secretSpecs {
 		if ok, why := validSecret(secretPath(e, s)); !ok {

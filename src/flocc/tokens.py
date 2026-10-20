@@ -1,3 +1,6 @@
+import json
+import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -10,6 +13,7 @@ from flocc.escalation import Escalation
 WARN_DAYS = 14
 PAGE_DAYS = 3
 _DAY = 86400
+LOGIN_REMEDY = "on the desktop, run just login <ssh target of this host>"
 
 
 class TokenRejected(Exception):
@@ -107,3 +111,39 @@ def check_tokens(rt, expiry=token_expiry) -> None:
             ledger.add_digest(rt.con, None, line, rt.now())
     if complete:
         ledger.meta_set(rt.con, "token_check_date", today)
+
+
+def claude_login(exe: str, run=subprocess.run) -> str | None:
+    """full, token-only (<method>) or none; None when claude auth status gave no answer."""
+    try:
+        out = run([exe, "auth", "status"], capture_output=True, text=True, check=False, timeout=30)
+        auth = json.loads(out.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    # A CLI error comes back as JSON without loggedIn; only an explicit false is a logout.
+    if not isinstance(auth, dict) or "loggedIn" not in auth:
+        return None
+    if not auth["loggedIn"]:
+        return "none"
+    method = auth.get("authMethod") or "unknown"
+    # Only a claude.ai login opens Remote Control sessions; a setup-token login cannot.
+    return "full" if method == "claude.ai" else f"token-only ({method})"
+
+
+def check_claude_login(rt, run=subprocess.run) -> None:
+    # Every new session fails without the login and running Remote Control sessions cannot
+    # recover, so the first tick that sees it lapse pages once; the flag rearms when it is back.
+    login = claude_login(rt.claude_exe, run)
+    if login is None:
+        return
+    lapsed = ledger.meta_get(rt.con, "claude_login_lapsed") == "1"
+    if login == "full":
+        if lapsed:
+            ledger.meta_set(rt.con, "claude_login_lapsed", "0")
+        return
+    if lapsed:
+        return
+    summary = f"The Claude login on {socket.gethostname()} lapsed ({login}); new sessions fail."
+    action = "On the desktop, run just login <ssh target of this host>"
+    rt.notifier.send(Escalation(1, "claude-login", summary, action, scope="global"), None, None)
+    ledger.meta_set(rt.con, "claude_login_lapsed", "1")

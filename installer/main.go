@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -24,9 +26,24 @@ import (
 const serviceStage = "/home/" + steps.ServiceUser + "/.cache/flocc-setup"
 
 // The service phase's saved answers: outside ~/.cache, which may be cleared, and outside the
-// stage, where every --answers copy is removed after its run.
+// stage, whose *.toml files removeStagedAnswers deletes.
 func savedAnswersPath(home string) string {
 	return filepath.Join(home, ".config/flocc/answers.toml")
+}
+
+// removeStagedAnswers deletes the *.toml files in the service user's stage. 0.3.0 copied the
+// --answers file there, secrets included, and deleted it only after a successful run; a failed
+// run leaves it behind, and the 0.4.0 stage copy never touches it.
+func removeStagedAnswers(stage string) error {
+	files, err := filepath.Glob(filepath.Join(stage, "*.toml"))
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, f := range files {
+		errs = append(errs, os.Remove(f))
+	}
+	return errors.Join(errs...)
 }
 
 const loopWarning = `PID 1 is not systemd, so this host runs in loop mode:
@@ -41,21 +58,18 @@ func checkPhase(phase string, euid int) error {
 	switch {
 	case phase == "root" && euid != 0:
 		return errors.New("the root phase runs as root; just ship runs it with sudo")
-	case phase == "service" && euid == 0:
-		return errors.New("the service phase runs as " + steps.ServiceUser + ", not root")
-	case phase != "root" && phase != "service":
+	case (phase == "service" || phase == "login") && euid == 0:
+		return errors.New("the " + phase + " phase runs as " + steps.ServiceUser + ", not root")
+	case phase != "root" && phase != "service" && phase != "login":
 		return fmt.Errorf("unknown phase %q", phase)
 	}
 	return nil
 }
 
-func handoffArgs(answersIn string, skip bool, dest string) []string {
+func handoffArgs(fromStdin bool) []string {
 	args := []string{"--phase", "service"}
-	if answersIn != "" {
-		args = append(args, "--answers", filepath.Join(dest, filepath.Base(answersIn)))
-	}
-	if skip {
-		args = append(args, "--skip-interactive")
+	if fromStdin {
+		args = append(args, "--answers", "-")
 	}
 	return args
 }
@@ -76,7 +90,7 @@ func checkStage(dir string) error {
 // stageNames lists what the service user copies. Root names every file itself because the
 // script must hold no shell expansion: sudo -i hands it to the login shell, which expands
 // `$` before the inner sh runs.
-func stageNames(stage, answersIn string) ([]string, error) {
+func stageNames(stage string) ([]string, error) {
 	entries, err := os.ReadDir(stage)
 	if err != nil {
 		return nil, err
@@ -84,8 +98,7 @@ func stageNames(stage, answersIn string) ([]string, error) {
 	var names []string
 	for _, ent := range entries {
 		n := ent.Name()
-		known := n == "flocc-setup" || n == "flocc.bundle" || n == "plugins.json" || n == "identity.json" ||
-			strings.HasSuffix(n, ".tar") || answersIn != "" && n == filepath.Base(answersIn)
+		known := n == "flocc-setup" || n == "flocc.bundle" || n == "plugins.json" || n == "identity.json" || strings.HasSuffix(n, ".tar")
 		if ent.Type().IsRegular() && known && stageFile.MatchString(n) {
 			names = append(names, n)
 		}
@@ -103,17 +116,10 @@ func copyScript(dir string, names []string) string {
 }
 
 // handoff lets the service user read the stage and copy it itself. Root never writes inside
-// the service home: an agent could plant a symlink there and have root write through it.
-func handoff(ctx context.Context, r host.Runner, stage, answersIn string, args []string) error {
-	if answersIn != "" && !stageFile.MatchString(filepath.Base(answersIn)) {
-		return fmt.Errorf("answers file name %q: start with a letter or digit, then use letters, digits, '.', '_' or '-'", filepath.Base(answersIn))
-	}
-	if answersIn != "" {
-		if _, err := os.Stat(filepath.Join(stage, filepath.Base(answersIn))); err != nil {
-			return fmt.Errorf("answers file %s is not in the stage: %w", filepath.Base(answersIn), err)
-		}
-	}
-	names, err := stageNames(stage, answersIn)
+// the service home: an agent could plant a symlink there and have root write through it. doc
+// is the answers document as root read it, piped on; nil leaves the service phase the terminal.
+func handoff(ctx context.Context, r host.Runner, stage string, args []string, doc io.Reader) error {
+	names, err := stageNames(stage)
 	if err != nil {
 		return err
 	}
@@ -126,96 +132,127 @@ func handoff(ctx context.Context, r host.Runner, stage, answersIn string, args [
 			return err
 		}
 	}
-	err = r.Interactive(ctx, host.Cmd{Name: "sudo", Args: append([]string{"-iu", steps.ServiceUser, serviceStage + "/flocc-setup"}, args...)})
-	if err == nil && answersIn != "" {
-		dropAnswersCopy(filepath.Join(stage, filepath.Base(answersIn)))
-	}
-	return err
+	return r.Interactive(ctx, host.Cmd{Name: "sudo", Args: append([]string{"-iu", steps.ServiceUser, serviceStage + "/flocc-setup"}, args...), Stdin: doc})
 }
 
-// dropAnswersCopy removes a --answers file, which carries tokens, once the run no longer needs it.
-func dropAnswersCopy(path string) { os.Remove(path) }
+// readAnswers takes the whole document before anything runs: commands started later must find
+// stdin at EOF, and the service phase needs the same bytes.
+func readAnswers(r io.Reader) ([]byte, *answers.Answers, error) {
+	doc, err := io.ReadAll(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	a, err := answers.Parse(doc)
+	return doc, a, err
+}
 
 func run(args []string) int {
-	if len(args) > 0 && args[0] == "host" {
-		return ship.HostMain(args[1:])
-	}
-	if len(args) > 0 && args[0] == "fleet" {
-		return ship.FleetMain(args[1:], os.Stdout)
-	}
-	if len(args) > 0 && args[0] == "ship" {
-		return ship.Main(args[1:])
+	if len(args) > 0 {
+		switch args[0] {
+		case "host":
+			return ship.HostMain(args[1:])
+		case "fleet":
+			return ship.FleetMain(args[1:], os.Stdout)
+		case "ship":
+			return ship.Main(args[1:])
+		case "login":
+			return ship.LoginMain(args[1:])
+		}
 	}
 	fs := flag.NewFlagSet("flocc-setup", flag.ContinueOnError)
-	phase := fs.String("phase", "root", "root or service; the root phase hands off to the service phase itself")
-	answersIn := fs.String("answers", "", "answers file supplying every form value, for runs without a terminal")
-	skip := fs.Bool("skip-interactive", false, "skip the Claude and Tailscale logins and read answers from --answers")
+	phase := fs.String("phase", "root", "root, service or login; the root phase hands off to the service phase itself")
+	answersIn := fs.String("answers", "", `"-" reads the answers document, secrets included, from stdin and runs without a terminal`)
+	email := fs.String("email", "", "login phase: the claude.ai account to sign in as")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if *answersIn != "" && *answersIn != "-" {
+		fmt.Fprintln(os.Stderr, "flocc-setup: answers travel on stdin; pass --answers - and pipe the document in")
+		return 2
+	}
+	fromStdin := *answersIn == "-"
+	var doc []byte
+	in := &answers.Answers{}
+	if fromStdin {
+		var err error
+		if doc, in, err = readAnswers(os.Stdin); err != nil {
+			fmt.Fprintln(os.Stderr, "flocc-setup:", err)
+			return 1
+		}
+	}
+	secrets := in.Secrets.Values()
+	stdout, stderr := host.Redact(os.Stdout, secrets...), host.Redact(os.Stderr, secrets...)
 	if err := checkPhase(*phase, os.Geteuid()); err != nil {
-		fmt.Fprintln(os.Stderr, "flocc-setup:", err)
+		fmt.Fprintln(stderr, "flocc-setup:", err)
 		return 2
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "flocc-setup:", err)
+		fmt.Fprintln(stderr, "flocc-setup:", err)
 		return 1
 	}
 	stage := filepath.Dir(exe)
 	if *phase == "root" {
 		if err := checkStage(stage); err != nil {
-			fmt.Fprintln(os.Stderr, "flocc-setup:", err)
+			fmt.Fprintln(stderr, "flocc-setup:", err)
 			return 2
 		}
 	}
 	logPath := filepath.Join(stage, "setup.log")
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "flocc-setup:", err)
+		fmt.Fprintln(stderr, "flocc-setup:", err)
 		return 1
 	}
 	defer logf.Close()
-	runner := host.Exec{Log: logf}
+	runner := host.Exec{Log: host.Redact(logf, secrets...)}
 
 	pid1, _ := os.ReadFile("/proc/1/comm")
 	osRelease, _ := os.ReadFile("/etc/os-release")
 	distro, err := host.ParseOSRelease(string(osRelease))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "flocc-setup:", err)
+		fmt.Fprintln(stderr, "flocc-setup:", err)
 		return 1
 	}
 	a := &answers.Answers{}
 	env := &steps.Env{Run: runner, Stage: stage, Mode: steps.DetectMode(string(pid1)), Distro: distro,
-		Answers: a, SkipInteractive: *skip, UID: os.Getuid(), Sleep: time.Sleep}
-	if *phase == "service" {
+		Answers: a, SkipInteractive: fromStdin, UID: os.Getuid(), Sleep: time.Sleep}
+	if *phase != "root" {
 		env.Home, _ = os.UserHomeDir()
+	}
+	if *phase == "service" {
+		if stage == serviceStage {
+			if err := removeStagedAnswers(stage); err != nil {
+				fmt.Fprintln(stderr, "flocc-setup: could not remove a leftover answers file from", stage+":", err)
+			}
+		}
 		env.AnswersPath = savedAnswersPath(env.Home)
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
 			if err := a.OverlaySaved(saved); err != nil {
-				fmt.Fprintln(os.Stderr, "flocc-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
+				fmt.Fprintln(stderr, "flocc-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
 			}
 		}
 	}
-	if *answersIn != "" {
-		in, err := answers.Load(*answersIn)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "flocc-setup:", err)
-			return 1
-		}
-		if err := a.Overlay(in); err != nil {
-			fmt.Fprintln(os.Stderr, "flocc-setup:", *answersIn+":", err)
-			return 1
-		}
+	if err := a.Overlay(in); err != nil {
+		fmt.Fprintln(stderr, "flocc-setup: answers:", err)
+		return 1
 	}
 	var u ui.UI = ui.NewHuh()
-	if *skip {
-		u = &ui.Scripted{A: a, Out: os.Stdout}
+	if fromStdin {
+		u = &ui.Scripted{A: a, Out: stdout}
 	}
 	env.UI = u
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	if *phase == "login" {
+		err := steps.Login(ctx, env, steps.LoginOptions{Email: *email})
+		if errors.Is(err, steps.ErrStopped) {
+			fmt.Fprintln(stdout, "Stopped. Run just login again to finish.")
+			return 1
+		}
+		return finish(ctx, env, err, true, stdout, stderr, logPath)
+	}
 	list := steps.ServiceSteps()
 	if *phase == "root" {
 		if env.Mode == steps.Loop {
@@ -227,25 +264,42 @@ func run(args []string) int {
 	}
 	err = steps.RunAll(ctx, env, list)
 	if err == nil && *phase == "root" {
-		err = handoff(ctx, runner, stage, *answersIn, handoffArgs(*answersIn, *skip, serviceStage))
+		var piped io.Reader
+		if fromStdin {
+			piped = bytes.NewReader(doc)
+		}
+		err = handoff(ctx, runner, stage, handoffArgs(fromStdin), piped)
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return exit.ExitCode() // the service phase already reported its error
 		}
 	}
+	return finish(ctx, env, err, *phase == "service", stdout, stderr, logPath)
+}
+
+// finish ends the service or login phase's output with the summary line when it got as far as
+// doctor, and prints the error otherwise. The desktop takes that line out of the stream and
+// prints the summary itself, so run by hand on the host the output ends in raw JSON.
+func finish(ctx context.Context, env *steps.Env, err error, summary bool, stdout, stderr io.Writer, logPath string) int {
+	var failed *steps.DoctorFailed
 	switch {
 	case errors.Is(err, steps.ErrStopped):
-		fmt.Println("Stopped. Run just ship again to continue.")
+		fmt.Fprintln(stdout, "Stopped. Run just ship again to continue.")
 		return 0
-	case err != nil:
-		fmt.Fprintf(os.Stderr, "\n%s\n\nFull log: %s\n", err, logPath)
+	case err != nil && !(summary && errors.As(err, &failed)):
+		fmt.Fprintf(stderr, "\n%s\n\nFull log: %s\n", err, logPath)
 		return 1
+	case !summary:
+		return 0
 	}
-	if *phase == "service" {
-		if *answersIn != "" {
-			dropAnswersCopy(*answersIn)
-		}
-		fmt.Println("Done.")
+	if err != nil {
+		fmt.Fprintf(stderr, "\n%s\n", err)
+	}
+	s := steps.Summarize(ctx, env).Redact(env.KnownSecrets()...)
+	// A blank line first: the marker must start a line, and a prompt may have left a partial one.
+	fmt.Fprintf(stdout, "\n%s\n", s.Line())
+	if s.Failing() {
+		return 1
 	}
 	return 0
 }

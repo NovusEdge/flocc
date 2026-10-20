@@ -2,11 +2,9 @@ package ship
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -40,28 +38,12 @@ func HostMain(args []string) int {
 	home, _ := os.UserHomeDir()
 	dest, err := resolveTarget(ctx, args[0], filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
 	if err == nil {
-		err = hostRun(ctx, host.Exec{Log: redact{os.Stderr, dest.Token}}, dest, args[1:])
+		err = hostRun(ctx, host.Exec{Log: host.Redact(os.Stderr, dest.Token)}, dest, args[1:])
 	}
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			if code := exit.ExitCode(); code >= 0 {
-				return code
-			}
-			return 255 // ssh was killed by a signal; ExitCode reports -1
-		}
-		fmt.Fprintln(os.Stderr, "host:", err)
-		return 1
-	}
-	return 0
+	return exitCode(err, "host")
 }
 
 // hostRun scrubs the SSH token from errors, as ship does.
 func hostRun(ctx context.Context, r host.Runner, dest Dest, command []string) error {
-	err := r.Interactive(ctx, sshCmd(dest, true, asServiceUser(command)))
-	var exit *exec.ExitError
-	if err == nil || dest.Token == "" || errors.As(err, &exit) {
-		return err
-	}
-	return errors.New(strings.ReplaceAll(err.Error(), dest.Token, "<token>"))
+	return scrubErr(r.Interactive(ctx, sshCmd(dest, true, asServiceUser(command))), dest.Token)
 }

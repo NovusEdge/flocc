@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +19,54 @@ const doctorCmd = "/home/flocc/.local/bin/flocc doctor"
 type declineUI struct{ *ui.Scripted }
 
 func (declineUI) Confirm(string, bool) (bool, error) { return false, nil }
+
+const loginFailLine = "FAIL  claude login: none; on the desktop, run just login <ssh target of this host>\n"
+
+// systemdRun answers what Run.Check and Run.Apply run in systemd mode, around doctor.
+func systemdRun(f *host.Fake, doctorCode int, doctorOut string) *host.Fake {
+	return f.On("systemctl --user daemon-reload", 0, "").
+		On("systemctl --user enable --now flocc-tmux.service", 0, "").
+		On("systemctl --user is-active --quiet flocc-tmux.service", 0, "").
+		On("tmux -N -L flocc list-sessions", 0, "").
+		On(doctorCmd, doctorCode, doctorOut).
+		On("systemctl --user enable --now flocc.timer", 0, "")
+}
+
+func TestRunWithTheLoginPendingStartsTmuxButNotTheTimer(t *testing.T) {
+	f := systemdRun(host.NewFake(), 1, "ok    tmux: server on socket flocc\n"+loginFailLine)
+	e := testEnv(t, f)
+	e.Pending = []string{"Claude login"}
+	if err := (Run{}).Apply(context.Background(), e); !errors.Is(err, ErrPending) {
+		t.Fatalf("err=%v", err)
+	}
+	if !f.Ran("systemctl --user enable --now flocc-tmux.service") || f.Ran("systemctl --user enable --now flocc.timer") {
+		t.Fatalf("calls: %v", f.Calls)
+	}
+	if e.lastDoctor == nil || len(e.lastDoctor.fails) != 1 {
+		t.Fatalf("doctor result not kept: %+v", e.lastDoctor)
+	}
+}
+
+func TestRunWithTheLoginPendingStillStopsOnOtherFails(t *testing.T) {
+	f := systemdRun(host.NewFake(), 1, loginFailLine+"FAIL  linear: 401\n")
+	e := testEnv(t, f)
+	e.Pending = []string{"Claude login"}
+	var failed *DoctorFailed
+	if err := (Run{}).Apply(context.Background(), e); !errors.As(err, &failed) || !slices.Equal(failed.Fails, []string{"FAIL  linear: 401"}) {
+		t.Fatalf("err=%v", err)
+	}
+	if f.Ran("systemctl --user enable --now flocc.timer") {
+		t.Fatal("timer started despite a FAIL line")
+	}
+}
+
+func TestRunWithoutAPendingLoginTreatsTheLoginFailAsAFailure(t *testing.T) {
+	f := systemdRun(host.NewFake(), 1, loginFailLine)
+	var failed *DoctorFailed
+	if err := (Run{}).Apply(context.Background(), testEnv(t, f)); !errors.As(err, &failed) || len(failed.Fails) != 1 {
+		t.Fatalf("err=%v", err)
+	}
+}
 
 func TestRunLoopModeStartsTmuxBeforeDoctor(t *testing.T) {
 	f := host.NewFake().

@@ -1,5 +1,6 @@
 import email.message
 import io
+import subprocess
 import urllib.error
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -8,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from flocc import ledger
-from flocc.tokens import TokenRejected, check_tokens, token_expiry
+from flocc.tick import tick
+from flocc.tokens import TokenRejected, check_claude_login, check_tokens, claude_login, token_expiry
 from tests.fakes import FakeNotifier
 
 NOW = datetime(2027, 1, 10, 12, tzinfo=UTC).timestamp()
@@ -113,3 +115,82 @@ def test_checks_once_a_day_and_retries_after_a_network_error(rt):
     check_tokens(rt, lambda token: calls.append(token) or None)
     check_tokens(rt, lambda token: calls.append(token) or None)
     assert len(calls) == 6
+
+
+def auth_run(stdout, code=0):
+    def run(argv, **kw):
+        assert argv[1:] == ["auth", "status"]
+        return subprocess.CompletedProcess(argv, code, stdout, "")
+
+    return run
+
+
+FULL = '{"loggedIn": true, "authMethod": "claude.ai"}'
+LOGGED_OUT = '{"loggedIn": false}'
+
+
+@pytest.mark.parametrize(
+    ("stdout", "want"),
+    [
+        (FULL, "full"),
+        ('{"loggedIn": true, "authMethod": "oauth_token"}', "token-only (oauth_token)"),
+        (LOGGED_OUT, "none"),
+        ("Error: unexpected", None),
+    ],
+)
+def test_claude_login_kinds(stdout, want):
+    assert claude_login("/opt/claude", auth_run(stdout)) == want
+
+
+def test_claude_login_that_cannot_run_is_unknown():
+    def hangs(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 30)
+
+    assert claude_login("/opt/claude", hangs) is None
+
+
+def test_lapsed_login_pages_once_and_rearms(rt):
+    rt.claude_exe = "/opt/claude"
+    out = auth_run(LOGGED_OUT, 1)
+    check_claude_login(rt, out)
+    check_claude_login(rt, out)
+    [esc] = rt.notifier.sent
+    assert (esc.tier, esc.scope, esc.cause) == (1, "global", "claude-login")
+    assert "just login" in esc.action
+    check_claude_login(rt, auth_run(FULL))
+    check_claude_login(rt, out)
+    assert len(rt.notifier.sent) == 2
+
+
+def test_unanswered_login_probe_does_not_page(rt):
+    rt.claude_exe = "/opt/claude"
+    check_claude_login(rt, auth_run("not json"))
+    assert rt.notifier.sent == []
+
+
+def test_error_json_without_logged_in_is_no_answer(rt):
+    rt.claude_exe = "/opt/claude"
+    assert claude_login("/opt/claude", auth_run('{"error": "rate limited"}')) is None
+    check_claude_login(rt, auth_run('{"error": "rate limited"}'))
+    assert rt.notifier.sent == []
+    assert ledger.meta_get(rt.con, "claude_login_lapsed") is None
+
+
+def test_tick_runs_the_login_check(rt, tmp_path, monkeypatch):
+    # conftest stubs the check out of every other tick test.
+    rt.claude_exe = "/opt/claude"
+    monkeypatch.setattr("flocc.tick.check_claude_login", lambda r: check_claude_login(r, out))
+    out = auth_run(LOGGED_OUT)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    for name in (
+        "route_escalations",
+        "forward_comments",
+        "reap_worktrees",
+        "clean_scratchpads",
+        "poll",
+        "maybe_digest",
+    ):
+        monkeypatch.setattr(f"flocc.tick.{name}", lambda r: set())
+    assert tick(rt.cfg, tmp_path / "c.toml") == 0
+    [esc] = rt.notifier.sent
+    assert esc.cause == "claude-login"

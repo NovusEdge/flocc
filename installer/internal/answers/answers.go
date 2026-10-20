@@ -3,6 +3,7 @@ package answers
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math/big"
 	"os"
@@ -102,6 +103,20 @@ type Secrets struct {
 	PublishToken string `toml:"publish_token"`
 }
 
+// Values is every secret that is set, for redacting logs and output.
+func (s *Secrets) Values() []string {
+	if s == nil {
+		return nil
+	}
+	var v []string
+	for _, x := range []string{s.LinearKey, s.AgentToken, s.PublishToken} {
+		if x != "" {
+			v = append(v, x)
+		}
+	}
+	return v
+}
+
 type Answers struct {
 	Hostname    string `toml:"hostname,omitempty"`
 	TeamKey     string `toml:"team_key,omitempty"`
@@ -119,15 +134,30 @@ type Answers struct {
 }
 
 func Load(path string) (*Answers, error) {
-	a := &Answers{}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return a, nil
+		return &Answers{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return a, toml.Unmarshal(b, a)
+	return Parse(b)
+}
+
+// Parse reads an answers document. Its errors give only the position: go-toml's own message
+// quotes the offending line, which can hold a token.
+func Parse(b []byte) (*Answers, error) {
+	a := &Answers{}
+	err := toml.Unmarshal(b, a)
+	if err == nil {
+		return a, nil
+	}
+	var de *toml.DecodeError
+	if errors.As(err, &de) {
+		row, col := de.Position()
+		return nil, fmt.Errorf("answers: invalid TOML at line %d, column %d", row, col)
+	}
+	return nil, errors.New("answers: a value does not fit its field; check the types against the example in docs/vm-setup.md")
 }
 
 func (a *Answers) Save(path string) error {

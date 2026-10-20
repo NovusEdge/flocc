@@ -2,17 +2,22 @@
 package ship
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
+	answersPkg "github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
@@ -27,7 +32,46 @@ func archFor(unameM string) (string, error) {
 	return "", fmt.Errorf("unsupported architecture %q", strings.TrimSpace(unameM))
 }
 
-const resetStage = "sudo rm -rf /tmp/flocc-setup && mkdir -p /tmp/flocc-setup"
+const (
+	resetStage = "sudo rm -rf /tmp/flocc-setup && mkdir -p /tmp/flocc-setup"
+	// Without a terminal sudo must fail rather than wait for a password.
+	resetStageNoPrompt = "sudo -n rm -rf /tmp/flocc-setup && mkdir -p /tmp/flocc-setup"
+)
+
+// Options are what Ship needs besides the stage and the answers.
+type Options struct {
+	// Target is the ssh target or daytona:<sandbox>, as the owner names the host.
+	Target string
+	// Interactive runs the host's forms on this terminal over ssh -t. Otherwise every answer,
+	// secrets included, comes from the answers reader on stdin and nothing prompts.
+	Interactive bool
+	// Out receives the host's output, less the summary line; nil is stdout.
+	Out io.Writer
+}
+
+type shipOpts struct {
+	// Target is the name the owner typed, for the login command the summary shows. Never
+	// Dest.SSH, which holds the Daytona token.
+	Target      string
+	Interactive bool
+	Answers     []byte
+	Out         io.Writer
+}
+
+// usageError is a refusal of the arguments, which exits 2.
+type usageError string
+
+func (u usageError) Error() string { return string(u) }
+
+var targetRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._:-]*$`)
+
+// ValidTarget reports whether t is safe as an ssh destination: no leading dash, which ssh would
+// read as an option, and no shell metacharacters.
+func ValidTarget(t string) bool { return targetRE.MatchString(t) }
+
+func badTarget(t string) error {
+	return usageError(fmt.Sprintf("%q is not an ssh target or daytona:<sandbox>", t))
+}
 
 func sshCmd(d Dest, tty bool, remote string) host.Cmd {
 	args := append([]string{}, d.Opts...)
@@ -35,6 +79,30 @@ func sshCmd(d Dest, tty bool, remote string) host.Cmd {
 		args = append(args, "-t")
 	}
 	return host.Cmd{Name: "ssh", Args: append(args, d.SSH, remote)}
+}
+
+// sshNoTTY is sshCmd(d, false, …) with -T. A RequestTTY setting in the owner's ssh config would
+// otherwise give the run a pty, which echoes the answers document back and never passes EOF.
+func sshNoTTY(d Dest, remote string) host.Cmd {
+	c := sshCmd(d, false, remote)
+	c.Args = slices.Insert(c.Args, len(d.Opts), "-T")
+	return c
+}
+
+// connect resolves target to an ssh destination and a runner whose log hides its token and
+// secrets.
+func connect(ctx context.Context, target string, secrets ...string) (host.Runner, Dest, error) {
+	home, _ := os.UserHomeDir()
+	dest, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
+	if err != nil {
+		return nil, Dest{}, err
+	}
+	return host.Exec{Log: host.Redact(os.Stderr, append(secrets, dest.Token)...)}, dest, nil
+}
+
+func repoRoot(ctx context.Context, r host.Runner) (string, error) {
+	out, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"rev-parse", "--show-toplevel"}})
+	return strings.TrimSpace(out), err
 }
 
 func ghPrivate(repo string) (bool, error) {
@@ -59,7 +127,7 @@ func claudeConfigDir() string {
 }
 
 // stageFiles writes the host binary for arch, the bundles, identity.json and plugins.json into dir.
-func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn, configDir string, private func(string) (bool, error)) error {
+func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, configDir string, private func(string) (bool, error)) error {
 	id, err := identity.FromRepo(ctx, r, root)
 	if err != nil {
 		return err
@@ -102,76 +170,107 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn, 
 		}
 		plan.List.Marketplaces[i].Commit = strings.TrimSpace(sha)
 	}
-	if err := plan.List.Write(filepath.Join(dir, "plugins.json")); err != nil {
-		return err
-	}
-	if answersIn != "" {
-		b, err := os.ReadFile(answersIn)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dir, filepath.Base(answersIn)), b, 0o600)
-	}
-	return nil
+	return plan.List.Write(filepath.Join(dir, "plugins.json"))
 }
 
 func Main(args []string) int {
 	fs := flag.NewFlagSet("flocc-setup ship", flag.ContinueOnError)
-	skip := fs.Bool("skip-interactive", false, "pass --skip-interactive to the host")
-	answersIn := fs.String("answers", "", "answers file to copy and pass to the host")
+	interactive := fs.Bool("interactive", false, "answer the host's forms on this terminal (ssh -t) instead of from --answers")
+	answersIn := fs.String("answers", "", `answers document, secrets included, sent to the host on stdin; "-" reads this terminal's stdin`)
 	stageOnly := fs.String("stage-only", "", "write the stage for linux/amd64 into this directory and stop")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	ctx := context.Background()
-	r := host.Exec{Log: os.Stderr}
-	rootOut, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"rev-parse", "--show-toplevel"}})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ship:", err)
-		return 1
-	}
-	root := strings.TrimSpace(rootOut)
-	if *stageOnly != "" {
-		if err := os.MkdirAll(*stageOnly, 0o755); err == nil {
-			err = stageFiles(ctx, r, root, *stageOnly, "amd64", *answersIn, claudeConfigDir(), ghPrivate)
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "ship:", err)
-			return 1
-		}
-		return 0
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: flocc-setup ship [--skip-interactive] [--answers FILE] <ssh-target|daytona:SANDBOX>")
+	if *interactive && *answersIn != "" {
+		fmt.Fprintln(os.Stderr, "ship: --interactive asks for every answer on the host; drop --answers")
 		return 2
 	}
-	home, _ := os.UserHomeDir()
-	dest, err := resolveTarget(ctx, fs.Arg(0), filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
-	if err == nil {
-		err = ship(ctx, host.Exec{Log: redact{os.Stderr, dest.Token}}, root, dest, *answersIn, *skip)
-	}
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return exit.ExitCode() // the host already reported its error
+	ctx := context.Background()
+	if *stageOnly != "" {
+		r := host.Exec{Log: os.Stderr}
+		root, err := repoRoot(ctx, r)
+		if err == nil {
+			if err = os.MkdirAll(*stageOnly, 0o755); err == nil {
+				err = stageFiles(ctx, r, root, *stageOnly, "amd64", claudeConfigDir(), ghPrivate)
+			}
 		}
-		fmt.Fprintln(os.Stderr, "ship:", err)
-		return 1
+		return exitCode(err, "ship")
 	}
-	return 0
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: flocc-setup ship [--interactive | --answers FILE|-] <ssh-target|daytona:SANDBOX>")
+		return 2
+	}
+	var in io.Reader
+	if *answersIn != "" {
+		rc, err := openAnswers(*answersIn, os.Stdin)
+		if err != nil {
+			return exitCode(err, "ship")
+		}
+		defer rc.Close()
+		in = rc
+	}
+	s, err := Ship(ctx, Options{Target: fs.Arg(0), Interactive: *interactive, Out: os.Stdout}, in)
+	s.Print(os.Stdout)
+	return exitCode(err, "ship")
 }
 
-// ship returns errors with the SSH token scrubbed: CmdError text carries the whole command line.
-func ship(ctx context.Context, r host.Runner, root string, dest Dest, answersIn string, skip bool) error {
-	err := shipTo(ctx, r, root, dest, answersIn, skip)
-	var exit *exec.ExitError
-	if err == nil || dest.Token == "" || errors.As(err, &exit) {
-		return err
+func openAnswers(path string, stdin io.Reader) (io.ReadCloser, error) {
+	if path == "-" {
+		return io.NopCloser(stdin), nil
 	}
-	return errors.New(strings.ReplaceAll(err.Error(), dest.Token, "<token>"))
+	return os.Open(path)
 }
 
-func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersIn string, skip bool) error {
+// Ship stages the installer on the host named by o.Target and runs it, with the answers document
+// (TOML, secrets included) on stdin unless o.Interactive. It returns the summary the host ended
+// with, which is zero when the host never got that far; it does not print it. Errors come back
+// with the SSH token scrubbed: CmdError text carries the whole command line.
+func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
+	if !ValidTarget(o.Target) {
+		return Summary{}, badTarget(o.Target)
+	}
+	var doc []byte
+	var secrets []string
+	if answers != nil {
+		if o.Interactive {
+			return Summary{}, usageError("--interactive asks for every answer on the host; drop the answers")
+		}
+		var err error
+		var a *answersPkg.Answers
+		if doc, err = io.ReadAll(answers); err == nil {
+			// Here, so a typo fails before anything reaches the host.
+			a, err = answersPkg.Parse(doc)
+		}
+		if err != nil {
+			return Summary{}, err
+		}
+		// No command line carries them, but the log must not either.
+		secrets = a.Secrets.Values()
+	}
+	r, dest, err := connect(ctx, o.Target, secrets...)
+	if err != nil {
+		return Summary{}, err
+	}
+	root, err := repoRoot(ctx, host.Exec{Log: os.Stderr})
+	if err != nil {
+		return Summary{}, err
+	}
+	if o.Out == nil {
+		o.Out = os.Stdout
+	}
+	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, Answers: doc, Out: o.Out})
+}
+
+func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts) (Summary, error) {
+	tap := &summaryTap{out: o.Out}
+	err := scrubErr(shipTo(ctx, r, root, dest, o, tap), dest.Token)
+	tap.Flush()
+	s, _ := tap.Summary()
+	s.Target = o.Target
+	return s, err
+}
+
+func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts, tap io.Writer) error {
 	unameM, err := host.Must(ctx, r, sshCmd(dest, false, "uname -m"))
 	if err != nil {
 		return err
@@ -183,17 +282,26 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersI
 	if err := refuseLegacy(ctx, r, dest); err != nil {
 		return err
 	}
+	if !o.Interactive {
+		if err := checkSudo(ctx, r, dest); err != nil {
+			return err
+		}
+	}
 	dir, err := os.MkdirTemp("", "flocc-ship-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	if err := stageFiles(ctx, r, root, dir, arch, answersIn, claudeConfigDir(), ghPrivate); err != nil {
+	if err := stageFiles(ctx, r, root, dir, arch, claudeConfigDir(), ghPrivate); err != nil {
 		return err
 	}
-	// A finished run leaves the stage root:flocc 750, so only sudo can clear it, and its
-	// password prompt needs the terminal.
-	if err := r.Interactive(ctx, sshCmd(dest, true, resetStage)); err != nil {
+	// A finished run leaves the stage root:flocc 750, so only sudo can clear it.
+	if o.Interactive {
+		err = r.Interactive(ctx, sshCmd(dest, true, resetStage))
+	} else {
+		_, err = host.Must(ctx, r, sshNoTTY(dest, resetStageNoPrompt))
+	}
+	if err != nil {
 		return err
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*"))
@@ -201,17 +309,39 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersI
 	if _, err := host.Must(ctx, r, host.Cmd{Name: "scp", Args: append(scp, dest.SSH+":/tmp/flocc-setup/")}); err != nil {
 		return err
 	}
-	return r.Interactive(ctx, sshCmd(dest, true, remoteCmd(answersIn, skip)))
+	c := sshCmd(dest, true, remoteCmd(true))
+	if !o.Interactive {
+		c = sshNoTTY(dest, remoteCmd(false))
+		c.Stdin = bytes.NewReader(o.Answers)
+	}
+	c.Stdout = tap
+	return r.Interactive(ctx, c)
 }
 
-func remoteCmd(answersIn string, skip bool) string {
+// checkSudo runs before anything is staged: without a terminal a sudo password prompt fails the
+// run halfway.
+func checkSudo(ctx context.Context, r host.Runner, dest Dest) error {
+	res, err := r.Run(ctx, sshNoTTY(dest, "sudo -n true"))
+	switch {
+	case err != nil:
+		return err
+	case res.Code == 0:
+		return nil
+	case res.Code == 127:
+		return errors.New("sudo is not installed on the host; install sudo and ship again")
+	}
+	user, err := host.Must(ctx, r, sshNoTTY(dest, "id -un"))
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("sudo asks for a password: give %s passwordless sudo, or use root", strings.TrimSpace(user))
+}
+
+func remoteCmd(interactive bool) string {
 	// scp through the Daytona gateway drops the exec bit.
-	remote := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo /tmp/flocc-setup/flocc-setup"
-	if answersIn != "" {
-		remote += " --answers /tmp/flocc-setup/" + filepath.Base(answersIn)
+	remote := "chmod 755 /tmp/flocc-setup/flocc-setup && "
+	if interactive {
+		return remote + "sudo /tmp/flocc-setup/flocc-setup"
 	}
-	if skip {
-		remote += " --skip-interactive"
-	}
-	return remote
+	return remote + "sudo -n /tmp/flocc-setup/flocc-setup --answers -"
 }

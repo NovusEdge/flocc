@@ -169,6 +169,8 @@ def collect(
         "session_cap": cfg.session_cap,
         "claims": [_claim_row(cfg, c, sessions, now) for c in claims],
         "ledger_error": ledger_error,
+        # The desktop's login takes this lock with flock while it runs.
+        "tick_lock": str(cfg.tick_lock),
         "five_hour_max_pct": cfg.five_hour_max_pct,
         "weekly_max_pct": cfg.weekly_max_pct,
         "usage": None

@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import shutil
@@ -10,7 +9,14 @@ from pathlib import Path
 from flocc.config import Config
 from flocc.linear import Linear, LinearError, http_transport
 from flocc.sessions import SOCKET
-from flocc.tokens import WARN_DAYS, TokenRejected, can_write_contents, token_expiry
+from flocc.tokens import (
+    LOGIN_REMEDY,
+    WARN_DAYS,
+    TokenRejected,
+    can_write_contents,
+    claude_login,
+    token_expiry,
+)
 from flocc.worktree import free_disk_gb
 
 # Minimum claude version whose flags the launcher needs (--name, --remote-control).
@@ -102,16 +108,12 @@ def claude_checks(exe: str | None, run=subprocess.run) -> list[Result]:
         results = [Result("fail", "claude", f"version {out.strip() or '?'}; needs {need}")]
     else:
         results = [Result("ok", "claude", out.strip())]
-    status = run([exe, "auth", "status"], capture_output=True, text=True, check=False)
-    try:
-        auth = json.loads(status.stdout)
-    except ValueError:
-        auth = {}
-    if auth.get("loggedIn") and auth.get("authMethod") == "claude.ai":
+    login = claude_login(exe, run)
+    if login == "full":
         results.append(Result("ok", "claude login", "claude.ai subscription"))
     else:
-        method = auth.get("authMethod", "none")
-        results.append(Result("fail", "claude login", f"{method}; run claude, then /login"))
+        detail = login or "claude auth status gave no answer"
+        results.append(Result("fail", "claude login", f"{detail}; {LOGIN_REMEDY}"))
     if os.environ.get("ANTHROPIC_API_KEY"):
         results.append(
             Result("fail", "api key", "ANTHROPIC_API_KEY is set; sessions must not bill the API")

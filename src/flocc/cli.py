@@ -386,15 +386,11 @@ def _config(args):
         raise SystemExit(1) from exc
 
 
-def _lock_path(cfg):
-    return cfg.ledger_path.with_suffix(".lock")
-
-
 def cmd_tick(args) -> int:
     from flocc.tick import tick, tick_lock
 
     cfg, path = _config(args)
-    with tick_lock(_lock_path(cfg)) as held:
+    with tick_lock(cfg.tick_lock) as held:
         if not held:
             print("tick: another tick is running; skipped", file=sys.stderr)
             return 0
@@ -415,7 +411,7 @@ def cmd_release(args) -> int:
     from flocc.tick import build_runtime, tick_lock
 
     cfg, path = _config(args)
-    with tick_lock(_lock_path(cfg)) as held:
+    with tick_lock(cfg.tick_lock) as held:
         if not held:
             print("release: a tick is running; try again in a moment", file=sys.stderr)
             return 1
