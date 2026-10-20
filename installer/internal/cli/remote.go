@@ -107,7 +107,11 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 	var unreachable []string
 	for j, row := range ship.Statuses(ctx, d.run, all) {
 		if row.Report == nil {
-			unreachable = append(unreachable, all[j].Name)
+			why := all[j].Name
+			if row.Err != "" {
+				why += ": " + row.Err
+			}
+			unreachable = append(unreachable, why)
 			continue
 		}
 		if slices.ContainsFunc(row.Report.Claims, func(c ship.Claim) bool { return c.Issue == key }) {
@@ -120,7 +124,7 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 	case 0:
 		msg := fmt.Sprintf("no reachable host holds %s", key)
 		if len(unreachable) > 0 {
-			msg += " (unreachable: " + strings.Join(unreachable, ", ") + ")"
+			msg += " (unreachable: " + strings.Join(unreachable, "; ") + ")"
 		}
 		return hosts.Host{}, fmt.Errorf("%s; name one with -H: %s", msg, strings.Join(names(all), ", "))
 	}
@@ -140,13 +144,33 @@ func onHost(ctx context.Context, d *deps, name string, args []string) int {
 	return ship.ExitCode(err, "flocc")
 }
 
+// follows reports whether logs flags ask to follow. The host parser is argparse, which accepts
+// abbreviations of --follow and clusters of short flags, so exact matches are not enough. Any
+// short cluster with an f is refused, even -n5foo where the f is a value: a false refusal is
+// cheap and a follow under Capture hangs until Ctrl-C.
+func follows(flags []string) bool {
+	for _, a := range flags {
+		switch {
+		case a == "--":
+			return false
+		case strings.HasPrefix(a, "--"):
+			if len(a) >= 4 && strings.HasPrefix("--follow", a) {
+				return true
+			}
+		case strings.HasPrefix(a, "-") && strings.Contains(a, "f"):
+			return true
+		}
+	}
+	return false
+}
+
 // onAll runs a read-only command on every host at once and prints each host's output whole.
 func onAll(ctx context.Context, d *deps, args []string) int {
 	switch {
 	case !slices.Contains(readOnly, args[0]):
 		fmt.Fprintf(d.err, "flocc: -H all runs only %s; name one host for %s\n", strings.Join(readOnly, ", "), args[0])
 		return 2
-	case args[0] == "logs" && (slices.Contains(args, "-f") || slices.Contains(args, "--follow")):
+	case args[0] == "logs" && follows(args[1:]):
 		fmt.Fprintln(d.err, "flocc: logs -f follows one host; name it with -H")
 		return 2
 	case args[0] == "status":
@@ -165,6 +189,8 @@ func onAll(ctx context.Context, d *deps, args []string) int {
 			defer wg.Done()
 			dest, err := d.resolve(ctx, h.Target())
 			if err == nil {
+				// Results print together after wg.Wait, so one blackholed host must time out fast.
+				dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
 				results[i], err = ship.Capture(ctx, d.run, dest, ship.FloccLine(args), nil)
 			}
 			if err != nil {

@@ -463,6 +463,7 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 		}
 		return auth.sshDest(ctx, client, h.ID, h.Name, realWaiter(io.Discard))
 	})
+	cache.sshOpts, _ = sshMux()
 	for {
 		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
 		notes = append(first, notes...)

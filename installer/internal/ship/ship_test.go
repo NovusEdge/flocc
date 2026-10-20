@@ -610,9 +610,37 @@ func TestShipRefusesAHostThatRunsTheOldService(t *testing.T) {
 	}
 }
 
-func TestResolveSharesOneConnectionPerHost(t *testing.T) {
-	home := t.TempDir()
+// shortHome sets HOME to a directory under /tmp: the ControlPath must fit sun_path, which
+// t.TempDir's long names (and macOS's TMPDIR) do not leave room for.
+func shortHome(t *testing.T) string {
+	t.Helper()
+	home, err := os.MkdirTemp("/tmp", "fh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(home) })
 	t.Setenv("HOME", home)
+	return home
+}
+
+// ssh fails every connection whose ControlPath exceeds sun_path, so a long HOME goes without sharing.
+func TestSSHMuxIsSkippedWhenTheSocketPathWouldNotFit(t *testing.T) {
+	short := shortHome(t)
+	if opts, err := sshMux(); err != nil || len(opts) == 0 {
+		t.Fatalf("short home %q: %v %v", short, opts, err)
+	}
+	long := filepath.Join(short, strings.Repeat("h", 40))
+	t.Setenv("HOME", long)
+	if opts, err := sshMux(); err != nil || len(opts) != 0 {
+		t.Fatalf("home of %d bytes: %v %v", len(long), opts, err)
+	}
+	if _, err := os.Stat(filepath.Join(long, ".ssh")); err == nil {
+		t.Fatal(".ssh made though no sharing was set up")
+	}
+}
+
+func TestResolveSharesOneConnectionPerHost(t *testing.T) {
+	home := shortHome(t)
 	d, err := Resolve(context.Background(), "root@h")
 	if err != nil || d.SSH != "root@h" {
 		t.Fatalf("%+v %v", d, err)

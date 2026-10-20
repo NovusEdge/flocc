@@ -38,6 +38,11 @@ func sshMux() ([]string, error) {
 		return nil, err
 	}
 	dir := filepath.Join(home, ".ssh")
+	// ssh refuses a ControlPath longer than sun_path (104 on macOS), and the master adds a 17-byte
+	// temporary suffix; %C expands to 40 hex digits. Past that every ssh would fail, so go without.
+	if len(dir)+len("/flocc-")+40+17 >= 104 {
+		return nil, nil
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
