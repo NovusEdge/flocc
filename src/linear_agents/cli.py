@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from linear_agents import gate, ledger, usage
 from linear_agents.config import default_config_path, load
@@ -167,6 +167,21 @@ def cmd_claim(args) -> int:
     shared = _shared_paths(args, mine.repo)
     globs = []
     for glob in args.globs:
+        if not glob or glob.startswith("/") or ".." in PurePosixPath(glob).parts:
+            print(f"claim: {glob!r} is not a path inside the worktree", file=sys.stderr)
+            return 1
+        # file_conflicts also matches a glob against every parent directory of a staged file, so
+        # a glob that matches a directory claims everything under it, whatever it is spelled.
+        tree = glob.endswith("/") or next(
+            (p for p in Path(mine.worktree).glob(glob) if p.is_dir()), None
+        )
+        if tree:
+            where = glob if tree is True else tree.relative_to(mine.worktree)
+            print(
+                f"claim: {glob} matches the directory {where}; claim the files in it",
+                file=sys.stderr,
+            )
+            return 1
         if ledger.is_shared(glob, shared):
             print(f"claim: {glob} is shared; edit it without claiming")
         else:

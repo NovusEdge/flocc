@@ -130,6 +130,37 @@ def test_claim_refuses_a_whole_tree(claims_env, capsys):
     assert claim and claim.paths == ["src/*.py"]
 
 
+def test_claim_refuses_a_glob_that_matches_a_directory(claims_env, tmp_path, capsys):
+    wt = tmp_path / "wt"
+    (wt / "server/src/api").mkdir(parents=True)
+    (wt / "server/src/main.rs").touch()
+    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(wt)))
+    for glob, directory in (
+        ("server/src", "server/src"),
+        ("server/src/", "server/src/"),
+        ("server/src/*", "server/src/api"),
+        ("server/s?c", "server/src"),
+    ):
+        assert main(["claim", "docs/a.md", glob]) == 1
+        err = capsys.readouterr().err
+        assert f"claim: {glob} matches the directory {directory}; claim the files in it" in err
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == []
+    # Files, globs over files, and a directory that does not exist yet are fine.
+    assert main(["claim", "server/src/main.rs", "server/src/*.rs", "server/new/*.rs"]) == 0
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == ["server/src/main.rs", "server/src/*.rs", "server/new/*.rs"]
+
+
+@pytest.mark.parametrize("glob", ["", "/etc/passwd", "../other/a.py", "src/../../a.py"])
+def test_claim_refuses_a_glob_outside_the_worktree(claims_env, capsys, glob):
+    ledger.insert_claim(claims_env, make("NF-1", ()))
+    assert main(["claim", glob]) == 1
+    assert "is not a path inside the worktree" in capsys.readouterr().err
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == []
+
+
 def test_claim_skips_a_shared_path(claims_env, capsys):
     ledger.insert_claim(claims_env, make("NF-1", ()))
     assert main(["claim", "docs/verification.md"]) == 0
