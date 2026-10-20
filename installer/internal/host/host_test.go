@@ -155,6 +155,16 @@ func TestRedactWithNoSecretsPassesThrough(t *testing.T) {
 	}
 }
 
+func TestRedactHidesASecretThatContainsAnotherWhicheverComesFirst(t *testing.T) {
+	for _, secrets := range [][]string{{"abc", "abcdef"}, {"abcdef", "abc"}} {
+		var b strings.Builder
+		Redact(&b, secrets...).Write([]byte("key abcdef end\n"))
+		if b.String() != "key <token> end\n" {
+			t.Errorf("%v: %q", secrets, b.String())
+		}
+	}
+}
+
 func TestExecPassesStdin(t *testing.T) {
 	res, err := Exec{}.Run(context.Background(), Cmd{Name: "cat", Stdin: strings.NewReader("doc\n")})
 	if err != nil || res.Stdout != "doc\n" {

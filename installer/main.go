@@ -26,9 +26,24 @@ import (
 const serviceStage = "/home/" + steps.ServiceUser + "/.cache/flocc-setup"
 
 // The service phase's saved answers: outside ~/.cache, which may be cleared, and outside the
-// stage, where every --answers copy is removed after its run.
+// stage, whose *.toml files removeStagedAnswers deletes.
 func savedAnswersPath(home string) string {
 	return filepath.Join(home, ".config/flocc/answers.toml")
+}
+
+// removeStagedAnswers deletes the *.toml files in the service user's stage. 0.3.0 copied the
+// --answers file there, secrets included, and deleted it only after a successful run; a failed
+// run leaves it behind, and the 0.4.0 stage copy never touches it.
+func removeStagedAnswers(stage string) error {
+	files, err := filepath.Glob(filepath.Join(stage, "*.toml"))
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, f := range files {
+		errs = append(errs, os.Remove(f))
+	}
+	return errors.Join(errs...)
 }
 
 const loopWarning = `PID 1 is not systemd, so this host runs in loop mode:
@@ -206,6 +221,9 @@ func run(args []string) int {
 		env.Home, _ = os.UserHomeDir()
 	}
 	if *phase == "service" {
+		if err := removeStagedAnswers(stage); err != nil {
+			fmt.Fprintln(stderr, "flocc-setup: could not remove a leftover answers file from", stage+":", err)
+		}
 		env.AnswersPath = savedAnswersPath(env.Home)
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
 			if err := a.OverlaySaved(saved); err != nil {
