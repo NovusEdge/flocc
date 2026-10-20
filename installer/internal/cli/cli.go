@@ -49,7 +49,7 @@ type deps struct {
 	fleet    func(args []string) int
 
 	store     func() keys.Store // opened on first use: host commands never wait on the keyring
-	prompt    keys.Prompt
+	prompt    prompter
 	open      func(url string)
 	qr        func(text string)
 	http      *http.Client
@@ -68,7 +68,7 @@ func Main(args []string) int {
 		run: host.Exec{}, tty: st != nil && st.Mode()&os.ModeCharDevice != 0, resolve: ship.Resolve,
 		fleet: func(args []string) int { return ship.FleetMain(args, os.Stdout) }}
 	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, os.Stderr) })
-	d.prompt = keys.Huh{}
+	d.prompt = huhPrompt{}
 	d.open = ship.OpenURL
 	d.qr = func(text string) {
 		if err := qr.Write(os.Stdout, text); err != nil {

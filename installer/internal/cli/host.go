@@ -2,15 +2,54 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/githubapi"
+	"github.com/NovusEdge/flocc/installer/internal/hosts"
+	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/linearapi"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 // hostCmd is flocc host <sub>: args is the line after "host", name the -H value.
 func hostCmd(ctx context.Context, d *deps, name string, args []string) int {
-	if len(args) > 0 && args[0] == "run" {
+	if len(args) == 0 {
+		fmt.Fprint(d.err, usage)
+		return 2
+	}
+	switch args[0] {
+	case "run":
 		return hostRun(ctx, d, name, args[1:])
+	case "add", "import":
+		reach, rest, err := reachFlags(args[1:])
+		if err == nil && args[0] == "add" {
+			if len(rest) != 1 {
+				err = errors.New("usage: flocc host add <name> [--ssh DEST | --daytona SANDBOX]")
+			} else {
+				err = addHost(ctx, d, rest[0], reach)
+			}
+		} else if err == nil {
+			if name == "" && len(rest) == 1 {
+				name = rest[0]
+			}
+			if name == "" {
+				err = errors.New("usage: flocc host import -H <name> [--ssh DEST | --daytona SANDBOX]")
+			} else {
+				err = importHost(ctx, d, name, reach)
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(d.err, "flocc host %s: %v\n", args[0], err)
+			return 1
+		}
+		return 0
 	}
 	fmt.Fprint(d.err, usage)
 	return 2
@@ -35,4 +74,298 @@ func hostRun(ctx context.Context, d *deps, name string, args []string) int {
 		err = ship.OnHost(ctx, d.run, dest, args, d.tty)
 	}
 	return ship.ExitCode(err, "flocc")
+}
+
+// reachFlags takes --ssh and --daytona wherever they sit: the host name comes first, and the
+// flag package stops at it.
+func reachFlags(args []string) (hosts.Host, []string, error) {
+	var h hosts.Host
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; a {
+		case "--ssh", "--daytona":
+			if i+1 == len(args) {
+				return h, nil, fmt.Errorf("%s needs a value", a)
+			}
+			i++
+			if a == "--ssh" {
+				h.SSH = args[i]
+			} else {
+				h.Daytona = args[i]
+			}
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if h.SSH != "" && h.Daytona != "" {
+		return h, nil, errors.New("give --ssh or --daytona, not both")
+	}
+	return h, rest, nil
+}
+
+func hostFile(d *deps, name string) string {
+	return filepath.Join(hosts.Dir(d.home), name+".toml")
+}
+
+// hostAdd is flocc host add <name> [--ssh DEST]; Part 3's host create calls it.
+func hostAdd(ctx context.Context, d *deps, name, sshDest string) error {
+	return addHost(ctx, d, name, hosts.Host{SSH: sshDest})
+}
+
+// loadOrNew is the host's file, or a new host reached as root@<name>; reach overrides either.
+func loadOrNew(d *deps, name string, reach hosts.Host) (hosts.Host, error) {
+	h, err := hosts.Load(hosts.Dir(d.home), name)
+	if errors.Is(err, os.ErrNotExist) {
+		h, err = hosts.Host{Name: name, SSH: "root@" + name}, nil
+	}
+	if reach.SSH != "" || reach.Daytona != "" {
+		h.SSH, h.Daytona = reach.SSH, reach.Daytona
+	}
+	return h, err
+}
+
+const digestTitle = "flocc digest"
+
+const digestBody = "flocc hosts post their daily digest here: tier 3 reports and token warnings. Pin this issue."
+
+func addHost(ctx context.Context, d *deps, name string, reach hosts.Host) error {
+	h, err := loadOrNew(d, name, reach)
+	if err != nil {
+		return err
+	}
+	if h.Hostname == "" {
+		h.Hostname = name
+	}
+	// The repos and teams come from what these two keys can see, so they are asked for first.
+	e := keysEnv(d)
+	if err := keys.Fill(ctx, e, mapped(listHosts(d)), []keys.Slot{keys.Linear, keys.Agent}); err != nil {
+		return err
+	}
+	st := d.store()
+	lk, err := st.Get(keys.Linear)
+	if err != nil {
+		return err
+	}
+	ag, err := st.Get(keys.Agent)
+	if err != nil {
+		return err
+	}
+	gh := &githubapi.Client{Base: d.githubAPI, Token: ag, HTTP: d.http}
+	lin := &linearapi.Client{URL: d.linearAPI, Key: lk, HTTP: d.http}
+	if err := pickRepos(ctx, d, gh, &h); err != nil {
+		return err
+	}
+	team, err := pickTeam(ctx, d, lin, &h)
+	if err != nil {
+		return err
+	}
+	if err := ensureDigest(ctx, d, lin, team, &h); err != nil {
+		return err
+	}
+	if err := ensureLabels(ctx, d, lin, team, h); err != nil {
+		return err
+	}
+	if err := hosts.Save(hosts.Dir(d.home), h); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.out, "Saved %s.\n", hostFile(d, name))
+	// Asked for after the save, so the publish token's page lists the repos just mapped.
+	m := mapped(listHosts(d))
+	if err := keys.Fill(ctx, e, m, []keys.Slot{keys.Publish, keys.Ntfy}); err != nil {
+		return fmt.Errorf("the host is saved; %w", err)
+	}
+	if problems := keys.Check(ctx, e, m); len(problems) > 0 {
+		return fmt.Errorf("the host is saved, but the keys do not cover it yet:\n  %s", strings.Join(problems, "\n  "))
+	}
+	return nil
+}
+
+func pickRepos(ctx context.Context, d *deps, gh *githubapi.Client, h *hosts.Host) error {
+	raw, err := gh.ListRepos(ctx)
+	if err != nil {
+		return err
+	}
+	repos, maybeEmpty, dropped, err := steps.ParseRepos(raw)
+	if err != nil {
+		return err
+	}
+	if len(dropped) > 0 {
+		d.prompt.Note("Some owners are not listed",
+			"Not listed: repos of "+strings.Join(dropped, ", ")+", which the agent token can see only publicly. Add any you want by URL.")
+	}
+	found, skipped := steps.MergeRepos(repos, h.Repos)
+	if len(skipped) > 0 {
+		d.prompt.Note("Skipped repos whose name another repo already has", strings.Join(skipped, "\n"))
+	}
+	// Left unticked unless already mapped: cloning an empty repo fails.
+	for _, u := range maybeEmpty {
+		if !slices.ContainsFunc(h.Repos, func(r answers.Repo) bool { return answers.SameURL(r.URL, u) }) {
+			h.ExcludedRepos = answers.Exclude(h.ExcludedRepos, u)
+		}
+	}
+	defaults := func(u string) (string, bool) {
+		r, err := gh.Repo(ctx, strings.TrimPrefix(answers.NormalizeURL(u), "https://github.com/"))
+		if err != nil || r.DefaultBranch == "" {
+			return "main", true
+		}
+		// Private repos of a GitHub Free organization cannot have draft PRs.
+		return r.DefaultBranch, !r.Private
+	}
+	return d.prompt.Repos(&h.Answers, found, defaults)
+}
+
+func pickTeam(ctx context.Context, d *deps, lin *linearapi.Client, h *hosts.Host) (linearapi.Team, error) {
+	v, err := lin.Viewer(ctx)
+	if err != nil {
+		return linearapi.Team{}, err
+	}
+	if i := slices.IndexFunc(v.Teams, func(t linearapi.Team) bool { return t.Key == h.TeamKey }); i >= 0 {
+		return v.Teams[i], nil
+	}
+	var t linearapi.Team
+	switch len(v.Teams) {
+	case 0:
+		return t, errors.New("the Linear key sees no team")
+	case 1:
+		t = v.Teams[0]
+	default:
+		if t, err = d.prompt.Team(v.Teams); err != nil {
+			return t, err
+		}
+	}
+	h.TeamKey = t.Key
+	return t, nil
+}
+
+// openIssue reports whether key is an open issue: false with no error when Linear has no such
+// issue or it is closed. Any other error comes back, so a blip at Linear never replaces a working
+// digest: an imported one is not titled "flocc digest", and falling through would make a second.
+func openIssue(ctx context.Context, lin *linearapi.Client, key string) (bool, error) {
+	is, err := lin.Issue(ctx, key)
+	if errors.Is(err, linearapi.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil && is.Open(), err
+}
+
+// ensureDigest keeps an open digest issue, else takes the open one another host on the team
+// uses, else finds or creates the team's open "flocc digest".
+func ensureDigest(ctx context.Context, d *deps, lin *linearapi.Client, team linearapi.Team, h *hosts.Host) error {
+	if h.DigestIssue != "" {
+		if ok, err := openIssue(ctx, lin, h.DigestIssue); err != nil || ok {
+			return err
+		}
+	}
+	for _, o := range listHosts(d) {
+		if o.Name == h.Name || o.TeamKey != team.Key || o.DigestIssue == "" || o.DigestIssue == h.DigestIssue {
+			continue
+		}
+		ok, err := openIssue(ctx, lin, o.DigestIssue)
+		if err != nil {
+			return err
+		}
+		if ok {
+			h.DigestIssue = o.DigestIssue
+			return nil
+		}
+	}
+	is, ok, err := lin.FindOpenIssue(ctx, team.Key, digestTitle)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if is, err = lin.CreateIssue(ctx, team.ID, digestTitle, digestBody); err != nil {
+			return err
+		}
+		fmt.Fprintf(d.out, "Created %s, the digest issue; pin it in Linear.\n", is.Key)
+	}
+	h.DigestIssue = is.Key
+	return nil
+}
+
+func ensureLabels(ctx context.Context, d *deps, lin *linearapi.Client, team linearapi.Team, h hosts.Host) error {
+	names := []string{"claude", "escalation", "needs-decision"}
+	for _, r := range h.Repos {
+		names = append(names, r.Name)
+	}
+	missing, err := lin.MissingLabels(ctx, team.Key, names)
+	if err != nil {
+		return err
+	}
+	for _, n := range missing {
+		if err := lin.CreateLabel(ctx, team.ID, n); err != nil {
+			return err
+		}
+		fmt.Fprintf(d.out, "Created label %s in %s.\n", n, team.Key)
+	}
+	return nil
+}
+
+// importHost copies a host's saved answers into its host file: for a host shipped before host
+// files held answers, and after an --interactive ship. The host's ntfy topic becomes the
+// desktop's when the desktop has none, so a subscription the owner already has keeps working,
+// and so does each key the desktop lacks: GitHub shows a token only once, so without this a
+// host moved to the desktop store would need new ones.
+func importHost(ctx context.Context, d *deps, name string, reach hosts.Host) error {
+	h, err := loadOrNew(d, name, reach)
+	if err != nil {
+		return err
+	}
+	dest, err := d.resolve(ctx, h.Target())
+	if err != nil {
+		return err
+	}
+	res, err := ship.Capture(ctx, d.run, dest, []string{"cat", ".config/flocc/answers.toml"}, nil)
+	if err != nil {
+		return err
+	}
+	if res.Code != 0 {
+		return fmt.Errorf("reading the host's answers: %s", strings.TrimSpace(res.Out()))
+	}
+	a, err := answers.Parse([]byte(res.Stdout))
+	if err != nil {
+		return err
+	}
+	st := d.store()
+	if cur, err := st.Get(keys.Ntfy); err == nil && cur == "" && a.NtfyTopic != "" {
+		if err := st.Set(keys.Ntfy, a.NtfyTopic); err != nil {
+			return err
+		}
+		fmt.Fprintln(d.out, "Kept the host's ntfy topic as the desktop's.")
+	}
+	h.Answers = *a
+	h.NtfyTopic, h.Secrets = "", nil
+	if err := hosts.Save(hosts.Dir(d.home), h); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.out, "Imported %s's answers into %s.\n", name, hostFile(d, name))
+	return adoptKeys(ctx, d, h, dest)
+}
+
+// adoptKeys reads each key the store lacks from the host's secret file as the service user and
+// stores it once it passes the checks a paste gets. The values reach neither argv nor output:
+// Capture forbids a pty, and only the slot's title and the check's note are printed.
+func adoptKeys(ctx context.Context, d *deps, h hosts.Host, dest ship.Dest) error {
+	e := keysEnv(d)
+	m := mapped(listHosts(d))
+	for _, s := range []keys.Slot{keys.Linear, keys.Agent, keys.Publish} {
+		cur, err := e.Store.Get(s)
+		if err != nil {
+			return err
+		}
+		if cur != "" {
+			continue
+		}
+		res, err := ship.Capture(ctx, d.run, dest, []string{"cat", ".config/flocc/" + steps.SecretFile(string(s))}, nil)
+		if err != nil {
+			return err
+		}
+		if res.Code != 0 {
+			continue // the host never had it; the desktop asks for it where it is needed
+		}
+		if err := keys.Adopt(ctx, e, m, s, res.Stdout, h.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }

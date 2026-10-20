@@ -124,6 +124,41 @@ func askKey(ctx context.Context, e Env, m Mapped, s Slot, help string) (bool, er
 	}
 }
 
+// Adopt checks a key read from elsewhere, such as a host's secret file, as a paste is checked,
+// and stores it once it passes. As with a paste, a check that got no answer runs again only if
+// the owner says so, and the key is never stored unchecked. A key left untaken is not an error:
+// what happened is printed, and only a failed prompt or store comes back.
+func Adopt(ctx context.Context, e Env, m Mapped, s Slot, raw, from string) error {
+	for {
+		v, note, err := Accept(ctx, e, m, s, raw)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var u unchecked
+		if errors.As(err, &u) {
+			fmt.Fprintf(e.Out, "%s from %s: %v\n", s.Title(), from, err)
+			again, err := e.Prompt.Confirm("Check it again?", true)
+			if err != nil {
+				return err
+			}
+			if again {
+				continue
+			}
+			fmt.Fprintf(e.Out, "Did not take the %s from %s; flocc host import takes it once the check gets an answer.\n", s.Title(), from)
+			return nil
+		}
+		if err != nil {
+			fmt.Fprintf(e.Out, "Did not take the %s from %s:\n%v\nflocc keys asks for a new one.\n", s.Title(), from, err)
+			return nil
+		}
+		if err := e.Store.Set(s, v); err != nil {
+			return err
+		}
+		fmt.Fprintf(e.Out, "Took the %s from %s (%s).\n", s.Title(), from, note)
+		return nil
+	}
+}
+
 // Accept cleans a paste and checks it, by prefix and then live, without storing it.
 func Accept(ctx context.Context, e Env, m Mapped, s Slot, raw string) (value, note string, err error) {
 	v, err := steps.CleanSecret(raw)

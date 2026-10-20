@@ -113,3 +113,11 @@ func TestSecretsApplyRequiresMissingSecrets(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestSecretFileNamesTheHostsFiles(t *testing.T) {
+	for id, file := range map[string]string{"linear_key": "linear.key", "agent_token": "gh-agent.token", "publish_token": "gh-publish.token", "x": ""} {
+		if got := SecretFile(id); got != file {
+			t.Errorf("%s: %q", id, got)
+		}
+	}
+}
