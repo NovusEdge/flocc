@@ -134,6 +134,36 @@ func TestSummaryLineRoundTripsAndPrintsNothingWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestRedactKeepsSecretsOutOfTheLine(t *testing.T) {
+	in := Summary{
+		Version:     "flocc 0.4.0 tok-version",
+		Login:       "token-only (tok-login)",
+		Failed:      []string{"FAIL  linear: 401 tok-failed", "FAIL  b: tok-failed-long-secret"},
+		Sessions:    []string{"NF-1 tok-session"},
+		SessionsErr: "flocc status failed: tok-err",
+	}
+	secrets := []string{"", "tok-version", "tok-login", "tok-failed", "tok-failed-long-secret", "tok-session", "tok-err"}
+	out := in.Redact(secrets...)
+	line := out.Line()
+	for _, x := range secrets[1:] {
+		if strings.Contains(line, x) {
+			t.Errorf("%q leaked: %s", x, line)
+		}
+	}
+	if strings.Contains(line, "long-secret") || strings.Contains(line, "-long") {
+		t.Errorf("the shorter secret left the longer one's tail: %s", line)
+	}
+	if out.Failed[1] != "FAIL  b: ***" || out.Version != "flocc 0.4.0 ***" {
+		t.Errorf("%+v", out)
+	}
+	if in.Failed[0] != "FAIL  linear: 401 tok-failed" || !strings.Contains(in.Line(), "tok-version") {
+		t.Errorf("Redact changed its receiver: %+v", in)
+	}
+	if got := in.Redact().Line(); got != in.Line() {
+		t.Errorf("no secrets must change nothing: %s", got)
+	}
+}
+
 func TestSummaryReusesTheRunStepsDoctor(t *testing.T) {
 	f := summaryFake(0, "")
 	delete(f.Responses, doctorCmd)

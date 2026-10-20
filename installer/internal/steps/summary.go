@@ -50,6 +50,31 @@ func ParseSummaryLine(line string) (Summary, bool) {
 	return s, true
 }
 
+// Redact returns a copy with each secret replaced by *** in every free-text field. The desktop
+// prints Line to its own stdout, outside host.Exec's redaction, and Failed and Version carry raw
+// host output.
+func (s Summary) Redact(secrets ...string) Summary {
+	// strings.Replacer prefers the earlier pair at a position, so longest first keeps a secret
+	// that contains another from leaking its tail.
+	secrets = slices.DeleteFunc(slices.Clone(secrets), func(x string) bool { return x == "" })
+	slices.SortStableFunc(secrets, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
+	var pairs []string
+	for _, x := range secrets {
+		pairs = append(pairs, x, "***")
+	}
+	r := strings.NewReplacer(pairs...)
+	all := func(in []string) []string {
+		var out []string
+		for _, v := range in {
+			out = append(out, r.Replace(v))
+		}
+		return out
+	}
+	s.Version, s.Login, s.SessionsErr = r.Replace(s.Version), r.Replace(s.Login), r.Replace(s.SessionsErr)
+	s.Failed, s.Sessions = all(s.Failed), all(s.Sessions)
+	return s
+}
+
 type hostStatus struct {
 	TickLock    string `json:"tick_lock"`
 	LedgerError string `json:"ledger_error"`
