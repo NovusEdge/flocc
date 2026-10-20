@@ -344,3 +344,24 @@ func TestStageFilesFailsWithoutAnOwnerIdentity(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestShipRefusesAHostThatRunsTheOldService(t *testing.T) {
+	f := host.NewFake().
+		On("ssh h uname -m", 0, "x86_64\n").
+		On("ssh h id -u "+legacyUser, 0, "998\n")
+	err := ship(context.Background(), f, t.TempDir(), Dest{SSH: "h"}, "", false)
+	if err == nil || !strings.Contains(err.Error(), "a second poller") {
+		t.Fatalf("%v", err)
+	}
+	if len(f.Calls) != 2 {
+		t.Fatalf("ran past the refusal: %v", f.Calls)
+	}
+	dest := Dest{SSH: "tok9@ssh.example.test", Token: "tok9"}
+	f = host.NewFake().
+		On("ssh tok9@ssh.example.test uname -m", 0, "x86_64\n").
+		On("ssh tok9@ssh.example.test id -u "+legacyUser, 0, "998\n")
+	err = ship(context.Background(), f, t.TempDir(), dest, "", false)
+	if err == nil || strings.Contains(err.Error(), "tok9") {
+		t.Fatalf("%v", err)
+	}
+}

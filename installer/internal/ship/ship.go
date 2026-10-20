@@ -180,6 +180,9 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, answersI
 	if err != nil {
 		return err
 	}
+	if err := refuseLegacy(ctx, r, dest); err != nil {
+		return err
+	}
 	dir, err := os.MkdirTemp("", "flocc-ship-")
 	if err != nil {
 		return err
