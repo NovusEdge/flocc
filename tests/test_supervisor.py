@@ -307,6 +307,16 @@ def test_publish_notes_commits_without_the_trailer_in_the_digest(rt):
     assert any("abc1234" in line and "trailer" in line for line in lines)
 
 
+def test_fix_session_is_pointed_at_the_full_check_output(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom", log="all of it")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    d = state_dir(rt.cfg, "NF-1")
+    assert (d / "check-output.log").read_text() == "all of it"
+    assert str(d / "check-output.log") in (d / "check-failure.md").read_text()
+
+
 def test_check_failure_gets_one_fix_then_blocks(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
     add(rt, phase="impl", tester_sha="sha-tests")

@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from linear_agents.ledger import Claim
 from linear_agents.worktree import changed_files, git, run_bounded
 
 _TAIL = 3000
+_FAILURE = re.compile(r"error|fail|traceback|panic|exit code [1-9]", re.IGNORECASE)
+_NOISE = re.compile(r"warning", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,28 @@ class PublishResult:
     untrailed: tuple[
         str, ...
     ] = ()  # short SHAs of branch commits without the Linear-Agents trailer
+    log: str = ""  # the check's full output, when it ran and failed
+
+
+def failure_excerpt(out: str, limit: int = _TAIL) -> str:
+    # A check over several components prints the failing one first and passing ones after it, so
+    # the tail alone showed only passing tests (NF-340, 2026-10-20).
+    if len(out) <= limit:
+        return out
+    lines = out.splitlines()
+    keep: set[int] = set(range(max(0, len(lines) - 10), len(lines)))
+    for i, line in enumerate(lines):
+        if _FAILURE.search(line) and not _NOISE.search(line):
+            near = range(max(0, i - 2), min(len(lines), i + 3))
+            keep.update(j for j in near if not _NOISE.search(lines[j]))
+    picked, last = [], -2
+    for i in sorted(keep):
+        if i != last + 1:
+            picked.append("...")
+        picked.append(lines[i])
+        last = i
+    text = "\n".join(picked)
+    return text if len(text) <= limit else text[: limit - 4] + "\n..."
 
 
 def publish(
@@ -48,9 +73,9 @@ def publish(
     code, out = run_bounded(shlex.split(repo.check), wt, check_timeout_s)
     if code is None:
         detail = f"`{repo.check}` timed out after {check_timeout_s}s\n\n{out[-_TAIL:]}"
-        return PublishResult("check_failed", detail.strip())
+        return PublishResult("check_failed", detail.strip(), log=out)
     if code != 0:
-        return PublishResult("check_failed", out[-_TAIL:])
+        return PublishResult("check_failed", failure_excerpt(out), log=out)
     # Commits made with --no-verify skip the hook; noted, not blocked, since the work is sound.
     untrailed = ()
     if trailer:

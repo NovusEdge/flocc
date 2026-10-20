@@ -35,6 +35,7 @@ HANDOFF_ASK = (
 )
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
+CHECK_OUTPUT = "check-output.log"
 QUESTION_WAIT_S = 7200
 PUBLISH_TRIES = 3
 POST_TRIES = 3
@@ -283,11 +284,17 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         _start_review(rt, claim, issue.title, issue.description, result.url)
     elif result.status == "check_failed" and claim.fix_attempts == 0:
         extra = f"The check failed with:\n\n{result.detail}"
+        if result.log:
+            log = state_dir(rt.cfg, key) / CHECK_OUTPUT
+            log.write_text(result.log)
+            extra += f"\n\nThis is an excerpt; the full output is in {log}."
         (state_dir(rt.cfg, key) / FIX_CONTEXT).write_text(extra)
         start = rt.now()
         launch(rt, claim, "fix", extra=extra, started_at=start)
         ledger.update_claim(rt.con, key, phase="fix", fix_attempts=1, restarts=0, started_at=start)
     elif result.status == "check_failed":
+        if result.log:
+            (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
         _block(
             rt,
             claim,
