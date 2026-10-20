@@ -70,6 +70,7 @@ type Env struct {
 	Log   *RedactLog // the log host.Exec writes to; Add registers a secret before it is used
 	Spec  Spec
 	Sleep func(time.Duration)
+	TTY   bool // stdin is a terminal, where ship.Connect can open the machine's master
 
 	sudo      bool // sudo -n works on the machine
 	incusSudo bool // the account is not in incus-admin, so incus goes through sudo

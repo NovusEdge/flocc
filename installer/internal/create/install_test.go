@@ -55,6 +55,7 @@ func createMachine() *host.Fake {
 func createEnv(m *host.Fake) (*Env, *bytes.Buffer) {
 	e, out := testEnv(m)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsStatus)
+	e.TTY = true
 	return e, out
 }
 
@@ -155,6 +156,18 @@ func TestSnapshotSwapsTheNewOneInAfterItExists(t *testing.T) {
 	}
 }
 
+func TestSnapshotRestoreLineCarriesSudoWhenIncusNeedsIt(t *testing.T) {
+	f := host.NewFake().On("sudo -n "+snapCreate, 0, "").On("sudo -n "+snapRename, 0, "")
+	e, out := testEnv(f)
+	e.incusSudo = true
+	if err := snapshot(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "; sudo incus snapshot restore flocc-a installed returns") {
+		t.Fatal(out.String())
+	}
+}
+
 func TestSnapshotKeepsTheOldOneWhenTheNewOneFails(t *testing.T) {
 	f := host.NewFake().On(snapQuery, 0, "{}").On(snapCreate, 1, "no space left")
 	e, _ := testEnv(f)
@@ -163,15 +176,55 @@ func TestSnapshotKeepsTheOldOneWhenTheNewOneFails(t *testing.T) {
 	}
 }
 
+const snapQueryNew = "incus query /1.0/instances/flocc-a/snapshots/installed-new"
+
 func TestSnapshotClearsALeftoverNewOne(t *testing.T) {
-	const leftover = "incus query /1.0/instances/flocc-a/snapshots/installed-new"
-	f := host.NewFake().On(leftover, 0, "{}").On("incus snapshot delete flocc-a installed-new", 0, "").
-		On(snapCreate, 0, "").On(snapRename, 0, "")
+	f := host.NewFake().On(snapQueryNew, 0, "{}").On(snapQuery, 0, "{}").On("incus snapshot delete flocc-a installed-new", 0, "").
+		On(snapCreate, 0, "").On(snapDelete, 0, "").On(snapRename, 0, "")
 	e, _ := testEnv(f)
 	if err := snapshot(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if slices.Index(f.Calls, "incus snapshot delete flocc-a installed-new") > slices.Index(f.Calls, snapCreate) {
+	if i := slices.Index(f.Calls, "incus snapshot delete flocc-a installed-new"); i < 0 || i > slices.Index(f.Calls, snapCreate) {
+		t.Fatalf("%v", f.Calls)
+	}
+}
+
+// A run stopped after deleting installed and before the rename leaves installed-new as the only
+// good snapshot; the next run must keep it.
+func TestSnapshotRecoversTheNewOneWhenTheOldOneIsGone(t *testing.T) {
+	f := host.NewFake().On(snapQueryNew, 0, "{}").OnSeq(snapQuery, host.Result{Code: 1}, host.Result{Stdout: "{}"}).
+		On(snapRename, 0, "").On(snapCreate, 0, "").On(snapDelete, 0, "")
+	e, _ := testEnv(f)
+	if err := snapshot(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	var changes []string
+	for _, c := range f.Calls {
+		if strings.HasPrefix(c, "incus snapshot ") {
+			changes = append(changes, c)
+		}
+	}
+	if want := []string{snapRename, snapCreate, snapDelete, snapRename}; !slices.Equal(changes, want) {
+		t.Fatalf("%q", changes)
+	}
+}
+
+// host add, ship and login can outlast ControlPersist, so the machine's master is opened again
+// on the terminal before the snapshot's captured commands.
+func TestCreateReconnectsToTheMachineBeforeTheSnapshot(t *testing.T) {
+	f := createMachine().On("tailscale status --json", 0, tsStatus)
+	e, _ := createEnv(f)
+	e.Local = f
+	if err := Create(context.Background(), e, &fakeInst{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	check := slices.IndexFunc(f.Calls, func(c string) bool { return strings.HasSuffix(c, "-O check laptop") })
+	warm := slices.IndexFunc(f.Calls, func(c string) bool {
+		return strings.HasPrefix(c, "interactive: ssh ") && strings.HasSuffix(c, " laptop true")
+	})
+	seen := slices.Index(f.Calls, "tailscale status --json")
+	if check < seen || warm < check || slices.Index(f.Calls, snapCreate) < warm {
 		t.Fatalf("%v", f.Calls)
 	}
 }
