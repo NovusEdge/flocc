@@ -167,11 +167,18 @@ func TestUntrustworthyAuthRepliesAreUnavailableNotRejected(t *testing.T) {
 		w.Write([]byte(`"}]}`))
 	}))
 	defer oversized.Close()
+	truncated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(403)
+		w.Write([]byte(`{"errors":[`))
+	}))
+	defer truncated.Close()
 	_, html401 := serve(t, "proxy-401.http")
 	_, auth503 := serve(t, "auth-error-503.http")
 	clients := map[string]*Client{
 		"401 HTML":                    html401,
 		"403 oversized":               {URL: oversized.URL, Key: "lin_api_test", HTTP: oversized.Client()},
+		"403 truncated":               {URL: truncated.URL, Key: "lin_api_test", HTTP: truncated.Client()},
 		"AUTHENTICATION_ERROR on 503": auth503,
 	}
 	for name, c := range clients {

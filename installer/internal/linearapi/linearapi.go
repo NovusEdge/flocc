@@ -99,7 +99,7 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, out 
 	status := resp.StatusCode
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxReply+1))
 	if err != nil {
-		return &Error{Status: status, Message: fmt.Sprintf("Linear HTTP %d: reading the reply: %v", status, err), cause: err}
+		return &Error{Status: status, Message: fmt.Sprintf("Linear HTTP %d: reading the reply: %v", status, err), malformed: true, cause: err}
 	}
 	if len(raw) > maxReply {
 		return &Error{Status: status, Message: fmt.Sprintf("Linear HTTP %d: reply over %d MiB", status, maxReply>>20), malformed: true}
