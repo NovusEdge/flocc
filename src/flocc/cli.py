@@ -482,6 +482,26 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_logs(args) -> int:
+    from flocc.status import detect_mode
+
+    cfg, _ = _config(args)
+    follow = ["-f"] if args.follow else []
+    lines = ["-n", str(args.lines)]
+    if detect_mode() == "systemd":
+        argv = ["journalctl", "--user", "-u", "flocc", "--no-pager", *follow, *lines]
+    else:
+        argv = ["tail", *follow, *lines, str(cfg.state_root / "run.log")]
+    os.execvp(argv[0], argv)
+
+
+def cmd_attach(args) -> int:
+    from flocc.sessions import SOCKET
+
+    argv = ["tmux", "-L", SOCKET, "attach", "-r", "-t", args.session]
+    os.execvp(argv[0], argv)
+
+
 def _age(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds:.0f}s"
@@ -510,6 +530,8 @@ COMMANDS = {
     "release": cmd_release,
     "doctor": cmd_doctor,
     "status": cmd_status,
+    "logs": cmd_logs,
+    "attach": cmd_attach,
 }
 
 
@@ -573,10 +595,33 @@ def build_parser() -> argparse.ArgumentParser:
     add("doctor", "Check config and host setup")
     status = add("status", "Show claims, last tick, usage and disk")
     status.add_argument("--json", action="store_true", help="print the raw report as JSON")
+    logs = add("logs", "Print the service log: the journal on systemd hosts, run.log otherwise")
+    logs.add_argument("-n", dest="lines", type=int, default=100, help="lines to print")
+    logs.add_argument("-f", "--follow", action="store_true", help="keep printing new lines")
+    attach = add("attach", "Attach read-only to an agent's tmux session")
+    attach.add_argument("session", help="session name, e.g. NF-12 or NF-12-review")
     return parser
 
 
+DESKTOP_VERBS = ("ship", "login", "keys", "host")
+
+
+def _command(argv: list[str]) -> str | None:
+    it = iter(argv)
+    for arg in it:
+        if arg == "--config":
+            next(it, None)
+        elif not arg.startswith("-"):
+            return arg
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    # argparse would report "invalid choice", or choke on the -H that follows the verb.
+    if (verb := _command(argv)) in DESKTOP_VERBS:
+        print(f"flocc {verb}: that is a desktop command; run it on your desktop", file=sys.stderr)
+        return 2
     parser = build_parser()
     try:
         args = parser.parse_args(argv)

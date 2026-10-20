@@ -1,12 +1,14 @@
+import argparse
 import io
 import json
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from flocc import ledger
-from flocc.cli import main
+from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.grants import Grants, set_block
 from flocc.linear import LinearError
@@ -456,3 +458,69 @@ def test_parallel_commits_take_only_their_own_paths(origin, monkeypatch):
 
 def test_commit_needs_paths(capsys):
     assert main(["commit", "-m", "x", "--"]) == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["ship"], ["keys", "rotate", "github"], ["host", "add", "x"], ["--config", "c.toml", "login"]],
+)
+def test_desktop_verbs_are_refused_on_a_host(argv, capsys):
+    assert main(argv) == 2
+    assert "that is a desktop command" in capsys.readouterr().err
+
+
+def test_no_host_command_takes_dash_h():
+    # The desktop removes -H from the command line before it reaches the host.
+    parser = build_parser()
+    parsers = [parser]
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            parsers += action.choices.values()
+    for p in parsers:
+        for action in p._actions:
+            assert not {"-H", "--host"} & set(action.option_strings), p.prog
+
+
+class Exec(Exception):
+    pass
+
+
+@pytest.fixture
+def host_cfg(tmp_path, monkeypatch):
+    path = tmp_path / "c.toml"
+    path.write_text(EXAMPLE.read_text().replace("~/.local/state/flocc", str(tmp_path / "state")))
+
+    def fake_exec(file, argv):
+        raise Exec(argv)
+
+    monkeypatch.setattr(os, "execvp", fake_exec)
+    return path
+
+
+def test_logs_reads_the_journal_on_a_systemd_host(host_cfg, monkeypatch):
+    monkeypatch.setattr("flocc.status.detect_mode", lambda: "systemd")
+    with pytest.raises(Exec) as exc:
+        main(["--config", str(host_cfg), "logs", "-n", "50", "-f"])
+    assert exc.value.args[0] == [
+        "journalctl",
+        "--user",
+        "-u",
+        "flocc",
+        "--no-pager",
+        "-f",
+        "-n",
+        "50",
+    ]
+
+
+def test_logs_tails_run_log_on_a_loop_host(host_cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr("flocc.status.detect_mode", lambda: "loop")
+    with pytest.raises(Exec) as exc:
+        main(["--config", str(host_cfg), "logs"])
+    assert exc.value.args[0] == ["tail", "-n", "100", str(tmp_path / "state" / "run.log")]
+
+
+def test_attach_is_read_only_on_the_service_socket(host_cfg):
+    with pytest.raises(Exec) as exc:
+        main(["--config", str(host_cfg), "attach", "NF-12-review"])
+    assert exc.value.args[0] == ["tmux", "-L", "flocc", "attach", "-r", "-t", "NF-12-review"]
