@@ -148,14 +148,17 @@ fails.
 - The answers document, secrets included, goes on stdin. The root phase reads stdin to EOF before
   anything else and passes it to `sudo -iu flocc flocc-setup --phase service --answers -` through a
   pipe. No secret is written to a file on the host except the service's own secret files (mode
-  600), appears in argv, or reaches `setup.log` or stdout: the runner redacts known secret values
-  from its log as a second guard.
+  600), appears in argv, or reaches `setup.log` or stdout. As a second guard the runner redacts
+  the stdin document's secret values from its log; secrets typed into an `--interactive` form are
+  not in that set, so the first guard (no step puts a secret in argv, env or output) covers them.
 - `--interactive` keeps `-t` and today's forms.
 - The Claude step splits. **Claude** installs the CLI, writes push settings, installs marketplaces
   and plugins. **Claude login** probes `claude auth status` for real in every mode and reports
   pending when there is no full login.
 - When the only open item is the Claude login, the Run step enables `flocc-tmux.service` but not
-  the timer, ship ends with the login command, and exits 0.
+  the timer, ship ends with the login command, and exits 0. On an upgraded host whose login has
+  lapsed, an already-enabled timer stays on and the tick pages until the login is redone.
+- Plugins and marketplaces are installed before the login.
 
 ## Login is one command
 
@@ -166,9 +169,10 @@ chat screen, so nothing is scraped:
 1. Take the tick lock for the whole login. If sessions are running, say so and wait or abort:
    running sessions rewrite `~/.claude.json` from memory and could drop the Remote Control consent.
 2. If `claude auth status` already shows a `claude.ai` login, skip to step 4.
-3. `ssh -t <host> sudo -iu flocc claude auth login --claudeai [--email <owner>]`. The URL it prints
-   is also opened on the desktop and shown as a QR code; the owner signs in and pastes the code
-   straight into the remote prompt.
+3. The desktop runs `flocc-setup --phase login` on the host over `ssh -t`; holding the tick lock,
+   it runs `claude auth login --claudeai [--email <owner>]` as `flocc`. The URL it prints is also
+   opened on the desktop and shown as a QR code; the owner signs in and pastes the code straight
+   into the remote prompt.
 4. Trust `~/worktrees` (the `hasTrustDialogAccepted` write the service already does for
    worktrees), then run `claude remote-control` once under a pty (`script -qfec`), answer its
    `Enable Remote Control? (y/n)` prompt with `y`, wait for its connected line, and stop it. No
@@ -179,7 +183,8 @@ The `just` recipe is `just login <target>` until 2b adds `flocc login -H`.
 
 ## The end of a ship
 
-Ship prints a summary instead of `Done.`: version on the host, Claude login (full, token-only or
+The host ends the service and login phases with one `flocc-summary <json>` line, and the desktop
+strips it and prints a summary instead of `Done.`: version on the host, Claude login (full, token-only or
 none), GitHub token expiries, each failed doctor check, the timer, live sessions. It exits non-zero
 when a check other than the pending login fails.
 
@@ -319,6 +324,8 @@ open-source users ask for it.
 ## Unconfirmed
 
 - `claude remote-control`'s y/n consent is the same one-time confirmation `--remote-control`
-  sessions read.
+  sessions read, and the wording of its prompt and connected line under a pty (the login's
+  matchers are guesses until Part 2a's Daytona trial captures them).
+- `claude plugin marketplace add` and `claude plugin install` work before any Claude login.
 - GitHub checks the caller's permission before validating `head` on `POST /pulls`.
 - dockerd does not reset `DOCKER-USER` on `docker network create`.
