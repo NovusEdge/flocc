@@ -31,6 +31,7 @@ Desktop commands:
   flocc keys rotate github|linear    replace keys and push them to every host
   flocc host add <name> [--ssh DEST | --daytona SANDBOX]
   flocc host import -H <name> [--ssh DEST | --daytona SANDBOX]
+  flocc host create [--cpus N] [--memory GiB] [--disk GiB] <machine> <name>
   flocc host run -H <name> -- <command...>
   flocc ship -H <name> [--interactive]    run it inside the flocc checkout: it ships that commit
   flocc login -H <name> [--email ADDR]

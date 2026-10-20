@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
@@ -27,6 +28,8 @@ func hostCmd(ctx context.Context, d *deps, name string, args []string) int {
 	switch args[0] {
 	case "run":
 		return hostRun(ctx, d, name, args[1:])
+	case "create":
+		return create.Main(args[1:], hostInstaller{d: d})
 	case "add", "import":
 		reach, rest, err := reachFlags(args[1:])
 		if err == nil && args[0] == "add" {
