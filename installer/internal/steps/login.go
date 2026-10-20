@@ -256,11 +256,12 @@ func flockPath(path string) (func(), error) {
 
 // The consent dialog and the line remote-control prints once it is up, matched on output with
 // escape codes removed. Claude Code draws with Ink, which can move the cursor right instead of
-// printing a space. connectedLine is calibrated against the real output in Task 10 Step 2; the
-// rest of the code treats a match as the only proof that Remote Control is on.
+// printing a space. connectedLine matches remote-control's status line as Claude Code 2.1.304
+// prints it ("·✔︎· Connected · worktrees · HEAD"); the rest of the code treats a match as the only
+// proof that Remote Control is on, so it must not match the dialog's prose.
 var (
 	consentPrompt = regexp.MustCompile(`Enable\s+Remote\s+Control\?`)
-	connectedLine = regexp.MustCompile(`(?i)\b(connected|ready)\b|https://claude\.ai/code/\S+`)
+	connectedLine = regexp.MustCompile(`\bConnected\s+·`)
 	cursorForward = regexp.MustCompile(`\x1b\[\d*C`)
 	escapeCodes   = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
 )

@@ -329,7 +329,7 @@ func TestAnswerConsentAnswersAPromptSplitAcrossWritesAndWaitsForTheConnectedLine
 	bin := consentScript(t, `printf 'Enable Remote '; sleep 0.2; printf 'Control? (y/n) '
 read a
 echo "$a" > "$1"
-echo 'Remote Control connected'
+echo '·✔︎· Connected · worktrees · HEAD'
 exec sleep 30
 `)
 	start := time.Now()
@@ -352,7 +352,7 @@ func TestAnswerConsentAnswersADialogThatLooksConnected(t *testing.T) {
 read a
 echo "$a" > "$1"
 sleep 0.2
-echo 'Remote Control connected'
+echo '·✔︎· Connected · worktrees · HEAD'
 exec sleep 30
 `)
 	if err := answerConsent(context.Background(), host.Cmd{Name: bin, Args: []string{got}}, io.Discard, quickWaits); err != nil {
@@ -375,7 +375,7 @@ func TestAnswerConsentFailsWhenADialogThatLooksConnectedGoesUnanswered(t *testin
 // The output is all copied before Wait returns, so a connected line printed before the exit counts.
 func TestAnswerConsentTakesAConnectedLineFromAProcessThatExits(t *testing.T) {
 	needScript(t)
-	bin := consentScript(t, "echo 'Remote Control connected'\nexit 0\n")
+	bin := consentScript(t, "echo '·✔︎· Connected · worktrees · HEAD'\nexit 0\n")
 	if err := answerConsent(context.Background(), host.Cmd{Name: bin}, io.Discard, quickWaits); err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestAnswerConsentTakesAConnectedLineFromAProcessThatExits(t *testing.T) {
 func TestAnswerConsentTakesAConnectedLineWithoutAPromptAsConsentGiven(t *testing.T) {
 	needScript(t)
 	got := filepath.Join(t.TempDir(), "answer")
-	bin := consentScript(t, "echo 'Remote Control connected'\nexec sleep 30\n")
+	bin := consentScript(t, "echo '·✔︎· Connected · worktrees · HEAD'\nexec sleep 30\n")
 	if err := answerConsent(context.Background(), host.Cmd{Name: bin, Args: []string{got}}, io.Discard, quickWaits); err != nil {
 		t.Fatal(err)
 	}
@@ -432,5 +432,24 @@ func TestConsentMatchersReadPastEscapeCodes(t *testing.T) {
 	case <-w.connected:
 		t.Fatal("the prompt is not a connected line")
 	default:
+	}
+}
+
+// Lines from a real run on flocc-nimble (Claude Code 2.1.304), escape codes removed.
+func TestConnectedLineMatchesOnlyTheStatusLine(t *testing.T) {
+	for _, line := range []string{
+		"The session keeps running on this machine. Use your other devices as a remote",
+		"Enable Remote Control? (y/n) y",
+		"Remote Control connected",
+		"Ready when you are",
+		"Sessions show at https://claude.ai/code/sessions",
+		"Capacity: 0/32 · New sessions will be created in the current directory",
+	} {
+		if connectedLine.MatchString(line) {
+			t.Errorf("matched %q", line)
+		}
+	}
+	if !connectedLine.MatchString("·✔︎· Connected · worktrees · HEAD") {
+		t.Error("missed the status line")
 	}
 }
