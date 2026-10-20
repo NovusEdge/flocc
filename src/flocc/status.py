@@ -19,6 +19,8 @@ _TICK = re.compile(r"^--- tick (\S+)Z$")
 _EXIT = re.compile(r"^--- exit (.*)$")
 # A tick's own output sits between the markers, so the last pair can be far from the end.
 _LOG_TAIL = 256 * 1024
+# The desktop gives each host 20s for the whole report; a hung claude must not make it unreachable.
+_LOGIN_TIMEOUT = 5
 
 
 def last_tick(log: Path) -> dict | None:
@@ -189,6 +191,8 @@ def collect(
         },
         "disk": _disk(cfg.state_root),
         # null: not asked. "unknown": asked, and claude gave no answer, which is not a logout.
-        "claude_login": None if claude is None else claude_login(claude, run) or "unknown",
+        "claude_login": None
+        if claude is None
+        else claude_login(claude, run, _LOGIN_TIMEOUT) or "unknown",
         "token_expiry": expiry,
     }
