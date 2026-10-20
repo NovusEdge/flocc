@@ -19,17 +19,15 @@ var dockerRules = [][]string{
 	{"-o", Bridge, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
 }
 
-// dockerUnit re-adds the rules after every Docker start (PartOf restarts it with Docker) and
-// removes them when Docker stops. systemd expands $name in Exec lines, so the shell's variable is
-// $$t. ip6tables is skipped where Docker made no IPv6 DOCKER-USER chain.
+// dockerUnit re-adds the rules after every Docker start (PartOf restarts it with Docker). It has
+// no ExecStop: a stopped Docker leaves FORWARD at DROP, so removing the rules then would cut the
+// VM off. systemd expands $name in Exec lines, so the shell's variable is $$t. ip6tables is
+// skipped where Docker made no IPv6 DOCKER-USER chain.
 func dockerUnit() string {
-	var start, stop []string
+	var start []string
 	for i := len(dockerRules) - 1; i >= 0; i-- {
 		r := strings.Join(dockerRules[i], " ")
 		start = append(start, "$$t -C DOCKER-USER "+r+" 2>/dev/null || $$t -I DOCKER-USER "+r)
-	}
-	for _, rule := range dockerRules {
-		stop = append(stop, "$$t -D DOCKER-USER "+strings.Join(rule, " ")+" 2>/dev/null")
 	}
 	loop := "for t in iptables ip6tables; do $$t -L DOCKER-USER -n >/dev/null 2>&1 || continue; "
 	return "[Unit]\n" +
@@ -40,7 +38,6 @@ func dockerUnit() string {
 		"Type=oneshot\n" +
 		"RemainAfterExit=yes\n" +
 		"ExecStart=/bin/sh -c '" + loop + strings.Join(start, "; ") + "; done'\n" +
-		"ExecStop=/bin/sh -c '" + loop + strings.Join(stop, "; ") + "; done; true'\n" +
 		"\n[Install]\n" +
 		"WantedBy=docker.service\n"
 }
@@ -64,8 +61,10 @@ type Docker struct{}
 
 func (Docker) Name() string { return "Docker" }
 
+// backend reads daemon.json as root: it may be 0600. With sudo -n working, a failed read means
+// the file is absent, which is Docker's iptables default.
 func (d Docker) backend(ctx context.Context, e *Env) string {
-	return dockerBackend(e.out(ctx, cmd("cat", daemonJSON)))
+	return dockerBackend(e.out(ctx, e.root(cmd("cat", daemonJSON))))
 }
 
 func (d Docker) Check(ctx context.Context, e *Env) (bool, string, error) {
@@ -82,7 +81,8 @@ func (d Docker) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if strings.HasPrefix(backend, "nftables") {
 		return false, "Docker uses the nftables firewall backend", nil
 	}
-	if e.out(ctx, cmd("cat", dockerUnitPath)) != strings.TrimSpace(dockerUnit()) {
+	// sudo's umask is the owner's ORed with 022, so under umask 077 tee leaves the unit 0600.
+	if e.out(ctx, e.root(cmd("cat", dockerUnitPath))) != strings.TrimSpace(dockerUnit()) {
 		return false, dockerUnitPath + " missing or out of date", nil
 	}
 	if !e.ok(ctx, cmd("systemctl", "is-enabled", "--quiet", dockerUnitName)) {
