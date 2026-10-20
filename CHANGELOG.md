@@ -8,6 +8,10 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 One `flocc` command on the desktop; keys are made once, checked when pasted and reused.
 
+- Fix: the service marks Claude Code's first-run onboarding done (`hasCompletedOnboarding` in
+  `~/.claude.json`) before each session starts. A host logged in by 0.4.0's `flocc login` never
+  went through it, so every session stopped at the "Press Enter to continue" security notes.
+
 - `flocc` (`go install ./installer/cmd/flocc`) is the desktop command. Host commands run as
   `flocc -H <host> <command>`, with the host picked from `$FLOCC_HOST`, the only host or the issue
   named; `-H all` runs `status`, `doctor` and `logs`. The installer is its own binary,
