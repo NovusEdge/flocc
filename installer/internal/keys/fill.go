@@ -159,6 +159,23 @@ func Adopt(ctx context.Context, e Env, m Mapped, s Slot, raw, from string) error
 	}
 }
 
+// Replace asks for a new value of each slot in turn, checked as Fill checks it, and returns the
+// slots it changed, also with an error, so the caller can push what was stored. An empty paste
+// keeps the current value.
+func Replace(ctx context.Context, e Env, m Mapped, slots []Slot) ([]Slot, error) {
+	var changed []Slot
+	for _, s := range slots {
+		stored, err := askKey(ctx, e, m, s, "Paste the new one; nothing shows while you paste. Leave it empty to keep the current one.")
+		if err != nil {
+			return changed, err
+		}
+		if stored {
+			changed = append(changed, s)
+		}
+	}
+	return changed, nil
+}
+
 // Accept cleans a paste and checks it, by prefix and then live, without storing it.
 func Accept(ctx context.Context, e Env, m Mapped, s Slot, raw string) (value, note string, err error) {
 	v, err := steps.CleanSecret(raw)
@@ -190,10 +207,9 @@ func checkLive(ctx context.Context, e Env, m Mapped, s Slot, v string) (string, 
 	if s == Linear {
 		lin := &linearapi.Client{URL: e.LinearAPI, Key: v, HTTP: e.HTTP}
 		viewer, err := linearapi.CheckKey(ctx, lin, m.Teams)
-		// A team the key cannot see is a plain error and the key's fault; a failed call is the
-		// key's fault only when Linear rejected it.
-		var le *linearapi.Error
-		if errors.As(err, &le) && !errors.Is(err, linearapi.ErrKeyRejected) {
+		// A team the key cannot see is a plain error and the key's fault. Only an outage leaves
+		// the key unchecked: a 400 validation error or a 404 would fail the same way again.
+		if errors.Is(err, linearapi.ErrUnavailable) {
 			return "", unchecked{err}
 		}
 		if err != nil {
