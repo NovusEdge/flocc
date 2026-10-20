@@ -75,21 +75,25 @@ claim (phase, age, context use, whether its tmux session is up). `just fleet-sta
 --interval 30s` redraws until Ctrl-C.
 
 The hosts are every sandbox in the active Daytona organization, read with the Daytona CLI's login,
-plus each ssh destination listed in `~/.config/flocc-setup/hosts`, one per line (blank lines and lines
-starting with `#` are skipped):
+plus one file per ssh host in `~/.config/flocc/hosts/`, named `<name>.toml`:
 
+```toml
+ssh = "root@flocc-nimble"
 ```
-# Tailscale names
-box.tailnet.ts.net
-```
+
+A file sets `ssh` or, for a Daytona sandbox, `daytona = "<sandbox>"`; the fleet lists sandboxes
+from the Daytona API either way. The first `just fleet-status` after 0.3.0 converts the old
+one-destination-per-line hosts file into these files, naming each host by its destination without
+`user@` and from the first dot on (`root@box.tail1.ts.net` becomes `box.toml`), renames the old file
+to `hosts.converted` and prints what it did.
 
 Each started host answers `flocc status --json`, which only reads state: it takes no tick
 lock and calls neither Linear nor GitHub. (On a WAL ledger, opening it read-only still creates
 the `-shm` and `-wal` files beside it; the ledger file itself is not changed.) Stopped sandboxes
 are listed with their state. The `est $/h` column prices started sandboxes only, from vCPU,
 memory and disk beyond 5 GiB at Daytona's list rates, so it is an estimate; stopped and archived
-sandboxes show `-` because their rate is not confirmed. Lines in the hosts file starting with `-`
-are ignored, since ssh would read them as options. An
+sandboxes show `-` because their rate is not confirmed. A host file whose `ssh` starts with `-`
+is skipped with a note, since ssh would read it as an option. An
 unreachable host gets a row and an error line, and the rest still render. Cells are colored for usage at
 the configured `five_hour_max_pct` and `weekly_max_pct`, disk under 15% free, a last tick older
 than 10 minutes, and a non-zero tick exit. Without a Daytona login the Daytona hosts are skipped

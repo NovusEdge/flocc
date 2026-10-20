@@ -19,6 +19,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/hosts"
 )
 
 // lockedFake serializes the Fake, which collect drives from one goroutine per host.
@@ -62,28 +63,16 @@ func TestCostIsOnlyShownForStartedSandboxes(t *testing.T) {
 	}
 }
 
-func TestReadHostsFileSkipsBlanksAndComments(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "hosts")
-	if err := os.WriteFile(p, []byte("# tailnet\n\nbox1.ts.net\n  box2  \n#off.ts.net\n-oProxyCommand=id\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, rejected, err := readHostsFile(p)
-	if err != nil || strings.Join(got, ",") != "box1.ts.net,box2" || strings.Join(rejected, ",") != "-oProxyCommand=id" {
-		t.Fatalf("%q %q %v", got, rejected, err)
-	}
-	if got, _, err := readHostsFile(filepath.Join(t.TempDir(), "none")); got != nil || err != nil {
-		t.Fatalf("%q %v", got, err)
-	}
-}
-
-func TestDiscoverSkipsDaytonaWithoutItsConfigAndKeepsTheHostsFile(t *testing.T) {
+func TestDiscoverSkipsDaytonaWithoutItsConfigAndKeepsTheHostsDir(t *testing.T) {
 	dir := t.TempDir()
-	hosts := filepath.Join(dir, "hosts")
-	if err := os.WriteFile(hosts, []byte("box1\n"), 0o600); err != nil {
-		t.Fatal(err)
+	hostsDir := filepath.Join(dir, "hosts")
+	for _, h := range []hosts.Host{{Name: "box1", SSH: "root@box1"}, {Name: "sb", Daytona: "sb"}} {
+		if err := hosts.Save(hostsDir, h); err != nil {
+			t.Fatal(err)
+		}
 	}
-	got, notes := discover(context.Background(), filepath.Join(dir, "no-config.json"), hosts, http.DefaultClient)
-	if len(got) != 1 || got[0].Target != "box1" || len(notes) != 1 || !strings.Contains(notes[0], "skipped") {
+	got, notes := discover(context.Background(), filepath.Join(dir, "no-config.json"), hostsDir, http.DefaultClient)
+	if len(got) != 1 || got[0].Name != "box1" || got[0].Target != "root@box1" || len(notes) != 1 || !strings.Contains(notes[0], "skipped") {
 		t.Fatalf("%+v %q", got, notes)
 	}
 }
@@ -340,6 +329,54 @@ func TestFleetRejectsATightWatchInterval(t *testing.T) {
 		if code := FleetMain([]string{"--watch", "--interval", iv}, io.Discard); code != 2 {
 			t.Errorf("%s: %d", iv, code)
 		}
+	}
+}
+
+// drawWriter ends the watch loop after its second draw.
+type drawWriter struct {
+	buf    bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w *drawWriter) Write(p []byte) (int, error) {
+	w.buf.Write(p)
+	if strings.Count(w.buf.String(), "\x1b[H\x1b[2J") == 2 && !bytes.Equal(p, []byte("\x1b[H\x1b[2J")) {
+		w.cancel()
+	}
+	return len(p), nil
+}
+
+func TestWatchShowsTheFirstNoticeOnTheFirstDrawOnly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := &drawWriter{cancel: cancel}
+	dir := t.TempDir()
+	code := runFleet(ctx, w, true, 10*time.Millisecond, filepath.Join(dir, "no-config.json"), filepath.Join(dir, "hosts"), []string{"hosts: dropped \"-oProxyCommand=id\""})
+	if code != exitInterrupted {
+		t.Fatal(code)
+	}
+	draws := strings.Split(w.buf.String(), "\x1b[H\x1b[2J")
+	if len(draws) != 3 || !strings.Contains(draws[1], "dropped") || strings.Contains(draws[2], "dropped") {
+		t.Fatalf("%q", draws)
+	}
+}
+
+func TestFleetPrintsWhatTheOldHostsFileConversionDropped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	old := filepath.Join(home, legacyHostsFile)
+	if err := os.MkdirAll(filepath.Dir(old), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte("-oProxyCommand=id\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := FleetMain(nil, &out); code != 0 {
+		t.Fatal(code)
+	}
+	if got := plainText(out.String()); !strings.Contains(got, "dropped") || !strings.Contains(got, ".converted") {
+		t.Fatal(got)
 	}
 }
 
