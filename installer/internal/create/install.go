@@ -55,7 +55,18 @@ func Create(ctx context.Context, e *Env, inst Installer, steps []Step) error {
 	if err := inst.Login(ctx, name); err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
+	// host add, ship and login reach the VM, not the machine, and can leave the machine's master
+	// idle past ControlPersist; a fresh captured connection would wait on a check-mode URL unseen.
+	if err := e.connect(ctx); err != nil {
+		return err
+	}
 	return snapshot(ctx, e)
+}
+
+// connect opens the machine's shared master on this terminal without BatchMode, so the owner can
+// answer a host-key question or a Tailscale check-mode URL; it does nothing while one is live.
+func (e *Env) connect(ctx context.Context) error {
+	return ship.Connect(ctx, e.Local, ship.Dest{SSH: e.Spec.Machine, Opts: ControlOpts()}, e.Spec.Machine, e.TTY)
 }
 
 const (
@@ -89,7 +100,13 @@ func snapshot(ctx context.Context, e *Env) error {
 		return err
 	}
 	if has("installed-new") {
-		if err := do("delete", name, "installed-new"); err != nil {
+		// Without installed, a run stopped between the delete and the rename below: installed-new
+		// is the only good snapshot.
+		args := []string{"delete", name, "installed-new"}
+		if !has("installed") {
+			args = []string{"rename", name, "installed-new", "installed"}
+		}
+		if err := do(args...); err != nil {
 			return err
 		}
 	}
@@ -104,7 +121,7 @@ func snapshot(ctx context.Context, e *Env) error {
 	if err := do("rename", name, "installed-new", "installed"); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.Out, "✓ %-10s %s/installed; incus snapshot restore %s installed returns to it\n", "Snapshot", name, name)
+	fmt.Fprintf(e.Out, "✓ %-10s %s/installed; %s returns to it\n", "Snapshot", name, e.incusLine("snapshot restore "+name+" installed"))
 	return nil
 }
 
@@ -155,15 +172,13 @@ func Main(args []string, inst Installer) int {
 	// Captured commands buffer stderr, so one that stops at a password or host-key prompt would
 	// hang with nothing shown; BatchMode makes it fail instead.
 	opts := append([]string{"-o", "BatchMode=yes"}, ControlOpts()...)
+	st, _ := os.Stdin.Stat()
 	e := &Env{M: Remote{R: run, Target: spec.Machine, Opts: opts}, Local: run,
-		UI: ui.NewHuh(), Out: os.Stdout, Log: log, Spec: spec, Sleep: time.Sleep}
+		UI: ui.NewHuh(), Out: os.Stdout, Log: log, Spec: spec, Sleep: time.Sleep,
+		TTY: st != nil && st.Mode()&os.ModeCharDevice != 0}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	// Connect opens the shared master without BatchMode, on this terminal, so the owner can answer
-	// a host-key question or a Tailscale check-mode URL before the BatchMode commands reuse it.
-	st, _ := os.Stdin.Stat()
-	tty := st != nil && st.Mode()&os.ModeCharDevice != 0
-	err = ship.Connect(ctx, run, ship.Dest{SSH: spec.Machine, Opts: ControlOpts()}, spec.Machine, tty)
+	err = e.connect(ctx)
 	if err == nil {
 		err = Create(ctx, e, inst, Steps())
 	}
