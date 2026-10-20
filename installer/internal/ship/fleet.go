@@ -427,14 +427,22 @@ func FleetMain(args []string, out io.Writer) int {
 	home, _ := os.UserHomeDir()
 	daytonaConfig := filepath.Join(home, ".config/daytona/config.json")
 	hostsDir := hosts.Dir(home)
+	// The notice goes into the first draw: the old file is renamed by now, and what the conversion
+	// dropped is named nowhere else, but --watch clears the screen before anything on stderr is read.
+	var first []string
 	if msg, err := hosts.ConvertOld(filepath.Join(home, legacyHostsFile), hostsDir); err != nil {
-		fmt.Fprintln(os.Stderr, "fleet: the old hosts file was not converted:", err)
+		first = []string{"hosts: the old hosts file was not converted: " + err.Error()}
 	} else if msg != "" {
-		fmt.Fprintln(os.Stderr, "fleet:", msg)
+		first = []string{"hosts: " + msg}
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir, first)
+}
+
+// runFleet draws the fleet until ctx ends, or once. first is added to the notes of the first draw.
+func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir string, first []string) int {
+	client := &http.Client{Timeout: 30 * time.Second}
 	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
 		auth, err := loadDaytona(daytonaConfig)
 		if err != nil {
@@ -444,24 +452,26 @@ func FleetMain(args []string, out io.Writer) int {
 	})
 	for {
 		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
+		notes = append(first, notes...)
+		first = nil
 		rows := collect(ctx, host.Exec{}, cache, found)
 		if ctx.Err() != nil {
 			return exitInterrupted
 		}
-		if *watch {
+		if watch {
 			fmt.Fprint(out, "\x1b[H\x1b[2J")
 		}
 		if len(found) == 0 {
 			notes = append(notes, "no hosts: log in with daytona login or add <name>.toml holding ssh = \"root@<name>\" to "+hostsDir)
 		}
 		lipgloss.Fprint(out, render(rows, notes))
-		if !*watch {
+		if !watch {
 			return 0
 		}
 		select {
 		case <-ctx.Done():
 			return exitInterrupted
-		case <-time.After(*interval):
+		case <-time.After(interval):
 		}
 	}
 }

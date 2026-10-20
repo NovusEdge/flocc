@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -328,6 +329,54 @@ func TestFleetRejectsATightWatchInterval(t *testing.T) {
 		if code := FleetMain([]string{"--watch", "--interval", iv}, io.Discard); code != 2 {
 			t.Errorf("%s: %d", iv, code)
 		}
+	}
+}
+
+// drawWriter ends the watch loop after its second draw.
+type drawWriter struct {
+	buf    bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w *drawWriter) Write(p []byte) (int, error) {
+	w.buf.Write(p)
+	if strings.Count(w.buf.String(), "\x1b[H\x1b[2J") == 2 && !bytes.Equal(p, []byte("\x1b[H\x1b[2J")) {
+		w.cancel()
+	}
+	return len(p), nil
+}
+
+func TestWatchShowsTheFirstNoticeOnTheFirstDrawOnly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := &drawWriter{cancel: cancel}
+	dir := t.TempDir()
+	code := runFleet(ctx, w, true, 10*time.Millisecond, filepath.Join(dir, "no-config.json"), filepath.Join(dir, "hosts"), []string{"hosts: dropped \"-oProxyCommand=id\""})
+	if code != exitInterrupted {
+		t.Fatal(code)
+	}
+	draws := strings.Split(w.buf.String(), "\x1b[H\x1b[2J")
+	if len(draws) != 3 || !strings.Contains(draws[1], "dropped") || strings.Contains(draws[2], "dropped") {
+		t.Fatalf("%q", draws)
+	}
+}
+
+func TestFleetPrintsWhatTheOldHostsFileConversionDropped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	old := filepath.Join(home, legacyHostsFile)
+	if err := os.MkdirAll(filepath.Dir(old), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte("-oProxyCommand=id\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := FleetMain(nil, &out); code != 0 {
+		t.Fatal(code)
+	}
+	if got := plainText(out.String()); !strings.Contains(got, "dropped") || !strings.Contains(got, ".converted") {
+		t.Fatal(got)
 	}
 }
 
