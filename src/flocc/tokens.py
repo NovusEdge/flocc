@@ -13,7 +13,7 @@ from flocc.escalation import Escalation
 WARN_DAYS = 14
 PAGE_DAYS = 3
 _DAY = 86400
-LOGIN_REMEDY = "on the desktop, run just login <ssh target of this host>"
+LOGIN_REMEDY = "on the desktop, run flocc login -H <this host>"
 
 
 class TokenRejected(Exception):
@@ -144,6 +144,6 @@ def check_claude_login(rt, run=subprocess.run) -> None:
     if lapsed:
         return
     summary = f"The Claude login on {socket.gethostname()} lapsed ({login}); new sessions fail."
-    action = "On the desktop, run just login <ssh target of this host>"
+    action = "On the desktop, run flocc login -H <this host>"
     rt.notifier.send(Escalation(1, "claude-login", summary, action, scope="global"), None, None)
     ledger.meta_set(rt.con, "claude_login_lapsed", "1")

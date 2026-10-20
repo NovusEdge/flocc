@@ -156,7 +156,7 @@ def test_lapsed_login_pages_once_and_rearms(rt):
     check_claude_login(rt, out)
     [esc] = rt.notifier.sent
     assert (esc.tier, esc.scope, esc.cause) == (1, "global", "claude-login")
-    assert "just login" in esc.action
+    assert "flocc login -H" in esc.action
     check_claude_login(rt, auth_run(FULL))
     check_claude_login(rt, out)
     assert len(rt.notifier.sent) == 2

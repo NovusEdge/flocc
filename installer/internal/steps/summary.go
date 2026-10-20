@@ -162,7 +162,7 @@ func Summarize(ctx context.Context, e *Env) Summary {
 	return s
 }
 
-// Failing reports a FAIL line other than a pending Claude login's, which just login fixes.
+// Failing reports a FAIL line other than a pending Claude login's, which flocc login fixes.
 func (s Summary) Failing() bool { return len(s.Failed) > 0 }
 
 // Print writes the summary the owner reads; Target is the desktop's name for the host.
@@ -174,7 +174,7 @@ func (s Summary) Print(w io.Writer) {
 	fmt.Fprintf(w, "%s\n", cmp.Or(s.Version, "flocc version unknown"))
 	login := s.Login
 	if s.LoginPending {
-		login += "; on the desktop run: just login " + cmp.Or(s.Target, "<host>")
+		login += "; on the desktop run: flocc login -H " + cmp.Or(s.Target, "<host>")
 	}
 	row("claude login", login)
 	for _, name := range slices.Sorted(maps.Keys(s.TokenExpiry)) {

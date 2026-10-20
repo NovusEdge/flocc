@@ -72,7 +72,7 @@ func TestSummaryOfAFreshHostWithTheLoginPending(t *testing.T) {
 	s.Target = "root@h"
 	s.Print(&b)
 	want := "flocc 0.4.0\n" +
-		row("claude login", "none; on the desktop run: just login root@h") +
+		row("claude login", "none; on the desktop run: flocc login -H root@h") +
 		row("agent token", "expires 2027-01-31 (100 days)") +
 		row("publish token", "never expires") +
 		row("timer", "off until the Claude login") +
@@ -118,7 +118,7 @@ func TestSummaryOfAnUpgradedHostWhoseLoginLapsed(t *testing.T) {
 	s.Print(&b)
 	out := b.String()
 	if s.Failing() || !s.Timer || !s.LoginPending || !strings.Contains(out, row("timer", "on")) ||
-		!strings.Contains(out, row("sessions", "NF-1 impl")) || !strings.Contains(out, "just login root@h") {
+		!strings.Contains(out, row("sessions", "NF-1 impl")) || !strings.Contains(out, "flocc login -H root@h") {
 		t.Fatalf("%q", out)
 	}
 }
@@ -203,7 +203,7 @@ func TestSummaryShowsAStatusFailure(t *testing.T) {
 	var b strings.Builder
 	Summarize(context.Background(), testEnv(t, f)).Print(&b)
 	if !strings.Contains(b.String(), row("sessions", "unknown: flocc status failed")) ||
-		!strings.Contains(b.String(), "just login <host>") {
+		!strings.Contains(b.String(), "flocc login -H <host>") {
 		t.Fatalf("%q", b.String())
 	}
 }

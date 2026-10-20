@@ -112,7 +112,7 @@ def test_claude_login_fail_names_the_kind_and_the_desktop_command(monkeypatch):
     run = fake_run({"--version": ("2.1.295 (Claude Code)\n", 0), "auth status": (token, 0)})
     login = doctor.claude_checks("/opt/claude", run)[1]
     assert login.status == "fail"
-    assert login.detail.startswith("token-only (oauth_token); on the desktop, run just login")
+    assert login.detail.startswith("token-only (oauth_token); on the desktop, run flocc login -H")
 
 
 def test_tmux_check(tmux_server):

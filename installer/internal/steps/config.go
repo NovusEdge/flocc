@@ -182,16 +182,19 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	if err := os.WriteFile(e.HomePath(".config/flocc/config.toml"), rendered, 0o600); err != nil {
 		return err
 	}
-	ntfy := "https://ntfy.sh/" + a.NtfyTopic
-	if _, err := e.Must(ctx, "curl", "-fsS", "-H", "Priority: 5", "-H", "Title: flocc", "-d", "test push from flocc-setup", ntfy); err != nil {
-		return err
-	}
-	arrived, err := e.UI.Confirm("Subscribe to "+ntfy+" in the ntfy app. Did the priority 5 test push arrive?", true)
-	if err != nil {
-		return err
-	}
-	if !arrived {
-		return errors.New("the ntfy test push did not arrive at " + ntfy + "; subscribe to it in the app and run again")
+	// With answers on stdin the desktop's flocc keys already saw this topic's test push arrive.
+	if !e.SkipInteractive {
+		ntfy := "https://ntfy.sh/" + a.NtfyTopic
+		if _, err := e.Must(ctx, "curl", "-fsS", "-H", "Priority: 5", "-H", "Title: flocc", "-d", "test push from flocc-setup", ntfy); err != nil {
+			return err
+		}
+		arrived, err := e.UI.Confirm("Subscribe to "+ntfy+" in the ntfy app. Did the priority 5 test push arrive?", true)
+		if err != nil {
+			return err
+		}
+		if !arrived {
+			return errors.New("the ntfy test push did not arrive at " + ntfy + "; subscribe to it in the app and run again")
+		}
 	}
 	for _, r := range a.Repos {
 		dir := e.Real("src/" + r.Name)

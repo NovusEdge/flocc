@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -26,19 +25,7 @@ type LoginOptions struct {
 	Out           io.Writer // the host's output and the summary; nil is stdout
 }
 
-// LoginMain runs the host's login phase over ssh -t and opens the sign-in URL it prints here.
-func LoginMain(args []string) int {
-	fs := flag.NewFlagSet("flocc-setup login", flag.ContinueOnError)
-	addr := fs.String("email", "", "the claude.ai account to sign in as")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: flocc-setup login [--email ADDR] <ssh-target|daytona:SANDBOX>")
-		return 2
-	}
-	return ExitCode(Login(context.Background(), LoginOptions{Target: fs.Arg(0), Email: *addr, Out: os.Stdout}), "login")
-}
+func ValidEmail(s string) bool { return emailRE.MatchString(s) }
 
 func loginRemote(addr string) string {
 	cmd := "sudo -iu " + steps.ServiceUser + " " + serviceHome + "/.cache/flocc-setup/flocc-setup --phase login"
@@ -56,7 +43,7 @@ func Login(ctx context.Context, o LoginOptions) error {
 		return badTarget(o.Target)
 	}
 	// The address goes into the remote command line, which sudo -i hands to a login shell.
-	if o.Email != "" && !emailRE.MatchString(o.Email) {
+	if o.Email != "" && !ValidEmail(o.Email) {
 		return usageError(fmt.Sprintf("%q is not an email address", o.Email))
 	}
 	r, dest, err := connect(ctx, o.Target)
