@@ -14,7 +14,8 @@ The host side of setup: ship never asks, and the Claude login is one command.
   sudo first. `--interactive` keeps the terminal forms; `--skip-interactive` is gone.
 - Ship no longer logs in to Claude. `just login <target>` does a full claude.ai login with
   `claude auth login --claudeai`, answers the Remote Control consent before it reports success and
-  starts the timer, holding the tick lock throughout.
+  starts the timer, holding the tick lock throughout. It knows remote-control is up by its
+  `Connected ·` status line (Claude Code 2.1.304); verified on flocc-nimble.
 - Ship ends with a summary (version, Claude login, GitHub token expiries, failed doctor checks,
   timer, live sessions) and exits non-zero only when a check other than a pending login fails. The
   login row names the next command with the host you gave ship: `just login <target>`.
