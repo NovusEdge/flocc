@@ -49,6 +49,12 @@ func ServicePath(home string) string {
 	return fmt.Sprintf("PATH=%[1]s/.local/bin:%[1]s/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin", home)
 }
 
+type doctorResult struct {
+	out   string
+	fails []string
+	ok    bool
+}
+
 // doctor's ok is false when the command could not run or exited non-zero; that can happen with
 // no FAIL line (missing binary, Python traceback), so callers must not read empty fails as healthy.
 func doctor(ctx context.Context, e *Env) (out string, fails []string, ok bool) {

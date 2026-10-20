@@ -3,13 +3,18 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/plugins"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 const claudeBin = "/home/flocc/.local/bin/claude"
@@ -45,41 +50,79 @@ func TestMinimumClaudeIsTheGateVersion(t *testing.T) {
 }
 
 func TestClaudeCheck(t *testing.T) {
-	f := host.NewFake().
-		On(claudeBin+" --version", 0, "2.1.295 (Claude Code)\n").
-		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
+	f := host.NewFake().On(claudeBin+" --version", 0, "2.1.295 (Claude Code)\n")
 	e := claudeEnv(t, f, plugins.List{Plugins: []string{"curt@curt"}})
 	writeSettings(t, e, pushOn)
 	if done, detail, _ := (Claude{}).Check(context.Background(), e); done || detail != "plugins missing: curt@curt" {
 		t.Fatalf("detail=%q", detail)
 	}
 	writeInstalled(t, e, `{"version":2,"plugins":{"curt@curt":[{"scope":"user"}]}}`)
-	if done, _, _ := (Claude{}).Check(context.Background(), e); !done {
-		t.Fatal("want done")
-	}
-	f.On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"apiKey"}`)
-	if done, detail, _ := (Claude{}).Check(context.Background(), e); done || detail != "not logged in to a claude.ai subscription" {
-		t.Fatalf("detail=%q", detail)
+	if done, detail, _ := (Claude{}).Check(context.Background(), e); !done || detail != "2.1.295 (Claude Code), 1 plugin" {
+		t.Fatalf("done=%v detail=%q", done, detail)
 	}
 }
 
-func TestClaudeApplyAfterAbortedLoginSkipsReinstall(t *testing.T) {
+func TestClaudeApplyNeverLogsIn(t *testing.T) {
 	f := host.NewFake().
 		On(claudeBin+" --version", 0, "2.1.295\n").
-		OnSeq(claudeBin+" auth status",
-			host.Result{Stdout: `{"loggedIn":false,"authMethod":"none"}`},
-			host.Result{Stdout: `{"loggedIn":true,"authMethod":"claude.ai"}`}).
+		On(claudeBin+" auth status", 1, `{"loggedIn":false}`).
 		On(claudeBin+" plugin marketplace add o/curt", 0, "").
 		On(claudeBin+" plugin install curt@curt", 0, "")
 	e := claudeEnv(t, f, plugins.List{Marketplaces: []plugins.Marketplace{{Name: "curt", GitHub: "o/curt"}}, Plugins: []string{"curt@curt"}})
 	if err := (Claude{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if f.Ran("sh -c curl -fsSL https://claude.ai/install.sh | bash") {
-		t.Fatal("reinstalled a current claude")
+	for _, c := range f.Calls {
+		if strings.HasPrefix(c, "interactive:") || c == "sh -c curl -fsSL https://claude.ai/install.sh | bash" {
+			t.Fatalf("unexpected %s", c)
+		}
 	}
-	if !f.Ran("interactive: "+claudeBin) || !f.Ran(claudeBin+" plugin install curt@curt") {
+	if !f.Ran(claudeBin + " plugin install curt@curt") {
 		t.Fatalf("calls: %v", f.Calls)
+	}
+}
+
+func TestClaudeLoginProbesInEveryMode(t *testing.T) {
+	for _, c := range []struct {
+		code       int
+		out, login string
+	}{
+		{0, `{"loggedIn":true,"authMethod":"claude.ai"}`, "full"},
+		{0, `{"loggedIn":true,"authMethod":"oauth_token"}`, "token-only (oauth_token)"},
+		{1, `{"loggedIn":false}`, "none"},
+		{0, `not json`, "none"},
+	} {
+		for _, skip := range []bool{false, true} {
+			f := host.NewFake().On(claudeBin+" auth status", c.code, c.out)
+			e := testEnv(t, f)
+			e.SkipInteractive = skip
+			if got := claudeLogin(context.Background(), e); got != c.login {
+				t.Errorf("%s skip=%v: %q", c.out, skip, got)
+			}
+			done, detail, _ := (ClaudeLogin{}).Check(context.Background(), e)
+			if done != (c.login == "full") || !done && !strings.HasPrefix(detail, c.login+"; ") {
+				t.Errorf("%s skip=%v: done=%v detail=%q", c.out, skip, done, detail)
+			}
+		}
+	}
+}
+
+func TestClaudeLoginApplyLeavesAMissingLoginPendingAndStartsNothing(t *testing.T) {
+	f := host.NewFake().On(claudeBin+" auth status", 1, `{"loggedIn":false}`)
+	if err := (ClaudeLogin{}).Apply(context.Background(), testEnv(t, f)); !errors.Is(err, ErrPending) ||
+		!slices.Equal(f.Calls, []string{claudeBin + " auth status"}) {
+		t.Fatalf("err=%v calls=%v", err, f.Calls)
+	}
+}
+
+// --interactive offers every finished step for redo; redoing a full login must not keep the
+// Run step from starting the timer.
+func TestRedoingAFullLoginLeavesNothingPending(t *testing.T) {
+	f := host.NewFake().On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
+	e := testEnv(t, f)
+	e.UI = redoUI{Scripted: &ui.Scripted{A: &answers.Answers{}, Out: io.Discard}, redo: []string{"Claude login"}}
+	if err := RunAll(context.Background(), e, []Step{ClaudeLogin{}}); err != nil || len(e.Pending) != 0 {
+		t.Fatalf("err=%v pending=%v", err, e.Pending)
 	}
 }
 

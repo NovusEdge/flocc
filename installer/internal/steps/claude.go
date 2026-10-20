@@ -17,12 +17,6 @@ import (
 // The gate hook's onFailure setting needs this version.
 var minClaude = [3]int{2, 1, 295}
 
-const loginNote = `Claude Code opens next, in ~/worktrees.
-1. Type /login. Over SSH it prints a URL; open it in a browser, sign in with the
-   subscription account and paste the code it shows back here.
-2. Accept "Enable Remote Control" if asked.
-3. Leave with /exit.`
-
 const settingsRel = ".claude/settings.json"
 
 // pushSettings are the /config toggles "Push when actions required" and "Push when Claude decides".
@@ -42,16 +36,42 @@ func claudeVersion(ctx context.Context, e *Env) (bool, string) {
 	return host.AtLeast(v, minClaude), v
 }
 
-func loggedIn(ctx context.Context, e *Env) bool {
-	if e.SkipInteractive {
-		return true
-	}
+// claudeLogin is "full" for a claude.ai login, "token-only (<method>)" for any other, or "none".
+// Only a full login can open Remote Control sessions.
+func claudeLogin(ctx context.Context, e *Env) string {
 	var s struct {
 		LoggedIn   bool   `json:"loggedIn"`
 		AuthMethod string `json:"authMethod"`
 	}
-	return json.Unmarshal([]byte(e.Output(ctx, e.claude(), "auth", "status")), &s) == nil &&
-		s.LoggedIn && s.AuthMethod == "claude.ai"
+	if json.Unmarshal([]byte(e.Output(ctx, e.claude(), "auth", "status")), &s) != nil || !s.LoggedIn {
+		return "none"
+	}
+	if s.AuthMethod == "claude.ai" {
+		return "full"
+	}
+	return "token-only (" + s.AuthMethod + ")"
+}
+
+// ClaudeLogin reports the login and never does it: it needs a browser and the owner, so ship
+// leaves it to just login.
+type ClaudeLogin struct{}
+
+func (ClaudeLogin) Name() string { return "Claude login" }
+
+func (ClaudeLogin) Check(ctx context.Context, e *Env) (bool, string, error) {
+	if l := claudeLogin(ctx, e); l != "full" {
+		return false, l + "; just login does it after ship", nil
+	}
+	return true, "claude.ai subscription", nil
+}
+
+// Apply is reached for a full login only when --interactive offers the step for redo; pending
+// then would keep the Run step from starting the timer.
+func (ClaudeLogin) Apply(ctx context.Context, e *Env) error {
+	if claudeLogin(ctx, e) == "full" {
+		return nil
+	}
+	return ErrPending
 }
 
 // mergePushSettings returns existing settings JSON (empty means none) with the push keys set
@@ -174,9 +194,6 @@ func (Claude) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if ok, v := claudeVersion(ctx, e); !ok {
 		return false, "claude " + v + "; needs 2.1.295", nil
 	}
-	if !loggedIn(ctx, e) {
-		return false, "not logged in to a claude.ai subscription", nil
-	}
 	if !pushSettingsApplied(e) {
 		return false, "push settings not applied", nil
 	}
@@ -192,7 +209,7 @@ func (Claude) Check(ctx context.Context, e *Env) (bool, string, error) {
 		}
 	}
 	_, v := claudeVersion(ctx, e)
-	return true, v + ", logged in, " + plural(len(l.Plugins), "plugin"), nil
+	return true, v + ", " + plural(len(l.Plugins), "plugin"), nil
 }
 
 func (Claude) Apply(ctx context.Context, e *Env) error {
@@ -210,18 +227,6 @@ func (Claude) Apply(ctx context.Context, e *Env) error {
 	}
 	if err := applyPushSettings(e); err != nil {
 		return err
-	}
-	if !loggedIn(ctx, e) {
-		e.UI.Note("Claude login", loginNote)
-		if err := os.MkdirAll(e.HomePath(worktreesRel), 0o755); err != nil {
-			return err
-		}
-		if err := e.Run.Interactive(ctx, host.Cmd{Name: e.claude(), Dir: e.Real(worktreesRel)}); err != nil {
-			return err
-		}
-		if !loggedIn(ctx, e) {
-			return errors.New("still not logged in to a claude.ai subscription (claude auth status)")
-		}
 	}
 	known := knownMarketplaces(e)
 	for _, m := range l.Marketplaces {
