@@ -13,6 +13,18 @@ from flocc.worktree import changed_files, git, run_bounded
 _TAIL = 3000
 _FAILURE = re.compile(r"error|fail|traceback|panic|exit code [1-9]", re.IGNORECASE)
 _NOISE = re.compile(r"warning", re.IGNORECASE)
+# git's words for a remote branch holding commits the push lacks; `[remote rejected]` (a hook or
+# branch protection) is a different failure.
+_MOVED = re.compile(r"\[rejected\].*\((non-fast-forward|fetch first)\)")
+
+
+# The same push is rejected until someone reconciles the branches, so retrying cannot help.
+class BranchMoved(subprocess.CalledProcessError):
+    def __str__(self) -> str:
+        return (
+            "GitHub's copy of the branch has commits this one lacks"
+            " (another host or a person pushed, or a pushed commit was rewritten)"
+        )
 
 
 @dataclass(frozen=True)
@@ -89,25 +101,30 @@ def publish(
         )
         untrailed = tuple(out.split())
     env = {**os.environ, "GH_TOKEN": token}
-    runner(
-        [
-            "git",
-            "-c",
-            "credential.helper=",
-            "-c",
-            "credential.helper=!gh auth git-credential",
-            "push",
-            "-q",
-            "-u",
-            "origin",
-            claim.branch,
-        ],
-        cwd=wt,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        runner(
+            [
+                "git",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.helper=!gh auth git-credential",
+                "push",
+                "-q",
+                "-u",
+                "origin",
+                claim.branch,
+            ],
+            cwd=wt,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        if _MOVED.search(exc.stderr or ""):
+            raise BranchMoved(exc.returncode, exc.cmd, exc.output, exc.stderr) from exc
+        raise
     # A publish retried after a later step failed finds the PR it already opened.
     existing = runner(
         [

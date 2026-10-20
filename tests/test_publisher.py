@@ -2,10 +2,13 @@ import subprocess
 import time
 from dataclasses import replace
 
+import pytest
+
 from flocc import legacy
 from flocc.config import TRAILER, RepoConfig
 from flocc.publisher import (
     COMMENT_LIMIT,
+    BranchMoved,
     comment_on_pr,
     failure_excerpt,
     publish,
@@ -68,6 +71,30 @@ def test_retry_reuses_the_open_pr(origin, tmp_path):
     gh = Gh(existing="https://github.com/o/r/pull/9\n")
     result = publish(claim, repo, "t", "s", token="t", runner=gh)
     assert result.url.endswith("/pull/9") and not any(c[2] == "create" for c in gh.calls)
+
+
+def test_a_push_rejected_because_the_branch_moved_says_so(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    other = tmp_path / "other-host"
+    subprocess.run(
+        ["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)],
+        check=True,
+        capture_output=True,
+    )
+    for k, v in (("user.name", "t"), ("user.email", "t@t")):
+        git("config", k, v, cwd=other)
+    git("checkout", "-qb", claim.branch, cwd=other)
+    (other / "theirs.txt").write_text("x\n")
+    git("add", ".", cwd=other)
+    git("commit", "-qm", "pushed from elsewhere", cwd=other)
+    git("push", "-q", "origin", claim.branch, cwd=other)
+    with pytest.raises(BranchMoved) as exc:
+        publish(claim, repo, "t", "s", token="t", runner=Gh())
+    assert str(exc.value) == (
+        "GitHub's copy of the branch has commits this one lacks"
+        " (another host or a person pushed, or a pushed commit was rewritten)"
+    )
+    assert "[rejected]" in exc.value.stderr
 
 
 def test_rejects_changed_tests(origin, tmp_path):

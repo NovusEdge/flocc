@@ -18,7 +18,7 @@ from flocc.gate import (
 )
 from flocc.ledger import Claim
 from flocc.linear import LinearError
-from flocc.publisher import review_comment
+from flocc.publisher import BranchMoved, review_comment
 from flocc.sessions import (
     allowed_plugins,
     claude_argv,
@@ -137,8 +137,20 @@ def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
     # lock; a push that is rejected for good would hold the lock that long forever.
     key = claim.issue_key
     counter = f"publish_failures:{key}"
-    fails = int(ledger.meta_get(rt.con, counter) or 0) + 1
     detail = (getattr(exc, "stderr", None) or "").strip()
+    if isinstance(exc, BranchMoved):
+        print(f"{key}: publish failed: {exc} {detail}", file=sys.stderr)
+        _block(
+            rt,
+            claim,
+            "branch-moved",
+            f"Publishing {claim.branch} failed: {exc}.\n{detail[-1500:]}".strip(),
+            f"See who pushed {claim.branch}, merge origin/{claim.branch} into the worktree's"
+            f" branch or reset it to that, then run flocc release --keep-worktree {key}",
+        )
+        ledger.meta_set(rt.con, counter, "0")
+        return
+    fails = int(ledger.meta_get(rt.con, counter) or 0) + 1
     print(f"{key}: publish failed ({fails}/{PUBLISH_TRIES}): {exc} {detail}", file=sys.stderr)
     if fails < PUBLISH_TRIES:
         ledger.meta_set(rt.con, counter, str(fails))
