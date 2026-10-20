@@ -344,7 +344,7 @@ func importHost(ctx context.Context, d *deps, name string, reach hosts.Host) err
 
 // adoptKeys reads each key the store lacks from the host's secret file as the service user and
 // stores it once it passes the checks a paste gets. The values reach neither argv nor output:
-// Capture forbids a pty, and only the slot's title and the check's note are printed.
+// Capture forbids a pty, and only the slot's title, the check's note and its error are printed.
 func adoptKeys(ctx context.Context, d *deps, h hosts.Host, dest ship.Dest) error {
 	e := keysEnv(d)
 	m := mapped(listHosts(d))
@@ -356,12 +356,22 @@ func adoptKeys(ctx context.Context, d *deps, h hosts.Host, dest ship.Dest) error
 		if cur != "" {
 			continue
 		}
-		res, err := ship.Capture(ctx, d.run, dest, []string{"cat", ".config/flocc/" + steps.SecretFile(string(s))}, nil)
+		file := ".config/flocc/" + steps.SecretFile(string(s))
+		res, err := ship.Capture(ctx, d.run, dest, []string{"cat", file}, nil)
 		if err != nil {
 			return err
 		}
-		if res.Code != 0 {
-			continue // the host never had it; the desktop asks for it where it is needed
+		// A lost connection must not pass for a missing file: the desktop would then ask for a
+		// new token, and GitHub shows one only once. The ControlPersist master can expire while
+		// the owner sits at a prompt, so the answers read proves nothing about this one.
+		switch res.Code {
+		case 0:
+		case 1:
+			continue // cat found no file: the host never had it; the desktop asks where it is needed
+		case 255:
+			return fmt.Errorf("could not reach %s (%s); run flocc host import again", h.Name, strings.TrimSpace(res.Stderr))
+		default:
+			return fmt.Errorf("reading %s on %s: %s; run flocc host import again", file, h.Name, strings.TrimSpace(res.Stderr))
 		}
 		if err := keys.Adopt(ctx, e, m, s, res.Stdout, h.Name); err != nil {
 			return err
