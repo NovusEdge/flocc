@@ -67,9 +67,34 @@ def test_unknown_mcp_server_raises():
         claude_argv(CFG, "NF-1", IssueSettings(mcp=("nope",)), "p", env={}, claude_exe="c", exe="x")
 
 
-def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
+def test_trust_marks_onboarding_done_and_keeps_the_rest(tmp_path):
+    cj = tmp_path / ".claude.json"
+    cj.write_text(json.dumps({"oauthAccount": {"emailAddress": "a@b"}, "projects": {}}))
+    trust_folders(cj, ["/wt/NF-1"])
+    data = json.loads(cj.read_text())
+    assert data["hasCompletedOnboarding"] is True
+    assert data["oauthAccount"] == {"emailAddress": "a@b"}
+    assert data["projects"]["/wt/NF-1"]["hasTrustDialogAccepted"] is True
+    assert cj.stat().st_mode & 0o777 == 0o600
+
+
+def test_trust_marks_onboarding_done_when_every_folder_is_trusted(tmp_path):
     cj = tmp_path / ".claude.json"
     cj.write_text(json.dumps({"projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}}}))
+    trust_folders(cj, ["/wt/NF-1"])
+    assert json.loads(cj.read_text())["hasCompletedOnboarding"] is True
+
+
+def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
+    cj = tmp_path / ".claude.json"
+    cj.write_text(
+        json.dumps(
+            {
+                "hasCompletedOnboarding": True,
+                "projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}},
+            }
+        )
+    )
     before = cj.stat()
     trust_folders(cj, ["/wt/NF-1"])
     after = cj.stat()
