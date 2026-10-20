@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -99,6 +101,66 @@ func TestCheckPublishRefusesATokenThatCannotOpenPullRequests(t *testing.T) {
 	got, err := CheckPublish(context.Background(), c, repoA)
 	if err != nil || len(got.Problems) != 1 || !strings.Contains(got.Problems[0], "cannot open pull requests") {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestARateLimitedRefProbeIsNotAPassForTheAgentToken(t *testing.T) {
+	_, c := serve(t, get("/user", "user-ok.http"), get("/repos/o/a", "repo-ok.http"),
+		post("/repos/o/a/git/refs", "refs-ratelimited.http"))
+	got, err := CheckAgent(context.Background(), c, repoA)
+	if err == nil || !strings.Contains(err.Error(), "secondary rate limit") || len(got.Problems) != 0 {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestARateLimitedRefProbeDoesNotBlameThePublishToken(t *testing.T) {
+	_, c := serve(t, get("/user", "user-ok.http"), get("/repos/o/a", "repo-ok.http"),
+		post("/repos/o/a/git/refs", "refs-ratelimited.http"))
+	got, err := CheckPublish(context.Background(), c, repoA)
+	if err == nil || len(got.Problems) != 0 {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestARateLimitedPullProbeDoesNotBlameThePublishToken(t *testing.T) {
+	_, c := serve(t, get("/user", "user-ok.http"), get("/repos/o/a", "repo-ok.http"),
+		post("/repos/o/a/git/refs", "refs-unprocessable.http"), post("/repos/o/a/pulls", "pulls-ratelimited.http"))
+	got, err := CheckPublish(context.Background(), c, repoA)
+	if err == nil || !strings.Contains(err.Error(), "secondary rate limit") || len(got.Problems) != 0 {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestAnOversizedResponseIsAnError(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(strings.Repeat("x", maxBody+1)))
+	}))
+	defer s.Close()
+	c := &Client{Base: s.URL, Token: "github_pat_test", HTTP: s.Client()}
+	if _, err := c.Expiry(context.Background()); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatal(err)
+	}
+}
+
+func TestListReposStopsAtANextLinkThatPointsAtItself(t *testing.T) {
+	q := "/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
+	_, c := serve(t, get(q, "repos-loop.http"))
+	if _, err := c.ListRepos(context.Background()); err == nil || !strings.Contains(err.Error(), "repeats") {
+		t.Fatal(err)
+	}
+}
+
+func TestListReposStopsAfterMaxPages(t *testing.T) {
+	n := 0
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		w.Header().Set("Link", `</user/repos?page=`+strings.Repeat("1", n)+`>; rel="next"`)
+		w.Write([]byte("[]"))
+	}))
+	defer s.Close()
+	c := &Client{Base: s.URL, Token: "github_pat_test", HTTP: s.Client()}
+	if _, err := c.ListRepos(context.Background()); err == nil || n != maxPages {
+		t.Fatalf("%d pages, %v", n, err)
 	}
 }
 

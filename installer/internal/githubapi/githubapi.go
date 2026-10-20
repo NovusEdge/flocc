@@ -23,6 +23,11 @@ var (
 	ErrNotVisible     = errors.New("not visible to this token")
 )
 
+const (
+	maxBody  = 1 << 20
+	maxPages = 50
+)
+
 type Client struct {
 	Base, Token string
 	HTTP        *http.Client
@@ -58,14 +63,26 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return nil, nil, err
+	}
+	if len(b) > maxBody {
+		return nil, nil, fmt.Errorf("GitHub %s %s: response larger than %d bytes", method, req.URL.Path, maxBody)
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		return resp, b, ErrBadCredentials
 	}
 	return resp, b, nil
+}
+
+// lacksPermission is true for the 403 GitHub sends when the token's grants do not cover the call.
+// Rate limits, archived repos and SSO enforcement are 403 too, with other messages, and say
+// nothing about the token's permissions.
+func lacksPermission(resp *http.Response, body []byte) bool {
+	var e struct{ Message string }
+	json.Unmarshal(body, &e)
+	return resp.StatusCode == http.StatusForbidden && strings.HasPrefix(e.Message, "Resource not accessible")
 }
 
 func apiError(resp *http.Response, body []byte) error {
@@ -116,7 +133,7 @@ func (c *Client) CanWriteContents(ctx context.Context, slug string) (bool, error
 		return false, err
 	}
 	switch {
-	case resp.StatusCode == http.StatusForbidden:
+	case lacksPermission(resp, b):
 		return false, nil
 	case resp.StatusCode == http.StatusUnprocessableEntity:
 		return true, nil
@@ -143,7 +160,7 @@ func (c *Client) CanOpenPulls(ctx context.Context, slug, base string) (bool, err
 	switch {
 	case resp.StatusCode == http.StatusUnprocessableEntity:
 		return true, nil
-	case resp.StatusCode == http.StatusForbidden:
+	case lacksPermission(resp, b):
 		return false, nil
 	case resp.StatusCode == http.StatusNotFound:
 		_, err := c.Repo(ctx, slug)
@@ -161,7 +178,12 @@ var nextLink = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
 func (c *Client) ListRepos(ctx context.Context) ([]byte, error) {
 	path := "/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
 	var all []byte
-	for path != "" {
+	seen := map[string]bool{}
+	for page := 0; path != ""; page++ {
+		if page == maxPages || seen[path] {
+			return nil, fmt.Errorf("GitHub /user/repos: more than %d pages or a page link that repeats", maxPages)
+		}
+		seen[path] = true
 		resp, b, err := c.do(ctx, "GET", path, nil)
 		if err != nil {
 			return nil, err
