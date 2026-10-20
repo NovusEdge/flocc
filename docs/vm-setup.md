@@ -295,7 +295,7 @@ stops or restarts Docker: on 2026-10-20 a Docker restart killed another session'
 | zone `flocc-incus` | firewalld | `incusbr0` moves into it. It allows only `dhcp` and `dns` (Incus's dnsmasq), so the VM reaches none of the machine's own services. |
 | policy `flocc-incus-out` | firewalld | Forwards `flocc-incus` to the zone of the default route's interface. |
 | policy `flocc-no-docker` | firewalld, when Docker made its `docker` zone | Rejects `flocc-incus` to `docker`, ahead of Docker's `docker-forwarding` policy, which accepts forwarding from every zone into Docker's bridges and published ports. |
-| `flocc-docker-user.service` | `/etc/systemd/system/` | A oneshot with `After=` and `PartOf=docker.service` that adds `-i incusbr0 -j ACCEPT` and `-o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT` to `DOCKER-USER` after every Docker start (ip6tables too, where Docker made that chain). It has no `ExecStop`, so the rules stay when Docker stops: a stopped Docker leaves `FORWARD` at `DROP`, and removing them would cut the VM off. With Docker stopped it is enabled but not started, and runs at Docker's next start. |
+| `flocc-docker-user.service` | `/etc/systemd/system/` | A oneshot with `After=` and `PartOf=docker.service` that adds `-i incusbr0 -o docker0 -j RETURN`, `-i incusbr0 -o br-+ -j RETURN`, `-i incusbr0 -j ACCEPT` and `-o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT` to `DOCKER-USER`, in that order, after every Docker start (ip6tables too, where Docker made that chain). The two `RETURN`s leave traffic into Docker's bridges to Docker's own rules, so the VM reaches published container ports and no others. It has no `ExecStop`, so the rules stay when Docker stops: a stopped Docker leaves `FORWARD` at `DROP`, and removing them would cut the VM off. With Docker stopped it is enabled but not started, and runs at Docker's next start. |
 
 A new zone or policy needs one `firewall-cmd --reload`, which create runs whenever the runtime or
 the permanent configuration differs from the wanted one. A reload drops every firewalld change that
@@ -331,8 +331,12 @@ sudo systemctl disable --now flocc-docker-user.service
 sudo rm /etc/systemd/system/flocc-docker-user.service && sudo systemctl daemon-reload
 # the unit has no ExecStop, so its rules stay until removed; the ip6tables lines fail harmlessly
 # where Docker made no IPv6 DOCKER-USER chain
+sudo iptables -D DOCKER-USER -i incusbr0 -o docker0 -j RETURN
+sudo iptables -D DOCKER-USER -i incusbr0 -o br-+ -j RETURN
 sudo iptables -D DOCKER-USER -i incusbr0 -j ACCEPT
 sudo iptables -D DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+sudo ip6tables -D DOCKER-USER -i incusbr0 -o docker0 -j RETURN
+sudo ip6tables -D DOCKER-USER -i incusbr0 -o br-+ -j RETURN
 sudo ip6tables -D DOCKER-USER -i incusbr0 -j ACCEPT
 sudo ip6tables -D DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 sudo firewall-cmd --permanent --delete-policy=flocc-no-docker

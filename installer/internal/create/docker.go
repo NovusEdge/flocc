@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 )
 
@@ -12,26 +13,41 @@ const (
 	dockerUnitPath = "/etc/systemd/system/" + dockerUnitName
 )
 
-// dockerRules let the VM through the DROP policy Docker puts on FORWARD, scoped to the bridge,
+// dockerReturns hand traffic into Docker's bridges back to Docker's own chains, which admit only
+// published ports. Below them, dockerAccepts would open every container's ports to the VM.
+var dockerReturns = [][]string{
+	{"-i", Bridge, "-o", "docker0", "-j", "RETURN"},
+	{"-i", Bridge, "-o", "br-+", "-j", "RETURN"},
+}
+
+// dockerAccepts let the VM through the DROP policy Docker puts on FORWARD, scoped to the bridge,
 // as the Incus firewall docs give them.
-var dockerRules = [][]string{
+var dockerAccepts = [][]string{
 	{"-i", Bridge, "-j", "ACCEPT"},
 	{"-o", Bridge, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
 }
 
+// dockerRules is DOCKER-USER's wanted order, top first.
+var dockerRules = append(slices.Clone(dockerReturns), dockerAccepts...)
+
 // dockerUnit re-adds the rules after every Docker start (PartOf restarts it with Docker). It has
 // no ExecStop: a stopped Docker leaves FORWARD at DROP, so removing the rules then would cut the
-// VM off. systemd expands $name in Exec lines, so the shell's variable is $$t. ip6tables is
-// skipped where Docker made no IPv6 DOCKER-USER chain. Any rule left out fails the unit, whose
+// VM off. systemd expands $name in Exec lines, so the shell's variables are $$t and $$m. ip6tables
+// is skipped where Docker made no IPv6 DOCKER-USER chain. Any rule left out fails the unit, whose
 // status is all a boot leaves to see.
+//
+// -I puts a rule at the top, so the rules go in bottom first, and once one has gone in, every rule
+// above it is deleted and inserted again: an ACCEPT added under RETURNs already there would
+// otherwise sit above them.
 func dockerUnit() string {
 	var start []string
 	for i := len(dockerRules) - 1; i >= 0; i-- {
 		r := strings.Join(dockerRules[i], " ")
-		start = append(start, "$$t -C DOCKER-USER "+r+" 2>/dev/null || $$t -I DOCKER-USER "+r+" || rc=1")
+		start = append(start, "[ $$m = 0 ] || $$t -D DOCKER-USER "+r+" 2>/dev/null; "+
+			"[ $$m = 0 ] && $$t -C DOCKER-USER "+r+" 2>/dev/null || { $$t -I DOCKER-USER "+r+" && m=1 || rc=1; }")
 	}
 	loop := "rc=0; for t in iptables ip6tables; do " +
-		"[ $$t = iptables ] || $$t -L DOCKER-USER -n >/dev/null 2>&1 || continue; "
+		"[ $$t = iptables ] || $$t -L DOCKER-USER -n >/dev/null 2>&1 || continue; m=0; "
 	return "[Unit]\n" +
 		"Description=Let Incus VMs on " + Bridge + " through Docker's forward drop (flocc)\n" +
 		"After=docker.service\n" +
@@ -101,6 +117,17 @@ func (d Docker) Check(ctx context.Context, e *Env) (bool, string, error) {
 		for _, r := range dockerRules {
 			if !e.ok(ctx, e.root(cmd(tool, append([]string{"-C", "DOCKER-USER"}, r...)...))) {
 				return false, tool + " DOCKER-USER lacks " + strings.Join(r, " "), nil
+			}
+		}
+		// -S prints rules as iptables-save does. A rule that -C finds but -S spells another way is
+		// left out of the order check rather than failing a chain that may well be right.
+		rules := strings.Split(e.out(ctx, e.root(cmd(tool, "-S", "DOCKER-USER"))), "\n")
+		at := func(r []string) int { return slices.Index(rules, "-A DOCKER-USER "+strings.Join(r, " ")) }
+		accept := at(dockerAccepts[0])
+		for _, r := range dockerReturns {
+			if accept >= 0 && at(r) > accept {
+				return false, tool + " DOCKER-USER has " + strings.Join(dockerAccepts[0], " ") + " above " +
+					strings.Join(r, " ") + "; delete that ACCEPT and run create again", nil
 			}
 		}
 	}
