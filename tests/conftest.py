@@ -12,8 +12,10 @@ from tests.paths import EXAMPLE
 
 @pytest.fixture(autouse=True)
 def no_token_check(monkeypatch):
-    # The tick's token check calls api.github.com; test_tokens.py covers it with fakes.
+    # The tick's token and login checks call api.github.com and claude; test_tokens.py covers
+    # them with fakes.
     monkeypatch.setattr("flocc.tick.check_tokens", lambda rt: None)
+    monkeypatch.setattr("flocc.tick.check_claude_login", lambda rt: None)
 
 
 @pytest.fixture

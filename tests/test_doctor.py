@@ -106,6 +106,15 @@ def test_claude_checks(monkeypatch):
     assert doctor.claude_checks(None, good)[0].status == "fail"
 
 
+def test_claude_login_fail_names_the_kind_and_the_desktop_command(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    token = json.dumps({"loggedIn": True, "authMethod": "oauth_token"})
+    run = fake_run({"--version": ("2.1.295 (Claude Code)\n", 0), "auth status": (token, 0)})
+    login = doctor.claude_checks("/opt/claude", run)[1]
+    assert login.status == "fail"
+    assert login.detail.startswith("token-only (oauth_token); on the desktop, run just login")
+
+
 def test_tmux_check(tmux_server):
     assert doctor.tmux_check(tmux_server).status == "ok"
     assert doctor.tmux_check("flocc-test-no-such-server").status == "fail"
