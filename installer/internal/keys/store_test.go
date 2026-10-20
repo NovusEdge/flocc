@@ -40,6 +40,7 @@ func TestFileStoreRoundTripsWithMode600(t *testing.T) {
 }
 
 func TestOpenUsesTheKeyringWhenItAnswers(t *testing.T) {
+	keyring.MockInit()
 	var notes bytes.Buffer
 	s := Open(t.TempDir(), &notes)
 	if s.Where() != "the OS keyring" || notes.Len() != 0 {
