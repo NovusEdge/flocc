@@ -456,7 +456,7 @@ def cmd_status(args) -> int:
     if args.json:
         print(json.dumps(report))
         return 0
-    print(f"{report['host']} ({report['mode']}), cap {report['session_cap']}")
+    print(f"{report['host']} ({report['mode']}), v{_version()}, cap {report['session_cap']}")
     for c in report["claims"]:
         alive = "up" if c["tmux_alive"] else "down"
         line = f"  {c['issue']}  {c['phase']}  {c['state']}  ctx {_pct(c['context_pct'])}  {alive}"
@@ -517,10 +517,17 @@ COMMANDS = {
 }
 
 
+def _version() -> str:
+    from importlib.metadata import version
+
+    return version("linear-agents")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="linear-agents", description="Run Claude sessions on Linear issues."
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
     parser.add_argument("--config", default=None, help="config file (default: standard path)")
     sub = parser.add_subparsers(dest="command", required=True)
 

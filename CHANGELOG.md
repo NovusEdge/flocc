@@ -1,0 +1,29 @@
+# Changelog
+
+A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyproject.toml` and
+`plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
+`v<version>`.
+
+## 0.2.0 (2026-10-20)
+
+The agent loop, and fixes from its first day on la-nimble.
+
+- Sessions delegate only to seven catalogue subagents with fixed models and per-phase launch
+  budgets, enforced by a fail-closed `PreToolUse` gate. The owner grants exceptions with `allow`
+  lines in issue comments (#31).
+- Implementer and fix sessions ask blocking questions with `AskUserQuestion`; an unanswered
+  question escalates after two hours. A session compacts once, then hands off (#31).
+- Agent sessions load only the plugins in `deploy/agent-plugins.txt`. Remote Control is on for
+  implementer and fix sessions only. Finished runs' scratchpads are deleted (#31).
+- `linear-agents release --accept-tests` accepts an owner-approved change to the tester's files
+  (#32).
+- A session idle for 30 minutes without finishing escalates with its last message. Claims are
+  checked within one repo, are refused for whole trees, and skip `shared_paths`. Sessions are told
+  the issue is the approved design (#33).
+- A failed check's comment shows its failing lines, and the fix session gets the full output (#34).
+- `linear-agents --version`, and the version in `linear-agents status`.
+
+## 0.1.0 (2026-10-19)
+
+Everything through #30: the poller, tester, implementer, reviewer and fix phases, the publisher,
+escalations and digest, steering by comment, the Go installer and `just ship`.

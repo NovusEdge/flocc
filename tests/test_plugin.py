@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 from linear_agents.context import phase_prompt
@@ -29,6 +30,14 @@ def test_every_catalogue_agent_has_a_file_with_its_model_and_effort():
     for name, (model, effort) in SPEC.items():
         fm = frontmatter(PLUGIN / "agents" / f"{name}.md")
         assert (fm["name"], fm["model"], fm["effort"]) == (name, model, effort)
+
+
+def test_the_plugin_and_the_package_share_one_version():
+    project = tomllib.loads((PLUGIN.parent / "pyproject.toml").read_text())["project"]
+    manifest = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())
+    assert manifest["version"] == project["version"]
+    changelog = (PLUGIN.parent / "CHANGELOG.md").read_text()
+    assert f"## {project['version']} " in changelog
 
 
 def test_reviewers_and_mappers_cannot_edit_or_run_shell():
