@@ -344,6 +344,43 @@ exec sleep 30
 	}
 }
 
+// The dialog's own text can match the connected line; only output after the y proves consent.
+func TestAnswerConsentAnswersADialogThatLooksConnected(t *testing.T) {
+	needScript(t)
+	got := filepath.Join(t.TempDir(), "answer")
+	bin := consentScript(t, `printf 'Enable Remote Control? Sessions show at https://claude.ai/code/sessions (y/n) '
+read a
+echo "$a" > "$1"
+sleep 0.2
+echo 'Remote Control connected'
+exec sleep 30
+`)
+	if err := answerConsent(context.Background(), host.Cmd{Name: bin, Args: []string{got}}, io.Discard, quickWaits); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(got); string(b) != "y\n" {
+		t.Fatalf("answer %q", b)
+	}
+}
+
+func TestAnswerConsentFailsWhenADialogThatLooksConnectedGoesUnanswered(t *testing.T) {
+	needScript(t)
+	bin := consentScript(t, "printf 'Enable Remote Control? Sessions show at https://claude.ai/code/sessions (y/n) '\nexit 1\n")
+	if err := answerConsent(context.Background(), host.Cmd{Name: bin}, io.Discard, quickWaits); err == nil ||
+		!strings.Contains(err.Error(), "exited before it connected") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+// The output is all copied before Wait returns, so a connected line printed before the exit counts.
+func TestAnswerConsentTakesAConnectedLineFromAProcessThatExits(t *testing.T) {
+	needScript(t)
+	bin := consentScript(t, "echo 'Remote Control connected'\nexit 0\n")
+	if err := answerConsent(context.Background(), host.Cmd{Name: bin}, io.Discard, quickWaits); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAnswerConsentTakesAConnectedLineWithoutAPromptAsConsentGiven(t *testing.T) {
 	needScript(t)
 	got := filepath.Join(t.TempDir(), "answer")

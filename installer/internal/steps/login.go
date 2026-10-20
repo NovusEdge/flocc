@@ -312,12 +312,21 @@ func answerConsent(ctx context.Context, c host.Cmd, out io.Writer, w consentWait
 	for {
 		select {
 		case <-prompt:
+			// Marked first: the reply can follow the y before WriteString returns.
+			watch.answered()
 			io.WriteString(stdin, "y\n")
 			prompt = nil
 		case <-watch.connected:
 			stop()
 			return nil
 		case err := <-exited:
+			// Wait returns only after the output is copied, so a connected line printed before
+			// the exit is already in; select picks between ready cases at random.
+			select {
+			case <-watch.connected:
+				return nil
+			default:
+			}
 			return fmt.Errorf("claude remote-control exited before it connected (%v):\n%s", err, watch.tail())
 		case <-timeout:
 			stop()
@@ -331,43 +340,65 @@ func answerConsent(ctx context.Context, c host.Cmd, out io.Writer, w consentWait
 }
 
 // consentWatch passes output through and closes prompt and connected once each appears. The
-// prompt has no newline after it and can arrive split across writes.
+// prompt has no newline after it and can arrive split across writes. The dialog's own text can
+// match connectedLine, so once the prompt shows, only output after answered counts; a connected
+// line with no prompt before it means the consent was already given.
 type consentWatch struct {
 	out                       io.Writer
 	prompt, connected         chan struct{}
-	oncePrompt, onceConnected sync.Once
 	mu                        sync.Mutex
-	recent                    []byte
+	recent, sinceAnswer       []byte
+	prompted, replied, online bool
 }
 
 func newConsentWatch(out io.Writer) *consentWatch {
 	return &consentWatch{out: out, prompt: make(chan struct{}), connected: make(chan struct{})}
 }
 
+func keepLast(buf, b []byte) []byte {
+	buf = append(buf, b...)
+	if len(buf) > 4096 {
+		buf = buf[len(buf)-4096:]
+	}
+	return buf
+}
+
 func (p *consentWatch) Write(b []byte) (int, error) {
 	p.out.Write(b)
 	p.mu.Lock()
-	p.recent = append(p.recent, b...)
-	if len(p.recent) > 4096 {
-		p.recent = p.recent[len(p.recent)-4096:]
+	defer p.mu.Unlock()
+	p.recent = keepLast(p.recent, b)
+	if p.replied {
+		p.sinceAnswer = keepLast(p.sinceAnswer, b)
 	}
-	clean := p.cleanLocked()
-	p.mu.Unlock()
-	if consentPrompt.Match(clean) {
-		p.oncePrompt.Do(func() { close(p.prompt) })
+	if !p.prompted && consentPrompt.Match(clean(p.recent)) {
+		p.prompted = true
+		close(p.prompt)
 	}
-	if connectedLine.Match(clean) {
-		p.onceConnected.Do(func() { close(p.connected) })
+	look := p.recent
+	if p.prompted {
+		look = p.sinceAnswer
+	}
+	if !p.online && connectedLine.Match(clean(look)) {
+		p.online = true
+		close(p.connected)
 	}
 	return len(b), nil
 }
 
-func (p *consentWatch) cleanLocked() []byte {
-	return escapeCodes.ReplaceAll(cursorForward.ReplaceAll(p.recent, []byte(" ")), nil)
+// answered starts the output that can prove the consent took.
+func (p *consentWatch) answered() {
+	p.mu.Lock()
+	p.replied = true
+	p.mu.Unlock()
+}
+
+func clean(b []byte) []byte {
+	return escapeCodes.ReplaceAll(cursorForward.ReplaceAll(b, []byte(" ")), nil)
 }
 
 func (p *consentWatch) tail() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return host.Tail(string(p.cleanLocked()), 20)
+	return host.Tail(string(clean(p.recent)), 20)
 }

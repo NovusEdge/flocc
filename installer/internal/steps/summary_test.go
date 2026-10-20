@@ -95,6 +95,18 @@ func TestSummaryFailsOnAnyOtherFailLine(t *testing.T) {
 	}
 }
 
+// The Run step keeps the timer off on any login FAIL line unless the login is pending, so the
+// summary must fail too.
+func TestSummaryKeepsTheLoginFailLineWhenTheLoginIsNotPending(t *testing.T) {
+	fixedNow(t)
+	f := summaryFake(1, doctorReport)
+	f.Responses[claudeBin+" auth status"] = authFull
+	s := Summarize(context.Background(), testEnv(t, f))
+	if s.LoginPending || !s.Failing() || !slices.Equal(s.Failed, []string{strings.TrimSuffix(loginFailLine, "\n")}) {
+		t.Fatalf("%+v", s)
+	}
+}
+
 func TestSummaryOfAnUpgradedHostWhoseLoginLapsed(t *testing.T) {
 	fixedNow(t)
 	f := summaryFake(1, doctorReport).
