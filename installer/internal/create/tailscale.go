@@ -6,7 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
+
+// renameWait is how many seconds Apply waits for the control server to confirm a new hostname.
+const renameWait = 15
 
 type tsVM struct {
 	state, dnsName string
@@ -57,11 +61,21 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 		if _, err := e.must(ctx, e.incus("exec", name, "--", "tailscale", "set", "--ssh", "--hostname="+name)); err != nil {
 			return err
 		}
-		// set cannot take a name another node holds: the tailnet still has a stale node of this name.
-		if label, _, _ := strings.Cut(e.vmTailscale(ctx).dnsName, "."); !strings.EqualFold(label, name) {
-			return tailnetTaken(name)
+		// set only edits local prefs; the new name comes back in a later netmap from the control
+		// server, so status shows the old name for a while.
+		for i := 0; ; i++ {
+			if label, _, _ := strings.Cut(e.vmTailscale(ctx).dnsName, "."); strings.EqualFold(label, name) {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if i == renameWait {
+				// set cannot take a name another node holds: the tailnet still has a stale node of this name.
+				return tailnetTaken(name)
+			}
+			e.Sleep(time.Second)
 		}
-		return nil
 	}
 	taken, err := tailnetHas(ctx, e, name)
 	if err != nil {
