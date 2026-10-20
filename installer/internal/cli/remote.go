@@ -106,11 +106,19 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 		return hosts.Host{}, fmt.Errorf("name a host with -H: %s", strings.Join(names(all), ", "))
 	}
 	key := args[i]
-	var holders []hosts.Host
+	var holders, reached []hosts.Host
 	var unreachable []string
-	for j, row := range ship.Statuses(ctx, d.run, all) {
+	// One at a time, as for -H all: Statuses fetches in parallel and keeps ssh's stderr.
+	for _, h := range all {
+		if err := connectFirst(ctx, d, h); err != nil {
+			unreachable = append(unreachable, err.Error())
+			continue
+		}
+		reached = append(reached, h)
+	}
+	for j, row := range ship.Statuses(ctx, d.run, reached) {
 		if row.Report == nil {
-			why := all[j].Name
+			why := reached[j].Name
 			if row.Err != "" {
 				why += ": " + row.Err
 			}
@@ -118,7 +126,7 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 			continue
 		}
 		if slices.ContainsFunc(row.Report.Claims, func(c ship.Claim) bool { return c.Issue == key }) {
-			holders = append(holders, all[j])
+			holders = append(holders, reached[j])
 		}
 	}
 	switch len(holders) {
@@ -132,6 +140,21 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 		return hosts.Host{}, fmt.Errorf("%s; name one with -H: %s", msg, strings.Join(names(all), ", "))
 	}
 	return hosts.Host{}, fmt.Errorf("%s is claimed on %s; name one with -H", key, and(names(holders)))
+}
+
+// connectFirst opens h's shared connection before Statuses reads it. A Daytona host is left to
+// Statuses: it mints its own token, and the connection is keyed by the token, so one opened here
+// would not be shared.
+func connectFirst(ctx context.Context, d *deps, h hosts.Host) error {
+	if h.Daytona != "" {
+		return nil
+	}
+	dest, err := d.resolve(ctx, h.Target())
+	if err != nil {
+		return err
+	}
+	dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
+	return ship.Connect(ctx, d.run, dest, h.Name, d.tty)
 }
 
 func onHost(ctx context.Context, d *deps, name string, args []string) int {

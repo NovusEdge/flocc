@@ -475,6 +475,9 @@ func TestHostImportTakesTheHostsKeysThroughThePasteChecks(t *testing.T) {
 		if !slices.Contains(c.Args, "-T") {
 			t.Errorf("no -T: %s", c)
 		}
+		if !strings.Contains(c.String(), "-o ConnectTimeout=10 ") {
+			t.Errorf("no ConnectTimeout: %s", c)
+		}
 	}
 }
 

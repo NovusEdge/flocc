@@ -20,7 +20,7 @@ import (
 
 func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 	dest := Dest{SSH: "tok123@ssh.example.test", Token: "tok123"}
-	f := host.NewFake().On("ssh tok123@ssh.example.test uname -m", 255, "")
+	f := host.NewFake().On("ssh -O check tok123@ssh.example.test", 0, "").On("ssh tok123@ssh.example.test uname -m", 255, "")
 	_, err := ship(context.Background(), f, t.TempDir(), dest, shipOpts{})
 	if err == nil || strings.Contains(err.Error(), "tok123") || !strings.Contains(err.Error(), "<token>") {
 		t.Fatalf("%v", err)
@@ -383,10 +383,15 @@ func TestRemoteCmd(t *testing.T) {
 	}
 }
 
+// mastered is a fake whose shared connection to dest is already open, so Connect does nothing.
+func mastered(dest string) *host.Fake {
+	return host.NewFake().On("ssh -O check "+dest, 0, "")
+}
+
 // okSudo is a host that passes the probes of a non-interactive ship; the ssh calls that carry
 // secrets or sudo pass -T, the uname probe does not.
 func okSudo(dest string) *stageOK {
-	return &stageOK{host.NewFake().
+	return &stageOK{mastered(dest).
 		On("ssh "+dest+" uname -m", 0, "x86_64\n").
 		On("ssh -T "+dest+" sudo -n true", 0, "").
 		On("ssh -T "+dest+" "+resetStageNoPrompt, 0, "")}
@@ -453,7 +458,7 @@ func TestShipWithoutAnswersStillClosesStdin(t *testing.T) {
 }
 
 func TestShipStopsBeforeStagingWithoutPasswordlessSudo(t *testing.T) {
-	f := &stageOK{host.NewFake().
+	f := &stageOK{mastered("ada@h").
 		On("ssh ada@h uname -m", 0, "x86_64\n").
 		On("ssh -T ada@h sudo -n true", 1, "").
 		On("ssh -T ada@h id -un", 0, "ada\n")}
@@ -467,15 +472,34 @@ func TestShipStopsBeforeStagingWithoutPasswordlessSudo(t *testing.T) {
 }
 
 func TestShipNamesAMissingSudo(t *testing.T) {
-	f := &stageOK{host.NewFake().On("ssh root@h uname -m", 0, "x86_64\n").On("ssh -T root@h sudo -n true", 127, "")}
+	f := &stageOK{mastered("root@h").On("ssh root@h uname -m", 0, "x86_64\n").On("ssh -T root@h sudo -n true", 127, "")}
 	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "install sudo") {
 		t.Fatalf("%v", err)
 	}
 }
 
+// uname -m is captured, so a Tailscale approval URL on its stderr would never show. The
+// connection opens on the terminal first, and the later calls share it.
+func TestShipOpensTheConnectionOnTheTerminalBeforeItsFirstCapture(t *testing.T) {
+	f := okSudo("root@h")
+	f.Responses["ssh -O check root@h"] = host.Result{Code: 255}
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Target: "root@h", TTY: true, Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	warm := slices.Index(f.Calls, "interactive: ssh -T root@h true")
+	if uname := slices.Index(f.Calls, "ssh root@h uname -m"); warm < 0 || uname < warm {
+		t.Fatalf("%v", f.Calls)
+	}
+	f = &stageOK{host.NewFake().On("ssh -O check root@h", 255, "").OnInteractive("ssh -T root@h true", errors.New("exit status 255"))}
+	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Target: "root@h", TTY: true, Out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "could not reach root@h") || f.Ran("ssh root@h uname -m") {
+		t.Fatalf("%v %v", err, f.Calls)
+	}
+}
+
 func TestShipInteractiveKeepsTheTerminal(t *testing.T) {
-	f := &stageOK{host.NewFake().On("ssh h uname -m", 0, "x86_64\n")}
+	f := &stageOK{mastered("h").On("ssh h uname -m", 0, "x86_64\n")}
 	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{Interactive: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}

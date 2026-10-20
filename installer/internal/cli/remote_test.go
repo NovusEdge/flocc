@@ -217,6 +217,29 @@ func TestAnIssueKeyPicksTheHostHoldingTheClaim(t *testing.T) {
 	}
 }
 
+// The lookup's status fetches run in parallel and keep stderr, so each host's connection opens
+// on the terminal first, one at a time.
+func TestAnIssueKeyLookupOpensEachConnectionOnTheTerminalFirst(t *testing.T) {
+	d, f, _, errb := hostDeps(t, "a", "b", "c")
+	d.tty = true
+	f.out["root@a"], f.out["root@b"] = `{"host":"a","claims":[]}`, holdsNF12
+	if code := run(context.Background(), d, []string{"release", "NF-12"}); code != 0 {
+		t.Fatalf("exit %d\n%s", code, errb)
+	}
+	if got := warmUps(t, f); !slices.Equal(got, []string{"root@a", "root@b", "root@c"}) {
+		t.Fatalf("warm-ups %v", got)
+	}
+	first := slices.IndexFunc(f.order, func(k call) bool { return isCapture(k.c) })
+	last := slices.IndexFunc(f.order, func(k call) bool { return k.interactive && strings.HasSuffix(k.c.String(), "root@c true") })
+	if first < last {
+		t.Fatalf("a status fetch ran before c's warm-up: %v", f.order)
+	}
+	// c failed to connect, so it is not fetched; b still holds the claim and is picked.
+	if n := len(f.captured()); n != 2 {
+		t.Fatalf("%d fetches: %v", n, f.captured())
+	}
+}
+
 func TestAnIssueKeyNoHostOrTwoHostsHoldIsAnError(t *testing.T) {
 	d, f, _, errb := hostDeps(t, "a", "b", "c")
 	f.out["root@a"] = `{"host":"a","claims":[]}`
@@ -224,7 +247,7 @@ func TestAnIssueKeyNoHostOrTwoHostsHoldIsAnError(t *testing.T) {
 	if code := run(context.Background(), d, []string{"release", "NF-12"}); code == 0 || len(f.interactive) != 0 {
 		t.Fatalf("exit %d %v", code, f.interactive)
 	}
-	if msg := errb.String(); !strings.Contains(msg, "no reachable host holds NF-12") || !strings.Contains(msg, "unreachable: c: exit 255: ssh: connect to host root@c: No route to host") || !strings.Contains(msg, "-H") {
+	if msg := errb.String(); !strings.Contains(msg, "no reachable host holds NF-12") || !strings.Contains(msg, "unreachable: could not reach c without a prompt (ssh: connect to host root@c: No route to host)") || !strings.Contains(msg, "-H") {
 		t.Fatal(msg)
 	}
 	f.out["root@a"], f.out["root@b"], f.out["root@c"] = holdsNF12, holdsNF12, holdsNF12

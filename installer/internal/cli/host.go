@@ -315,6 +315,8 @@ func importHost(ctx context.Context, d *deps, name string, reach hosts.Host) err
 	if err != nil {
 		return err
 	}
+	// The import has no time limit, so a blackholed host must fail on its own.
+	dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
 	if err := ship.Connect(ctx, d.run, dest, name, d.tty); err != nil {
 		return err
 	}
