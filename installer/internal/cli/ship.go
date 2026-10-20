@@ -43,7 +43,7 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 	var in io.Reader
 	if !interactive {
 		if h.TeamKey == "" || h.DigestIssue == "" || len(h.Repos) == 0 {
-			return fmt.Errorf("%s has no answers yet; run flocc host add %s", h.Name, h.Name)
+			return fmt.Errorf("%s has no answers yet; run flocc host import -H %s to copy the host's own answers and keys, or flocc host add %s if it was never shipped", h.Name, h.Name, h.Name)
 		}
 		if err := keys.Fill(ctx, keysEnv(d), mapped(listHosts(d)), keys.Slots); err != nil {
 			return err

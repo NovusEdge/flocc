@@ -86,7 +86,8 @@ func TestShipStopsBeforeShippingWhenAKeyIsNotGivenOrTheHostHasNoAnswers(t *testi
 	}
 	hosts.Save(hosts.Dir(d.home), hosts.Host{Name: "b", SSH: "root@b"})
 	writeSecrets(t, d.home, allKeys)
-	if err := shipHost(context.Background(), d, "b"); err == nil || !strings.Contains(err.Error(), "flocc host add b") {
+	if err := shipHost(context.Background(), d, "b"); err == nil || !strings.Contains(err.Error(), "flocc host import -H b") ||
+		strings.Index(err.Error(), "flocc host import") > strings.Index(err.Error(), "flocc host add b") {
 		t.Fatal(err)
 	}
 	if len(*calls) != 0 {
