@@ -223,9 +223,6 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOp
 	if err != nil {
 		return err
 	}
-	if err := refuseLegacy(ctx, r, dest); err != nil {
-		return err
-	}
 	if !o.Interactive {
 		if err := checkSudo(ctx, r, dest); err != nil {
 			return err

@@ -5,7 +5,6 @@ import signal
 import subprocess
 from pathlib import Path
 
-from flocc import legacy
 from flocc.config import TRAILER, RepoConfig
 
 _LISTED = 20
@@ -238,14 +237,14 @@ def recover_tests(
         f"{fork}..{remote}",
         cwd=worktree,
     )
-    wanted = {f"{name}: {key} test" for name in (TRAILER, legacy.TRAILER)}
+    wanted = f"{TRAILER}: {key} test"
     run = []
     # Only the run that starts the branch: the implementer can write a test trailer itself.
     for record in log.split("\x1e"):
         sha, _, trailers = record.strip().partition("\x1f")
         if not sha:
             continue
-        if not wanted & {line.strip() for line in trailers.splitlines()}:
+        if wanted not in {line.strip() for line in trailers.splitlines()}:
             break
         run.append(sha)
     if not run:

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -394,25 +393,6 @@ func TestWatchShowsTheFirstNoticeOnTheFirstDrawOnly(t *testing.T) {
 	draws := strings.Split(w.buf.String(), "\x1b[H\x1b[2J")
 	if len(draws) != 3 || !strings.Contains(draws[1], "dropped") || strings.Contains(draws[2], "dropped") {
 		t.Fatalf("%q", draws)
-	}
-}
-
-func TestFleetPrintsWhatTheOldHostsFileConversionDropped(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	old := filepath.Join(home, legacyHostsFile)
-	if err := os.MkdirAll(filepath.Dir(old), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(old, []byte("-oProxyCommand=id\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	if code := FleetMain(nil, &out); code != 0 {
-		t.Fatal(code)
-	}
-	if got := plainText(out.String()); !strings.Contains(got, "dropped") || !strings.Contains(got, ".converted") {
-		t.Fatal(got)
 	}
 }
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
-from flocc import ledger, legacy
+from flocc import ledger
 from flocc.config import TRAILER, RepoConfig, load
 from flocc.context import state_dir
 from flocc.escalation import Notifier
@@ -382,19 +382,6 @@ def test_forward_only_owner_comments(rt):
     assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
     c = ledger.get_claim(rt.con, "NF-1")
     assert c is not None and c.last_comment_at == "2026-10-09T10:06:00Z"
-
-
-def test_comments_with_the_old_bot_prefix_are_not_forwarded(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [
-            Comment("c1", f"{legacy.BOT_PREFIX} note", "2026-10-09T10:00:00Z", mine=True),
-            Comment("c2", "use option B", "2026-10-09T10:05:00Z", mine=True),
-        ]
-    }
-    rt.sessions.alive_names.add("NF-1-test")
-    forward_comments(rt)
-    assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
 
 
 def test_forward_steer_author_comments(rt):

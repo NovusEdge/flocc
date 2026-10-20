@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from flocc import ledger, legacy
+from flocc import ledger
 from flocc.cli import main
 from flocc.config import TRAILER, RepoConfig
 from flocc.worktree import (
@@ -99,7 +99,7 @@ def test_recover_tests_takes_the_first_run_of_test_commits(origin, tmp_path):
     other = _other_host(tmp_path)
     fork = git("rev-parse", "HEAD", cwd=other)
     _commit(other, "t1.txt", f"{TRAILER}: NF-3 test")
-    last = _commit(other, "t2.txt", f"{legacy.TRAILER}: NF-3 test")
+    last = _commit(other, "t2.txt", f"{TRAILER}: NF-3 test")
     _commit(other, "impl.txt", f"{TRAILER}: NF-3 impl")
     _commit(other, "t3.txt", f"{TRAILER}: NF-3 test")
     _push(other)
