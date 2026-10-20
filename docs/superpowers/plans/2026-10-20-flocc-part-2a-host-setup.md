@@ -3884,6 +3884,14 @@ Then read `$scratch/login.typescript` and check what the matchers rely on:
 - If the browser did not open, copy the URL line the host printed into `TestLoginRunsTheLoginPhaseOnATerminalOpensTheURLAndPrintsTheSummary` as the fixture and fix `oauthURL` in `installer/internal/ship/login.go`.
 - If the QR code is skewed (stair-stepped lines), `qr.Write` lost its `\r\n` endings.
 
+A false success looks like a real one in the summary (`full`, timer on), so the pass needs the typescript too. These checks gate the 0.4.0 tag:
+
+- Nothing matching `connectedLine` appears before the consent prompt in the typescript.
+- The echoed `y` follows the prompt.
+- The run stopped on remote-control's own connected line, not on a redraw of the consent dialog.
+- Afterwards, `just host daytona:flocc-smoke script -qfec 'claude remote-control' /dev/null` shows no consent prompt (stop it with Ctrl-C).
+- Narrow `connectedLine` to the real connected line, with that line as the `TestAnswerConsent…` fixture.
+
 - [ ] **Step 3: Clean up the sandbox**
 
 ```bash

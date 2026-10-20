@@ -49,7 +49,8 @@ refused.
 
 Ship never logs in to Claude. It ends with a summary: the version on the host, the Claude login
 (full, token-only or none), the GitHub token expiries, each failed doctor check, the timer and the
-live sessions. It exits non-zero when a doctor check other than the Claude login fails. On a fresh
+live sessions. It exits non-zero when a doctor check fails, except the Claude login while that
+login is pending. On a fresh
 host the login is pending, so the tmux unit runs, the timer stays off and ship exits 0. The command
 to run next is on the summary's `claude login` row, as `just login <target>` with the target you
 gave ship; each failed doctor check prints below the other rows.

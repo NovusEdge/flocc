@@ -208,8 +208,10 @@ func run(args []string) int {
 		env.Home, _ = os.UserHomeDir()
 	}
 	if *phase == "service" {
-		if err := removeStagedAnswers(stage); err != nil {
-			fmt.Fprintln(stderr, "flocc-setup: could not remove a leftover answers file from", stage+":", err)
+		if stage == serviceStage {
+			if err := removeStagedAnswers(stage); err != nil {
+				fmt.Fprintln(stderr, "flocc-setup: could not remove a leftover answers file from", stage+":", err)
+			}
 		}
 		env.AnswersPath = savedAnswersPath(env.Home)
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
