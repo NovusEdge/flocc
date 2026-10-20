@@ -2,7 +2,8 @@ import subprocess
 import time
 from dataclasses import replace
 
-from flocc.config import RepoConfig
+from flocc import legacy
+from flocc.config import TRAILER, RepoConfig
 from flocc.publisher import (
     COMMENT_LIMIT,
     comment_on_pr,
@@ -167,6 +168,16 @@ def test_commits_without_the_trailer_are_listed_not_blocked(origin, tmp_path):
     tests = git("rev-parse", "--short", str(claim.tester_sha), cwd=path)
     assert result.status == "opened"
     assert set(result.untrailed) == {bare, tests}
+
+
+def test_commits_with_either_trailer_count_as_trailed(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    _trailed_commit(path, "a.py", f"{TRAILER}: NF-5 impl")
+    # A rerun of a branch la-nimble started holds commits with its trailer.
+    _trailed_commit(path, "b.py", f"{legacy.TRAILER}: NF-5 impl")
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh())
+    tests = git("rev-parse", "--short", str(claim.tester_sha), cwd=path)
+    assert result.untrailed == (tests,)
 
 
 def test_trailer_check_is_skipped_when_the_trailer_is_off(origin, tmp_path):

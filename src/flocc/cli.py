@@ -9,7 +9,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 from flocc import gate, ledger, usage
-from flocc.config import default_config_path, load
+from flocc.config import TRAILER, default_config_path, load
 from flocc.escalation import Escalation, validate
 from flocc.grants import for_phase
 
@@ -89,7 +89,7 @@ def _commit_msg(message_file: str, trailer_on: bool) -> int:
     # A commit made by hand in the worktree has neither; it stays the owner's plain commit.
     if not key or not phase or phase == "review":
         return 0
-    trailer = f"Flocc: {Path(key).name} {phase}"
+    trailer = f"{TRAILER}: {Path(key).name} {phase}"
     # doNothing matches on the key alone: an amend keeps the phase it was first committed in, and
     # never stacks a second copy. Rebase and cherry-pick skip commit-msg, so they keep it as is.
     subprocess.run(
