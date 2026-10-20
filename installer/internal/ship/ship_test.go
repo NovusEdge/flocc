@@ -603,12 +603,12 @@ func shortHome(t *testing.T) string {
 // ssh fails every connection whose ControlPath exceeds sun_path, so a long HOME goes without sharing.
 func TestSSHMuxIsSkippedWhenTheSocketPathWouldNotFit(t *testing.T) {
 	short := shortHome(t)
-	if opts, err := sshMux(); err != nil || len(opts) == 0 {
+	if opts, err := SSHMux(); err != nil || len(opts) == 0 {
 		t.Fatalf("short home %q: %v %v", short, opts, err)
 	}
 	long := filepath.Join(short, strings.Repeat("h", 40))
 	t.Setenv("HOME", long)
-	if opts, err := sshMux(); err != nil || len(opts) != 0 {
+	if opts, err := SSHMux(); err != nil || len(opts) != 0 {
 		t.Fatalf("home of %d bytes: %v %v", len(long), opts, err)
 	}
 	if _, err := os.Stat(filepath.Join(long, ".ssh")); err == nil {

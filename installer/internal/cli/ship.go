@@ -35,9 +35,8 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 	if err != nil {
 		return err
 	}
-	// Ship reads the root itself; asked here first for the friendlier error.
-	if _, err := d.repoRoot(); err != nil {
-		return fmt.Errorf("flocc ship ships the flocc checkout it runs in; cd into it: %w", err)
+	if err := needCheckout(d); err != nil {
+		return err
 	}
 	// An io.Reader holding a nil *bytes.Reader is not nil, and Ship refuses answers with --interactive.
 	var in io.Reader
@@ -63,6 +62,15 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 	}
 	if interactive {
 		return importHost(ctx, d, h.Name, hosts.Host{})
+	}
+	return nil
+}
+
+// needCheckout fails outside a git checkout. Ship reads the root itself; asked here first for
+// the friendlier error.
+func needCheckout(d *deps) error {
+	if _, err := d.repoRoot(); err != nil {
+		return fmt.Errorf("flocc ship ships the flocc checkout it runs in; cd into it: %w", err)
 	}
 	return nil
 }

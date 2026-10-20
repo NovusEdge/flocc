@@ -48,58 +48,6 @@ build:
 clean:
     rm -rf build
 
-# Set up or upgrade a host from its host file and the stored keys (--interactive: the host's own forms)
-[group('host')]
-ship name *flags: build
-    build/flocc ship -H {{name}} {{flags}}
-
-# Log the host in to Claude, accept Remote Control and start its timer (--email picks the account)
-[group('host')]
-login name *flags: build
-    build/flocc login -H {{name}} {{flags}}
-
-# Run a raw command on the host as flocc, with the service PATH
-[group('host')]
-[positional-arguments]
-host name *cmd: build
-    t=$1; shift; build/flocc host run -H "$t" -- "$@"
-
-# Run flocc doctor on the host
-[group('host')]
-doctor name: build
-    build/flocc -H {{name}} doctor
-
-# Show the host's claims, last tick, usage, disk, Claude login and token expiries
-[group('host')]
-status name: build
-    build/flocc -H {{name}} status
-
-# Show every host's loop, sessions, usage and disk in one table
-[group('host')]
-fleet-status *flags: build
-    build/flocc status -H all {{flags}}
-
-# Follow run.log, or the journal on a systemd host
-[group('host')]
-logs name: build
-    build/flocc -H {{name}} logs -f
-
-# Attach read-only to a tmux session on the host
-[group('host')]
-attach name session: build
-    build/flocc -H {{name}} attach {{session}}
-
-# Run one tick by hand on the host
-[group('host')]
-tick name: build
-    build/flocc -H {{name}} tick
-
-# Release a blocked or timed-out issue's claim on the host
-[group('host')]
-[positional-arguments]
-release name key *flags: build
-    t=$1; shift; build/flocc -H "$t" release "$@"
-
 # Create a Daytona sandbox that never auto-stops
 [group('daytona')]
 daytona-up name:
@@ -109,12 +57,6 @@ daytona-up name:
 [group('daytona')]
 daytona-stop name:
     daytona stop {{name}}
-
-# Start a Daytona sandbox, then ship to it, after flocc host add {{name}} --daytona {{name}}
-[group('daytona')]
-daytona-start name:
-    daytona start {{name}}
-    just ship {{name}}
 
 # List Daytona sandboxes
 [group('daytona')]

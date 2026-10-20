@@ -297,10 +297,12 @@ or `incus` group membership (not root SSH):
 2. If firewalld runs, puts `incusbr0` in a zone allowing only `dhcp` and `dns`, and forwards it only
    to the default route's interface. Agents in the VM run unreviewed code and must not reach the
    machine's own services.
-3. If Docker runs with the iptables backend, adds two `DOCKER-USER` rules scoped to `incusbr0`
-   (accept from it; accept related/established to it), installed by a oneshot unit with
-   `After=docker.service` and `PartOf=docker.service`. With the nftables backend it stops and says
-   so. Docker is never restarted: on 2026-10-20 a restart killed another session's build.
+3. If Docker 28 or newer runs with the iptables backend, adds three `DOCKER-USER` rules scoped to
+   `incusbr0` (jump from it to `DOCKER-FORWARD`; accept from it; accept related/established to it).
+   The jump comes first so that Docker's own chain, which admits only published ports on every
+   Docker bridge, judges the VM's traffic to containers. The rules are installed by a oneshot unit
+   with `After=docker.service` and `PartOf=docker.service`. With the nftables backend or an older
+   Docker it stops and says so. Docker is never restarted: on 2026-10-20 a restart killed another session's build.
 4. Checks `tailscale status` for `<name>`, launches `images:debian/13` as a VM with
    `boot.autostart=true`, and waits for an IPv4 address with outbound HTTPS.
 5. Joins Tailscale with `tailscale up --ssh --qr`: the owner scans or clicks. A one-off auth key may
