@@ -41,18 +41,11 @@ test-go:
 [group('dev')]
 check: lint test
 
-# Build flocc-setup for this machine and for linux amd64/arm64 hosts into build/
+# Build the desktop flocc command into build/
 [group('build')]
-build-setup:
+build:
     mkdir -p build
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/flocc-setup-linux-amd64 ./installer
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o build/flocc-setup-linux-arm64 ./installer
-    go build -o build/flocc-setup ./installer
-
-[private]
-build-desktop:
-    mkdir -p build
-    go build -o build/flocc-setup ./installer
+    go build -o build/flocc ./installer/cmd/flocc
 
 # Remove build/
 [group('build')]
@@ -61,55 +54,55 @@ clean:
 
 # Set up or upgrade a host without a terminal (--answers FILE sends the answers), or --interactive
 [group('host')]
-ship target *flags: build-setup
-    build/flocc-setup ship {{flags}} {{target}}
+ship target *flags: build
+    build/flocc ship {{flags}} {{target}}
 
 # Log the host in to Claude, accept Remote Control and start its timer (--email picks the account)
 [group('host')]
-login target *flags: build-desktop
-    build/flocc-setup login {{flags}} {{target}}
+login target *flags: build
+    build/flocc login {{flags}} {{target}}
 
 # Run any command on the host as flocc, with the service PATH
 [group('host')]
 [positional-arguments]
-host target *cmd: build-desktop
-    build/flocc-setup host "$@"
+host target *cmd: build
+    build/flocc host "$@"
 
 # Run flocc doctor on the host
 [group('host')]
-doctor target: build-desktop
-    build/flocc-setup host {{target}} flocc doctor
+doctor target: build
+    build/flocc host {{target}} flocc doctor
 
 # Show tmux sessions, the last run.log lines and the timer on the host
 [group('host')]
-status target: build-desktop
-    build/flocc-setup host {{target}} 'tmux -L flocc ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers flocc.timer; true'
+status target: build
+    build/flocc host {{target}} 'tmux -L flocc ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers flocc.timer; true'
 
 # Show every host's loop, sessions, usage and disk in one table
 [group('host')]
-fleet-status *flags: build-desktop
-    build/flocc-setup fleet {{flags}}
+fleet-status *flags: build
+    build/flocc fleet {{flags}}
 
 # Follow run.log, or the journal on a systemd host
 [group('host')]
-logs target: build-desktop
-    build/flocc-setup host {{target}} 'if [ -d /run/systemd/system ]; then journalctl --user -u flocc -f; else tail -f {{runlog}}; fi'
+logs target: build
+    build/flocc host {{target}} 'if [ -d /run/systemd/system ]; then journalctl --user -u flocc -f; else tail -f {{runlog}}; fi'
 
 # Attach read-only to a tmux session on the host
 [group('host')]
-attach target session: build-desktop
-    build/flocc-setup host {{target}} tmux -L flocc attach -r -t {{session}}
+attach target session: build
+    build/flocc host {{target}} tmux -L flocc attach -r -t {{session}}
 
 # Run one tick by hand on the host
 [group('host')]
-tick target: build-desktop
-    build/flocc-setup host {{target}} flocc tick
+tick target: build
+    build/flocc host {{target}} flocc tick
 
 # Release a blocked or timed-out issue's claim on the host
 [group('host')]
 [positional-arguments]
-release target key *flags: build-desktop
-    t=$1; shift; build/flocc-setup host "$t" flocc release "$@"
+release target key *flags: build
+    t=$1; shift; build/flocc host "$t" flocc release "$@"
 
 # Create a Daytona sandbox that never auto-stops
 [group('daytona')]

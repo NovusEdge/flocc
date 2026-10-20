@@ -135,11 +135,10 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, configDir s
 	if err := id.Write(filepath.Join(dir, "identity.json")); err != nil {
 		return err
 	}
-	bin, err := os.ReadFile(filepath.Join(root, "build", "flocc-setup-linux-"+arch))
-	if err != nil {
-		return fmt.Errorf("%w; run just build-setup", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "flocc-setup"), bin, 0o755); err != nil {
+	// Built here, not read from build/, so a stale installer never ships next to a newer bundle.
+	if _, err := host.Must(ctx, r, host.Cmd{Name: "go", Dir: root,
+		Args: []string{"build", "-o", filepath.Join(dir, "flocc-setup"), "./installer/cmd/flocc-setup"},
+		Env:  []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + arch}}); err != nil {
 		return err
 	}
 	if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "flocc.bundle"), "HEAD"}}); err != nil {
@@ -197,7 +196,7 @@ func Main(args []string) int {
 		return exitCode(err, "ship")
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: flocc-setup ship [--interactive | --answers FILE|-] <ssh-target|daytona:SANDBOX>")
+		fmt.Fprintln(os.Stderr, "usage: flocc ship[--interactive | --answers FILE|-] <ssh-target|daytona:SANDBOX>")
 		return 2
 	}
 	var in io.Reader

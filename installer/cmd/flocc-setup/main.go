@@ -18,7 +18,6 @@ import (
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/host"
-	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
@@ -147,18 +146,6 @@ func readAnswers(r io.Reader) ([]byte, *answers.Answers, error) {
 }
 
 func run(args []string) int {
-	if len(args) > 0 {
-		switch args[0] {
-		case "host":
-			return ship.HostMain(args[1:])
-		case "fleet":
-			return ship.FleetMain(args[1:], os.Stdout)
-		case "ship":
-			return ship.Main(args[1:])
-		case "login":
-			return ship.LoginMain(args[1:])
-		}
-	}
 	fs := flag.NewFlagSet("flocc-setup", flag.ContinueOnError)
 	phase := fs.String("phase", "root", "root, service or login; the root phase hands off to the service phase itself")
 	answersIn := fs.String("answers", "", `"-" reads the answers document, secrets included, from stdin and runs without a terminal`)
