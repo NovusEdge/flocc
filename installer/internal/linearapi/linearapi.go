@@ -60,12 +60,18 @@ type Error struct {
 func (e *Error) Error() string { return e.Message }
 func (e *Error) Unwrap() error { return e.cause }
 
+func (e *Error) unavailable() bool {
+	return e.Status == 0 || e.Status >= 500 || e.Status == 429 || e.Code == "RATELIMITED" || e.malformed
+}
+
+// The two classes are disjoint: a 401 from a proxy's HTML page, or an auth code on a 5xx, says
+// nothing reliable about the key, so unavailable wins.
 func (e *Error) Is(target error) bool {
 	switch target {
 	case ErrKeyRejected:
-		return e.Code == "AUTHENTICATION_ERROR" || e.Code == "FORBIDDEN" || e.Status == 401 || e.Status == 403
+		return !e.unavailable() && (e.Code == "AUTHENTICATION_ERROR" || e.Code == "FORBIDDEN" || e.Status == 401 || e.Status == 403)
 	case ErrUnavailable:
-		return e.Status == 0 || e.Status >= 500 || e.Status == 429 || e.Code == "RATELIMITED" || e.malformed
+		return e.unavailable()
 	}
 	return false
 }

@@ -158,6 +158,32 @@ func TestCanWriteWritesNothingWhenLinearReturnsNoIssue(t *testing.T) {
 	}
 }
 
+// A reply that cannot be trusted as Linear's answer about the key must not read as a rejected key.
+func TestUntrustworthyAuthRepliesAreUnavailableNotRejected(t *testing.T) {
+	oversized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(403)
+		w.Write([]byte(`{"errors":[{"message":"`))
+		w.Write(bytes.Repeat([]byte("a"), maxReply))
+		w.Write([]byte(`"}]}`))
+	}))
+	defer oversized.Close()
+	_, html401 := serve(t, "proxy-401.http")
+	_, auth503 := serve(t, "auth-error-503.http")
+	clients := map[string]*Client{
+		"401 HTML":                    html401,
+		"403 oversized":               {URL: oversized.URL, Key: "lin_api_test", HTTP: oversized.Client()},
+		"AUTHENTICATION_ERROR on 503": auth503,
+	}
+	for name, c := range clients {
+		t.Run(name, func(t *testing.T) {
+			_, err := CheckKey(context.Background(), c, nil)
+			if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrKeyRejected) || strings.Contains(err.Error(), "Full access") {
+				t.Fatalf("%v", err)
+			}
+		})
+	}
+}
+
 func TestAReplyOverTheLimitIsRefused(t *testing.T) {
 	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"data":{"viewer":{"name":"`))
