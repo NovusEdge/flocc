@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
 )
@@ -63,7 +64,8 @@ func fwMachine(runtime, permanent fwState) *host.Fake {
 	f := host.NewFake().
 		On("systemctl is-active --quiet firewalld.service", 0, "").
 		On("ip -j route show default", 0, `[{"dst":"default","gateway":"192.168.1.1","dev":"wlan0","protocol":"dhcp"}]`).
-		On("sudo -n firewall-cmd --get-zone-of-interface=wlan0", 0, "public\n")
+		On("sudo -n firewall-cmd --get-zone-of-interface=wlan0", 0, "public\n").
+		On("sudo -n firewall-cmd --get-default-zone", 0, "public\n")
 	onFirewall(f, false, runtime)
 	onFirewall(f, true, permanent)
 	return f
@@ -198,12 +200,146 @@ func TestFirewalldCheckPassesWithoutWriting(t *testing.T) {
 
 func TestFirewalldDetailSaysWhenTailscaleSharesTheUplinkZone(t *testing.T) {
 	f := fwMachine(wantFw("public"), wantFw("public")).
+		On("ip link show dev tailscale0", 0, "").
 		On("sudo -n firewall-cmd --get-zone-of-interface=tailscale0", 0, "public\n")
 	e, _ := testEnv(f)
 	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
 	if !ok || !strings.Contains(detail, "tailscale0 is in the same zone") {
 		t.Fatalf("%v %q", ok, detail)
 	}
+}
+
+// An interface bound to no zone falls in the default zone, which is usually the uplink's.
+func TestFirewalldDetailSaysWhenAnUnboundTailscaleFallsInTheUplinkZone(t *testing.T) {
+	f := fwMachine(wantFw("public"), wantFw("public")).
+		On("ip link show dev tailscale0", 0, "").
+		On("sudo -n firewall-cmd --get-zone-of-interface=tailscale0", 2, "no zone\n")
+	e, _ := testEnv(f)
+	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
+	if !ok || !strings.Contains(detail, "tailscale0 is in the same zone") {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+// firewall-cmd also answers "no zone" for an interface that does not exist.
+func TestFirewalldDetailIsQuietWithoutTailscale(t *testing.T) {
+	f := fwMachine(wantFw("public"), wantFw("public")).
+		On("ip link show dev tailscale0", 1, "").
+		On("sudo -n firewall-cmd --get-zone-of-interface=tailscale0", 2, "no zone\n")
+	e, _ := testEnv(f)
+	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
+	if !ok || strings.Contains(detail, "tailscale0") {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestFwBackend(t *testing.T) {
+	for conf, want := range map[string]string{
+		"":                             "nftables",
+		"# FirewallBackend=iptables\n": "nftables",
+		"DefaultZone=public\nFirewallBackend=nftables\n": "nftables",
+		"FirewallBackend = iptables\n":                   "iptables",
+	} {
+		if got := fwBackend(conf); got != want {
+			t.Errorf("%q: %q", conf, got)
+		}
+	}
+}
+
+// With the iptables backend firewalld's rules sit behind Docker's DOCKER-USER ACCEPT for
+// incusbr0, so flocc-no-docker would never see the VM's traffic.
+func TestFirewalldStopsOnTheIptablesBackend(t *testing.T) {
+	f := fwMachine(laptopFw(), laptopFw()).
+		On("sudo -n cat /etc/firewalld/firewalld.conf", 0, "DefaultZone=public\nFirewallBackend=iptables\n")
+	e, _ := testEnv(f)
+	ok, detail, err := Firewalld{}.Check(context.Background(), e)
+	if ok || err != nil || !strings.Contains(detail, "iptables backend") {
+		t.Fatalf("%v %q %v", ok, detail, err)
+	}
+	err = (Firewalld{}).Apply(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "FirewallBackend=nftables") || !strings.Contains(err.Error(), "DOCKER-USER") {
+		t.Fatal(err)
+	}
+	for _, c := range f.Calls {
+		if strings.Contains(c, "--new-") || strings.Contains(c, "--add-") || strings.Contains(c, "--set-") || strings.Contains(c, "--reload") {
+			t.Errorf("writes: %s", c)
+		}
+	}
+}
+
+const bridgesJSON = `[{"ifindex":3,"ifname":"incusbr0"},{"ifindex":4,"ifname":"docker0"},` +
+	`{"ifindex":5,"ifname":"br-0123456789ab"},{"ifindex":6,"ifname":"br-lan"}]`
+
+// fwDockerMachine is fwMachine set up, with Docker running and its bridges in the given zones;
+// "" is an unbound bridge.
+func fwDockerMachine(docker0, br string) *host.Fake {
+	f := fwMachine(wantFw("public"), wantFw("public")).
+		On("systemctl is-active --quiet docker.service", 0, "").
+		On("ip -j link show type bridge", 0, bridgesJSON)
+	for dev, z := range map[string]string{"docker0": docker0, "br-0123456789ab": br} {
+		if z == "" {
+			f.On("sudo -n firewall-cmd --get-zone-of-interface="+dev, 2, "no zone\n")
+		} else {
+			f.On("sudo -n firewall-cmd --get-zone-of-interface="+dev, 0, z+"\n")
+		}
+	}
+	return f
+}
+
+func TestFirewalldPassesWithDockersBridgesInItsZone(t *testing.T) {
+	f := fwDockerMachine("docker", "docker")
+	e, _ := testEnv(f)
+	ok, detail, err := Firewalld{}.Check(context.Background(), e)
+	if !ok || err != nil {
+		t.Fatalf("%v %q %v", ok, detail, err)
+	}
+	if f.Ran("sudo -n firewall-cmd --get-zone-of-interface=br-lan") {
+		t.Fatalf("read a bridge that is not Docker's: %v", f.Calls)
+	}
+}
+
+// flocc-no-docker rejects only traffic into zone docker; a Docker bridge elsewhere, such as the
+// uplink's zone, is open to the VM through flocc-incus-out.
+func TestFirewalldCatchesADockerBridgeOutsideDockersZone(t *testing.T) {
+	for _, z := range []string{"public", ""} {
+		e, _ := testEnv(fwDockerMachine("docker", z))
+		ok, detail, err := Firewalld{}.Check(context.Background(), e)
+		if ok || err != nil || !strings.Contains(detail, "Docker's bridge br-0123456789ab is in zone public, so flocc-no-docker does not cover it") ||
+			!strings.Contains(detail, "firewall-cmd --zone=docker --change-interface=br-0123456789ab") {
+			t.Fatalf("%q: %v %q %v", z, ok, detail, err)
+		}
+	}
+}
+
+// With Docker stopped no container runs, and Docker binds its bridges again when it starts.
+func TestFirewalldIgnoresBridgesWhileDockerIsStopped(t *testing.T) {
+	f := fwDockerMachine("public", "public").
+		On("systemctl is-active --quiet docker.service", 3, "inactive\n")
+	e, _ := testEnv(f)
+	if ok, detail, err := (Firewalld{}).Check(context.Background(), e); !ok || err != nil {
+		t.Fatalf("%v %q %v", ok, detail, err)
+	}
+}
+
+// A reload unbinds Docker's bridges until Docker, told over D-Bus, binds them again.
+func TestFirewalldApplyWaitsForDockerToRebindItsBridges(t *testing.T) {
+	f := fwDockerMachine("docker", "docker").
+		On("sudo -n firewall-cmd --reload", 0, "success\n").
+		OnSeq("sudo -n firewall-cmd --get-zone-of-interface=docker0",
+			host.Result{Code: 2, Stdout: "no zone\n"}, host.Result{Code: 2, Stdout: "no zone\n"}, host.Result{Stdout: "docker\n"})
+	e, _ := testEnv(f)
+	sleeps := 0
+	e.Sleep = func(time.Duration) { sleeps++ }
+	if err := (Firewalld{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if sleeps != 2 {
+		t.Fatalf("sleeps=%d %v", sleeps, f.Calls)
+	}
+	if ok, detail, _ := (Firewalld{}).Check(context.Background(), e); !ok {
+		t.Fatal(detail)
+	}
+	dockerUntouched(t, f.Calls)
 }
 
 // Docker's zone is in the runtime configuration only: the permanent check must still want
