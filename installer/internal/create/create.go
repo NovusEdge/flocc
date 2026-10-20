@@ -120,9 +120,20 @@ func (e *Env) Probe(ctx context.Context) error {
 	case e.sudo && e.ok(ctx, e.root(cmd("incus", "query", "/1.0"))):
 		e.incusSudo = true
 	default:
-		return fmt.Errorf("cannot run incus as an administrator on %s: add your account to the incus-admin group (sudo usermod -aG incus-admin \"$USER\", then log in again; the restricted incus group is not enough), or give it passwordless sudo", e.Spec.Machine)
+		return fmt.Errorf("cannot run incus as an administrator on %s: give your account passwordless sudo there, or add it to the incus-admin group with sudo usermod -aG incus-admin \"$USER\" (the restricted incus group is not enough), %s", e.Spec.Machine, regroup(e.Spec.Machine, ControlOpts()))
 	}
 	return nil
+}
+
+// regroup says how a new group reaches create's commands: the shared master logged in before the
+// usermod and serves every command until ControlPersist after its last use.
+func regroup(machine string, opts []string) string {
+	for _, o := range opts {
+		if strings.HasPrefix(o, "ControlPath=") {
+			return "then close create's shared connection, which keeps your old groups for 10 minutes: ssh -o " + quote(o) + " -O exit " + machine
+		}
+	}
+	return "then log in again"
 }
 
 // needRoot stops a step that reads or changes the machine's firewall, which only root can.

@@ -267,6 +267,22 @@ func TestProbeStopsWithoutIncusAccess(t *testing.T) {
 	}
 }
 
+// A live shared connection keeps the groups it logged in with, so usermod alone changes nothing
+// for create until that master closes.
+func TestProbeSaysToCloseTheSharedConnectionAfterUsermod(t *testing.T) {
+	opts := []string{"-o", "ControlMaster=auto", "-o", "ControlPath=/h/.ssh/flocc-%C", "-o", "ControlPersist=10m"}
+	if got := regroup("laptop", opts); !strings.Contains(got, "ssh -o 'ControlPath=/h/.ssh/flocc-%C' -O exit laptop") {
+		t.Fatal(got)
+	}
+	if got := regroup("laptop", nil); got != "then log in again" {
+		t.Fatal(got)
+	}
+	e, _ := testEnv(host.NewFake())
+	if err := e.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), regroup("laptop", ControlOpts())) {
+		t.Fatal(err)
+	}
+}
+
 func TestNeedRootNamesTheFix(t *testing.T) {
 	e, _ := testEnv(host.NewFake())
 	if e.needRoot("x") != nil {
