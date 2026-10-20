@@ -51,8 +51,10 @@ func (Tailnet) Check(ctx context.Context, e *Env) (bool, string, error) {
 
 func (Tailnet) Apply(ctx context.Context, e *Env) error {
 	name := e.Spec.Name
-	if !e.ok(ctx, e.incus("exec", name, "--", "sh", "-c", "command -v tailscale")) {
-		if _, err := e.must(ctx, e.incus("exec", name, "--", "sh", "-c", "curl -fsSL https://tailscale.com/install.sh | sh")); err != nil {
+	// An install cut off mid-dpkg leaves the binary without a running tailscaled, and apt refuses
+	// to install anything until dpkg --configure -a finishes the interrupted run.
+	if !e.ok(ctx, e.incus("exec", name, "--", "sh", "-c", "command -v tailscale && systemctl is-active --quiet tailscaled")) {
+		if _, err := e.must(ctx, e.incus("exec", name, "--", "sh", "-c", "dpkg --configure -a && curl -fsSL https://tailscale.com/install.sh | sh && systemctl enable --now tailscaled")); err != nil {
 			return err
 		}
 	}

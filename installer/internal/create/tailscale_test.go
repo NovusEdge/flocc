@@ -17,7 +17,8 @@ import (
 const (
 	tsInVM    = "incus exec flocc-a -- tailscale status --json"
 	prefsInVM = "incus exec flocc-a -- tailscale debug prefs"
-	hasTS     = "incus exec flocc-a -- sh -c command -v tailscale"
+	hasTS     = "incus exec flocc-a -- sh -c command -v tailscale && systemctl is-active --quiet tailscaled"
+	installTS = "incus exec flocc-a -- sh -c dpkg --configure -a && curl -fsSL https://tailscale.com/install.sh | sh && systemctl enable --now tailscaled"
 	upQR      = "incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --qr"
 	upKey     = "incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --auth-key=file:/dev/stdin"
 )
@@ -46,18 +47,32 @@ func TestTailnetCheckRejectsARenamedNode(t *testing.T) {
 func TestTailnetJoinsByQRWhenNoKeyIsGiven(t *testing.T) {
 	f := host.NewFake().
 		On(hasTS, 1, "").
-		On("incus exec flocc-a -- sh -c curl -fsSL https://tailscale.com/install.sh | sh", 0, "").
+		On(installTS, 0, "").
 		On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`)
 	e, out := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
 	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran("incus exec flocc-a -- sh -c curl -fsSL https://tailscale.com/install.sh | sh") || !f.Ran("interactive: "+upQR) {
+	if !f.Ran(installTS) || !f.Ran("interactive: "+upQR) {
 		t.Fatalf("%v", f.Calls)
 	}
 	if !strings.Contains(out.String(), "Disable key expiry") {
 		t.Fatal(out.String())
+	}
+}
+
+// An install cut off mid-dpkg leaves the tailscale binary without a running tailscaled.
+func TestTailnetInstallsAgainWhenTailscaledIsNotRunning(t *testing.T) {
+	f := host.NewFake().On("incus exec flocc-a -- sh -c command -v tailscale", 0, "/usr/bin/tailscale").
+		On(installTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`)
+	e, _ := testEnv(f)
+	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
+	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran(installTS) {
+		t.Fatalf("%v", f.Calls)
 	}
 }
 
