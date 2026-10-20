@@ -71,6 +71,25 @@ func TestOpenKeepsAnExistingSecretsFile(t *testing.T) {
 	}
 }
 
+func TestOpenTightensALooseSecretsFile(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".config/flocc/secrets.toml")
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	os.WriteFile(path, []byte("ntfy_topic = 'flocc-x'\n"), 0o644)
+	os.Chmod(path, 0o644)
+	var notes bytes.Buffer
+	Open(home, &notes)
+	st, _ := os.Stat(path)
+	if st.Mode().Perm() != 0o600 || notes.String() != path+" was mode 644; set it to 600.\n" {
+		t.Fatalf("%o %q", st.Mode().Perm(), notes.String())
+	}
+	notes.Reset()
+	Open(home, &notes)
+	if notes.Len() != 0 {
+		t.Fatalf("%q", notes.String())
+	}
+}
+
 func TestOpenFallsBackWhenTheKeyringHangs(t *testing.T) {
 	get, wait, limit := keyringGet, probeWait, probeLimit
 	t.Cleanup(func() { keyringGet, probeWait, probeLimit = get, wait, limit })
