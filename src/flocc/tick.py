@@ -23,7 +23,7 @@ from flocc.publisher import comment_on_pr, publish
 from flocc.runtime import Runtime
 from flocc.sessions import Sessions
 from flocc.supervisor import supervise
-from flocc.tokens import check_tokens
+from flocc.tokens import check_claude_login, check_tokens
 from flocc.worktree import git
 
 FAILS_BEFORE_PAGE = 5
@@ -179,6 +179,7 @@ def tick(cfg: Config, config_path: Path) -> int:
         poll(rt)
         # Before the digest, so a warning written today goes out with today's digest.
         check_tokens(rt)
+        check_claude_login(rt)
         maybe_digest(rt)
         if failed:
             raise IssueLinearErrors(failed)

@@ -38,6 +38,12 @@ def test_fresh_host_has_no_ledger_log_or_usage(cfg):
     assert not cfg.ledger_path.exists()
 
 
+def test_status_names_the_tick_lock(cfg):
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop")
+    assert report["tick_lock"] == str(cfg.ledger_path.with_suffix(".lock"))
+    assert cfg.tick_lock == cfg.ledger_path.with_suffix(".lock")
+
+
 def test_claims_carry_age_tmux_and_context(cfg):
     con = ledger.connect(cfg.ledger_path)
     ledger.insert_claim(con, make("NF-1"))
