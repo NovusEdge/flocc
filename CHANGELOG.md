@@ -18,7 +18,11 @@ The host side of setup: ship never asks, and the Claude login is one command.
 - Ship ends with a summary (version, Claude login, GitHub token expiries, failed doctor checks,
   timer, live sessions) and exits non-zero only when a check other than a pending login fails.
 - The tick pages once, tier 1, when the Claude login lapses. `flocc status --json` names the tick
-  lock.
+  lock. A transient `claude auth status` error (JSON without `loggedIn`) is not read as a lapse and
+  does not page.
+- The summary's login row names the real target: `just login <target>` with the host you gave ship.
+- The service phase removes an answers file a 0.3.0 run left in the host's stage, secrets included.
+- `just login` answers the Remote Control consent before it reports success.
 
 ## 0.3.0 (2026-10-20)
 
