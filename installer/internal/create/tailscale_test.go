@@ -3,11 +3,13 @@ package create
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
 )
@@ -94,11 +96,42 @@ func TestTailnetFixesARunningNodeWithoutAskingAgain(t *testing.T) {
 	}
 }
 
+// The first read is Apply's state check; set's rename shows up two reads after it.
+func TestTailnetWaitsForTheControlServerToConfirmTheRename(t *testing.T) {
+	old, renamed := host.Result{Stdout: fmt.Sprintf(runningAs, "flocc-a-1")}, host.Result{Stdout: fmt.Sprintf(runningAs, "flocc-a")}
+	f := host.NewFake().On(hasTS, 0, "").On(prefsInVM, 0, `{"RunSSH":true}`).On(tsSet, 0, "").
+		OnSeq(tsInVM, old, old, old, renamed)
+	e, _ := testEnv(f)
+	slept := 0
+	e.Sleep = func(time.Duration) { slept++ }
+	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if slept != 2 {
+		t.Fatalf("slept %d times", slept)
+	}
+}
+
 func TestTailnetRenamedNodeThatStaysRenamedPointsAtTheStaleNode(t *testing.T) {
 	f := joined("flocc-a-1.tail1.ts.net.").On(hasTS, 0, "").On(tsSet, 0, "")
 	e, _ := testEnv(f)
+	var slept time.Duration
+	e.Sleep = func(d time.Duration) { slept += d }
 	err := Tailnet{}.Apply(context.Background(), e)
 	if err == nil || !strings.Contains(err.Error(), "already a node on your tailnet") {
+		t.Fatal(err)
+	}
+	if slept != 15*time.Second {
+		t.Fatalf("gave up after %v", slept)
+	}
+}
+
+func TestTailnetStopsWaitingForTheRenameWhenCancelled(t *testing.T) {
+	f := joined("flocc-a-1.tail1.ts.net.").On(hasTS, 0, "").On(tsSet, 0, "")
+	e, _ := testEnv(f)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.Sleep = func(time.Duration) { cancel() }
+	if err := (Tailnet{}).Apply(ctx, e); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 }
