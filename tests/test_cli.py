@@ -109,6 +109,8 @@ def gate_env(monkeypatch, tmp_path, phase="review"):
     monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
     monkeypatch.setenv("LINEAR_AGENTS_PHASE", phase)
     monkeypatch.setenv("LINEAR_AGENTS_RUN", f"{phase}@1")
+    # The suite may run inside a host session, whose launch grants would leak into the gate.
+    monkeypatch.delenv("LINEAR_AGENTS_LAUNCH_GRANTS", raising=False)
 
 
 def test_gate_command_denies_with_hook_json(tmp_path, monkeypatch, capsys):

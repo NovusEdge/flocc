@@ -628,7 +628,7 @@ def test_no_handoff_is_requested_while_a_question_is_open(rt):
     assert len(rt.sessions.sent) == 1 and (d / "handoff-requested").exists()
 
 
-def test_the_question_escalation_says_to_answer_in_the_app(rt):
+def test_a_tester_question_escalation_points_at_the_pane(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
     d = state_dir(rt.cfg, "NF-1")
@@ -638,7 +638,22 @@ def test_the_question_escalation_says_to_answer_in_the_app(rt):
     supervise(rt, current(rt))
     (esc,) = rt.notifier.sent
     assert esc.action == (
-        "Answer it in the Claude app (Remote Control session NF-1-test);"
+        "Answer it in its pane on the host (tmux -L linear-agents attach -t NF-1-test);"
+        " a reply on this issue is delivered after the question is answered."
+    )
+
+
+def test_an_implementer_question_escalation_points_at_the_app(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    rt.sessions.alive_names.add("NF-1")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "asking").write_text(
+        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
+    )
+    supervise(rt, current(rt))
+    (esc,) = rt.notifier.sent
+    assert esc.action == (
+        "Answer it in the Claude app (Remote Control session NF-1);"
         " a reply on this issue is delivered after the question is answered."
     )
 

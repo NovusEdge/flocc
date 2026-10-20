@@ -16,7 +16,9 @@ The root phase must run from `/tmp/la-setup`, where `just ship` puts it; running
 hand from anywhere else is refused.
 
 Upgrading the service on a host is `just ship <target>` again: it ships the current commit as
-a git bundle, since the repo is private and the host has no credential for it.
+a git bundle, since the repo is private and the host has no credential for it. A session already
+running keeps the plugin, hooks and settings it was launched with; the upgrade reaches it at its
+next launch or handoff.
 
 ## Hosts
 

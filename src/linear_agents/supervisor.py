@@ -310,12 +310,16 @@ def _check_question(rt, claim: Claim, d: Path, name: str) -> None:
         return
     if rt.now() - at < QUESTION_WAIT_S:
         return
+    if claim.phase in ("impl", "fix"):
+        where = f"in the Claude app (Remote Control session {name})"
+    else:
+        where = f"in its pane on the host (tmux -L linear-agents attach -t {name})"
     esc = scoped(
         Escalation(
             2,
             "question",
-            f"Unanswered question in the Claude app: {text}",
-            f"Answer it in the Claude app (Remote Control session {name});"
+            f"Unanswered question in session {name}: {text}",
+            f"Answer it {where};"
             " a reply on this issue is delivered after the question is answered.",
             waiting=True,
         ),
