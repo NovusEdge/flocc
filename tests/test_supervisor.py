@@ -378,6 +378,7 @@ def test_touched_tests_block_names_release(rt):
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
     assert "linear-agents release" in rt.notifier.sent[-1].action
+    assert "--accept-tests NF-1" in rt.notifier.sent[-1].action
 
 
 def test_unbuildable_launch_keeps_the_markers(rt):

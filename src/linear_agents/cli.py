@@ -362,9 +362,18 @@ def cmd_release(args) -> int:
         if claim is None:
             print(f"release: no claim for {args.key}", file=sys.stderr)
             return 1
-        release_claim(rt, claim, keep_worktree=args.keep_worktree)
-    wt = "kept" if args.keep_worktree else "removed"
-    print(f"released {args.key}, branch {claim.branch} kept, worktree {wt}")
+        keep = args.keep_worktree or args.accept_tests
+        if args.accept_tests:
+            # The rerun resumes at the implementer only with the remembered tester commit, and
+            # the acceptance is checked against the branch it came from, so both need the worktree.
+            if ledger.remembered_tests(rt.con, args.key) is None:
+                print(f"release: {args.key} has no tester commit to accept", file=sys.stderr)
+                return 1
+            ledger.accept_tests(rt.con, args.key, rt.git_head(claim.worktree))
+        release_claim(rt, claim, keep_worktree=keep)
+    wt = "kept" if keep else "removed"
+    accepted = ", tester files accepted as they stand" if args.accept_tests else ""
+    print(f"released {args.key}, branch {claim.branch} kept, worktree {wt}{accepted}")
     return 0
 
 
@@ -489,6 +498,11 @@ def build_parser() -> argparse.ArgumentParser:
     rel = add("release", "Clear a claim and kill its session")
     rel.add_argument("key", help="issue key, e.g. NF-12")
     rel.add_argument("--keep-worktree", action="store_true", help="leave the worktree on disk")
+    rel.add_argument(
+        "--accept-tests",
+        action="store_true",
+        help="approve the tester's files as they stand on the branch (keeps the worktree)",
+    )
     add("doctor", "Check config and host setup")
     status = add("status", "Show claims, last tick, usage and disk")
     status.add_argument("--json", action="store_true", help="print the raw report as JSON")

@@ -67,6 +67,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
             token,
             check_timeout_s=cfg.check_timeout_s,
             trailer=trailer_enabled(cfg, cfg.repos[claim.repo]),
+            accepted_sha=ledger.accepted_tests(con, claim.issue_key),
         )
 
     def review_diff(claim):

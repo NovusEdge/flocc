@@ -122,3 +122,14 @@ def test_remembered_tests_outlive_the_claim(con):
     ledger.delete_claim(con, "NF-1")
     assert ledger.remembered_tests(con, "NF-1") == ("sha-base", "sha-tests")
     assert ledger.remembered_tests(con, "NF-2") is None
+
+
+def test_an_acceptance_ends_with_its_tester_commit(con):
+    ledger.remember_tests(con, "NF-1", "sha-base", "sha-tests")
+    ledger.accept_tests(con, "NF-1", "sha-ok")
+    assert ledger.accepted_tests(con, "NF-1") == "sha-ok"
+    ledger.remember_tests(con, "NF-1", "sha-base", "sha-tests-2")
+    assert ledger.accepted_tests(con, "NF-1") is None
+    ledger.accept_tests(con, "NF-1", "sha-ok")
+    ledger.forget_tests(con, "NF-1")
+    assert ledger.accepted_tests(con, "NF-1") is None

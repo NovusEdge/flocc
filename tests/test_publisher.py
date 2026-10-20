@@ -71,6 +71,19 @@ def test_rejects_changed_tests(origin, tmp_path):
     assert result.status == "tests_touched" and "test_x.py" in result.detail
 
 
+def test_accepted_tests_pass_until_changed_again(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "test_x.py").write_text("assert 1\n")
+    git("commit", "-qam", "amend with approval", cwd=path)
+    accepted = git("rev-parse", "HEAD", cwd=path)
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), accepted_sha=accepted)
+    assert result.status == "opened"
+    (path / "test_x.py").write_text("assert 2\n")
+    git("commit", "-qam", "weaken", cwd=path)
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), accepted_sha=accepted)
+    assert result.status == "tests_touched" and "test_x.py" in result.detail
+
+
 def test_uncommitted_changes_fail_before_the_check(origin, tmp_path):
     repo, path, claim = setup_claim(origin, tmp_path, check="sh -c 'echo ran > ran.txt'")
     (path / "impl.py").write_text("x = 1\n")
