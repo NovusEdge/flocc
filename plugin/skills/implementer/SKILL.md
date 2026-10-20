@@ -8,8 +8,18 @@ Make the committed tests pass by implementing the behavior.
 - Do not edit, delete or skip any file the tester committed. The service rejects the run if you
   do. If you believe a test is wrong, do not edit it: ask the owner (see the escalate skill), state
   the test change you propose, and keep working only on parts that do not depend on that test.
-- Claim paths before editing them: `linear-agents claim '<glob>'`. A rejected claim names the
-  issue that holds it; message that session or escalate.
+- Claim the files you will edit before editing them: `linear-agents claim '<path>'`. Claim files,
+  not trees: `**` is refused, a `*` within one directory is fine. A rejected claim names the issue
+  that holds it; message that session or escalate. A file the repo lists as shared is edited
+  without a claim.
+- When a peer's claim blocks your commit, finish everything else first, then message that peer
+  once. If the file is still held after the peer's next turn, escalate (tier 2,
+  `--cause claim-held:<path>`) instead of waiting.
+- Nobody reads your session's pane. Never end a turn waiting for the owner in plain text: to wait
+  on the owner, ask with `AskUserQuestion` (see the escalate skill).
+- When auto mode refuses a check command, do not ask for it to be run. Commit with
+  `linear-agents commit`, whose git hook runs the repo's lint on the commit, and finish with
+  `linear-agents done`, which runs the full check before the PR.
 - Run `linear-agents context` and read "Grants" before planning; it lists what you may do beyond
   the defaults. Grants that change launch flags (general-purpose agents, workflows) apply from the
   next session start; until then the gate refuses them, even when "Grants" lists them.
