@@ -120,9 +120,20 @@ func (e *Env) Probe(ctx context.Context) error {
 	case e.sudo && e.ok(ctx, e.root(cmd("incus", "query", "/1.0"))):
 		e.incusSudo = true
 	default:
-		return fmt.Errorf("cannot run incus as an administrator on %s: add your account to the incus-admin group (sudo usermod -aG incus-admin \"$USER\", then log in again; the restricted incus group is not enough), or give it passwordless sudo", e.Spec.Machine)
+		return fmt.Errorf("cannot run incus as an administrator on %s: give your account passwordless sudo there, or add it to the incus-admin group with sudo usermod -aG incus-admin \"$USER\" (the restricted incus group is not enough), %s", e.Spec.Machine, regroup(e.Spec.Machine, ControlOpts()))
 	}
 	return nil
+}
+
+// regroup says how a new group reaches create's commands: the shared master logged in before the
+// usermod and serves every command until ControlPersist after its last use.
+func regroup(machine string, opts []string) string {
+	for _, o := range opts {
+		if strings.HasPrefix(o, "ControlPath=") {
+			return "then close create's shared connection, which keeps your old groups for 10 minutes: ssh -o " + quote(o) + " -O exit " + machine
+		}
+	}
+	return "then log in again"
 }
 
 // needRoot stops a step that reads or changes the machine's firewall, which only root can.
@@ -178,6 +189,12 @@ func (n *tsNode) named(name string) bool {
 // tailnetHas reports whether a node on the owner's tailnet already uses name, as this desktop
 // sees the tailnet.
 func tailnetHas(ctx context.Context, e *Env, name string) (bool, error) {
+	return tailnetHasExcept(ctx, e, name, "")
+}
+
+// tailnetHasExcept is tailnetHas without the peer whose node key is except. The VM is such a peer
+// while its tailscaled is down or logged out, and this desktop lists it offline under its name.
+func tailnetHasExcept(ctx context.Context, e *Env, name, except string) (bool, error) {
 	out, err := host.Must(ctx, e.Local, cmd("tailscale", "status", "--json"))
 	if err != nil {
 		return false, fmt.Errorf("reading the tailnet on this desktop: %w", err)
@@ -192,8 +209,9 @@ func tailnetHas(ctx context.Context, e *Env, name string) (bool, error) {
 	if st.Self.named(name) {
 		return true, nil
 	}
-	for _, p := range st.Peer {
-		if p.named(name) {
+	// Peer is keyed by node public key, the form Self.PublicKey takes in the VM's own status.
+	for k, p := range st.Peer {
+		if k != except && p.named(name) {
 			return true, nil
 		}
 	}
