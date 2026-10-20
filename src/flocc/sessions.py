@@ -42,16 +42,20 @@ def trust_folders(claude_json: Path, paths) -> None:
     # session would sit at the folder-trust dialog until its wall-clock limit. The docs name this
     # key as the manual way to trust a folder. Running sessions rewrite the file from memory and
     # can drop a key written meanwhile, so every launch writes it again just before starting.
+    # `claude auth login` signs in without the first-run onboarding, so a host logged in that way
+    # (0.4.0's flocc-setup --phase login) starts every session on the "Press Enter to continue"
+    # security notes; flocc-nimble lost three hours of NF-260 to it on 2026-10-20.
     try:
         data = json.loads(claude_json.read_text())
     except FileNotFoundError:
         data = {}
     projects = data.setdefault("projects", {})
     missing = [str(p) for p in paths if not projects.get(str(p), {}).get("hasTrustDialogAccepted")]
-    if not missing:
+    if not missing and data.get("hasCompletedOnboarding") is True:
         return
     for p in missing:
         projects.setdefault(p, {})["hasTrustDialogAccepted"] = True
+    data["hasCompletedOnboarding"] = True
     tmp = claude_json.with_name(f"{claude_json.name}.flocc.tmp")
     # Mode 600 from the start: the file holds the account's OAuth state.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
