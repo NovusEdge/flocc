@@ -95,12 +95,11 @@ that loses tester recovery):
    la-nimble's `trigger_label` to it: a label that exists but no issue carries. Only flocc-nimble
    will start issues; la-nimble keeps supervising, publishing, reviewing and forwarding comments for
    its claims.
-4. Ship flocc-nimble in two passes, with an answers file whose `[secrets]` block holds la-nimble's
-   three secret files (GitHub shows a token only once). Pass 1, `--skip-interactive --answers A`,
-   installs everything and stops at the Claude login with no timer; then set `session_cap` to the
-   intended total minus la-nimble's running sessions. Pass 2, `--answers A` in the owner's own
-   terminal, does the Claude login (an interactive ship reads `[secrets]` only through the answers
-   file it was given, and its forms and `/login` need a TTY).
+4. Ship flocc-nimble with an answers file whose `[secrets]` block holds la-nimble's three secret
+   files (GitHub shows a token only once): `just ship <host> --answers A`. It installs everything
+   and stops at the Claude login with no timer; then set `session_cap` to the intended total minus
+   la-nimble's running sessions. Then `just login <host>` in the owner's own terminal does the
+   Claude login (it needs a TTY). There is no second ship pass.
 5. For each blocked or timed-out claim on la-nimble:
    1. commit or discard what its worktree holds;
    2. push `agent/<key>` with the publish token (the agent token is read-only):

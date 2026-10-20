@@ -5,11 +5,16 @@ finished ones and resumes at the first that is not. `<target>` is an SSH destina
 the host's Tailscale name, or `daytona:<sandbox>`. It needs `go` (from `mise install`), `gh`
 logged in on the desktop, and, for Daytona, the Daytona CLI logged in with `daytona login`.
 
-`just ship <target> --answers <file>` runs without a terminal (`--answers -` reads the document
-from this terminal's stdin). The answers document, secrets included, goes to the host on stdin in
-one SSH session forced to have no TTY (`ssh -T`, so a `RequestTTY` setting cannot echo it back),
-and nothing prompts. The SSH user must be root or have passwordless sudo: ship checks
-`sudo -n true` before it stages anything and stops otherwise. No secret is written on the host
+A first ship needs `--answers <file>` or `--interactive`; without either, ship has no secrets and
+stops with "Linear API key is required". `--answers <file>` runs without a terminal (`--answers -`
+reads the document from this terminal's stdin). The answers document, secrets included, goes to
+the host on stdin in one SSH session forced to have no TTY (`ssh -T`, so a `RequestTTY` setting
+cannot echo it back), and nothing prompts. The document must have `team_key`, `digest_issue` and
+at least one `[[repos]]`. The SSH user must be root or have passwordless sudo, and `sudo` must be
+installed: ship checks `sudo -n true` before it stages anything and stops otherwise. Answers mode
+skips the Tailscale login (it only starts `tailscaled`), so on a host that is not yet on your
+tailnet run `tailscale up --ssh --hostname=<name>` there yourself, as in the Incus steps below,
+and disable key expiry. No secret is written on the host
 except the service's own secret files (mode 600, in `~flocc/.config/flocc/`), and none appears in a
 command line, a `setup.log` or the output; the installer also replaces the secret values of the
 answers document with `<token>` in its log (secrets typed into `--interactive` forms are not in
@@ -45,8 +50,9 @@ refused.
 Ship never logs in to Claude. It ends with a summary: the version on the host, the Claude login
 (full, token-only or none), the GitHub token expiries, each failed doctor check, the timer and the
 live sessions. It exits non-zero when a doctor check other than the Claude login fails. On a fresh
-host the login is pending, so the tmux unit runs, the timer stays off, ship exits 0 and the summary
-ends with the command to run next.
+host the login is pending, so the tmux unit runs, the timer stays off and ship exits 0. The command
+to run next is on the summary's `claude login` row, as `just login <target>` with the target you
+gave ship; each failed doctor check prints below the other rows.
 
 ## Claude login
 
@@ -73,8 +79,8 @@ sessions. `just login` runs on the host as `flocc`, over `ssh -t`:
 
 The host must have been shipped with 0.4.0 or later. When the login lapses, the next tick sends one
 tier 1 push; it pages again only after a login has been seen in between. Shipping to a host whose
-login has lapsed leaves its already-enabled timer on, so the tick keeps paging until you run
-`just login`.
+login has lapsed leaves its already-enabled timer on, so ticks keep running and the one page
+stands until you run `just login`.
 
 Upgrading the service on a host is `just ship <target>` again: it ships the current commit as
 a git bundle, since the repo is private and the host has no credential for it. A session already
@@ -93,7 +99,7 @@ A Daytona container for a smoke test, about $0.17 an hour while running:
 
 ```bash
 daytona create --snapshot daytona-medium --name flocc-smoke --auto-stop 0
-just ship daytona:flocc-smoke
+just ship daytona:flocc-smoke --answers answers.toml   # or --interactive
 # when done
 daytona stop flocc-smoke
 ```
@@ -145,7 +151,8 @@ incus exec flocc-nimble -- tailscale up --ssh --hostname=flocc-nimble
 ```
 
 `tailscale up` prints a login URL; open it and log in as the owner. In the Tailscale admin console,
-disable key expiry for the node. `just ship root@flocc-nimble` then reaches it over Tailscale SSH.
+disable key expiry for the node. `just ship root@flocc-nimble --answers answers.toml` (or
+`--interactive`) then reaches it over Tailscale SSH.
 
 ## What the installer cannot do
 
