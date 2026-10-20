@@ -29,6 +29,7 @@ from flocc.worktree import (
     has_uncommitted_changes,
     install_hook,
     prepare_worktree,
+    recover_tests,
 )
 
 COMMENT_ONCE_S = 365 * 24 * 3600
@@ -289,12 +290,19 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.
     phase, tester_sha = "test", None
+    base_branch = cfg.repos[repo].base_branch
     remembered = ledger.remembered_tests(rt.con, issue.key)
     # Tests already merged into the base belong to shipped work, and a reopened issue is new
     # work. After a merge commit, a branch cut fresh from the base contains them too.
-    if remembered and contains(path, remembered[1], f"origin/{cfg.repos[repo].base_branch}"):
+    if remembered and contains(path, remembered[1], f"origin/{base_branch}"):
         ledger.forget_tests(rt.con, issue.key)
         remembered = None
+    # A branch another host pushed holds its tester's commits, but this ledger has no record of
+    # them, and the publisher's guard and --accept-tests compare against that record.
+    if remembered is None:
+        remembered = recover_tests(path, base_branch, branch, issue.key)
+        if remembered:
+            ledger.remember_tests(rt.con, issue.key, *remembered)
     if remembered and contains(path, remembered[1]):
         (base, tester_sha), phase = remembered, "impl"
     claim = Claim(

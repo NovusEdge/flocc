@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 from flocc import ledger, legacy
-from flocc.config import RepoConfig, load
+from flocc.config import TRAILER, RepoConfig, load
 from flocc.context import state_dir
 from flocc.escalation import Notifier
 from flocc.grants import Grants, for_phase, set_block
@@ -22,7 +22,7 @@ from flocc.poller import (
 from flocc.runtime import Runtime
 from flocc.supervisor import LaunchError
 from flocc.tick import tick, tick_lock
-from flocc.worktree import prepare_worktree
+from flocc.worktree import git, prepare_worktree, recover_tests
 from tests.fakes import FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -89,6 +89,7 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
 
     monkeypatch.setattr("flocc.poller.prepare_worktree", fake_prepare)
     monkeypatch.setattr("flocc.poller.install_hook", lambda *a, **kw: None)
+    monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: None)
     return Runtime(
         cfg=tmp_cfg,
         con=ledger.connect(tmp_cfg.ledger_path),
@@ -195,6 +196,59 @@ def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch)
     assert c is not None
     assert (c.phase, c.base_sha, c.tester_sha) == ("test", "sha0", None)
     assert ledger.remembered_tests(rt.con, "NF-9") is None
+
+
+def test_tests_recovered_from_the_branch_are_remembered_and_resume_the_implementer(rt, monkeypatch):
+    monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: ("sha-fork", "sha-tests"))
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": ref == "HEAD")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None
+    assert (c.phase, c.base_sha, c.tester_sha) == ("impl", "sha-fork", "sha-tests")
+    assert ledger.remembered_tests(rt.con, "NF-9") == ("sha-fork", "sha-tests")
+
+
+def test_remembered_tests_are_not_recovered_again(rt, monkeypatch):
+    ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
+
+    def recover(*a):
+        raise AssertionError("recovery ran with tests already remembered")
+
+    monkeypatch.setattr("flocc.poller.recover_tests", recover)
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": ref == "HEAD")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.phase == "impl"
+
+
+def test_a_branch_from_another_host_resumes_at_the_implementer(rt, origin, tmp_path, monkeypatch):
+    monkeypatch.setattr("flocc.poller.prepare_worktree", prepare_worktree)
+    monkeypatch.setattr("flocc.poller.recover_tests", recover_tests)
+    backend = replace(rt.cfg.repos["backend"], path=origin)
+    rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
+    other = tmp_path / "other-host"
+    subprocess.run(
+        ["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)],
+        check=True,
+        capture_output=True,
+    )
+    for k, v in (("user.name", "t"), ("user.email", "t@t")):
+        git("config", k, v, cwd=other)
+    git("checkout", "-qb", "agent/nf-9", cwd=other)
+    fork = git("rev-parse", "HEAD", cwd=other)
+    (other / "test_x.py").write_text("assert True\n")
+    git("add", ".", cwd=other)
+    git("commit", "-qm", f"tests\n\n{TRAILER}: NF-9 test", cwd=other)
+    tests = git("rev-parse", "HEAD", cwd=other)
+    git("push", "-q", "origin", "agent/nf-9", cwd=other)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None
+    assert (c.phase, c.base_sha, c.tester_sha) == ("impl", fork, tests)
+    assert ledger.remembered_tests(rt.con, "NF-9") == (fork, tests)
 
 
 @pytest.mark.parametrize("state", ["done", "timed_out", "blocked"])

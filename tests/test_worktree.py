@@ -4,9 +4,9 @@ import time
 
 import pytest
 
-from flocc import ledger
+from flocc import ledger, legacy
 from flocc.cli import main
-from flocc.config import RepoConfig
+from flocc.config import TRAILER, RepoConfig
 from flocc.worktree import (
     changed_files,
     contains,
@@ -14,6 +14,7 @@ from flocc.worktree import (
     git,
     install_hook,
     prepare_worktree,
+    recover_tests,
     run_bounded,
 )
 from tests.paths import EXAMPLE
@@ -48,6 +49,116 @@ def test_prepare_recovers_a_worktree_whose_directory_was_deleted(origin, tmp_pat
     again, again_branch, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     assert (again, again_branch, base) == (path, branch, head)
     assert (path / "t.txt").exists()
+
+
+def _other_host(tmp_path, key="NF-3"):
+    """A second clone of the remote, standing in for the host that ran the issue before."""
+    other = tmp_path / "other-host"
+    subprocess.run(
+        ["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)],
+        check=True,
+        capture_output=True,
+    )
+    for k, v in (("user.name", "t"), ("user.email", "t@t")):
+        git("config", k, v, cwd=other)
+    git("checkout", "-qb", f"agent/{key.lower()}", cwd=other)
+    return other
+
+
+def _commit(repo, name, trailer=""):
+    (repo / name).write_text(f"{name}\n")
+    git("add", name, cwd=repo)
+    git("commit", "-qm", f"{name}\n\n{trailer}".strip(), cwd=repo)
+    return git("rev-parse", "HEAD", cwd=repo)
+
+
+def _push(other):
+    git("push", "-qf", "origin", "HEAD", cwd=other)
+
+
+def _recover(origin, tmp_path):
+    path, branch, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    return recover_tests(path, "main", branch, "NF-3")
+
+
+def test_prepare_continues_a_branch_only_the_remote_has(origin, tmp_path):
+    other = _other_host(tmp_path)
+    head = _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    path, branch, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert (branch, base) == ("agent/nf-3", head)
+    assert (path / "t.txt").exists()
+
+
+def test_prepare_without_a_remote_branch_cuts_one_from_the_base(origin, tmp_path):
+    _, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert base == git("rev-parse", "origin/main", cwd=origin)
+
+
+def test_recover_tests_takes_the_first_run_of_test_commits(origin, tmp_path):
+    other = _other_host(tmp_path)
+    fork = git("rev-parse", "HEAD", cwd=other)
+    _commit(other, "t1.txt", f"{TRAILER}: NF-3 test")
+    last = _commit(other, "t2.txt", f"{legacy.TRAILER}: NF-3 test")
+    _commit(other, "impl.txt", f"{TRAILER}: NF-3 impl")
+    _commit(other, "t3.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    assert _recover(origin, tmp_path) == (fork, last)
+
+
+def test_recover_tests_ignores_a_test_trailer_after_an_implementer_commit(origin, tmp_path):
+    other = _other_host(tmp_path)
+    _commit(other, "impl.txt", f"{TRAILER}: NF-3 impl")
+    _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    assert _recover(origin, tmp_path) is None
+
+
+def test_recover_tests_follows_an_amended_tester_commit(origin, tmp_path):
+    other = _other_host(tmp_path)
+    fork = git("rev-parse", "HEAD", cwd=other)
+    _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    (other / "t.txt").write_text("amended\n")
+    git("commit", "-qa", "--amend", "--no-edit", cwd=other)
+    amended = git("rev-parse", "HEAD", cwd=other)
+    _push(other)
+    assert _recover(origin, tmp_path) == (fork, amended)
+
+
+def test_recover_tests_needs_the_issues_own_key(origin, tmp_path):
+    other = _other_host(tmp_path)
+    _commit(other, "t.txt", f"{TRAILER}: NF-30 test")
+    _push(other)
+    assert _recover(origin, tmp_path) is None
+
+
+def test_recover_tests_without_a_remote_branch_finds_nothing(origin, tmp_path):
+    assert _recover(origin, tmp_path) is None
+
+
+def test_recover_tests_after_the_base_was_merged_in(origin, tmp_path):
+    other = _other_host(tmp_path)
+    fork = git("rev-parse", "HEAD", cwd=other)
+    tests = _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    git("checkout", "-q", "main", cwd=other)
+    _commit(other, "main.txt")
+    git("push", "-q", "origin", "main", cwd=other)
+    git("checkout", "-q", "agent/nf-3", cwd=other)
+    git("merge", "-q", "--no-edit", "main", cwd=other)
+    _push(other)
+    # The merge moves the merge-base to main's new tip, but the tester's commit is not an
+    # ancestor of it, so the first-parent range still starts at the tests.
+    assert _recover(origin, tmp_path) == (fork, tests)
+
+
+def test_recover_tests_with_no_common_ancestor_finds_nothing(origin, tmp_path):
+    other = _other_host(tmp_path)
+    git("checkout", "-q", "--orphan", "lone", cwd=other)
+    git("rm", "-rfq", ".", cwd=other)
+    _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    git("push", "-qf", "origin", "HEAD:refs/heads/agent/nf-3", cwd=other)
+    assert _recover(origin, tmp_path) is None
 
 
 def test_prepare_recreates_a_worktree_removed_with_git(origin, tmp_path):
