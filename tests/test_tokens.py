@@ -194,3 +194,17 @@ def test_tick_runs_the_login_check(rt, tmp_path, monkeypatch):
     assert tick(rt.cfg, tmp_path / "c.toml") == 0
     [esc] = rt.notifier.sent
     assert esc.cause == "claude-login"
+
+
+def test_check_tokens_records_each_expiry_for_status(rt):
+    def expiry(token):
+        if token == "p":
+            raise TokenRejected("401")
+        return NOW + 10 * DAY
+
+    check_tokens(rt, expiry)
+    assert ledger.meta_get(rt.con, "token_expiry:agent") == str(int(NOW + 10 * DAY))
+    assert ledger.meta_get(rt.con, "token_expiry:publish") == "rejected"
+    rt.con.execute("DELETE FROM meta WHERE key = 'token_check_date'")
+    check_tokens(rt, lambda token: None)
+    assert ledger.meta_get(rt.con, "token_expiry:agent") == "never"

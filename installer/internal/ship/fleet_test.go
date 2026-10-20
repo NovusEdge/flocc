@@ -229,7 +229,7 @@ func TestRenderShowsHostsClaimsFailuresAndNotes(t *testing.T) {
 	}
 	out := plainText(render(rows, []string{"daytona: no CLI config, skipped"}))
 	for _, want := range []string{
-		"2m ago, ok", "2/2", "20%", "55%", "10.0 GiB", "~$0.166",
+		"LOGIN", "TOKENS", "2m ago, ok", "2/2", "20%", "55%", "10.0 GiB", "~$0.166",
 		"NF-1", "impl", "1h", "42%",
 		"unreachable", "down: exit 255: Connection refused",
 		"stopped",
@@ -321,6 +321,42 @@ func TestTickAndDiskCellsFlagProblems(t *testing.T) {
 	json.Unmarshal([]byte(`{"disk":{"free_bytes":15,"total_bytes":100}}`), &fine)
 	if !strings.Contains(diskCell(&low), red) || strings.Contains(diskCell(&fine), red) {
 		t.Errorf("%q %q", diskCell(&low), diskCell(&fine))
+	}
+}
+
+func TestLoginAndTokenCellsFlagWhatWillStopSessions(t *testing.T) {
+	const red, yellow = "\x1b[31m", "\x1b[33m"
+	for _, tc := range []struct {
+		json, login, tokens, color string
+	}{
+		{`{"now":0,"claude_login":"full","token_expiry":{"agent":"2592000","publish":"never"}}`, "full", "agent 30d", ""},
+		{`{"now":0,"claude_login":"none","token_expiry":{"agent":"864000","publish":"5000000"}}`, "none", "agent 10d", yellow},
+		{`{"now":0,"claude_login":"full","token_expiry":{"agent":"never","publish":"86400"}}`, "full", "publish 1d", red},
+		{`{"now":0,"claude_login":"full","token_expiry":{"agent":"rejected"}}`, "full", "agent rejected", red},
+		{`{"now":0,"token_expiry":{"agent":"never","publish":"never"}}`, "-", "never", ""},
+		{`{"now":0}`, "-", "-", ""},
+	} {
+		var rep Report
+		if err := json.Unmarshal([]byte(tc.json), &rep); err != nil {
+			t.Fatal(err)
+		}
+		if got := plainText(loginCell(&rep)); got != tc.login {
+			t.Errorf("%s: login %q", tc.json, got)
+		}
+		cell := tokensCell(&rep)
+		if got := plainText(cell); got != tc.tokens || tc.color != "" && !strings.Contains(cell, tc.color) {
+			t.Errorf("%s: tokens %q %q", tc.json, got, cell)
+		}
+	}
+	none := Report{ClaudeLogin: new(string)}
+	*none.ClaudeLogin = "token-only (oauth_token)"
+	if !strings.Contains(loginCell(&none), red) {
+		t.Error("a login without Remote Control is not styled as bad")
+	}
+	// A login the host could not read is neither a lapse nor fine.
+	*none.ClaudeLogin = "unknown"
+	if got := loginCell(&none); plainText(got) != "unknown" || !strings.Contains(got, yellow) {
+		t.Errorf("%q", got)
 	}
 }
 
