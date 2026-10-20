@@ -81,33 +81,50 @@ func fillKey(ctx context.Context, e Env, m Mapped, s Slot) error {
 // stores nothing and returns false. A paste whose check got no answer is checked again only if
 // the owner says so, and is never stored unchecked.
 func askKey(ctx context.Context, e Env, m Mapped, s Slot, help string) (bool, error) {
+	v, note, ok, err := askChecked(ctx, e, m, s, help)
+	if err != nil || !ok {
+		return false, err
+	}
+	return true, store(e, s, v, note)
+}
+
+func store(e Env, s Slot, v, note string) error {
+	if err := e.Store.Set(s, v); err != nil {
+		return err
+	}
+	fmt.Fprintf(e.Out, "Stored in %s: %s\n", e.Store.Where(), note)
+	return nil
+}
+
+// askChecked is askKey up to the store: it returns the checked value, or ok false for an empty
+// paste.
+func askChecked(ctx context.Context, e Env, m Mapped, s Slot, help string) (v, note string, ok bool, err error) {
 	link, page := Page(s, m)
 	fmt.Fprintf(e.Out, "\n%s\n%s\n%s\n", s.Title(), page, link)
 	e.Open(link)
 	raw := ""
 	for {
 		if raw == "" {
-			var err error
 			if raw, err = e.Prompt.Secret(s.Title(), help); err != nil {
-				return false, err
+				return "", "", false, err
 			}
 			if strings.TrimSpace(raw) == "" {
-				return false, nil
+				return "", "", false, nil
 			}
 		}
 		v, note, err := Accept(ctx, e, m, s, raw)
 		if ctx.Err() != nil {
-			return false, ctx.Err()
+			return "", "", false, ctx.Err()
 		}
 		var u unchecked
 		if errors.As(err, &u) {
 			fmt.Fprintf(e.Out, "Not stored: %v\n", err)
 			again, err2 := e.Prompt.Confirm("Check the same paste again?", true)
 			if err2 != nil {
-				return false, err2
+				return "", "", false, err2
 			}
 			if !again {
-				return false, fmt.Errorf("the %s is not stored: %w", s.Title(), err)
+				return "", "", false, fmt.Errorf("the %s is not stored: %w", s.Title(), err)
 			}
 			continue
 		}
@@ -116,11 +133,7 @@ func askKey(ctx context.Context, e Env, m Mapped, s Slot, help string) (bool, er
 			raw = ""
 			continue
 		}
-		if err := e.Store.Set(s, v); err != nil {
-			return false, err
-		}
-		fmt.Fprintf(e.Out, "Stored in %s: %s\n", e.Store.Where(), note)
-		return true, nil
+		return v, note, true, nil
 	}
 }
 
@@ -159,19 +172,31 @@ func Adopt(ctx context.Context, e Env, m Mapped, s Slot, raw, from string) error
 	}
 }
 
-// Replace asks for a new value of each slot in turn, checked as Fill checks it, and returns the
-// slots it changed, also with an error, so the caller can push what was stored. An empty paste
-// keeps the current value.
+// Replace asks for a new value of each slot in turn and checks it as Fill does, and stores
+// nothing until every slot has been asked, so a Ctrl-C or a failed prompt changes no key. An
+// empty paste keeps the current value. It returns the slots it changed, also with an error from
+// the store, so the caller can push what was stored.
 func Replace(ctx context.Context, e Env, m Mapped, slots []Slot) ([]Slot, error) {
-	var changed []Slot
+	type pending struct {
+		s       Slot
+		v, note string
+	}
+	var asked []pending
 	for _, s := range slots {
-		stored, err := askKey(ctx, e, m, s, "Paste the new one; nothing shows while you paste. Leave it empty to keep the current one.")
+		v, note, ok, err := askChecked(ctx, e, m, s, "Paste the new one; nothing shows while you paste. Leave it empty to keep the current one.")
 		if err != nil {
+			return nil, err
+		}
+		if ok {
+			asked = append(asked, pending{s, v, note})
+		}
+	}
+	var changed []Slot
+	for _, p := range asked {
+		if err := store(e, p.s, p.v, p.note); err != nil {
 			return changed, err
 		}
-		if stored {
-			changed = append(changed, s)
-		}
+		changed = append(changed, p.s)
 	}
 	return changed, nil
 }

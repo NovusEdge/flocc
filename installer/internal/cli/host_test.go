@@ -25,8 +25,10 @@ import (
 
 // hostScript ticks every repo offered, picks the first team and pastes secrets in order. With
 // secrets used up it returns err, as a Ctrl-C at the prompt does, or else an empty paste.
-// Confirms answer from confirms, then with the default.
+// Confirms answer from confirms; an unscripted one fails the test, since a default of yes on a
+// recheck would otherwise repeat until go test times out.
 type hostScript struct {
+	t         *testing.T
 	secrets   []string
 	err       error
 	confirms  []bool
@@ -36,9 +38,10 @@ type hostScript struct {
 
 func (s *hostScript) Note(title, _ string) { s.notes = append(s.notes, title) }
 
-func (s *hostScript) Confirm(_ string, def bool) (bool, error) {
+func (s *hostScript) Confirm(title string, _ bool) (bool, error) {
 	if len(s.confirms) == 0 {
-		return def, nil
+		s.t.Helper()
+		s.t.Fatalf("unscripted confirm: %q", title)
 	}
 	v := s.confirms[0]
 	s.confirms = s.confirms[1:]
@@ -189,7 +192,7 @@ func addDeps(t *testing.T, secrets string) (*deps, *fakeLinear, *hostScript) {
 	ls := httptest.NewServer(lin)
 	t.Cleanup(ls.Close)
 	writeSecrets(t, d.home, secrets)
-	p := &hostScript{}
+	p := &hostScript{t: t}
 	d.store = func() keys.Store { return keys.Open(d.home, io.Discard) }
 	d.prompt = p
 	d.http = http.DefaultClient
@@ -290,6 +293,7 @@ func TestHostAddSkipsADigestAnotherHostNamesButLinearNoLongerHas(t *testing.T) {
 func TestHostAddAsksForAMissingKeyOnTheSpot(t *testing.T) {
 	d, lin, p := addDeps(t, "")
 	p.secrets = []string{"lin_api_k", "github_pat_agent", "github_pat_publish"}
+	p.confirms = []bool{true} // the ntfy test push arrived
 	if err := hostAdd(context.Background(), d, "h1", ""); err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
@@ -95,33 +96,73 @@ func rotate(ctx context.Context, d *deps, which string) int {
 	changed, err := keys.Replace(ctx, keysEnv(d), mapped(all), slots)
 	code := 0
 	if err != nil {
-		// Pushed anyway below: what was stored must reach the hosts too.
 		fmt.Fprintln(d.err, "flocc keys rotate:", err)
 		code = 1
 	}
 	if len(changed) == 0 {
-		if err == nil {
-			fmt.Fprintln(d.out, "Nothing changed.")
+		if err != nil {
+			return code
 		}
-		return code
+		// A push that failed on some host leaves the new key in the store and the old one there,
+		// and a rerun pastes nothing, so the stored keys are offered to the hosts again.
+		var perr error
+		if changed, perr = offerRepush(d, all, slots); perr != nil {
+			fmt.Fprintln(d.err, "flocc keys rotate:", perr)
+			return 1
+		}
+		if len(changed) == 0 {
+			fmt.Fprintln(d.out, "Nothing changed.")
+			return 0
+		}
 	}
 	var failed []string
+	pushed := 0
 	for _, h := range all {
-		if err := pushKeys(ctx, d, h, d.store(), changed); err != nil {
+		// Ctrl-C must not stop a push once a key is stored: the hosts would hold the old key
+		// and the desktop the new one.
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		err := pushKeys(pctx, d, h, d.store(), changed)
+		cancel()
+		if err != nil {
 			failed = append(failed, h.Name+": "+err.Error())
 			continue
 		}
+		pushed++
 		fmt.Fprintf(d.out, "Pushed to %s.\n", h.Name)
 	}
-	if which == "github" {
+	if pushed > 0 && which == "github" {
 		fmt.Fprintln(d.out, "Do not revoke the old token until the sessions running now end: each read GH_TOKEN when it started.")
 		fmt.Fprintln(d.out, "flocc status -H all shows the new expiry after each host's next daily token check.")
 	}
 	if len(failed) > 0 {
-		fmt.Fprintf(d.err, "Not pushed; once these are up, run flocc keys rotate %s again or flocc ship -H <host>:\n  %s\n", which, strings.Join(failed, "\n  "))
+		fmt.Fprintf(d.err, "Not pushed; once these are up, run flocc keys rotate %s again, paste nothing and answer yes to push the stored keys again, or run flocc ship -H <host>:\n  %s\n",
+			which, strings.Join(failed, "\n  "))
 		return 1
 	}
 	return code
+}
+
+// offerRepush asks whether to write the stored keys among slots to every host again, and returns
+// the slots to push.
+func offerRepush(d *deps, all []hosts.Host, slots []keys.Slot) ([]keys.Slot, error) {
+	var stored []keys.Slot
+	for _, s := range slots {
+		if v, err := d.store().Get(s); err == nil && v != "" {
+			stored = append(stored, s)
+		}
+	}
+	if len(all) == 0 || len(stored) == 0 {
+		return nil, nil
+	}
+	var names []string
+	for _, h := range all {
+		names = append(names, h.Name)
+	}
+	again, err := d.prompt.Confirm("Push the stored keys to "+strings.Join(names, ", ")+" again?", false)
+	if err != nil || !again {
+		return nil, err
+	}
+	return stored, nil
 }
 
 // pushKeys writes each changed key into the host's secret file as the service user. The value
@@ -137,14 +178,15 @@ func pushKeys(ctx context.Context, d *deps, h hosts.Host, st keys.Store, slots [
 		if err != nil {
 			return err
 		}
-		f := ".config/flocc/" + steps.SecretFile(string(s))
+		file := steps.SecretFile(string(s))
+		f := ".config/flocc/" + file
 		script := []string{"umask 077 && cat > " + f + ".new && mv " + f + ".new " + f}
 		res, err := ship.Capture(ctx, d.run, dest, script, strings.NewReader(v+"\n"))
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: %w", file, err)
 		}
 		if res.Code != 0 {
-			return fmt.Errorf("exit %d: %s", res.Code, strings.TrimSpace(res.Out()))
+			return fmt.Errorf("%s: exit %d: %s", file, res.Code, strings.TrimSpace(res.Out()))
 		}
 	}
 	return nil

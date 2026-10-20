@@ -15,6 +15,7 @@ import (
 
 func rotateDeps(t *testing.T, p *hostScript) (*deps, *fakeSSH) {
 	t.Helper()
+	p.t = t
 	d, f, _, _ := hostDeps(t, "a", "b")
 	writeSecrets(t, d.home, allKeys)
 	d.store = func() keys.Store { return keys.Open(d.home, io.Discard) }
@@ -66,17 +67,84 @@ func TestRotatePushesTheNewTokenOnStdinAndNamesAnUnreachableHost(t *testing.T) {
 	}
 }
 
-// A rotate stopped at the second prompt still pushes the token it stored, so the desktop and the
-// hosts never hold different agent tokens.
-func TestAStoppedRotatePushesWhatItStored(t *testing.T) {
+// Nothing is stored until every key has been asked, so a rotate stopped at the second prompt
+// leaves the desktop and the hosts with the same keys.
+func TestAStoppedRotateChangesNothing(t *testing.T) {
 	d, f := rotateDeps(t, &hostScript{secrets: []string{"github_pat_agent2"}, err: errors.New("interrupted")})
 	if code := run(context.Background(), d, []string{"keys", "rotate", "github"}); code != 1 {
 		t.Fatalf("exit %d", code)
 	}
-	if in, ok := pushedTo(f, "root@a", "gh-agent.token"); !ok || in != "github_pat_agent2\n" {
-		t.Fatalf("runs %v", f.runs)
+	if v, _ := d.store().Get(keys.Agent); v != "github_pat_agent" || len(f.runs) != 0 {
+		t.Fatalf("%q %v", v, f.runs)
 	}
 	if !strings.Contains(d.err.(*bytes.Buffer).String(), "interrupted") {
 		t.Fatal(d.err)
+	}
+}
+
+// cancelAtSecret cancels the run as Ctrl-C does while the n-th paste is being checked.
+type cancelAtSecret struct {
+	*hostScript
+	cancel func()
+	n, at  int
+}
+
+func (c *cancelAtSecret) Secret(title, help string) (string, error) {
+	v, err := c.hostScript.Secret(title, help)
+	if c.n++; c.n == c.at {
+		c.cancel()
+	}
+	return v, err
+}
+
+func TestCtrlCDuringTheSecondCheckStoresAndPushesNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := &hostScript{secrets: []string{"github_pat_agent2", "github_pat_publish2"}}
+	d, f := rotateDeps(t, p)
+	d.prompt = &cancelAtSecret{hostScript: p, cancel: cancel, at: 2}
+	if code := run(ctx, d, []string{"keys", "rotate", "github"}); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	for s, want := range map[keys.Slot]string{keys.Agent: "github_pat_agent", keys.Publish: "github_pat_publish"} {
+		if v, _ := d.store().Get(s); v != want {
+			t.Fatalf("%s is %q", s, v)
+		}
+	}
+	if len(f.runs) != 0 {
+		t.Fatalf("pushed: %v", f.runs)
+	}
+}
+
+// A push that missed a host leaves the new key in the store; rotating again with nothing to
+// paste offers to push the stored keys, so the retry the message names works.
+func TestRotateAgainPushesTheStoredKeysToTheHostThatMissedThem(t *testing.T) {
+	p := &hostScript{secrets: []string{"github_pat_agent2", ""}}
+	d, f := rotateDeps(t, p)
+	if code := run(context.Background(), d, []string{"keys", "rotate", "github"}); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	f.out["root@b"] = ""
+	f.runs, f.stdins = nil, nil
+	p.confirms = []bool{true}
+	if code := run(context.Background(), d, []string{"keys", "rotate", "github"}); code != 0 {
+		t.Fatalf("exit %d\n%s\n%s", code, d.out, d.err)
+	}
+	if in, ok := pushedTo(f, "root@b", "gh-agent.token"); !ok || in != "github_pat_agent2\n" {
+		t.Fatalf("runs %v stdins %q", f.runs, f.stdins)
+	}
+	if in, ok := pushedTo(f, "root@b", "gh-publish.token"); !ok || in != "github_pat_publish\n" {
+		t.Fatalf("runs %v stdins %q", f.runs, f.stdins)
+	}
+}
+
+func TestRotateWithNothingToPasteAndNoRepushChangesNothing(t *testing.T) {
+	p := &hostScript{confirms: []bool{false}}
+	d, f := rotateDeps(t, p)
+	if code := run(context.Background(), d, []string{"keys", "rotate", "linear"}); code != 0 || len(f.runs) != 0 {
+		t.Fatalf("exit %d runs %v", code, f.runs)
+	}
+	if !strings.Contains(d.out.(*bytes.Buffer).String(), "Nothing changed") {
+		t.Fatal(d.out)
 	}
 }

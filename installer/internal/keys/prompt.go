@@ -17,22 +17,19 @@ type Huh struct {
 
 var errNoTerminal = errors.New("flocc keys reads keys with echo off; run it in a terminal")
 
-// ready refuses a piped stdin before any prompt: huh's Confirm can return its default there with
-// no error, which would answer "Check the same paste again?" yes with nobody at the keyboard.
-func (h Huh) ready() error {
-	isTerm := h.Terminal
-	if isTerm == nil {
-		isTerm = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+// IsTerminal is false on a piped stdin. huh answers there with a default and no error, such as
+// yes to "Check the same paste again?" or the first team of a list, with nobody at the keyboard,
+// so every prompt checks this first.
+func (h Huh) IsTerminal() bool {
+	if h.Terminal != nil {
+		return h.Terminal()
 	}
-	if !isTerm() {
-		return errNoTerminal
-	}
-	return nil
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 func (h Huh) Secret(title, help string) (string, error) {
-	if err := h.ready(); err != nil {
-		return "", err
+	if !h.IsTerminal() {
+		return "", errNoTerminal
 	}
 	var v string
 	err := huh.NewForm(huh.NewGroup(huh.NewInput().Title(title).Description(help).
@@ -41,8 +38,8 @@ func (h Huh) Secret(title, help string) (string, error) {
 }
 
 func (h Huh) Confirm(title string, def bool) (bool, error) {
-	if err := h.ready(); err != nil {
-		return false, err
+	if !h.IsTerminal() {
+		return false, errNoTerminal
 	}
 	v := def
 	err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(title).Value(&v))).Run()

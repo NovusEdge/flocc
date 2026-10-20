@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
+	"os"
+
 	"charm.land/huh/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
@@ -19,11 +23,19 @@ type prompter interface {
 
 type huhPrompt struct{ keys.Huh }
 
-func (huhPrompt) Repos(a *answers.Answers, found []answers.Repo, defaults func(string) (string, bool)) error {
+var errNoTerminal = errors.New("flocc asks you to choose here; run it in a terminal")
+
+func (p huhPrompt) Repos(a *answers.Answers, found []answers.Repo, defaults func(string) (string, bool)) error {
+	if !p.IsTerminal() {
+		return errNoTerminal
+	}
 	return ui.RepoForm(a, found, defaults)
 }
 
-func (huhPrompt) Team(teams []linearapi.Team) (linearapi.Team, error) {
+func (p huhPrompt) Team(teams []linearapi.Team) (linearapi.Team, error) {
+	if !p.IsTerminal() {
+		return linearapi.Team{}, errNoTerminal
+	}
 	opts := make([]huh.Option[int], len(teams))
 	for i, t := range teams {
 		opts[i] = huh.NewOption(t.Key+"  "+t.Name, i)
@@ -33,4 +45,10 @@ func (huhPrompt) Team(teams []linearapi.Team) (linearapi.Team, error) {
 	return teams[i], err
 }
 
-func (huhPrompt) Note(title, body string) { ui.NewHuh().Note(title, body) }
+func (p huhPrompt) Note(title, body string) {
+	if !p.IsTerminal() {
+		fmt.Fprintf(os.Stderr, "\n%s\n%s\n", title, body)
+		return
+	}
+	ui.NewHuh().Note(title, body)
+}
