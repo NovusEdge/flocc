@@ -1,7 +1,10 @@
 import json
 import multiprocessing
+import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+
+import pytest
 
 from linear_agents.gate import (
     BUDGETS,
@@ -10,11 +13,13 @@ from linear_agents.gate import (
     clear_question,
     decide,
     launches_used,
+    note_idle,
     note_question,
     record_session,
     record_stop,
     run_gate,
     run_id,
+    running_agents,
 )
 from linear_agents.grants import Grants, launch_flags, set_block
 
@@ -336,3 +341,89 @@ def test_a_new_question_drops_the_old_escalation_mark(tmp_path):
     note_question(tmp_path, payload, 5.0)
     assert not (tmp_path / "asking-escalated").exists()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["asking"]
+
+
+def test_running_agents_counts_launches_without_a_stop(tmp_path):
+    assert running_agents(tmp_path, "impl@1", "impl") == 0
+    assert run_gate(agent(), tmp_path, "impl", "impl@1", 0.0) is None
+    assert run_gate(agent("linear-agents:code-mapper"), tmp_path, "impl", "impl@1", 0.0) is None
+    assert running_agents(tmp_path, "impl@1", "impl") == 2
+    assert running_agents(tmp_path, "impl@2", "impl") == 0
+    record_stop(tmp_path, "impl@1", 1.0, "code-mapper")
+    assert running_agents(tmp_path, "impl@1", "impl") == 1
+    record_session(tmp_path, "impl@1", 2.0, "impl")
+    assert running_agents(tmp_path, "impl@1", "impl") == 0
+
+
+def _assistant(*blocks):
+    return json.dumps({"type": "assistant", "message": {"content": list(blocks)}})
+
+
+def test_idle_message_skips_assistant_lines_without_text(tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                _assistant({"type": "text", "text": "waiting on you"}),
+                _assistant({"type": "tool_use", "name": "Bash"}),
+                _assistant({"type": "thinking", "thinking": "hm"}),
+            ]
+        )
+    )
+    note_idle(tmp_path, {"transcript_path": str(transcript)}, 5.0)
+    assert json.loads((tmp_path / "idle").read_text())["message"] == "waiting on you"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, b"\xff\xfe", json.dumps({"type": "assistant", "message": "text"}), "[1]"],
+    ids=["missing", "undecodable", "message-not-a-dict", "line-not-an-object"],
+)
+def test_idle_marker_is_written_when_the_transcript_cannot_be_read(tmp_path, content):
+    transcript = tmp_path / "t.jsonl"
+    if isinstance(content, bytes):
+        transcript.write_bytes(content)
+    elif content is not None:
+        transcript.write_text(content)
+    note_idle(tmp_path, {"transcript_path": str(transcript)}, 5.0)
+    marker = json.loads((tmp_path / "idle").read_text())
+    assert marker["at"] == 5.0 and marker["message"] == ""
+
+
+def _escalate(state, waiting, mtime):
+    path = state / "escalations.jsonl"
+    path.write_text(json.dumps({"tier": 2, "waiting": waiting}) + "\n")
+    os.utime(path, (mtime, mtime))
+
+
+def _stopped_at(state, mtime):
+    (state / "last-stop").touch()
+    os.utime(state / "last-stop", (mtime, mtime))
+
+
+def test_idle_marker_notes_a_waiting_escalation_made_since_the_last_stop(tmp_path):
+    _stopped_at(tmp_path, 100)
+    _escalate(tmp_path, True, 200)
+    note_idle(tmp_path, {}, 300.0)
+    assert json.loads((tmp_path / "idle").read_text())["waiting_on_owner"] is True
+    # The Stop just recorded is now the reference: the same escalation no longer counts.
+    note_idle(tmp_path, {}, 400.0)
+    assert json.loads((tmp_path / "idle").read_text())["waiting_on_owner"] is False
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        lambda s: _escalate(s, True, 50),
+        lambda s: _escalate(s, False, 200),
+        lambda s: (s / "escalations.jsonl").write_text(""),
+        lambda s: (s / "escalations.jsonl").write_text("not json\n"),
+        lambda s: None,
+    ],
+    ids=["before-the-last-stop", "not-waiting", "empty", "torn", "no-file"],
+)
+def test_idle_marker_ignores_other_escalations(tmp_path, setup):
+    _stopped_at(tmp_path, 100)
+    setup(tmp_path)
+    note_idle(tmp_path, {}, 300.0)
+    assert json.loads((tmp_path / "idle").read_text())["waiting_on_owner"] is False

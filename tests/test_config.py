@@ -12,6 +12,7 @@ def test_example_loads_with_defaults():
     assert cfg.default_wall_clock_s == 10800
     assert cfg.review_wall_clock_s == 3600
     assert cfg.context_restart_pct == 60.0
+    assert cfg.idle_escalate_s == 1800.0
     assert cfg.review_model == "opus"
     assert cfg.five_hour_max_pct == 80.0
     assert cfg.weekly_max_pct == 80.0
@@ -61,6 +62,17 @@ def test_bad_steer_authors_is_an_error(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text('steer_authors = "just-one-id"\n' + EXAMPLE.read_text())
     with pytest.raises(ValueError, match="steer_authors"):
+        load(p)
+
+
+def test_shared_paths_load_per_repo(tmp_path):
+    assert load(EXAMPLE).repos["backend"].shared_paths == ()
+    p = tmp_path / "c.toml"
+    table = '[repos.backend]\npath = "~/src/backend"'
+    p.write_text(EXAMPLE.read_text().replace(table, f'{table}\nshared_paths = ["docs/log.md"]'))
+    assert load(p).repos["backend"].shared_paths == ("docs/log.md",)
+    p.write_text(EXAMPLE.read_text().replace(table, f'{table}\nshared_paths = "docs/log.md"'))
+    with pytest.raises(ValueError, match="shared_paths"):
         load(p)
 
 

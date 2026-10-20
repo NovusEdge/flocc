@@ -195,6 +195,15 @@ def _counts(entries: list[dict], counted: set[str]) -> tuple[int, int, set[tuple
     return launched, running, refused
 
 
+def _counted(grants: Grants) -> set[str]:
+    return set(CATALOGUE) | set(grants.agents)
+
+
+def running_agents(state: Path, run: str | None, phase: str | None) -> int:
+    grants = for_phase(state / "grants.json", phase or "")
+    return _counts(_entries(state, run), _counted(grants))[1]
+
+
 def _line(at: float, run: str | None, phase: str | None, event: str, what: str, rule: str) -> dict:
     return {"at": at, "run": run, "phase": phase, "event": event, "what": what, "rule": rule}
 
@@ -211,9 +220,8 @@ def run_gate(
         return None
     with _locked(state):
         grants = for_phase(state / "grants.json", phase or "")
-        counted = set(CATALOGUE) | set(grants.agents)
         entries = _entries(state, run)
-        launched, running, refused = _counts(entries, counted)
+        launched, running, refused = _counts(entries, _counted(grants))
         started = frozenset(str(e.get("what")) for e in entries if e.get("event") == "launch")
         dec = decide(payload, phase, grants, launched, running, refused, flags, started)
         event = "launch" if dec.allowed else "refused"
@@ -251,4 +259,76 @@ def note_question(state: Path, payload: dict, now: float) -> None:
 
 def clear_question(state: Path) -> None:
     for name in ("asking", "asking-escalated"):
+        (state / name).unlink(missing_ok=True)
+
+
+IDLE_MESSAGE_CHARS = 600
+
+
+def _transcript_text(path: str) -> str:
+    for line in reversed(Path(path).read_text().splitlines()):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            text = content
+        else:
+            blocks = content if isinstance(content, list) else []
+            texts = (
+                b.get("text") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
+            )
+            text = "\n".join(t for t in texts if isinstance(t, str))
+        # A line holding only tool calls says nothing; the turn's last words are further back.
+        if text:
+            return text
+    return ""
+
+
+LAST_STOP = "last-stop"
+
+
+def _waiting_on_owner(state: Path, since: float) -> bool:
+    """True when the session recorded a `--waiting` escalation after `since`."""
+    path = state / "escalations.jsonl"
+    try:
+        last = json.loads(path.read_text().splitlines()[-1])
+        return path.stat().st_mtime > since and last.get("waiting") is True
+    except (OSError, IndexError, ValueError, AttributeError):
+        return False
+
+
+def note_idle(state: Path, payload: dict, now: float) -> None:
+    message = payload.get("last_assistant_message")
+    if not isinstance(message, str) or not message:
+        message = ""
+        transcript = payload.get("transcript_path")
+        if isinstance(transcript, str) and transcript:
+            # The marker matters more than the message: write it whatever the transcript holds.
+            try:
+                message = _transcript_text(transcript)
+            except (OSError, ValueError, AttributeError):
+                pass
+    state.mkdir(parents=True, exist_ok=True)
+    # The idle marker is removed whenever the session acts, so the previous Stop is kept apart.
+    # SessionStart touches this file too, so an escalation from an earlier session never counts.
+    stopped = state / LAST_STOP
+    since = stopped.stat().st_mtime if stopped.exists() else 0.0
+    marker = {
+        "at": now,
+        "message": message[:IDLE_MESSAGE_CHARS],
+        "waiting_on_owner": _waiting_on_owner(state, since),
+    }
+    # Written whole by rename: the supervisor polls this file.
+    tmp = state / "idle.tmp"
+    tmp.write_text(json.dumps(marker))
+    os.replace(tmp, state / "idle")
+    stopped.touch()
+
+
+def clear_idle(state: Path) -> None:
+    for name in ("idle", "idle-escalated"):
         (state / name).unlink(missing_ok=True)

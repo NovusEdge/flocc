@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from linear_agents.admission import admit
 from linear_agents.agentblock import IssueSettings
 from linear_agents.config import load
@@ -10,8 +12,8 @@ OK = Usage(10, 10, observed_at=1000)
 DEFAULT = IssueSettings()
 
 
-def run(settings=DEFAULT, live=(), usage=OK, deps=None, now=1100, free=None):
-    return admit("NF-9", settings, list(live), usage, deps or {}, CFG, now, free)
+def run(settings=DEFAULT, live=(), usage=OK, deps=None, now=1100, free=None, repo="backend"):
+    return admit("NF-9", repo, settings, list(live), usage, deps or {}, CFG, now, free)
 
 
 def test_admits_when_clear():
@@ -57,3 +59,21 @@ def test_path_conflict():
     s = IssueSettings(paths=("src/b*",))
     d = run(settings=s, live=[make("NF-1", ("src/billing/**",))])
     assert not d.ok and "NF-1" in d.reason
+
+
+def test_a_shared_path_in_the_agent_block_does_not_hold_a_start():
+    backend = replace(CFG.repos["backend"], shared_paths=("docs/verification.md",))
+    cfg = replace(CFG, repos={**CFG.repos, "backend": backend})
+    s = IssueSettings(paths=("docs/verification.md", "src/a.py"))
+    live = [make("NF-1", ("docs/verification.md", "src/b.py"))]
+    assert admit("NF-9", "backend", s, live, OK, {}, cfg, 1100).ok
+    assert not run(settings=s, live=live).ok  # not shared in the default config
+    live = [make("NF-1", ("docs/verification.md", "src/a.py"))]
+    assert not admit("NF-9", "backend", s, live, OK, {}, cfg, 1100).ok
+
+
+def test_a_claim_in_another_repo_does_not_hold_a_start():
+    s = IssueSettings(paths=("docs/verification.md",))
+    live = [make("NF-1", ("docs/verification.md",), repo="web")]
+    assert run(settings=s, live=live).ok
+    assert not run(settings=s, live=live, repo="web").ok

@@ -102,6 +102,113 @@ def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, 
     assert main(["hook", "pre-commit"]) == 0
 
 
+@pytest.fixture
+def claims_env(tmp_path, monkeypatch):
+    config = tmp_path / "c.toml"
+    config.write_text(
+        EXAMPLE.read_text().replace(
+            '[repos.backend]\npath = "~/src/backend"',
+            '[repos.backend]\npath = "~/src/backend"\nshared_paths = ["docs/verification.md"]',
+        )
+    )
+    state = tmp_path / "state" / "NF-1"
+    state.mkdir(parents=True)
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(state))
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "hook.sqlite"))
+    monkeypatch.setenv("LINEAR_AGENTS_CONFIG", str(config))
+    return ledger.connect(tmp_path / "hook.sqlite")
+
+
+def test_claim_refuses_a_whole_tree(claims_env, capsys):
+    ledger.insert_claim(claims_env, make("NF-1", ()))
+    assert main(["claim", "src/a.py", "src/**"]) == 1
+    assert "src/** claims a whole tree; claim the files you will edit" in capsys.readouterr().err
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == []
+    assert main(["claim", "src/*.py"]) == 0
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == ["src/*.py"]
+
+
+def test_claim_refuses_a_glob_that_matches_a_directory(claims_env, tmp_path, capsys):
+    wt = tmp_path / "wt"
+    (wt / "server/src/api").mkdir(parents=True)
+    (wt / "server/src/main.rs").touch()
+    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(wt)))
+    for glob, directory in (
+        ("server/src", "server/src"),
+        ("server/src/", "server/src/"),
+        ("server/src/*", "server/src/api"),
+        ("server/s?c", "server/src"),
+    ):
+        assert main(["claim", "docs/a.md", glob]) == 1
+        err = capsys.readouterr().err
+        assert f"claim: {glob} matches the directory {directory}; claim the files in it" in err
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == []
+    # Files, globs over files, and a directory that does not exist yet are fine.
+    assert main(["claim", "server/src/main.rs", "server/src/*.rs", "server/new/*.rs"]) == 0
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == ["server/src/main.rs", "server/src/*.rs", "server/new/*.rs"]
+
+
+@pytest.mark.parametrize("glob", ["", "/etc/passwd", "../other/a.py", "src/../../a.py"])
+def test_claim_refuses_a_glob_outside_the_worktree(claims_env, capsys, glob):
+    ledger.insert_claim(claims_env, make("NF-1", ()))
+    assert main(["claim", glob]) == 1
+    assert "is not a path inside the worktree" in capsys.readouterr().err
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == []
+
+
+def test_claim_skips_a_shared_path(claims_env, capsys):
+    ledger.insert_claim(claims_env, make("NF-1", ()))
+    assert main(["claim", "docs/verification.md"]) == 0
+    assert "docs/verification.md is shared; edit it without claiming" in capsys.readouterr().out
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == []
+    assert main(["claim", "docs/verification.md", "src/a.py"]) == 0
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == ["src/a.py"]
+
+
+def test_claim_ignores_a_peer_in_another_repo(claims_env, capsys):
+    ledger.insert_claim(claims_env, make("NF-1", ()))
+    ledger.insert_claim(claims_env, make("NF-2", ("src/a.py",), repo="web"))
+    assert main(["claim", "src/a.py"]) == 0
+    ledger.insert_claim(claims_env, make("NF-3", ("src/b.py",)))
+    assert main(["claim", "src/b.py"]) == 1
+    assert "overlaps NF-3" in capsys.readouterr().err
+
+
+def commit_hook(claims_env, origin, monkeypatch, peer, name):
+    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
+    ledger.insert_claim(claims_env, peer)
+    (origin / name).parent.mkdir(exist_ok=True)
+    (origin / name).write_text("x")
+    subprocess.run(["git", "add", name], cwd=origin, check=True)
+    monkeypatch.chdir(origin)
+    return main(["hook", "pre-commit"])
+
+
+def test_commit_hook_ignores_a_peer_claim_in_another_repo(claims_env, origin, monkeypatch):
+    peer = make("NF-2", ("server/x.py",), repo="web", worktree="/wt/NF-2")
+    assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 0
+
+
+def test_commit_hook_still_refuses_a_peer_claim_in_the_same_repo(
+    claims_env, origin, monkeypatch, capsys
+):
+    peer = make("NF-2", ("server/x.py",), worktree="/wt/NF-2")
+    assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 1
+    assert "server/x.py is claimed by NF-2" in capsys.readouterr().err
+
+
+def test_commit_hook_never_refuses_a_shared_path(claims_env, origin, monkeypatch):
+    peer = make("NF-2", ("docs/**",), worktree="/wt/NF-2")
+    assert commit_hook(claims_env, origin, monkeypatch, peer, "docs/verification.md") == 0
+
+
 def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
     assert main(["review-done"]) == 1
@@ -197,6 +304,7 @@ def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
     assert (tmp_path / "compacted").exists() and not (tmp_path / "status.json").exists()
     assert (tmp_path / "scratchpads").read_text().splitlines() == [payload["scratchpad_dir"]]
     assert not (tmp_path / "launches.jsonl").exists(), "compaction is not a new session"
+    assert not (tmp_path / "last-stop").exists()
 
 
 def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch, capsys):
@@ -207,6 +315,7 @@ def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch, capsy
     line = json.loads((tmp_path / "launches.jsonl").read_text())
     assert (line["event"], line["phase"], line["run"]) == ("session", "impl", "impl@1")
     assert "## Grants" in capsys.readouterr().out
+    assert (tmp_path / "last-stop").exists()
 
 
 def test_session_start_prints_the_context_when_bookkeeping_fails(tmp_path, monkeypatch, capsys):
@@ -236,6 +345,57 @@ def test_bookkeeping_failures_never_exit_2(tmp_path, monkeypatch, capsys, flag):
     assert main(["gate", flag]) == 1
     err = capsys.readouterr().err
     assert "disk gone" in err and "refused" not in err
+
+
+def test_idle_records_the_last_message(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+    payload = {"last_assistant_message": "x" * 700, "transcript_path": "/nonexistent"}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert main(["idle"]) == 0
+    marker = json.loads((tmp_path / "idle").read_text())
+    assert marker["message"] == "x" * 600 and marker["at"] > 0
+    assert not (tmp_path / "idle.tmp").exists()
+
+
+def test_idle_falls_back_to_the_transcript(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+
+    def line(kind, *blocks):
+        return json.dumps({"type": kind, "message": {"content": list(blocks)}})
+
+    text = {"type": "text", "text": "please run it for me"}
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                line("assistant", {"type": "text", "text": "older"}),
+                line("assistant", text, {"type": "tool_use", "name": "Bash"}),
+                line("user", {"type": "text", "text": "ignored"}),
+            ]
+        )
+    )
+    for payload in (
+        {"transcript_path": str(transcript)},
+        {"last_assistant_message": "", "transcript_path": str(transcript)},
+    ):
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+        assert main(["idle"]) == 0
+        assert json.loads((tmp_path / "idle").read_text())["message"] == "please run it for me"
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert main(["idle"]) == 0
+    assert json.loads((tmp_path / "idle").read_text())["message"] == ""
+
+
+def test_idle_bookkeeping_failure_exits_1_never_2(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("linear_agents.gate.note_idle", boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert main(["idle"]) == 1
+    assert "disk gone" in capsys.readouterr().err
 
 
 def test_stopped_records_the_agent_type_and_phase(tmp_path, monkeypatch):

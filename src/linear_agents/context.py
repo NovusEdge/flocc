@@ -4,7 +4,13 @@ from linear_agents.config import Config
 from linear_agents.ledger import Claim
 from linear_agents.linear import Issue
 
-_COMMANDS = """## Commands
+_COMMANDS = """## Execution only
+
+The issue and the specs it names are the approved design. Do not brainstorm, write a plan for
+approval, or ask for design sign-off: nobody is at this session to approve it. Ask only about a
+decision the spec leaves open, through the escalate skill.
+
+## Commands
 
 - `linear-agents claim '<glob>'` before editing files outside your claimed paths.
 - `linear-agents context` to see this text again with the current peer list.

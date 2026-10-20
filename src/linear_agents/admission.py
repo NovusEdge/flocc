@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from linear_agents.agentblock import IssueSettings
 from linear_agents.config import Config
-from linear_agents.ledger import Claim, conflicting_claims
+from linear_agents.ledger import Claim, conflicting_claims, in_repo, unshared
 from linear_agents.usage import Usage
 
 STALE_USAGE_S = 15 * 60
@@ -16,6 +16,7 @@ class Decision:
 
 def admit(
     key: str,
+    repo: str,
     settings: IssueSettings,
     live: list[Claim],
     usage: Usage | None,
@@ -42,7 +43,9 @@ def admit(
     waiting = [d for d in settings.depends_on if dep_states.get(d) != "completed"]
     if waiting:
         return Decision(False, f"waiting on {', '.join(waiting)}")
-    clash = conflicting_claims(settings.paths, live, exclude=key)
+    shared = cfg.repos[repo].shared_paths if repo in cfg.repos else ()
+    paths = unshared(list(settings.paths), shared)
+    clash = conflicting_claims(paths, in_repo(live, repo), exclude=key)
     if clash:
         owners = ", ".join(f"{g} ({k})" for g, k in clash.items())
         return Decision(False, f"paths claimed: {owners}")

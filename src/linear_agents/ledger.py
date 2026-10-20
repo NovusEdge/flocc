@@ -151,6 +151,20 @@ def update_claim(con: sqlite3.Connection, key: str, **values) -> None:
         con.execute(f"UPDATE claims SET {sets} WHERE issue_key = :_key", {**data, "_key": key})
 
 
+def in_repo(claims: list[Claim], repo: str) -> list[Claim]:
+    """Paths are relative to a repo root, so claims in another repo never clash with them."""
+    return [c for c in claims if c.repo == repo]
+
+
+def is_shared(name: str, shared: tuple[str, ...]) -> bool:
+    path = PurePosixPath(name)
+    return any(name == g or path.full_match(g) for g in shared)
+
+
+def unshared(globs: list[str], shared: tuple[str, ...]) -> list[str]:
+    return [g for g in globs if not is_shared(g, shared)]
+
+
 def add_paths(con: sqlite3.Connection, key: str, globs: list[str]) -> dict[str, str]:
     """Adds globs to the claim unless another live claim overlaps; returns the clashes."""
     # Read, check and write share one transaction so two agents claiming at once cannot both win.
@@ -158,7 +172,7 @@ def add_paths(con: sqlite3.Connection, key: str, globs: list[str]) -> dict[str, 
         mine = get_claim(con, key)
         if mine is None:
             raise KeyError(key)
-        clash = conflicting_claims(globs, live_claims(con), exclude=key)
+        clash = conflicting_claims(globs, in_repo(live_claims(con), mine.repo), exclude=key)
         if not clash:
             paths = mine.paths + [g for g in globs if g not in mine.paths]
             con.execute("UPDATE claims SET paths = ? WHERE issue_key = ?", (json.dumps(paths), key))

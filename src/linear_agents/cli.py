@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from linear_agents import gate, ledger, usage
 from linear_agents.config import default_config_path, load
@@ -122,8 +122,14 @@ def cmd_hook(args) -> int:
     if mine.phase == "review":
         print("linear-agents: the review session is read-only; do not commit", file=sys.stderr)
         return 1
-    staged = git("diff", "--cached", "--name-only", cwd=top).splitlines()
-    clash = ledger.file_conflicts(staged, ledger.live_claims(con), exclude=mine.issue_key)
+    shared = _shared_paths(args, mine.repo)
+    staged = [
+        n
+        for n in git("diff", "--cached", "--name-only", cwd=top).splitlines()
+        if not ledger.is_shared(n, shared)
+    ]
+    peers = ledger.in_repo(ledger.live_claims(con), mine.repo)
+    clash = ledger.file_conflicts(staged, peers, exclude=mine.issue_key)
     if not clash:
         return 0
     for name, owner in clash.items():
@@ -134,11 +140,56 @@ def cmd_hook(args) -> int:
     return 1
 
 
+def _shared_paths(args, repo: str) -> tuple[str, ...]:
+    # A config that will not load must not stop a commit; the check then falls back to claims only.
+    try:
+        cfg = load(Path(args.config) if args.config else default_config_path())
+    except (OSError, ValueError, TypeError):
+        return ()
+    return cfg.repos[repo].shared_paths if repo in cfg.repos else ()
+
+
 def cmd_claim(args) -> int:
     key = _state_dir().name
+    for glob in args.globs:
+        if "**" in glob:
+            print(
+                f"claim: {glob} claims a whole tree; claim the files you will edit"
+                " (a * within one directory is fine)",
+                file=sys.stderr,
+            )
+            return 1
     con = _ledger(args)
+    mine = ledger.get_claim(con, key)
+    if mine is None:
+        print(f"claim: no live claim for {key}", file=sys.stderr)
+        return 1
+    shared = _shared_paths(args, mine.repo)
+    globs = []
+    for glob in args.globs:
+        if not glob or glob.startswith("/") or ".." in PurePosixPath(glob).parts:
+            print(f"claim: {glob!r} is not a path inside the worktree", file=sys.stderr)
+            return 1
+        # file_conflicts also matches a glob against every parent directory of a staged file, so
+        # a glob that matches a directory claims everything under it, whatever it is spelled.
+        tree = glob.endswith("/") or next(
+            (p for p in Path(mine.worktree).glob(glob) if p.is_dir()), None
+        )
+        if tree:
+            where = glob if tree is True else tree.relative_to(mine.worktree)
+            print(
+                f"claim: {glob} matches the directory {where}; claim the files in it",
+                file=sys.stderr,
+            )
+            return 1
+        if ledger.is_shared(glob, shared):
+            print(f"claim: {glob} is shared; edit it without claiming")
+        else:
+            globs.append(glob)
+    if not globs:
+        return 0
     try:
-        clash = ledger.add_paths(con, key, args.globs)
+        clash = ledger.add_paths(con, key, globs)
     except KeyError:
         print(f"claim: no live claim for {key}", file=sys.stderr)
         return 1
@@ -240,6 +291,16 @@ def cmd_gate(args) -> int:
     return 0
 
 
+def cmd_idle(args) -> int:
+    # Exit 2 on Stop blocks the stop and keeps the session running; see cmd_gate.
+    try:
+        gate.note_idle(_state_dir(), _hook_input(), time.time())
+    except Exception as exc:  # noqa: BLE001 - must not block the stop
+        print(f"linear-agents idle could not record the stop: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _session_bookkeeping(state: Path) -> None:
     state.mkdir(parents=True, exist_ok=True)
     payload = _hook_input()
@@ -250,6 +311,7 @@ def _session_bookkeeping(state: Path) -> None:
     else:
         # Background agents survive compaction, so only a real start resets the running count.
         run = os.environ.get("LINEAR_AGENTS_RUN")
+        (state / gate.LAST_STOP).touch()
         gate.record_session(state, run, time.time(), os.environ.get("LINEAR_AGENTS_PHASE"))
     pad = payload.get("scratchpad_dir")
     if isinstance(pad, str) and pad:
@@ -441,6 +503,7 @@ COMMANDS = {
     "claim": cmd_claim,
     "context": cmd_context,
     "gate": cmd_gate,
+    "idle": cmd_idle,
     "session-start": cmd_session_start,
     "commit": cmd_commit,
     "done": cmd_done,
@@ -485,6 +548,7 @@ def build_parser() -> argparse.ArgumentParser:
     which = gate.add_mutually_exclusive_group()
     which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
     which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
+    add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
     add("session-start", "Hook: record compaction and the scratchpad, print the context")
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")
     com.add_argument("-m", dest="message", required=True, help="commit message")

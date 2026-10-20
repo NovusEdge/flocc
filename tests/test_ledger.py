@@ -4,11 +4,11 @@ from linear_agents import ledger
 from linear_agents.ledger import Claim
 
 
-def make(key="NF-1", paths=("src/a/**",), state="running", worktree=None):
+def make(key="NF-1", paths=("src/a/**",), state="running", worktree=None, repo="backend"):
     return Claim(
         issue_key=key,
         issue_id=f"id-{key}",
-        repo="backend",
+        repo=repo,
         worktree=worktree or f"/wt/{key}",
         branch=f"agent/{key.lower()}",
         phase="test",
@@ -98,6 +98,23 @@ def test_add_paths_extends_a_claim_or_reports_the_owner(con):
     assert claim and claim.paths == ["a/**", "docs/**"]
     with pytest.raises(KeyError):
         ledger.add_paths(con, "NF-9", ["z/**"])
+
+
+def test_add_paths_ignores_claims_in_other_repos(con):
+    ledger.insert_claim(con, make("NF-1", ("a/**",)))
+    ledger.insert_claim(con, make("NF-2", ("docs/verification.md",), repo="web"))
+    assert ledger.add_paths(con, "NF-1", ["docs/verification.md"]) == {}
+    ledger.insert_claim(con, make("NF-3", ("docs/**",)))
+    assert ledger.add_paths(con, "NF-1", ["docs/x.md"]) == {"docs/x.md": "NF-3"}
+
+
+def test_is_shared_matches_exact_names_and_globs():
+    shared = ("docs/verification.md", "logs/*.log")
+    assert ledger.is_shared("docs/verification.md", shared)
+    assert ledger.is_shared("logs/a.log", shared)
+    assert not ledger.is_shared("docs/other.md", shared)
+    assert not ledger.is_shared("logs/sub/a.log", shared)
+    assert not ledger.is_shared("docs/verification.md", ())
 
 
 def test_usage_log(con):

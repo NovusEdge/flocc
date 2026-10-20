@@ -3,12 +3,18 @@
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "linear-agents session-start" } ] }
     ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "[ -z \"$LINEAR_AGENTS_STATE\" ] || rm -f \"$LINEAR_AGENTS_STATE/idle\"" } ] }
+    ],
     "PreToolUse": [
       {
         "matcher": "Agent|Task|Workflow|AskUserQuestion",
         "hooks": [
           { "type": "command", "command": "linear-agents gate", "timeout": 10, "onFailure": "block" }
         ]
+      },
+      {
+        "hooks": [ { "type": "command", "command": "[ -z \"$LINEAR_AGENTS_STATE\" ] || rm -f \"$LINEAR_AGENTS_STATE/idle\"" } ]
       }
     ],
     "PostToolUse": [
@@ -24,7 +30,12 @@
       }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ] }
+      {
+        "hooks": [
+          { "type": "command", "command": "linear-agents gate --answered" },
+          { "type": "command", "command": "linear-agents idle" }
+        ]
+      }
     ],
     "SubagentStop": [
       { "hooks": [ { "type": "command", "command": "linear-agents gate --stopped" } ] }

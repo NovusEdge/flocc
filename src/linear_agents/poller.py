@@ -208,7 +208,7 @@ def poll(rt) -> None:
         live = ledger.live_claims(rt.con)
         usage = latest_usage(cfg.state_root, rt.now())
         free = rt.free_disk_gb(cfg.worktree_root)
-        decision = admit(issue.key, settings, live, usage, deps, cfg, rt.now(), free)
+        decision = admit(issue.key, repo, settings, live, usage, deps, cfg, rt.now(), free)
         if not decision.ok:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)
             continue
@@ -275,7 +275,15 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         (d / "handoff.md").replace(d / "handoff.prev.md")
     # A previous claim's grants, scratchpads, compaction and question belong to that run; the
     # agent block's grants are written again at launch.
-    for stale in ("grants.json", "scratchpads", "compacted", "asking", "asking-escalated"):
+    for stale in (
+        "grants.json",
+        "scratchpads",
+        "compacted",
+        "asking",
+        "asking-escalated",
+        "idle",
+        "idle-escalated",
+    ):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the
@@ -297,7 +305,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         branch=branch,
         phase=phase,
         state="running",
-        paths=list(settings.paths),
+        paths=ledger.unshared(list(settings.paths), cfg.repos[repo].shared_paths),
         depends_on=list(settings.depends_on),
         settings_json=settings_to_json(settings),
         started_at=rt.now(),

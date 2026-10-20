@@ -124,6 +124,16 @@ def test_poll_launches_tester(rt):
     assert (state_dir(rt.cfg, "NF-9") / "context.md").exists()
 
 
+def test_a_shared_path_in_the_agent_block_is_not_recorded_as_a_claim(rt):
+    backend = replace(rt.cfg.repos["backend"], shared_paths=("docs/verification.md",))
+    rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
+    block = "```agent\npaths: docs/verification.md, src/a.py\n```\n\n"
+    rt.linear.ready = [issue(desc=block + GOOD)]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.paths == ["src/a.py"]
+
+
 def test_unreadable_dependency_holds_only_that_issue(rt):
     rt.linear.ready = [issue("NF-8", desc=DEPENDS), issue()]
     poll(rt)

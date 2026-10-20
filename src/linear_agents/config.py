@@ -27,6 +27,8 @@ class RepoConfig:
     # GitHub Free organizations cannot open draft PRs on private repos.
     draft: bool = True
     commit_trailer: bool | None = None  # None follows Config.commit_trailer
+    # Files every issue edits (an append-only log): never claimed, never refused at commit.
+    shared_paths: tuple[str, ...] = ()
 
 
 # No claude_config_dir: sessions must share the owner's Claude Code login and
@@ -51,6 +53,7 @@ class Config:
     five_hour_max_pct: float = 80.0
     weekly_max_pct: float = 80.0
     context_restart_pct: float = 60.0
+    idle_escalate_s: float = 1800.0
     default_wall_clock_s: int = 3 * 3600
     review_model: str = "opus"
     # Per-phase reasoning effort, overridden by an issue's agentblock effort. The tester plans the
@@ -98,13 +101,20 @@ def default_config_path() -> Path:
     return Path(env) if env else Path.home() / ".config" / "linear-agents" / "config.toml"
 
 
+def _repo(config_path: Path, name: str, table: dict) -> RepoConfig:
+    shared = table.pop("shared_paths", [])
+    # A bare string would become a char tuple; fail at load like steer_authors.
+    if not isinstance(shared, list) or not all(isinstance(p, str) for p in shared):
+        raise ValueError(f"{config_path}: repos.{name}.shared_paths must be a list of path strings")
+    # Unpacked so a misspelt repo key fails like a misspelt top-level one.
+    return RepoConfig(
+        path=Path(table.pop("path")).expanduser(), shared_paths=tuple(shared), **table
+    )
+
+
 def load(path: Path) -> Config:
     raw = tomllib.loads(path.read_text())
-    # Unpacked so a misspelt repo key fails like a misspelt top-level one.
-    repos = {
-        name: RepoConfig(path=Path(r.pop("path")).expanduser(), **r)
-        for name, r in raw.pop("repos", {}).items()
-    }
+    repos = {name: _repo(path, name, r) for name, r in raw.pop("repos", {}).items()}
     if not repos:
         raise ValueError(f"{path}: no [repos.<name>] tables")
     if not raw.get("digest_issue"):
