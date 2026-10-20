@@ -40,7 +40,9 @@ One `flocc` command on the desktop; keys are made once, checked when pasted and 
 - Ship no longer sends an ntfy test push on every run.
 - `Linear-Agents:` trailers, `🤖 linear-agents:` comments and the old hosts file are no longer
   read, and ship no longer refuses a host from before 0.3.0. Hosts must be on 0.3.0 or later
-  before they upgrade to 0.5.0, since 0.5.0 no longer reads what the old names left behind.
+  before they upgrade to 0.5.0, since 0.5.0 no longer reads what the old names left behind. A
+  branch whose tester commits carry only the old `Linear-Agents: <KEY> test` trailer is no longer
+  recognised, so finish or merge such issues on a 0.4.x host before upgrading it.
 
 ## 0.4.0 (2026-10-20)
 

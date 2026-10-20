@@ -409,19 +409,8 @@ decisions that block them.
 `digest_issue` is now required. A config without it fails to load, which fails every tick and the
 agents' pre-commit hook, so commits in running sessions are refused. Add it before upgrading.
 
-## Hosts from before 0.3.0
-
-A host set up before 0.3.0 is replaced by a new one, not upgraded. Since 0.5.0 `flocc ship` no
-longer checks for such a host, so drain the old one yourself: a second poller there would claim
-the same issues.
-
-A branch the old host pushed continues on the new one: with no local `agent/<key>`, the new host
-fetches it, finds the tester's commits on it and resumes at the implementer. An `--accept-tests`
-grant made on the old host does not move; grant it again. A push the old host made after the new
-one started is reported as "GitHub's copy of the branch has commits this one lacks".
-
-The new host does not read the old host's saved answers; it saves its own in
-`~flocc/.config/flocc/answers.toml`.
+A host must be on 0.3.0 or later before you ship 0.5.0 to it: 0.5.0 no longer reads the old names
+or refuses a host that still has them.
 
 ## Smoke test
 
