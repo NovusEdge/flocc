@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
-	"regexp"
+	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -48,13 +48,101 @@ func (r *recorder) Interactive(_ context.Context, c host.Cmd) error {
 	return nil
 }
 
-var touchesDocker = regexp.MustCompile(`systemctl (start|stop|restart|try-restart|reload|reload-or-restart|kill|disable|mask) docker(\.service|\.socket)?( |$)|\bdockerd\b|service docker|pkill|killall`)
+func isDocker(unit string) bool {
+	return slices.Contains([]string{"docker", "docker.service", "docker.socket", "dockerd"}, unit)
+}
+
+// touchesDocker reports whether c could start, stop, reload or kill dockerd. It reads c as words,
+// so a verb or unit in any order among flags and other units counts, as does one behind sudo,
+// sh -c or a ; or &&.
+func touchesDocker(c string) bool {
+	c = strings.NewReplacer("'", " ", `"`, " ", "`", " ", "(", " ", ")", " ", "&", ";", "|", ";", "\n", ";").Replace(c)
+	for _, seg := range strings.Split(c, ";") {
+		f := strings.Fields(seg)
+		for i, w := range f {
+			var words []string // the arguments after w, without flags
+			for _, a := range f[i+1:] {
+				if !strings.HasPrefix(a, "-") {
+					words = append(words, a)
+				}
+			}
+			switch base := path.Base(w); {
+			case base == "systemctl":
+				readOnly := []string{"is-active", "is-enabled", "is-failed", "status", "show", "cat", "list-units", "list-unit-files"}
+				if len(words) > 0 && !slices.Contains(readOnly, words[0]) && slices.ContainsFunc(words[1:], isDocker) {
+					return true
+				}
+			case base == "service" || base == "invoke-rc.d":
+				if len(words) > 0 && isDocker(words[0]) && (len(words) < 2 || words[1] != "status") {
+					return true
+				}
+			case strings.HasSuffix(w, "init.d/docker"):
+				if len(words) == 0 || words[0] != "status" {
+					return true
+				}
+			case base == "kill" || base == "pkill" || base == "killall":
+				if slices.ContainsFunc(words, func(a string) bool { return isDocker(a) || strings.Contains(a, "dockerd") }) {
+					return true
+				}
+			case base == "dockerd":
+				if i == 0 || slices.Contains([]string{"sudo", "-n", "env", "exec", "nohup", "--", "-c"}, f[i-1]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func TestTouchesDocker(t *testing.T) {
+	for _, c := range []string{
+		"sudo -n systemctl enable --now docker.service",
+		"sudo -n systemctl disable --now docker.service",
+		"sudo -n systemctl --no-block restart docker",
+		"sudo -n systemctl restart --no-block docker.service",
+		"sudo -n systemctl try-reload-or-restart docker",
+		"sudo -n systemctl reload-or-try-restart docker",
+		"sudo -n systemctl force-reload docker",
+		"sudo -n systemctl condrestart docker",
+		"sudo -n systemctl mask docker.socket",
+		"sudo -n /usr/bin/systemctl stop docker.socket",
+		"sudo -n systemctl restart flocc-docker-user.service docker.service",
+		"sh -c 'iptables -L && systemctl restart docker'",
+		"sudo -n /etc/init.d/docker restart",
+		"sudo -n service docker restart",
+		"sudo -n kill $(pidof dockerd)",
+		"sudo -n pkill dockerd",
+		"sudo -n pkill -f /usr/bin/dockerd",
+		"sudo -n killall dockerd",
+		"sudo -n dockerd",
+	} {
+		if !touchesDocker(c) {
+			t.Errorf("not caught: %s", c)
+		}
+	}
+	for _, c := range []string{
+		"systemctl is-active docker",
+		"systemctl is-active --quiet docker.service",
+		"systemctl is-enabled --quiet docker.service",
+		"systemctl show -p ActiveState docker.service",
+		"sudo -n systemctl daemon-reload",
+		"sudo -n systemctl enable --now flocc-docker-user.service",
+		"sudo -n systemctl restart flocc-docker-user.service",
+		"service docker status",
+		"pidof dockerd",
+		"After=docker.service",
+	} {
+		if touchesDocker(c) {
+			t.Errorf("wrongly caught: %s", c)
+		}
+	}
+}
 
 // dockerUntouched fails when any command could stop, start or reload dockerd.
 func dockerUntouched(t *testing.T, calls []string) {
 	t.Helper()
 	for _, c := range calls {
-		if touchesDocker.MatchString(c) {
+		if touchesDocker(c) {
 			t.Errorf("touches Docker: %s", c)
 		}
 	}
