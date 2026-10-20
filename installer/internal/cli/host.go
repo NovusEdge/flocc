@@ -183,7 +183,7 @@ func addHost(ctx context.Context, d *deps, name string, reach hosts.Host) error 
 func pickRepos(ctx context.Context, d *deps, gh *githubapi.Client, h *hosts.Host) error {
 	raw, err := gh.ListRepos(ctx)
 	if err != nil {
-		return err
+		return keys.RotateHint(err)
 	}
 	repos, maybeEmpty, dropped, err := steps.ParseRepos(raw)
 	if err != nil {
@@ -217,7 +217,7 @@ func pickRepos(ctx context.Context, d *deps, gh *githubapi.Client, h *hosts.Host
 func pickTeam(ctx context.Context, d *deps, lin *linearapi.Client, h *hosts.Host) (linearapi.Team, error) {
 	v, err := lin.Viewer(ctx)
 	if err != nil {
-		return linearapi.Team{}, err
+		return linearapi.Team{}, keys.RotateHint(err)
 	}
 	if i := slices.IndexFunc(v.Teams, func(t linearapi.Team) bool { return t.Key == h.TeamKey }); i >= 0 {
 		return v.Teams[i], nil
@@ -315,6 +315,11 @@ func importHost(ctx context.Context, d *deps, name string, reach hosts.Host) err
 	if err != nil {
 		return err
 	}
+	// The import has no time limit, so a blackholed host must fail on its own.
+	dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
+	if err := ship.Connect(ctx, d.run, dest, name, d.tty); err != nil {
+		return err
+	}
 	res, err := ship.Capture(ctx, d.run, dest, []string{"cat", ".config/flocc/answers.toml"}, nil)
 	if err != nil {
 		return err
@@ -327,11 +332,16 @@ func importHost(ctx context.Context, d *deps, name string, reach hosts.Host) err
 		return err
 	}
 	st := d.store()
-	if cur, err := st.Get(keys.Ntfy); err == nil && cur == "" && a.NtfyTopic != "" {
+	switch cur, err := st.Get(keys.Ntfy); {
+	case err != nil || a.NtfyTopic == "" || cur == a.NtfyTopic:
+	case cur == "":
 		if err := st.Set(keys.Ntfy, a.NtfyTopic); err != nil {
 			return err
 		}
 		fmt.Fprintln(d.out, "Kept the host's ntfy topic as the desktop's.")
+	default:
+		// Ship sends the desktop's topic, so the phone following the host's would go quiet.
+		fmt.Fprintf(d.out, "The desktop's ntfy topic differs from %s's; the next ship moves %s to the desktop's (https://ntfy.sh/%s).\n", name, name, cur)
 	}
 	h.Answers = *a
 	h.NtfyTopic, h.Secrets = "", nil

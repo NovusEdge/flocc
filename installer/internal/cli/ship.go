@@ -54,7 +54,7 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 		}
 		in = bytes.NewReader(doc)
 	}
-	s, err := d.doShip(ctx, ship.Options{Target: h.Target(), Interactive: interactive, Out: d.out}, in)
+	s, err := d.doShip(ctx, ship.Options{Target: h.Target(), Interactive: interactive, TTY: d.tty, Out: d.out}, in)
 	// The host cannot know the name the desktop calls it, which the remedy lines use.
 	s.Target = h.Name
 	s.Print(d.out)

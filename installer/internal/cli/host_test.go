@@ -320,6 +320,29 @@ func TestHostAddStopsAtAnEmptyPasteBeforeWritingAnything(t *testing.T) {
 	}
 }
 
+func TestHostAddSendsAKeyGitHubOrLinearRejectsToRotate(t *testing.T) {
+	rejected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	t.Cleanup(rejected.Close)
+	d, _, _ := addDeps(t, allKeys)
+	d.githubAPI = rejected.URL
+	if err := hostAdd(context.Background(), d, "h1", ""); err == nil || !strings.HasSuffix(err.Error(), "; run flocc keys rotate github") {
+		t.Fatal(err)
+	}
+	d, _, _ = addDeps(t, allKeys)
+	lin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"errors":[{"message":"Authentication required","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`))
+	}))
+	t.Cleanup(lin.Close)
+	d.linearAPI = lin.URL
+	if err := hostAdd(context.Background(), d, "h1", ""); err == nil || !strings.HasSuffix(err.Error(), "; run flocc keys rotate linear") {
+		t.Fatal(err)
+	}
+}
+
 func TestHostAddSaysWhichKeyMissesTheNewRepo(t *testing.T) {
 	d, _, _ := addDeps(t, strings.Replace(allKeys, "github_pat_publish", "github_pat_weak", 1))
 	err := hostAdd(context.Background(), d, "h1", "")
@@ -354,9 +377,59 @@ func TestHostImportCopiesTheHostsAnswersAndKeepsItsTopic(t *testing.T) {
 	if topic, _ := d.store().Get(keys.Ntfy); topic != "flocc-host" {
 		t.Fatalf("topic %q", topic)
 	}
-	words := shWords(t, f.runs[0].Args[len(f.runs[0].Args)-1])
+	c := f.captured()[0]
+	words := shWords(t, c.Args[len(c.Args)-1])
 	if script := words[len(words)-1]; script != "cd && cat .config/flocc/answers.toml" {
 		t.Fatalf("%q", script)
+	}
+}
+
+// The next ship sends the desktop's topic, so the phone would stop hearing from the host.
+func TestHostImportSaysWhenTheDesktopsTopicWillReplaceTheHosts(t *testing.T) {
+	d, _, _ := importDeps(t)
+	writeSecrets(t, d.home, "ntfy_topic = 'flocc-desk'\n")
+	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if topic, _ := d.store().Get(keys.Ntfy); topic != "flocc-desk" {
+		t.Fatalf("topic %q", topic)
+	}
+	want := "The desktop's ntfy topic differs from h1's; the next ship moves h1 to the desktop's (https://ntfy.sh/flocc-desk).\n"
+	if out := d.out.(*bytes.Buffer).String(); !strings.Contains(out, want) {
+		t.Fatal(out)
+	}
+}
+
+// Capture keeps ssh's stderr, where a Tailscale check-mode URL appears, so the connection opens
+// on the terminal once, before the first read; the key reads share it.
+func TestHostImportOpensTheConnectionOnTheTerminalOnceFirst(t *testing.T) {
+	d, f, _ := importDeps(t)
+	d.tty = true
+	f.files[".config/flocc/linear.key"] = "lin_api_k\n"
+	f.files[".config/flocc/gh-agent.token"] = "github_pat_agent\n"
+	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if got := warmUps(t, f); !slices.Equal(got, []string{"root@h1"}) || len(f.captured()) != 4 {
+		t.Fatalf("warm-ups %v captures %v", got, f.captured())
+	}
+	f.order, f.runs = nil, nil
+	f.masters = map[string]bool{"root@h1": true}
+	run(context.Background(), d, []string{"host", "import", "-H", "h1"})
+	if got := warmUps(t, f); len(got) != 0 {
+		t.Fatalf("warmed up with a live master: %v", got)
+	}
+}
+
+func TestHostImportNamesTheHostItCouldNotReach(t *testing.T) {
+	d, f, _ := importDeps(t)
+	d.tty = true
+	delete(f.out, "root@h1")
+	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code == 0 {
+		t.Fatal("exit 0")
+	}
+	if errs := d.err.(*bytes.Buffer).String(); !strings.Contains(errs, "could not reach h1") || len(f.captured()) != 0 {
+		t.Fatalf("%s %v", errs, f.captured())
 	}
 }
 
@@ -398,9 +471,12 @@ func TestHostImportTakesTheHostsKeysThroughThePasteChecks(t *testing.T) {
 		}
 	}
 	// Each key file is read without a terminal, so a forced pty cannot echo it.
-	for _, c := range f.runs {
+	for _, c := range f.captured() {
 		if !slices.Contains(c.Args, "-T") {
 			t.Errorf("no -T: %s", c)
+		}
+		if !strings.Contains(c.String(), "-o ConnectTimeout=10 ") {
+			t.Errorf("no ConnectTimeout: %s", c)
 		}
 	}
 }
@@ -425,7 +501,7 @@ func (r *dropAfter) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 func TestHostImportStopsWhenTheHostDropsBeforeAKeyIsRead(t *testing.T) {
 	d, f, _ := importDeps(t)
 	f.files[".config/flocc/linear.key"] = "lin_api_k\n"
-	d.run = &dropAfter{fakeSSH: f, n: 1}
+	d.run = &dropAfter{fakeSSH: f, n: 3} // -O check, the warm-up, the answers
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code == 0 {
 		t.Fatal("exit 0")
 	}

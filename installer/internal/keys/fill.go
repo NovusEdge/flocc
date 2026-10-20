@@ -311,7 +311,7 @@ func Check(ctx context.Context, e Env, m Mapped) []string {
 				"Repository access and Permissions (the token stays the same), then run flocc keys check.", err, tokenName[s])
 		}
 		if err != nil {
-			problems = append(problems, s.Title()+": "+err.Error())
+			problems = append(problems, s.Title()+": "+RotateHint(err).Error())
 			continue
 		}
 		fmt.Fprintf(e.Out, "ok    %s: %s\n", s.Title(), note)
@@ -320,6 +320,18 @@ func Check(ctx context.Context, e Env, m Mapped) []string {
 		problems = append(problems, "ntfy topic: missing; run flocc keys")
 	}
 	return problems
+}
+
+// RotateHint adds the next step to an error saying GitHub or Linear refused a stored key: there
+// is no prompt to paste a new one into, and rotate is what replaces it on every host.
+func RotateHint(err error) error {
+	switch {
+	case errors.Is(err, githubapi.ErrBadCredentials):
+		return fmt.Errorf("%w; run flocc keys rotate github", err)
+	case errors.Is(err, linearapi.ErrKeyRejected):
+		return fmt.Errorf("%w; run flocc keys rotate linear", err)
+	}
+	return err
 }
 
 // tokenName is the name each GitHub token's page fills in, which the owner finds it by later.

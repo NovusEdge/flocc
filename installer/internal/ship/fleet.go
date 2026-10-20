@@ -494,11 +494,11 @@ func FleetMain(args []string, out io.Writer) int {
 	hostsDir := hosts.Dir(home)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir, nil)
+	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir)
 }
 
-// runFleet draws the fleet until ctx ends, or once. first is added to the notes of the first draw.
-func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir string, first []string) int {
+// runFleet draws the fleet until ctx ends, or once.
+func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir string) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
 		auth, err := loadDaytona(daytonaConfig)
@@ -510,8 +510,6 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 	cache.sshOpts, _ = sshMux()
 	for {
 		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
-		notes = append(first, notes...)
-		first = nil
 		rows := collect(ctx, host.Exec{}, cache, found)
 		if ctx.Err() != nil {
 			return exitInterrupted

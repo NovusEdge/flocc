@@ -82,10 +82,13 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 	if name == "all" {
 		return hosts.Host{}, fmt.Errorf("-H all runs only %s; name one host", strings.Join(readOnly, ", "))
 	}
-	all := listHosts(d)
 	if name == "" {
 		name = d.getenv("FLOCC_HOST")
+		if name == "all" {
+			return hosts.Host{}, errors.New("FLOCC_HOST cannot be all; use -H all for status, doctor or logs")
+		}
 	}
+	all := listHosts(d)
 	if name != "" {
 		if i := slices.IndexFunc(all, func(h hosts.Host) bool { return h.Name == name }); i >= 0 {
 			return all[i], nil
@@ -103,11 +106,19 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 		return hosts.Host{}, fmt.Errorf("name a host with -H: %s", strings.Join(names(all), ", "))
 	}
 	key := args[i]
-	var holders []hosts.Host
+	var holders, reached []hosts.Host
 	var unreachable []string
-	for j, row := range ship.Statuses(ctx, d.run, all) {
+	// One at a time, as for -H all: Statuses fetches in parallel and keeps ssh's stderr.
+	for _, h := range all {
+		if err := connectFirst(ctx, d, h); err != nil {
+			unreachable = append(unreachable, err.Error())
+			continue
+		}
+		reached = append(reached, h)
+	}
+	for j, row := range ship.Statuses(ctx, d.run, reached) {
 		if row.Report == nil {
-			why := all[j].Name
+			why := reached[j].Name
 			if row.Err != "" {
 				why += ": " + row.Err
 			}
@@ -115,7 +126,7 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 			continue
 		}
 		if slices.ContainsFunc(row.Report.Claims, func(c ship.Claim) bool { return c.Issue == key }) {
-			holders = append(holders, all[j])
+			holders = append(holders, reached[j])
 		}
 	}
 	switch len(holders) {
@@ -129,6 +140,21 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 		return hosts.Host{}, fmt.Errorf("%s; name one with -H: %s", msg, strings.Join(names(all), ", "))
 	}
 	return hosts.Host{}, fmt.Errorf("%s is claimed on %s; name one with -H", key, and(names(holders)))
+}
+
+// connectFirst opens h's shared connection before Statuses reads it. A Daytona host is left to
+// Statuses: it mints its own token, and the connection is keyed by the token, so one opened here
+// would not be shared.
+func connectFirst(ctx context.Context, d *deps, h hosts.Host) error {
+	if h.Daytona != "" {
+		return nil
+	}
+	dest, err := d.resolve(ctx, h.Target())
+	if err != nil {
+		return err
+	}
+	dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
+	return ship.Connect(ctx, d.run, dest, h.Name, d.tty)
 }
 
 func onHost(ctx context.Context, d *deps, name string, args []string) int {
@@ -182,20 +208,35 @@ func onAll(ctx context.Context, d *deps, args []string) int {
 		return 2
 	}
 	results := make([]host.Result, len(all))
-	var wg sync.WaitGroup
+	dests := make([]*ship.Dest, len(all))
+	// One at a time: two hosts' approval prompts on one terminal would interleave.
 	for i, h := range all {
+		dest, err := d.resolve(ctx, h.Target())
+		if err == nil {
+			// Connect goes host by host and the results print together after wg.Wait, so one
+			// blackholed host must time out fast.
+			dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
+			err = ship.Connect(ctx, d.run, dest, h.Name, d.tty)
+		}
+		if err != nil {
+			results[i] = host.Result{Stderr: err.Error(), Code: 255}
+			continue
+		}
+		dests[i] = &dest
+	}
+	var wg sync.WaitGroup
+	for i, dest := range dests {
+		if dest == nil {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			dest, err := d.resolve(ctx, h.Target())
-			if err == nil {
-				// Results print together after wg.Wait, so one blackholed host must time out fast.
-				dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
-				results[i], err = ship.Capture(ctx, d.run, dest, ship.FloccLine(args), nil)
-			}
+			res, err := ship.Capture(ctx, d.run, *dest, ship.FloccLine(args), nil)
 			if err != nil {
-				results[i] = host.Result{Stderr: err.Error(), Code: 255}
+				res = host.Result{Stderr: err.Error(), Code: 255}
 			}
+			results[i] = res
 		}()
 	}
 	wg.Wait()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -75,6 +76,44 @@ func TestCaptureSendsStdinWithoutATerminalAndScrubsOutput(t *testing.T) {
 	res, err := Capture(context.Background(), f, Dest{SSH: "tok@h", Token: "tok"}, []string{"cat"}, strings.NewReader("in"))
 	if err != nil || res.Code != 3 || f.Stdins[line] != "in" || strings.Contains(res.Stderr, "tok@") {
 		t.Fatalf("%+v %v %v", res, err, f.Stdins)
+	}
+}
+
+// Capture buffers stderr, where ssh prints a Tailscale check-mode URL, so the connection is
+// opened first where the owner can see it.
+func TestConnectOpensTheConnectionOnTheTerminalUnlessAMasterIsLive(t *testing.T) {
+	dest := Dest{SSH: "root@h", Opts: []string{"-o", "ControlPath=/s"}}
+	check, warm := "ssh -o ControlPath=/s -O check root@h", "ssh -o ControlPath=/s -T root@h true"
+	f := host.NewFake().On(check, 255, "")
+	if err := Connect(context.Background(), f, dest, "h1", true); err != nil || !f.Ran("interactive: "+warm) {
+		t.Fatalf("%v %v", err, f.Calls)
+	}
+	f = host.NewFake().On(check, 0, "")
+	if err := Connect(context.Background(), f, dest, "h1", true); err != nil || len(f.Calls) != 1 {
+		t.Fatalf("%v %v", err, f.Calls)
+	}
+	f = host.NewFake().On(check, 255, "").OnInteractive(warm, errors.New("exit status 255"))
+	if err := Connect(context.Background(), f, dest, "h1", true); err == nil || !strings.Contains(err.Error(), "could not reach h1") {
+		t.Fatal(err)
+	}
+}
+
+func TestConnectWithoutATerminalNeverPrompts(t *testing.T) {
+	dest := Dest{SSH: "root@h"}
+	warm := "ssh -o BatchMode=yes -T root@h true"
+	f := host.NewFake().On("ssh -O check root@h", 255, "")
+	f.Responses[warm] = host.Result{Stderr: "# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/x\n", Code: 255}
+	err := Connect(context.Background(), f, dest, "h1", false)
+	if err == nil || !strings.Contains(err.Error(), "could not reach h1 without a prompt") ||
+		!strings.Contains(err.Error(), "https://login.tailscale.com/a/x") || !strings.Contains(err.Error(), "run it in a terminal") {
+		t.Fatal(err)
+	}
+	if !f.Ran(warm) || slices.ContainsFunc(f.Calls, func(c string) bool { return strings.HasPrefix(c, "interactive: ") }) {
+		t.Fatalf("%v", f.Calls)
+	}
+	f.Responses[warm] = host.Result{}
+	if err := Connect(context.Background(), f, dest, "h1", false); err != nil {
+		t.Fatal(err)
 	}
 }
 

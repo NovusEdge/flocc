@@ -48,11 +48,12 @@ func shipDeps(t *testing.T, secrets string) (*deps, *fakeSSH, *[]shipCall) {
 
 func TestShipSendsTheHostFileAndTheKeysOnStdinAndPrintsTheSummary(t *testing.T) {
 	d, _, calls := shipDeps(t, allKeys)
+	d.tty = true // so Ship opens the connection where a Tailscale approval URL shows
 	if code := run(context.Background(), d, []string{"ship", "-H", "a"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	c := (*calls)[0]
-	if c.o.Target != "root@a" || c.o.Interactive || c.o.Out != d.out || c.noAnswers {
+	if c.o.Target != "root@a" || c.o.Interactive || !c.o.TTY || c.o.Out != d.out || c.noAnswers {
 		t.Fatalf("%+v", c)
 	}
 	a, err := answers.Parse(c.doc)

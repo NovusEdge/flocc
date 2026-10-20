@@ -120,9 +120,7 @@ func rotate(ctx context.Context, d *deps, which string) int {
 	for _, h := range all {
 		// Ctrl-C must not stop a push once a key is stored: the hosts would hold the old key
 		// and the desktop the new one.
-		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-		err := pushKeys(pctx, d, h, d.store(), changed)
-		cancel()
+		err := pushKeys(context.WithoutCancel(ctx), d, h, d.store(), changed)
 		if err != nil {
 			failed = append(failed, h.Name+": "+err.Error())
 			continue
@@ -167,12 +165,20 @@ func offerRepush(d *deps, all []hosts.Host, slots []keys.Slot) ([]keys.Slot, err
 
 // pushKeys writes each changed key into the host's secret file as the service user. The value
 // goes on stdin through Capture, which forbids a pty, and the file is written beside the old one
-// and renamed over it, mode 600.
+// and renamed over it, mode 600. The time limit leaves out the connection's opening, which may
+// wait for the owner to approve it in a browser.
 func pushKeys(ctx context.Context, d *deps, h hosts.Host, st keys.Store, slots []keys.Slot) error {
-	dest, err := d.resolve(ctx, h.Target())
+	rctx, cancel := context.WithTimeout(ctx, time.Minute)
+	dest, err := d.resolve(rctx, h.Target())
+	cancel()
 	if err != nil {
 		return err
 	}
+	if err := ship.Connect(ctx, d.run, dest, h.Name, d.tty); err != nil {
+		return err
+	}
+	ctx, cancel = context.WithTimeout(ctx, time.Minute)
+	defer cancel()
 	for _, s := range slots {
 		v, err := st.Get(s)
 		if err != nil {

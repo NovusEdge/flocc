@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,28 +17,38 @@ import (
 )
 
 // fakeSSH answers ssh by destination: Run returns out[dest], and a destination it does not know
-// fails as an unreachable host. files answers a remote command containing "cat <path>" with
-// files[path] on a reachable host, and exit 1 when path is not in it. Commands are kept whole,
-// with the stdin each Run got.
+// fails as an unreachable host, also for ship.Connect's interactive "true". files answers a
+// remote command containing "cat <path>" with files[path] on a reachable host, and exit 1 when
+// path is not in it. ssh -O check succeeds for a destination in masters. Commands are kept
+// whole, with the stdin each Run got, and order holds both kinds as they came.
 type fakeSSH struct {
 	mu          sync.Mutex
 	out         map[string]string
 	files       map[string]string
+	masters     map[string]bool
 	runs        []host.Cmd
 	stdins      []string
 	interactive []host.Cmd
+	order       []call
 }
 
 func (f *fakeSSH) Run(_ context.Context, c host.Cmd) (host.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runs = append(f.runs, c)
+	f.order = append(f.order, call{false, c})
 	in := ""
 	if c.Stdin != nil {
 		b, _ := io.ReadAll(c.Stdin)
 		in = string(b)
 	}
 	f.stdins = append(f.stdins, in)
+	if slices.Contains(c.Args, "-O") {
+		if f.masters[c.Args[len(c.Args)-1]] {
+			return host.Result{}, nil
+		}
+		return host.Result{Stderr: "Control socket connect: No such file or directory", Code: 255}, nil
+	}
 	dest := c.Args[len(c.Args)-2]
 	out, ok := f.out[dest]
 	if !ok {
@@ -59,7 +71,57 @@ func (f *fakeSSH) Interactive(_ context.Context, c host.Cmd) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.interactive = append(f.interactive, c)
+	f.order = append(f.order, call{true, c})
+	dest := c.Args[len(c.Args)-2]
+	if _, ok := f.out[dest]; !ok && c.Args[len(c.Args)-1] == "true" {
+		return errors.New("exit status 255")
+	}
 	return nil
+}
+
+type call struct {
+	interactive bool
+	c           host.Cmd
+}
+
+func isCapture(c host.Cmd) bool { return strings.HasPrefix(c.Args[len(c.Args)-1], "sudo ") }
+
+// captured is the runs that reached the host's service user: no -O check, no warm-up.
+func (f *fakeSSH) captured() []host.Cmd {
+	var out []host.Cmd
+	for _, c := range f.runs {
+		if isCapture(c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// warmUps is the destination of each ship.Connect warm-up, in order. It fails the test when a
+// warm-up ran without a terminal or came after a capture to its destination.
+func warmUps(t *testing.T, f *fakeSSH) []string {
+	t.Helper()
+	var warm []string
+	captured := map[string]bool{}
+	for _, k := range f.order {
+		a := k.c.Args
+		if slices.Contains(a, "-O") {
+			continue
+		}
+		dest := a[len(a)-2]
+		switch {
+		case a[len(a)-1] == "true" && !k.interactive:
+			t.Fatalf("warm-up without a terminal: %s", k.c)
+		case a[len(a)-1] == "true":
+			if captured[dest] {
+				t.Fatalf("%s warmed up after a capture: %v", dest, f.order)
+			}
+			warm = append(warm, dest)
+		case isCapture(k.c):
+			captured[dest] = true
+		}
+	}
+	return warm
 }
 
 // hostDeps makes one host file per name, reached as root@<name>. HOME is the test's, because
@@ -122,6 +184,11 @@ func TestHostChoiceOrder(t *testing.T) {
 	if _, err := pickHost(ctx, d, "all", []string{"release", "NF-1"}); err == nil || !strings.Contains(err.Error(), "-H all runs only") {
 		t.Fatal(err)
 	}
+	d.getenv = func(k string) string { return map[string]string{"FLOCC_HOST": "all"}[k] }
+	if _, err := pickHost(ctx, d, "", []string{"doctor"}); err == nil ||
+		err.Error() != "FLOCC_HOST cannot be all; use -H all for status, doctor or logs" {
+		t.Fatal(err)
+	}
 	d.getenv = func(string) string { return "" }
 	if _, err := pickHost(ctx, d, "", []string{"status"}); err == nil || !strings.Contains(err.Error(), "a, b") {
 		t.Fatal(err)
@@ -150,6 +217,29 @@ func TestAnIssueKeyPicksTheHostHoldingTheClaim(t *testing.T) {
 	}
 }
 
+// The lookup's status fetches run in parallel and keep stderr, so each host's connection opens
+// on the terminal first, one at a time.
+func TestAnIssueKeyLookupOpensEachConnectionOnTheTerminalFirst(t *testing.T) {
+	d, f, _, errb := hostDeps(t, "a", "b", "c")
+	d.tty = true
+	f.out["root@a"], f.out["root@b"] = `{"host":"a","claims":[]}`, holdsNF12
+	if code := run(context.Background(), d, []string{"release", "NF-12"}); code != 0 {
+		t.Fatalf("exit %d\n%s", code, errb)
+	}
+	if got := warmUps(t, f); !slices.Equal(got, []string{"root@a", "root@b", "root@c"}) {
+		t.Fatalf("warm-ups %v", got)
+	}
+	first := slices.IndexFunc(f.order, func(k call) bool { return isCapture(k.c) })
+	last := slices.IndexFunc(f.order, func(k call) bool { return k.interactive && strings.HasSuffix(k.c.String(), "root@c true") })
+	if first < last {
+		t.Fatalf("a status fetch ran before c's warm-up: %v", f.order)
+	}
+	// c failed to connect, so it is not fetched; b still holds the claim and is picked.
+	if n := len(f.captured()); n != 2 {
+		t.Fatalf("%d fetches: %v", n, f.captured())
+	}
+}
+
 func TestAnIssueKeyNoHostOrTwoHostsHoldIsAnError(t *testing.T) {
 	d, f, _, errb := hostDeps(t, "a", "b", "c")
 	f.out["root@a"] = `{"host":"a","claims":[]}`
@@ -157,7 +247,7 @@ func TestAnIssueKeyNoHostOrTwoHostsHoldIsAnError(t *testing.T) {
 	if code := run(context.Background(), d, []string{"release", "NF-12"}); code == 0 || len(f.interactive) != 0 {
 		t.Fatalf("exit %d %v", code, f.interactive)
 	}
-	if msg := errb.String(); !strings.Contains(msg, "no reachable host holds NF-12") || !strings.Contains(msg, "unreachable: c: exit 255: ssh: connect to host root@c: No route to host") || !strings.Contains(msg, "-H") {
+	if msg := errb.String(); !strings.Contains(msg, "no reachable host holds NF-12") || !strings.Contains(msg, "unreachable: could not reach c without a prompt (ssh: connect to host root@c: No route to host)") || !strings.Contains(msg, "-H") {
 		t.Fatal(msg)
 	}
 	f.out["root@a"], f.out["root@b"], f.out["root@c"] = holdsNF12, holdsNF12, holdsNF12
@@ -208,21 +298,45 @@ func TestDashHAllRunsOnlyReadOnlyCommands(t *testing.T) {
 func TestDashHAllLogsWithoutFollowRunsEverywhere(t *testing.T) {
 	d, f, _, _ := hostDeps(t, "a")
 	f.out["root@a"] = "line\n"
-	if code := run(context.Background(), d, []string{"-H", "all", "logs", "-n", "5", "--fix"}); code != 0 || len(f.runs) != 1 {
+	if code := run(context.Background(), d, []string{"-H", "all", "logs", "-n", "5", "--fix"}); code != 0 || len(f.captured()) != 1 {
 		t.Fatalf("exit %d %v", code, f.runs)
 	}
 }
 
 func TestDashHAllGivesEveryHostAConnectTimeout(t *testing.T) {
 	d, f, _, _ := hostDeps(t, "a", "b")
+	f.out["root@a"], f.out["root@b"] = "", ""
 	run(context.Background(), d, []string{"-H", "all", "doctor"})
-	if len(f.runs) != 2 {
+	if len(f.captured()) != 2 {
 		t.Fatalf("%v", f.runs)
 	}
 	for _, c := range f.runs {
 		if !strings.Contains(c.String(), "-o ConnectTimeout=10 ") {
 			t.Errorf("no ConnectTimeout: %s", c)
 		}
+	}
+}
+
+// A Tailscale check-mode URL goes to ssh's stderr, which Capture keeps, so each host's
+// connection opens on the terminal first, one at a time, before the captures run in parallel.
+func TestDashHAllOpensEachConnectionOnTheTerminalBeforeAnyCapture(t *testing.T) {
+	d, f, out, _ := hostDeps(t, "a", "b", "c")
+	d.tty = true
+	f.out["root@a"], f.out["root@c"] = "ok\n", "ok\n"
+	f.masters = map[string]bool{"root@c": true}
+	if code := run(context.Background(), d, []string{"-H", "all", "doctor"}); code == 0 {
+		t.Fatal("exit 0 with b unreachable")
+	}
+	if got := warmUps(t, f); !slices.Equal(got, []string{"root@a", "root@b"}) {
+		t.Fatalf("warm-ups %v", got)
+	}
+	first := slices.IndexFunc(f.order, func(k call) bool { return isCapture(k.c) })
+	last := slices.IndexFunc(f.order, func(k call) bool { return k.interactive && strings.Contains(k.c.String(), "root@b") })
+	if first < last {
+		t.Fatalf("a capture ran before b's warm-up: %v", f.order)
+	}
+	if len(f.captured()) != 2 || !strings.Contains(out.String(), "== b ==\ncould not reach b") {
+		t.Fatalf("%v\n%s", f.captured(), out)
 	}
 }
 

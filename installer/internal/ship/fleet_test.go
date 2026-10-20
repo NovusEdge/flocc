@@ -367,35 +367,6 @@ func TestFleetRejectsATightWatchInterval(t *testing.T) {
 	}
 }
 
-// drawWriter ends the watch loop after its second draw.
-type drawWriter struct {
-	buf    bytes.Buffer
-	cancel context.CancelFunc
-}
-
-func (w *drawWriter) Write(p []byte) (int, error) {
-	w.buf.Write(p)
-	if strings.Count(w.buf.String(), "\x1b[H\x1b[2J") == 2 && !bytes.Equal(p, []byte("\x1b[H\x1b[2J")) {
-		w.cancel()
-	}
-	return len(p), nil
-}
-
-func TestWatchShowsTheFirstNoticeOnTheFirstDrawOnly(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w := &drawWriter{cancel: cancel}
-	dir := t.TempDir()
-	code := runFleet(ctx, w, true, 10*time.Millisecond, filepath.Join(dir, "no-config.json"), filepath.Join(dir, "hosts"), []string{"hosts: dropped \"-oProxyCommand=id\""})
-	if code != exitInterrupted {
-		t.Fatal(code)
-	}
-	draws := strings.Split(w.buf.String(), "\x1b[H\x1b[2J")
-	if len(draws) != 3 || !strings.Contains(draws[1], "dropped") || strings.Contains(draws[2], "dropped") {
-		t.Fatalf("%q", draws)
-	}
-}
-
 // destCache hands an ssh host its destination without minting one, so the sharing must come
 // from the cache itself.
 func TestStatusesSharesConnectionsForSSHHosts(t *testing.T) {

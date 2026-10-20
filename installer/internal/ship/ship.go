@@ -42,6 +42,8 @@ type Options struct {
 	// Interactive runs the host's forms on this terminal over ssh -t. Otherwise every answer,
 	// secrets included, comes from the answers reader on stdin and nothing prompts.
 	Interactive bool
+	// TTY is stdin being a terminal, where Connect can show a Tailscale approval prompt.
+	TTY bool
 	// Out receives the host's output, less the summary line; nil is stdout.
 	Out io.Writer
 }
@@ -51,6 +53,7 @@ type shipOpts struct {
 	// Dest.SSH, which holds the Daytona token.
 	Target      string
 	Interactive bool
+	TTY         bool
 	Answers     []byte
 	Out         io.Writer
 }
@@ -202,7 +205,7 @@ func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
 	if o.Out == nil {
 		o.Out = os.Stdout
 	}
-	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, Answers: doc, Out: o.Out})
+	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, TTY: o.TTY, Answers: doc, Out: o.Out})
 }
 
 func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts) (Summary, error) {
@@ -215,6 +218,9 @@ func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts
 }
 
 func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts, tap io.Writer) error {
+	if err := Connect(ctx, r, dest, o.Target, o.TTY); err != nil {
+		return err
+	}
 	unameM, err := host.Must(ctx, r, sshCmd(dest, false, "uname -m"))
 	if err != nil {
 		return err
