@@ -5,7 +5,8 @@ import signal
 import subprocess
 from pathlib import Path
 
-from flocc.config import RepoConfig
+from flocc import legacy
+from flocc.config import TRAILER, RepoConfig
 
 _LISTED = 20
 _DRAIN_S = 5
@@ -64,6 +65,13 @@ def free_disk_gb(path: Path) -> float:
     return shutil.disk_usage(probe).free / 1e9
 
 
+def _has_ref(repo: Path, ref: str) -> bool:
+    out = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", ref], cwd=repo, capture_output=True, check=False
+    )
+    return out.returncode == 0
+
+
 def prepare_worktree(
     repo: RepoConfig,
     worktree_root: Path,
@@ -84,28 +92,17 @@ def prepare_worktree(
     # A released run leaves its branch, and with --keep-worktree its worktree; a rerun continues
     # on them, where `worktree add -b` would fail.
     if f"worktree {path}" not in listed:
-        has_branch = (
-            subprocess.run(
-                ["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"],
-                cwd=repo.path,
-                capture_output=True,
-                check=False,
-            ).returncode
-            == 0
-        )
-        if has_branch:
+        if _has_ref(repo.path, f"refs/heads/{branch}"):
             git("worktree", "add", "-q", str(path), branch, cwd=repo.path)
         else:
-            git(
-                "worktree",
-                "add",
-                "-q",
-                "-b",
-                branch,
-                str(path),
-                f"origin/{repo.base_branch}",
-                cwd=repo.path,
-            )
+            start = f"origin/{repo.base_branch}"
+            # Another host ran this issue before: a branch cut fresh from the base would be
+            # rejected at the end of the run, after the sessions spent their usage.
+            if git("ls-remote", "origin", f"refs/heads/{branch}", cwd=repo.path):
+                refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+                git("fetch", "-q", "origin", refspec, cwd=repo.path)
+                start = f"origin/{branch}"
+            git("worktree", "add", "-q", "-b", branch, str(path), start, cwd=repo.path)
     base = git("rev-parse", "HEAD", cwd=path)
     if (path / "setup").exists():
         # A kept worktree may hold the previous run's uncommitted work; only what setup adds counts.
@@ -213,6 +210,47 @@ def contains(worktree: Path, sha: str, ref: str = "HEAD") -> bool:
         check=False,
     )
     return out.returncode == 0
+
+
+def recover_tests(
+    worktree: Path, base_branch: str, branch: str, key: str
+) -> tuple[str, str] | None:
+    """(base_sha, tester_sha) of the tester's commits on origin's copy of branch, or None."""
+    remote = f"origin/{branch}"
+    if not _has_ref(worktree, f"refs/remotes/{remote}"):
+        return None
+    # Exits 1 when the branches share no history; git() would raise and crash every poll of the issue.
+    base = subprocess.run(
+        ["git", "merge-base", f"origin/{base_branch}", remote],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if base.returncode != 0:
+        return None
+    fork = base.stdout.strip()
+    log = git(
+        "log",
+        "--reverse",
+        "--first-parent",
+        "--format=%H%x1f%(trailers:only,unfold)%x1e",
+        f"{fork}..{remote}",
+        cwd=worktree,
+    )
+    wanted = {f"{name}: {key} test" for name in (TRAILER, legacy.TRAILER)}
+    run = []
+    # Only the run that starts the branch: the implementer can write a test trailer itself.
+    for record in log.split("\x1e"):
+        sha, _, trailers = record.strip().partition("\x1f")
+        if not sha:
+            continue
+        if not wanted & {line.strip() for line in trailers.splitlines()}:
+            break
+        run.append(sha)
+    if not run:
+        return None
+    return git("rev-parse", f"{run[0]}^", cwd=worktree), run[-1]
 
 
 def changed_files(worktree: Path, a: str, b: str) -> set[str]:
