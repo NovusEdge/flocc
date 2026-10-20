@@ -12,13 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	answersPkg "github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
 
@@ -63,11 +63,8 @@ type usageError string
 
 func (u usageError) Error() string { return string(u) }
 
-var targetRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._:-]*$`)
-
-// ValidTarget reports whether t is safe as an ssh destination: no leading dash, which ssh would
-// read as an option, and no shell metacharacters.
-func ValidTarget(t string) bool { return targetRE.MatchString(t) }
+// ValidTarget is hosts.ValidTarget: ship and the host files take the same targets.
+func ValidTarget(t string) bool { return hosts.ValidTarget(t) }
 
 func badTarget(t string) error {
 	return usageError(fmt.Sprintf("%q is not an ssh target or daytona:<sandbox>", t))
