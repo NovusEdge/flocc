@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +59,10 @@ type deps struct {
 	linearAPI string
 	ntfyBase  string
 	newTopic  func() string
+
+	repoRoot func() (string, error)
+	doShip   func(context.Context, ship.Options, io.Reader) (ship.Summary, error)
+	doLogin  func(context.Context, ship.LoginOptions) error
 }
 
 func Main(args []string) int {
@@ -78,6 +84,11 @@ func Main(args []string) int {
 	d.http = &http.Client{Timeout: 30 * time.Second}
 	d.githubAPI, d.linearAPI, d.ntfyBase = githubapi.DefaultBase, linearapi.DefaultURL, "https://ntfy.sh"
 	d.newTopic = answers.RandomTopic
+	d.repoRoot = func() (string, error) {
+		out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	d.doShip, d.doLogin = ship.Ship, ship.Login
 	return run(ctx, d, args)
 }
 
@@ -96,9 +107,9 @@ func run(ctx context.Context, d *deps, args []string) int {
 		fmt.Fprint(d.out, usage)
 		return 0
 	case "ship":
-		return ship.Main(rest[1:])
+		return shipCmd(ctx, d, name, rest[1:])
 	case "login":
-		return ship.LoginMain(rest[1:])
+		return loginCmd(ctx, d, name, rest[1:])
 	case "host":
 		return hostCmd(ctx, d, name, rest[1:])
 	case "keys":

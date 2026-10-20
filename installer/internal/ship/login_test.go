@@ -62,7 +62,24 @@ func TestLoginSummaryNamesTheTypedTargetNotTheTokenedDestination(t *testing.T) {
 	if err := login(context.Background(), f, "daytona:box", dest, "", &out, func(string) {}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "just login daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
+	if !strings.Contains(out.String(), "flocc login -H daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
+		t.Fatalf("%q", out.String())
+	}
+}
+
+func TestLoginSummaryNamesTheHostWhenGivenOne(t *testing.T) {
+	o := LoginOptions{Target: "daytona:box", Name: "mybox"}
+	if o.label() != "mybox" || (LoginOptions{Target: "root@h"}).label() != "root@h" {
+		t.Fatalf("%q", o.label())
+	}
+	dest := Dest{SSH: "tok123@gw", Token: "tok123"}
+	sum := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
+	f := host.NewFake().OnInteractiveOut("ssh -t tok123@gw "+loginRemote(""), sum.Line()+"\r\n")
+	var out strings.Builder
+	if err := login(context.Background(), f, o.label(), dest, "", &out, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "flocc login -H mybox\n") || strings.Contains(out.String(), "daytona:") || strings.Contains(out.String(), "tok123") {
 		t.Fatalf("%q", out.String())
 	}
 }
@@ -74,7 +91,10 @@ func TestLoginRefusesAnUnsafeTargetAndEmail(t *testing.T) {
 			t.Errorf("%+v: %v", o, err)
 		}
 	}
-	if code := LoginMain([]string{"--email", "a@b;id", "root@h"}); code != 2 {
-		t.Fatalf("exit %d", code)
+}
+
+func TestValidEmail(t *testing.T) {
+	if !ValidEmail("o@example.test") || ValidEmail("a@b;id") || ValidEmail("$(id)@x") {
+		t.Fatal("wrong verdict")
 	}
 }

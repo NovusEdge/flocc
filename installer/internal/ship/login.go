@@ -2,9 +2,9 @@ package ship
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -20,25 +20,14 @@ import (
 
 var emailRE = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$`)
 
-// LoginOptions are what Login needs. Email picks the claude.ai account and may be empty.
+// LoginOptions are what Login needs. Email picks the claude.ai account and may be empty. Name is
+// what the owner calls the host, for the login command the summary shows; empty means Target.
 type LoginOptions struct {
-	Target, Email string
-	Out           io.Writer // the host's output and the summary; nil is stdout
+	Target, Email, Name string
+	Out                 io.Writer // the host's output and the summary; nil is stdout
 }
 
-// LoginMain runs the host's login phase over ssh -t and opens the sign-in URL it prints here.
-func LoginMain(args []string) int {
-	fs := flag.NewFlagSet("flocc-setup login", flag.ContinueOnError)
-	addr := fs.String("email", "", "the claude.ai account to sign in as")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: flocc-setup login [--email ADDR] <ssh-target|daytona:SANDBOX>")
-		return 2
-	}
-	return ExitCode(Login(context.Background(), LoginOptions{Target: fs.Arg(0), Email: *addr, Out: os.Stdout}), "login")
-}
+func ValidEmail(s string) bool { return emailRE.MatchString(s) }
 
 func loginRemote(addr string) string {
 	cmd := "sudo -iu " + steps.ServiceUser + " " + serviceHome + "/.cache/flocc-setup/flocc-setup --phase login"
@@ -56,7 +45,7 @@ func Login(ctx context.Context, o LoginOptions) error {
 		return badTarget(o.Target)
 	}
 	// The address goes into the remote command line, which sudo -i hands to a login shell.
-	if o.Email != "" && !emailRE.MatchString(o.Email) {
+	if o.Email != "" && !ValidEmail(o.Email) {
 		return usageError(fmt.Sprintf("%q is not an email address", o.Email))
 	}
 	r, dest, err := connect(ctx, o.Target)
@@ -67,8 +56,10 @@ func Login(ctx context.Context, o LoginOptions) error {
 	if out == nil {
 		out = os.Stdout
 	}
-	return login(ctx, r, o.Target, dest, o.Email, out, OpenURL)
+	return login(ctx, r, o.label(), dest, o.Email, out, OpenURL)
 }
+
+func (o LoginOptions) label() string { return cmp.Or(o.Name, o.Target) }
 
 // target is the name the owner typed, never dest.SSH, which holds the Daytona token.
 func login(ctx context.Context, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {

@@ -517,7 +517,7 @@ func TestShipSummaryNamesTheTypedTargetNotTheTokenedDestination(t *testing.T) {
 	}
 	var out strings.Builder
 	got.Print(&out)
-	if !strings.Contains(out.String(), "just login daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
+	if !strings.Contains(out.String(), "flocc login -H daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
 		t.Fatalf("%q", out.String())
 	}
 }
@@ -550,26 +550,6 @@ func TestShipRejectsABrokenAnswersDocumentBeforeConnecting(t *testing.T) {
 	}
 }
 
-func TestOpenAnswersReadsStdinForDashAndAFileOtherwise(t *testing.T) {
-	rc, err := openAnswers("-", strings.NewReader("from stdin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := io.ReadAll(rc); string(b) != "from stdin" {
-		t.Fatalf("%q", b)
-	}
-	path := filepath.Join(t.TempDir(), "a.toml")
-	os.WriteFile(path, []byte("from file"), 0o600)
-	rc, err = openAnswers(path, strings.NewReader("unused"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rc.Close()
-	if b, _ := io.ReadAll(rc); string(b) != "from file" {
-		t.Fatalf("%q", b)
-	}
-}
-
 func TestValidTarget(t *testing.T) {
 	for _, ok := range []string{"root@flocc-nimble", "daytona:flocc-smoke", "box.tailnet.ts.net"} {
 		if !ValidTarget(ok) {
@@ -580,12 +560,6 @@ func TestValidTarget(t *testing.T) {
 		if ValidTarget(bad) {
 			t.Errorf("%q accepted", bad)
 		}
-	}
-}
-
-func TestMainRefusesInteractiveWithAnswers(t *testing.T) {
-	if code := Main([]string{"--interactive", "--answers", "a.toml", "h"}); code != 2 {
-		t.Fatalf("exit %d", code)
 	}
 }
 

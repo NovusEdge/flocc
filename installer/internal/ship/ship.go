@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -164,54 +163,6 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, configDir s
 		plan.List.Marketplaces[i].Commit = strings.TrimSpace(sha)
 	}
 	return plan.List.Write(filepath.Join(dir, "plugins.json"))
-}
-
-func Main(args []string) int {
-	fs := flag.NewFlagSet("flocc-setup ship", flag.ContinueOnError)
-	interactive := fs.Bool("interactive", false, "answer the host's forms on this terminal (ssh -t) instead of from --answers")
-	answersIn := fs.String("answers", "", `answers document, secrets included, sent to the host on stdin; "-" reads this terminal's stdin`)
-	stageOnly := fs.String("stage-only", "", "write the stage for linux/amd64 into this directory and stop")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if *interactive && *answersIn != "" {
-		fmt.Fprintln(os.Stderr, "ship: --interactive asks for every answer on the host; drop --answers")
-		return 2
-	}
-	ctx := context.Background()
-	if *stageOnly != "" {
-		r := host.Exec{Log: os.Stderr}
-		root, err := repoRoot(ctx, r)
-		if err == nil {
-			if err = os.MkdirAll(*stageOnly, 0o755); err == nil {
-				err = stageFiles(ctx, r, root, *stageOnly, "amd64", claudeConfigDir(), ghPrivate)
-			}
-		}
-		return ExitCode(err, "ship")
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: flocc ship[--interactive | --answers FILE|-] <ssh-target|daytona:SANDBOX>")
-		return 2
-	}
-	var in io.Reader
-	if *answersIn != "" {
-		rc, err := openAnswers(*answersIn, os.Stdin)
-		if err != nil {
-			return ExitCode(err, "ship")
-		}
-		defer rc.Close()
-		in = rc
-	}
-	s, err := Ship(ctx, Options{Target: fs.Arg(0), Interactive: *interactive, Out: os.Stdout}, in)
-	s.Print(os.Stdout)
-	return ExitCode(err, "ship")
-}
-
-func openAnswers(path string, stdin io.Reader) (io.ReadCloser, error) {
-	if path == "-" {
-		return io.NopCloser(stdin), nil
-	}
-	return os.Open(path)
 }
 
 // Ship stages the installer on the host named by o.Target and runs it, with the answers document

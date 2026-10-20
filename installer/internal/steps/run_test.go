@@ -20,7 +20,7 @@ type declineUI struct{ *ui.Scripted }
 
 func (declineUI) Confirm(string, bool) (bool, error) { return false, nil }
 
-const loginFailLine = "FAIL  claude login: none; on the desktop, run just login <ssh target of this host>\n"
+const loginFailLine = "FAIL  claude login: none; on the desktop, run flocc login -H <this host>\n"
 
 // systemdRun answers what Run.Check and Run.Apply run in systemd mode, around doctor.
 func systemdRun(f *host.Fake, doctorCode int, doctorOut string) *host.Fake {

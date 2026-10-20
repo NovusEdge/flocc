@@ -48,15 +48,15 @@ build:
 clean:
     rm -rf build
 
-# Set up or upgrade a host without a terminal (--answers FILE sends the answers), or --interactive
+# Set up or upgrade a host from its host file and the stored keys (--interactive: the host's own forms)
 [group('host')]
-ship target *flags: build
-    build/flocc ship {{flags}} {{target}}
+ship name *flags: build
+    build/flocc ship -H {{name}} {{flags}}
 
 # Log the host in to Claude, accept Remote Control and start its timer (--email picks the account)
 [group('host')]
-login target *flags: build
-    build/flocc login {{flags}} {{target}}
+login name *flags: build
+    build/flocc login -H {{name}} {{flags}}
 
 # Run a raw command on the host as flocc, with the service PATH
 [group('host')]
@@ -110,11 +110,11 @@ daytona-up name:
 daytona-stop name:
     daytona stop {{name}}
 
-# Start a Daytona sandbox, then ship to it
+# Start a Daytona sandbox, then ship to it, after flocc host add {{name}} --daytona {{name}}
 [group('daytona')]
 daytona-start name:
     daytona start {{name}}
-    just ship daytona:{{name}}
+    just ship {{name}}
 
 # List Daytona sandboxes
 [group('daytona')]

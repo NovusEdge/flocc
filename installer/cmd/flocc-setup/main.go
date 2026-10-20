@@ -48,7 +48,7 @@ func removeStagedAnswers(stage string) error {
 const loopWarning = `PID 1 is not systemd, so this host runs in loop mode:
 - flocc run in tmux session flocc-loop ticks every 3 minutes, in place of the timer;
 - processes a timed-out check daemonized are not killed when its tick ends;
-- after the host stops, run just ship again to restart tailscaled and the loop.
+- after the host stops, run flocc ship -H <host> again to restart tailscaled and the loop.
 Continue?`
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -56,7 +56,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 func checkPhase(phase string, euid int) error {
 	switch {
 	case phase == "root" && euid != 0:
-		return errors.New("the root phase runs as root; just ship runs it with sudo")
+		return errors.New("the root phase runs as root; flocc ship runs it with sudo")
 	case (phase == "service" || phase == "login") && euid == 0:
 		return errors.New("the " + phase + " phase runs as " + steps.ServiceUser + ", not root")
 	case phase != "root" && phase != "service" && phase != "login":
@@ -73,7 +73,7 @@ func handoffArgs(fromStdin bool) []string {
 	return args
 }
 
-// rootStage is where just ship stages the files. The root phase chowns the stage, so it must
+// rootStage is where flocc ship stages the files. The root phase chowns the stage, so it must
 // never be any other directory.
 const rootStage = "/tmp/flocc-setup"
 
@@ -81,7 +81,7 @@ var stageFile = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func checkStage(dir string) error {
 	if dir != rootStage {
-		return fmt.Errorf("the root phase runs from %s, not %s; just ship stages it there", rootStage, dir)
+		return fmt.Errorf("the root phase runs from %s, not %s; flocc ship stages it there", rootStage, dir)
 	}
 	return nil
 }
@@ -235,7 +235,7 @@ func run(args []string) int {
 	if *phase == "login" {
 		err := steps.Login(ctx, env, steps.LoginOptions{Email: *email})
 		if errors.Is(err, steps.ErrStopped) {
-			fmt.Fprintln(stdout, "Stopped. Run just login again to finish.")
+			fmt.Fprintln(stdout, "Stopped. Run flocc login -H <host> again to finish.")
 			return 1
 		}
 		return finish(ctx, env, err, true, stdout, stderr, logPath)
@@ -271,7 +271,7 @@ func finish(ctx context.Context, env *steps.Env, err error, summary bool, stdout
 	var failed *steps.DoctorFailed
 	switch {
 	case errors.Is(err, steps.ErrStopped):
-		fmt.Fprintln(stdout, "Stopped. Run just ship again to continue.")
+		fmt.Fprintln(stdout, "Stopped. Run flocc ship -H <host> again to continue.")
 		return 0
 	case err != nil && !(summary && errors.As(err, &failed)):
 		fmt.Fprintf(stderr, "\n%s\n\nFull log: %s\n", err, logPath)
