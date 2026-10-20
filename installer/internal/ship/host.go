@@ -40,7 +40,7 @@ func HostMain(args []string) int {
 	home, _ := os.UserHomeDir()
 	dest, err := resolveTarget(ctx, args[0], filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
 	if err == nil {
-		err = hostRun(ctx, host.Exec{Log: redact{os.Stderr, dest.Token}}, dest, args[1:])
+		err = hostRun(ctx, host.Exec{Log: host.Redact(os.Stderr, dest.Token)}, dest, args[1:])
 	}
 	if err != nil {
 		var exit *exec.ExitError

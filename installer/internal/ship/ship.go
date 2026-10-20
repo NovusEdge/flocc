@@ -148,7 +148,7 @@ func Main(args []string) int {
 	home, _ := os.UserHomeDir()
 	dest, err := resolveTarget(ctx, fs.Arg(0), filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
 	if err == nil {
-		err = ship(ctx, host.Exec{Log: redact{os.Stderr, dest.Token}}, root, dest, *answersIn, *skip)
+		err = ship(ctx, host.Exec{Log: host.Redact(os.Stderr, dest.Token)}, root, dest, *answersIn, *skip)
 	}
 	if err != nil {
 		var exit *exec.ExitError

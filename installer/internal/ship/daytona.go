@@ -1,7 +1,6 @@
 package ship
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,22 +17,6 @@ type Dest struct {
 	SSH   string
 	Token string // a Daytona SSH token inside SSH, redacted from logs
 	Opts  []string
-}
-
-// redact keeps a credential out of the command echo on the desktop terminal.
-type redact struct {
-	w      io.Writer
-	secret string
-}
-
-func (r redact) Write(p []byte) (int, error) {
-	if r.secret != "" {
-		if _, err := r.w.Write(bytes.ReplaceAll(p, []byte(r.secret), []byte("<token>"))); err != nil {
-			return 0, err
-		}
-		return len(p), nil
-	}
-	return r.w.Write(p)
 }
 
 type daytonaAuth struct{ url, bearer, org string }

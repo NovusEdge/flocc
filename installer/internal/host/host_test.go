@@ -124,3 +124,60 @@ func TestExecCancelledContextReturnsContextError(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestExecLogRedactsSecretsButTheCallerGetsTheOutput(t *testing.T) {
+	var log strings.Builder
+	e := Exec{Log: Redact(&log, "s3cret", "")}
+	res, err := e.Run(context.Background(), Cmd{Name: "sh", Args: []string{"-c", `printf '%s\n' "$S"; printf '%s' "$S" >&2`},
+		Env: []string{"S=s3cret"}})
+	if err != nil || res.Stdout != "s3cret\n" || res.Stderr != "s3cret" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if strings.Contains(log.String(), "s3cret") || strings.Count(log.String(), "<token>") != 2 {
+		t.Fatalf("log %q", log.String())
+	}
+}
+
+func TestRedactHidesTheToken(t *testing.T) {
+	var b strings.Builder
+	Redact(&b, "tok123").Write([]byte("$ ssh tok123@ssh.app.daytona.io uname -m\n"))
+	if strings.Contains(b.String(), "tok123") || !strings.Contains(b.String(), "<token>@ssh.app.daytona.io") {
+		t.Fatalf("%q", b.String())
+	}
+}
+
+// strings.ReplaceAll with an empty old string inserts the new one between every byte.
+func TestRedactWithNoSecretsPassesThrough(t *testing.T) {
+	var b strings.Builder
+	Redact(&b, "", "").Write([]byte("plain\n"))
+	if b.String() != "plain\n" {
+		t.Fatalf("%q", b.String())
+	}
+}
+
+func TestExecPassesStdin(t *testing.T) {
+	res, err := Exec{}.Run(context.Background(), Cmd{Name: "cat", Stdin: strings.NewReader("doc\n")})
+	if err != nil || res.Stdout != "doc\n" {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+func TestExecInteractiveUsesTheCmdStreams(t *testing.T) {
+	var out bytes.Buffer
+	if err := (Exec{}).Interactive(context.Background(), Cmd{Name: "cat", Stdin: strings.NewReader("x"), Stdout: &out}); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "x" {
+		t.Fatalf("%q", out.String())
+	}
+}
+
+func TestFakeRecordsStdinAndWritesInteractiveOutput(t *testing.T) {
+	f := NewFake().On("cat", 0, "").OnInteractiveOut("ssh -t h x", "hello\r\n")
+	f.Run(context.Background(), Cmd{Name: "cat", Stdin: strings.NewReader("doc")})
+	var out bytes.Buffer
+	f.Interactive(context.Background(), Cmd{Name: "ssh", Args: []string{"-t", "h", "x"}, Stdin: strings.NewReader("in"), Stdout: &out})
+	if f.Stdins["cat"] != "doc" || f.Stdins["ssh -t h x"] != "in" || out.String() != "hello\r\n" {
+		t.Fatalf("%v %q", f.Stdins, out.String())
+	}
+}

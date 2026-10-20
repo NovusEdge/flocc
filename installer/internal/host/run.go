@@ -17,6 +17,10 @@ type Cmd struct {
 	Args []string
 	Dir  string
 	Env  []string // added to the inherited environment
+	// Stdin is nil for /dev/null in Run and for the terminal in Interactive.
+	Stdin io.Reader
+	// Stdout replaces the terminal in Interactive; Run always captures.
+	Stdout io.Writer
 }
 
 func (c Cmd) String() string { return strings.Join(append([]string{c.Name}, c.Args...), " ") }
@@ -56,6 +60,7 @@ func (e Exec) command(ctx context.Context, c Cmd) *exec.Cmd {
 
 func (e Exec) Run(ctx context.Context, c Cmd) (Result, error) {
 	cmd := e.command(ctx, c)
+	cmd.Stdin = c.Stdin
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	log := e.log()
@@ -79,6 +84,12 @@ func (e Exec) Run(ctx context.Context, c Cmd) (Result, error) {
 func (e Exec) Interactive(ctx context.Context, c Cmd) error {
 	cmd := e.command(ctx, c)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if c.Stdin != nil {
+		cmd.Stdin = c.Stdin
+	}
+	if c.Stdout != nil {
+		cmd.Stdout = c.Stdout
+	}
 	fmt.Fprintf(e.log(), "$ %s (interactive)\n", c)
 	return cmd.Run()
 }
