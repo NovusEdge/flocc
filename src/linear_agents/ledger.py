@@ -161,6 +161,10 @@ def is_shared(name: str, shared: tuple[str, ...]) -> bool:
     return any(name == g or path.full_match(g) for g in shared)
 
 
+def unshared(globs: list[str], shared: tuple[str, ...]) -> list[str]:
+    return [g for g in globs if not is_shared(g, shared)]
+
+
 def add_paths(con: sqlite3.Connection, key: str, globs: list[str]) -> dict[str, str]:
     """Adds globs to the claim unless another live claim overlaps; returns the clashes."""
     # Read, check and write share one transaction so two agents claiming at once cannot both win.

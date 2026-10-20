@@ -305,7 +305,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         branch=branch,
         phase=phase,
         state="running",
-        paths=list(settings.paths),
+        paths=ledger.unshared(list(settings.paths), cfg.repos[repo].shared_paths),
         depends_on=list(settings.depends_on),
         settings_json=settings_to_json(settings),
         started_at=rt.now(),
