@@ -8,13 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	answersPkg "github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/host"
@@ -89,8 +87,7 @@ func sshNoTTY(d Dest, remote string) host.Cmd {
 // connect resolves target to an ssh destination and a runner whose log hides its token and
 // secrets.
 func connect(ctx context.Context, target string, secrets ...string) (host.Runner, Dest, error) {
-	home, _ := os.UserHomeDir()
-	dest, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
+	dest, err := Resolve(ctx, target)
 	if err != nil {
 		return nil, Dest{}, err
 	}
@@ -190,7 +187,7 @@ func Main(args []string) int {
 				err = stageFiles(ctx, r, root, *stageOnly, "amd64", claudeConfigDir(), ghPrivate)
 			}
 		}
-		return exitCode(err, "ship")
+		return ExitCode(err, "ship")
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: flocc ship[--interactive | --answers FILE|-] <ssh-target|daytona:SANDBOX>")
@@ -200,14 +197,14 @@ func Main(args []string) int {
 	if *answersIn != "" {
 		rc, err := openAnswers(*answersIn, os.Stdin)
 		if err != nil {
-			return exitCode(err, "ship")
+			return ExitCode(err, "ship")
 		}
 		defer rc.Close()
 		in = rc
 	}
 	s, err := Ship(ctx, Options{Target: fs.Arg(0), Interactive: *interactive, Out: os.Stdout}, in)
 	s.Print(os.Stdout)
-	return exitCode(err, "ship")
+	return ExitCode(err, "ship")
 }
 
 func openAnswers(path string, stdin io.Reader) (io.ReadCloser, error) {

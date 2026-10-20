@@ -9,9 +9,40 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// Resolve is resolveTarget with SSH connection sharing.
+func Resolve(ctx context.Context, target string) (Dest, error) {
+	mux, err := sshMux()
+	if err != nil {
+		return Dest{}, err
+	}
+	home, _ := os.UserHomeDir()
+	d, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
+	if err != nil {
+		return d, err
+	}
+	d.Opts = append(d.Opts, mux...)
+	return d, nil
+}
+
+// sshMux makes every ssh to one host in the next ten minutes reuse the first connection, so one
+// Tailscale check-mode approval covers a whole run. %C is a hash of the connection, which keeps
+// the socket path inside the 104 bytes macOS allows.
+func sshMux() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	return []string{"-o", "ControlMaster=auto", "-o", "ControlPath=" + filepath.Join(dir, "flocc-%C"), "-o", "ControlPersist=10m"}, nil
+}
 
 type Dest struct {
 	SSH   string

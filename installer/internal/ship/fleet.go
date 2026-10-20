@@ -140,10 +140,11 @@ func scrub(s, token string) string {
 // destCache keeps each Daytona host's SSH destination until shortly before its token expires, so
 // --watch does not mint a token per host on every redraw.
 type destCache struct {
-	mu   sync.Mutex
-	m    map[string]cachedDest
-	now  func() time.Time
-	mint func(context.Context, FleetHost) (Dest, error)
+	mu      sync.Mutex
+	m       map[string]cachedDest
+	now     func() time.Time
+	mint    func(context.Context, FleetHost) (Dest, error)
+	sshOpts []string // given to every ssh host, which resolve returns without minting
 }
 
 type cachedDest struct {
@@ -157,7 +158,7 @@ func newDestCache(mint func(context.Context, FleetHost) (Dest, error)) *destCach
 
 func (c *destCache) resolve(ctx context.Context, h FleetHost) (Dest, error) {
 	if !h.Daytona {
-		return Dest{SSH: h.Target}, nil
+		return Dest{SSH: h.Target, Opts: c.sshOpts}, nil
 	}
 	c.mu.Lock()
 	hit, ok := c.m[h.Target]
@@ -412,9 +413,21 @@ func render(rows []Row, notes []string) string {
 	return b.String()
 }
 
+// Statuses runs flocc status --json on every host in parallel, as the fleet view does.
+func Statuses(ctx context.Context, r host.Runner, hs []hosts.Host) []Row {
+	fhs := make([]FleetHost, len(hs))
+	for i, h := range hs {
+		fhs[i] = FleetHost{Name: h.Name, Target: h.Target(), Daytona: h.Daytona != ""}
+	}
+	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) { return Resolve(ctx, h.Target) })
+	// No sharing is still a working lookup, so a missing ~/.ssh does not stop it.
+	cache.sshOpts, _ = sshMux()
+	return collect(ctx, r, cache, fhs)
+}
+
 // FleetMain prints the fleet once, or redraws it every interval with --watch.
 func FleetMain(args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("flocc-setup fleet", flag.ContinueOnError)
+	fs := flag.NewFlagSet("flocc status -H all", flag.ContinueOnError)
 	watch := fs.Bool("watch", false, "redraw until interrupted")
 	interval := fs.Duration("interval", 30*time.Second, "time between redraws with --watch")
 	if err := fs.Parse(args); err != nil {

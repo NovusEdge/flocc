@@ -2,12 +2,8 @@ package ship
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"os"
-	"path/filepath"
+	"io"
 	"strings"
-	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
@@ -28,22 +24,32 @@ func asServiceUser(command []string) string {
 	return "sudo -u " + steps.ServiceUser + " -H env HOME=" + serviceHome + " " + steps.ServicePath(serviceHome) + " sh -c " + shQuote(script)
 }
 
-// HostMain runs a command on a host as the service user and returns its exit code.
-func HostMain(args []string) int {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: flocc-setup host <ssh-target|daytona:SANDBOX> <command...>")
-		return 2
+// FloccLine is the host's own flocc with each argument quoted on its own, so spaces, quotes and $
+// reach the host CLI exactly as typed on the desktop.
+func FloccLine(args []string) []string {
+	line := []string{"flocc"}
+	for _, a := range args {
+		line = append(line, shQuote(a))
 	}
-	ctx := context.Background()
-	home, _ := os.UserHomeDir()
-	dest, err := resolveTarget(ctx, args[0], filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
-	if err == nil {
-		err = hostRun(ctx, host.Exec{Log: host.Redact(os.Stderr, dest.Token)}, dest, args[1:])
-	}
-	return exitCode(err, "host")
+	return line
 }
 
-// hostRun scrubs the SSH token from errors, as ship does.
-func hostRun(ctx context.Context, r host.Runner, dest Dest, command []string) error {
-	return scrubErr(r.Interactive(ctx, sshCmd(dest, true, asServiceUser(command))), dest.Token)
+// OnHost runs command, shell words, on the host as the service user with this terminal's
+// streams; tty asks ssh for a terminal.
+func OnHost(ctx context.Context, r host.Runner, dest Dest, command []string, tty bool) error {
+	return scrubErr(r.Interactive(ctx, sshCmd(dest, tty, asServiceUser(command))), dest.Token)
+}
+
+// Capture runs command on the host as the service user without a terminal and returns what it
+// printed; stdin, when set, is the command's input. Callers send and read secrets with it, so it
+// forbids a pty (sshNoTTY). BatchMode makes ssh fail instead of waiting at a prompt nobody sees.
+func Capture(ctx context.Context, r host.Runner, dest Dest, command []string, stdin io.Reader) (host.Result, error) {
+	d := dest
+	d.Opts = append([]string{"-o", "BatchMode=yes"}, dest.Opts...)
+	c := sshNoTTY(d, asServiceUser(command))
+	c.Stdin = stdin
+	res, err := r.Run(ctx, c)
+	res.Stdout = scrub(res.Stdout, dest.Token)
+	res.Stderr = scrub(res.Stderr, dest.Token)
+	return res, scrubErr(err, dest.Token)
 }
