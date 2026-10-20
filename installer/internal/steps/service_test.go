@@ -55,12 +55,12 @@ func TestRepoApplyStopsOnLocalEditsWithGitsMessage(t *testing.T) {
 
 func TestCleanSecret(t *testing.T) {
 	for in, want := range map[string]string{"lin_api_x\n": "lin_api_x", "  ghp_y\r\n": "ghp_y"} {
-		if got, err := cleanSecret(in); err != nil || got != want {
+		if got, err := CleanSecret(in); err != nil || got != want {
 			t.Errorf("%q: got %q %v", in, got, err)
 		}
 	}
 	for _, bad := range []string{"LINEAR_KEY=lin_api_x", "a b", "a\nb"} {
-		if _, err := cleanSecret(bad); err == nil {
+		if _, err := CleanSecret(bad); err == nil {
 			t.Errorf("%q: want an error", bad)
 		}
 	}

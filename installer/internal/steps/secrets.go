@@ -26,8 +26,8 @@ var secretSpecs = []secretSpec{
 
 var envPrefix = regexp.MustCompile(`^[A-Z_]+=`)
 
-// cleanSecret strips what a paste adds and refuses what doctor would reject.
-func cleanSecret(v string) (string, error) {
+// CleanSecret strips what a paste adds and refuses what doctor would reject.
+func CleanSecret(v string) (string, error) {
 	v = strings.TrimSpace(v)
 	switch {
 	case strings.ContainsAny(v, "\r\n"):
@@ -46,7 +46,7 @@ func validSecret(path string) (bool, string) {
 		return false, "missing"
 	}
 	b, _ := os.ReadFile(path)
-	if _, err := cleanSecret(string(b)); err != nil {
+	if _, err := CleanSecret(string(b)); err != nil {
 		return false, err.Error()
 	}
 	if strings.TrimSpace(string(b)) == "" {
@@ -113,7 +113,7 @@ func (Secrets) Apply(_ context.Context, e *Env) error {
 			}
 			return errors.New(s.title + " is required")
 		}
-		v, err := cleanSecret(raw)
+		v, err := CleanSecret(raw)
 		if err != nil {
 			return fmt.Errorf("%s: %w", s.title, err)
 		}
