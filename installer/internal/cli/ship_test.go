@@ -62,7 +62,7 @@ func TestShipSendsTheHostFileAndTheKeysOnStdinAndPrintsTheSummary(t *testing.T) 
 	}
 	// The summary names the host, not its ssh destination, in the command it asks for.
 	if out := d.out.(*bytes.Buffer).String(); !strings.Contains(out, "flocc 0.5.0") || !strings.Contains(out, "flocc login -H a") ||
-		strings.Contains(out, "root@a") {
+		strings.Contains(out, "root@a") || strings.Contains(out, "<host>") {
 		t.Fatal(out)
 	}
 }
@@ -116,7 +116,7 @@ func TestLoginRunsOnTheChosenHost(t *testing.T) {
 		return nil
 	}
 	if code := run(context.Background(), d, []string{"login", "-H", "a", "--email", "o@example.test"}); code != 0 ||
-		got.Target != "root@a" || got.Email != "o@example.test" || got.Out != d.out {
+		got.Target != "root@a" || got.Name != "a" || got.Email != "o@example.test" || got.Out != d.out {
 		t.Fatalf("exit %d %+v", code, got)
 	}
 	if code := run(context.Background(), d, []string{"login", "-H", "a", "--email", "a@b;id"}); code != 2 {

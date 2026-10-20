@@ -112,5 +112,5 @@ func loginWith(ctx context.Context, d *deps, name, email string) error {
 	if err != nil {
 		return err
 	}
-	return d.doLogin(ctx, ship.LoginOptions{Target: h.Target(), Email: email, Out: d.out})
+	return d.doLogin(ctx, ship.LoginOptions{Target: h.Target(), Name: h.Name, Email: email, Out: d.out})
 }

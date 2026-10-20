@@ -67,6 +67,23 @@ func TestLoginSummaryNamesTheTypedTargetNotTheTokenedDestination(t *testing.T) {
 	}
 }
 
+func TestLoginSummaryNamesTheHostWhenGivenOne(t *testing.T) {
+	o := LoginOptions{Target: "daytona:box", Name: "mybox"}
+	if o.label() != "mybox" || (LoginOptions{Target: "root@h"}).label() != "root@h" {
+		t.Fatalf("%q", o.label())
+	}
+	dest := Dest{SSH: "tok123@gw", Token: "tok123"}
+	sum := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
+	f := host.NewFake().OnInteractiveOut("ssh -t tok123@gw "+loginRemote(""), sum.Line()+"\r\n")
+	var out strings.Builder
+	if err := login(context.Background(), f, o.label(), dest, "", &out, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "flocc login -H mybox\n") || strings.Contains(out.String(), "daytona:") || strings.Contains(out.String(), "tok123") {
+		t.Fatalf("%q", out.String())
+	}
+}
+
 func TestLoginRefusesAnUnsafeTargetAndEmail(t *testing.T) {
 	var u usageError
 	for _, o := range []LoginOptions{{Target: "h;id"}, {Target: "-oProxyCommand=x"}, {Target: "root@h", Email: "a@b;id"}} {

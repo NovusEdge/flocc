@@ -2,6 +2,7 @@ package ship
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,10 +20,11 @@ import (
 
 var emailRE = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$`)
 
-// LoginOptions are what Login needs. Email picks the claude.ai account and may be empty.
+// LoginOptions are what Login needs. Email picks the claude.ai account and may be empty. Name is
+// what the owner calls the host, for the login command the summary shows; empty means Target.
 type LoginOptions struct {
-	Target, Email string
-	Out           io.Writer // the host's output and the summary; nil is stdout
+	Target, Email, Name string
+	Out                 io.Writer // the host's output and the summary; nil is stdout
 }
 
 func ValidEmail(s string) bool { return emailRE.MatchString(s) }
@@ -54,8 +56,10 @@ func Login(ctx context.Context, o LoginOptions) error {
 	if out == nil {
 		out = os.Stdout
 	}
-	return login(ctx, r, o.Target, dest, o.Email, out, OpenURL)
+	return login(ctx, r, o.label(), dest, o.Email, out, OpenURL)
 }
+
+func (o LoginOptions) label() string { return cmp.Or(o.Name, o.Target) }
 
 // target is the name the owner typed, never dest.SSH, which holds the Daytona token.
 func login(ctx context.Context, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {
