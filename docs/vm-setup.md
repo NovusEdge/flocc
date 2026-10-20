@@ -8,7 +8,9 @@ logged in on the desktop, and, for Daytona, the Daytona CLI logged in with `dayt
 The first run on a host asks you to log in to Tailscale and to Claude (`/login`, Remote Control;
 the two push settings are written to `~/.claude/settings.json` for you), to paste the Linear key
 and the two GitHub tokens, to fill in the config form and to confirm an ntfy test push. It ends
-by running `flocc doctor` and starts ticking only when doctor reports no FAIL line.
+by running `flocc doctor` and starts ticking only when doctor reports no FAIL line. The service
+phase saves the form's answers, without the tokens, in `~/.config/flocc/answers.toml` on the
+host, and a rerun starts from them.
 Everything it runs is logged to `/tmp/flocc-setup/setup.log` (root steps) and
 `~flocc/.cache/flocc-setup/setup.log` (the rest).
 
@@ -41,6 +43,48 @@ daytona stop flocc-smoke
 15-minute auto-stop ends it mid-run. A stopped sandbox bills only its disk. If
 `daytona-medium` has less than 2 vCPU and 4 GiB, pass `--cpu 2 --memory 4096` instead of
 `--snapshot`.
+
+## A VM on an Incus machine
+
+The owner's host is an Incus VM on the laptop `zer0-day-nimble`. Agents run unreviewed code, so it
+is a VM rather than a container. The machine is shared: never restart Docker or Incus on it, since
+a Docker restart on 2026-10-20 killed another session's build.
+
+The machine carries the bridge and forwarding settings applied by hand on 2026-10-19. Check them
+before building a VM:
+
+```bash
+incus network get incusbr0 ipv4.nat                  # true
+sudo firewall-cmd --get-zone-of-interface=incusbr0    # trusted
+sudo iptables -S FORWARD | head -1                    # -P FORWARD ACCEPT
+grep ip-forward-no-drop /etc/docker/daemon.json       # Docker leaves FORWARD alone
+```
+
+They are broad: the VM can reach every service on the machine. `flocc host create` (0.6.0)
+replaces them with rules scoped to `incusbr0`.
+
+Size a new VM like the existing one and check the machine has room for both:
+
+```bash
+incus config show la-nimble --expanded | grep -E 'limits\.(cpu|memory)|size:'
+free -g
+```
+
+Then, with la-nimble's `limits.cpu`, `limits.memory` and root disk `size` in place of the example
+values:
+
+```bash
+incus launch images:debian/13 flocc-nimble --vm -c boot.autostart=true \
+  -c limits.cpu=4 -c limits.memory=8GiB -d root,size=40GiB
+until incus exec flocc-nimble -- true 2>/dev/null; do sleep 2; done   # the Incus agent starts a few seconds after launch
+incus exec flocc-nimble -- sh -c 'until ip -4 -o addr show scope global | grep -q inet; do sleep 2; done'
+incus exec flocc-nimble -- sh -c 'apt-get update -q && apt-get install -yq curl && curl -fsSI https://pkgs.tailscale.com >/dev/null'
+incus exec flocc-nimble -- sh -c 'curl -fsSL https://tailscale.com/install.sh | sh'
+incus exec flocc-nimble -- tailscale up --ssh --hostname=flocc-nimble
+```
+
+`tailscale up` prints a login URL; open it and log in as the owner. In the Tailscale admin console,
+disable key expiry for the node. `just ship root@flocc-nimble` then reaches it over Tailscale SSH.
 
 ## What the installer cannot do
 
@@ -187,6 +231,21 @@ decisions that block them.
 
 `digest_issue` is now required. A config without it fails to load, which fails every tick and the
 agents' pre-commit hook, so commits in running sessions are refused. Add it before upgrading.
+
+## Hosts from before 0.3.0
+
+`just ship` refuses a host set up before 0.3.0: it has the service user of the old name, and a
+second poller there would claim the same issues. Build a new host and drain the old one; the steps
+used for la-nimble are tasks 12, 14 and 15 of
+`docs/superpowers/plans/2026-10-20-flocc-part-1-rename.md`.
+
+A branch the old host pushed continues on the new one: with no local `agent/<key>`, the new host
+fetches it, finds the tester's commits on it and resumes at the implementer. An `--accept-tests`
+grant made on the old host does not move; grant it again. A push the old host made after the new
+one started is reported as "GitHub's copy of the branch has commits this one lacks".
+
+The new host does not read the old host's saved answers; it saves its own in
+`~/.config/flocc/answers.toml`.
 
 ## Smoke test
 
