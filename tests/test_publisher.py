@@ -2,15 +2,15 @@ import subprocess
 import time
 from dataclasses import replace
 
-from linear_agents.config import RepoConfig
-from linear_agents.publisher import (
+from flocc.config import RepoConfig
+from flocc.publisher import (
     COMMENT_LIMIT,
     comment_on_pr,
     failure_excerpt,
     publish,
     review_comment,
 )
-from linear_agents.worktree import git, prepare_worktree
+from flocc.worktree import git, prepare_worktree
 from tests.test_ledger import make
 
 
@@ -133,7 +133,7 @@ def test_failed_check_keeps_the_full_output(origin, tmp_path):
 
 
 def test_review_comment_wraps_the_review_verbatim():
-    assert review_comment("body\n") == "🤖 linear-agents review\n\nbody\n"
+    assert review_comment("body\n") == "🤖 flocc review\n\nbody\n"
 
 
 def test_review_comment_is_truncated_to_githubs_limit():
@@ -160,7 +160,7 @@ def _trailed_commit(path, name, trailer):
 
 def test_commits_without_the_trailer_are_listed_not_blocked(origin, tmp_path):
     repo, path, claim = setup_claim(origin, tmp_path)
-    _trailed_commit(path, "a.py", "Linear-Agents: NF-5 impl")
+    _trailed_commit(path, "a.py", "Flocc: NF-5 impl")
     _trailed_commit(path, "b.py", "")
     bare = git("rev-parse", "--short", "HEAD", cwd=path)
     result = publish(claim, repo, "t", "s", token="t", runner=Gh())

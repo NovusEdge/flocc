@@ -4,22 +4,22 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from linear_agents import grants as grants_mod
-from linear_agents import ledger
-from linear_agents.agentblock import settings_from_json
-from linear_agents.context import phase_prompt, state_dir
-from linear_agents.escalation import Escalation, scoped
-from linear_agents.gate import (
+from flocc import grants as grants_mod
+from flocc import ledger
+from flocc.agentblock import settings_from_json
+from flocc.context import phase_prompt, state_dir
+from flocc.escalation import Escalation, scoped
+from flocc.gate import (
     LAUNCH_GRANTS_ENV,
     clear_idle,
     clear_question,
     run_id,
     running_agents,
 )
-from linear_agents.ledger import Claim
-from linear_agents.linear import LinearError
-from linear_agents.publisher import review_comment
-from linear_agents.sessions import (
+from flocc.ledger import Claim
+from flocc.linear import LinearError
+from flocc.publisher import review_comment
+from flocc.sessions import (
     allowed_plugins,
     claude_argv,
     clean_env,
@@ -27,11 +27,11 @@ from linear_agents.sessions import (
     session_name,
     trust_folders,
 )
-from linear_agents.usage import context_pct, latest_usage, read_status
+from flocc.usage import context_pct, latest_usage, read_status
 
 HANDOFF_ASK = (
     "Your context is past {pct:.0f}%. Follow the handoff skill now: write handoff.md in your state"
-    " directory, then run linear-agents handoff-ready. A fresh session will continue from it."
+    " directory, then run flocc handoff-ready. A fresh session will continue from it."
 )
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
@@ -74,11 +74,11 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | No
     start = claim.started_at if started_at is None else started_at
     env = clean_env(
         {
-            "LINEAR_AGENTS_STATE": str(d),
-            "LINEAR_AGENTS_CONFIG": str(rt.config_path),
-            "LINEAR_AGENTS_PHASE": phase,
+            "FLOCC_STATE": str(d),
+            "FLOCC_CONFIG": str(rt.config_path),
+            "FLOCC_PHASE": phase,
             # Handoffs and crash relaunches of one phase share its launch budget.
-            "LINEAR_AGENTS_RUN": run_id(phase, start),
+            "FLOCC_RUN": run_id(phase, start),
             "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
             "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS": "1",
         }
@@ -148,7 +148,7 @@ def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
         claim,
         "publish-failed",
         f"Publishing failed {fails} times in a row: {exc}\n{detail[-1500:]}".strip(),
-        f"Fix the push or the gh token, then run linear-agents release --keep-worktree {key}",
+        f"Fix the push or the gh token, then run flocc release --keep-worktree {key}",
     )
     ledger.meta_set(rt.con, counter, "0")
 
@@ -254,7 +254,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
                 claim,
                 "no-tests",
                 "The tester finished without committing tests.",
-                f"Add detail to the acceptance criteria, then run linear-agents release {key}",
+                f"Add detail to the acceptance criteria, then run flocc release {key}",
             )
             return
         if claim.base_sha is not None:
@@ -277,9 +277,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         rt.linear.comment(issue.id, f"PR for review: {result.url}")
         ledger.add_digest(rt.con, key, f"PR ready for review: {result.url}", rt.now())
         if result.untrailed:
-            line = (
-                f"{key}: commits without the Linear-Agents trailer: {', '.join(result.untrailed)}"
-            )
+            line = f"{key}: commits without the Flocc trailer: {', '.join(result.untrailed)}"
             ledger.add_digest(rt.con, key, line, rt.now())
         _start_review(rt, claim, issue.title, issue.description, result.url)
     elif result.status == "check_failed" and claim.fix_attempts == 0:
@@ -300,7 +298,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             claim,
             "check-failed",
             f"The check still fails after one fix:\n{result.detail}",
-            f"Fix the branch or the issue, then run linear-agents release --keep-worktree {key}",
+            f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
         )
     else:
         _block(
@@ -309,8 +307,8 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             "tests-touched",
             f"The implementer changed the tester's files: {result.detail}",
             "If the test change is wrong, revert it on the branch, then run"
-            f" linear-agents release --keep-worktree {key}. If it is right, run"
-            f" linear-agents release --accept-tests {key}",
+            f" flocc release --keep-worktree {key}. If it is right, run"
+            f" flocc release --accept-tests {key}",
         )
 
 
@@ -328,7 +326,7 @@ def _check_question(rt, claim: Claim, d: Path, name: str) -> None:
     if claim.phase in ("impl", "fix"):
         where = f"in the Claude app (Remote Control session {name})"
     else:
-        where = f"in its pane on the host (tmux -L linear-agents attach -t {name})"
+        where = f"in its pane on the host (tmux -L flocc attach -t {name})"
     esc = scoped(
         Escalation(
             2,
@@ -372,7 +370,7 @@ def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
             f"{name} has been idle for {minutes} min without finishing:"
             f" {message or 'no last message'}",
             "Reply on this issue to steer it, or release it with"
-            f" linear-agents release --keep-worktree {claim.issue_key}",
+            f" flocc release --keep-worktree {claim.issue_key}",
             waiting=True,
         ),
         claim.issue_key,
@@ -408,7 +406,7 @@ def supervise(rt, claim: Claim) -> None:
                 claim,
                 "crash",
                 "The session died twice.",
-                f"Check the worktree, then run linear-agents release --keep-worktree {key}",
+                f"Check the worktree, then run flocc release --keep-worktree {key}",
             )
             return
         _relaunch(rt, claim)
@@ -421,7 +419,7 @@ def supervise(rt, claim: Claim) -> None:
             _review_skipped(rt, claim, f"stopped at the wall-clock limit ({name})")
             return
         rt.sessions.kill(name)
-        line = f"stopped at the wall-clock limit ({name}); rerun with linear-agents release {key}"
+        line = f"stopped at the wall-clock limit ({name}); rerun with flocc release {key}"
         ledger.add_digest(rt.con, key, line, rt.now())
         _record_usage(rt, key, claim.phase, "end")
         ledger.update_claim(rt.con, key, state="timed_out")

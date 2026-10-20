@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 
-from linear_agents.agentblock import IssueSettings
-from linear_agents.config import Config
-from linear_agents.ledger import Claim, conflicting_claims, in_repo, unshared
-from linear_agents.usage import Usage
+from flocc.agentblock import IssueSettings
+from flocc.config import Config
+from flocc.ledger import Claim, conflicting_claims, in_repo, unshared
+from flocc.usage import Usage
 
 STALE_USAGE_S = 15 * 60
 

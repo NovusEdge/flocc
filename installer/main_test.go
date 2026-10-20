@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 func TestCheckPhase(t *testing.T) {
@@ -27,8 +27,8 @@ func TestCheckPhase(t *testing.T) {
 }
 
 func TestHandoffArgs(t *testing.T) {
-	got := handoffArgs("/tmp/la-setup/e2e.toml", true, "/home/linear-agents/.cache/la-setup")
-	want := []string{"--phase", "service", "--answers", "/home/linear-agents/.cache/la-setup/e2e.toml", "--skip-interactive"}
+	got := handoffArgs("/tmp/flocc-setup/e2e.toml", true, "/home/flocc/.cache/flocc-setup")
+	want := []string{"--phase", "service", "--answers", "/home/flocc/.cache/flocc-setup/e2e.toml", "--skip-interactive"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v", got)
 	}
@@ -49,21 +49,21 @@ func fillStage(t *testing.T, names ...string) string {
 }
 
 func TestStageNamesKeepsOnlyKnownSafeFiles(t *testing.T) {
-	stage := fillStage(t, "la-setup", "linear-agents.bundle", "plugins.json", "identity.json", "mp-X.tar", "e2e.toml",
+	stage := fillStage(t, "flocc-setup", "flocc.bundle", "plugins.json", "identity.json", "mp-X.tar", "e2e.toml",
 		"setup.log", "other.toml", "-bad.tar", "a b.tar")
 	got, err := stageNames(stage, "/x/e2e.toml")
-	want := []string{"e2e.toml", "identity.json", "la-setup", "linear-agents.bundle", "mp-X.tar", "plugins.json"}
+	want := []string{"e2e.toml", "flocc-setup", "flocc.bundle", "identity.json", "mp-X.tar", "plugins.json"}
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("%v %v", got, err)
 	}
 	if _, err := stageNames(fillStage(t, "plugins.json"), ""); err == nil {
-		t.Fatal("a stage without la-setup must be refused")
+		t.Fatal("a stage without flocc-setup must be refused")
 	}
 }
 
 // sudo -i passes the script through the login shell, which expands $ before the inner sh runs.
 func TestCopyScriptHasNoExpansionAndCopiesTheStage(t *testing.T) {
-	stage := fillStage(t, "la-setup", "linear-agents.bundle", "plugins.json", "mp-X.tar", "e2e.toml")
+	stage := fillStage(t, "flocc-setup", "flocc.bundle", "plugins.json", "mp-X.tar", "e2e.toml")
 	names, err := stageNames(stage, "e2e.toml")
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestCopyScriptHasNoExpansionAndCopiesTheStage(t *testing.T) {
 		t.Fatalf("%v: %s", err, out)
 	}
 	for _, n := range names {
-		if b, err := os.ReadFile(filepath.Join(home, ".cache/la-setup", n)); err != nil || string(b) != n {
+		if b, err := os.ReadFile(filepath.Join(home, ".cache/flocc-setup", n)); err != nil || string(b) != n {
 			t.Errorf("%s: %q %v", n, b, err)
 		}
 	}
@@ -101,18 +101,18 @@ func TestDropAnswersCopyKeepsSavedState(t *testing.T) {
 }
 
 func TestHandoffRemovesTheStagedAnswersOnlyOnSuccess(t *testing.T) {
-	stage := fillStage(t, "la-setup", "e2e.toml")
+	stage := fillStage(t, "flocc-setup", "e2e.toml")
 	f := host.NewFake().
-		On("chown -R root:linear-agents "+stage, 0, "").
+		On("chown -R root:flocc "+stage, 0, "").
 		On("chmod -R g+rX,o-rwx "+stage, 0, "")
-	f.Responses["sudo -iu linear-agents sh -c "+copyScript(rootStage, []string{"e2e.toml", "la-setup"})] = host.Result{Code: 1}
+	f.Responses["sudo -iu flocc sh -c "+copyScript(rootStage, []string{"e2e.toml", "flocc-setup"})] = host.Result{Code: 1}
 	if err := handoff(context.Background(), f, stage, "e2e.toml", nil); err == nil {
 		t.Fatal("want the copy failure")
 	}
 	if _, err := os.Stat(filepath.Join(stage, "e2e.toml")); err != nil {
 		t.Fatal("answers removed after a failed handoff")
 	}
-	f.On("sudo -iu linear-agents sh -c "+copyScript(rootStage, []string{"e2e.toml", "la-setup"}), 0, "")
+	f.On("sudo -iu flocc sh -c "+copyScript(rootStage, []string{"e2e.toml", "flocc-setup"}), 0, "")
 	if err := handoff(context.Background(), f, stage, "e2e.toml", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -122,19 +122,19 @@ func TestHandoffRemovesTheStagedAnswersOnlyOnSuccess(t *testing.T) {
 }
 
 func TestHandoffNeverWritesIntoTheServiceHomeAsRoot(t *testing.T) {
-	stage := fillStage(t, "la-setup", "e2e.toml")
+	stage := fillStage(t, "flocc-setup", "e2e.toml")
 	f := host.NewFake().
-		On("chown -R root:linear-agents "+stage, 0, "").
+		On("chown -R root:flocc "+stage, 0, "").
 		On("chmod -R g+rX,o-rwx "+stage, 0, "").
-		On("sudo -iu linear-agents sh -c "+copyScript(rootStage, []string{"e2e.toml", "la-setup"}), 0, "")
+		On("sudo -iu flocc sh -c "+copyScript(rootStage, []string{"e2e.toml", "flocc-setup"}), 0, "")
 	if err := handoff(context.Background(), f, stage, filepath.Join(stage, "e2e.toml"), nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range f.Calls {
-		if c == "chown -R root:linear-agents "+stage || c == "chmod -R g+rX,o-rwx "+stage {
+		if c == "chown -R root:flocc "+stage || c == "chmod -R g+rX,o-rwx "+stage {
 			continue
 		}
-		if !strings.HasPrefix(c, "sudo -iu linear-agents") && !strings.HasPrefix(c, "interactive: sudo -iu linear-agents") {
+		if !strings.HasPrefix(c, "sudo -iu flocc") && !strings.HasPrefix(c, "interactive: sudo -iu flocc") {
 			t.Errorf("root ran something besides the stage chown/chmod and the service user's own commands: %s", c)
 		}
 	}
@@ -149,7 +149,7 @@ func TestCheckStage(t *testing.T) {
 	if checkStage(rootStage) != nil {
 		t.Fatal("the root stage was refused")
 	}
-	for _, d := range []string{"/usr/local/bin", "/tmp/la-setup/x", ""} {
+	for _, d := range []string{"/usr/local/bin", "/tmp/flocc-setup/x", ""} {
 		if checkStage(d) == nil {
 			t.Errorf("%q: want refusal", d)
 		}

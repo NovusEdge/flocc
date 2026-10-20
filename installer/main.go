@@ -14,17 +14,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/ship"
-	"github.com/NovusEdge/linear-agents/installer/internal/steps"
-	"github.com/NovusEdge/linear-agents/installer/internal/ui"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-const serviceStage = "/home/" + steps.ServiceUser + "/.cache/la-setup"
+const serviceStage = "/home/" + steps.ServiceUser + "/.cache/flocc-setup"
 
 const loopWarning = `PID 1 is not systemd, so this host runs in loop mode:
-- linear-agents run in tmux session la-loop ticks every 3 minutes, in place of the timer;
+- flocc run in tmux session flocc-loop ticks every 3 minutes, in place of the timer;
 - processes a timed-out check daemonized are not killed when its tick ends;
 - after the host stops, run just ship again to restart tailscaled and the loop.
 Continue?`
@@ -56,7 +56,7 @@ func handoffArgs(answersIn string, skip bool, dest string) []string {
 
 // rootStage is where just ship stages the files. The root phase chowns the stage, so it must
 // never be any other directory.
-const rootStage = "/tmp/la-setup"
+const rootStage = "/tmp/flocc-setup"
 
 var stageFile = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
@@ -78,14 +78,14 @@ func stageNames(stage, answersIn string) ([]string, error) {
 	var names []string
 	for _, ent := range entries {
 		n := ent.Name()
-		known := n == "la-setup" || n == "linear-agents.bundle" || n == "plugins.json" || n == "identity.json" ||
+		known := n == "flocc-setup" || n == "flocc.bundle" || n == "plugins.json" || n == "identity.json" ||
 			strings.HasSuffix(n, ".tar") || answersIn != "" && n == filepath.Base(answersIn)
 		if ent.Type().IsRegular() && known && stageFile.MatchString(n) {
 			names = append(names, n)
 		}
 	}
-	if !slices.Contains(names, "la-setup") {
-		return nil, fmt.Errorf("%s has no la-setup binary", stage)
+	if !slices.Contains(names, "flocc-setup") {
+		return nil, fmt.Errorf("%s has no flocc-setup binary", stage)
 	}
 	return names, nil
 }
@@ -93,7 +93,7 @@ func stageNames(stage, answersIn string) ([]string, error) {
 // copyScript is what the service user runs to copy the stage into its own home. The names
 // must already match stageFile, so none needs quoting.
 func copyScript(dir string, names []string) string {
-	return "mkdir -p ~/.cache/la-setup && cd " + dir + " && cp -- " + strings.Join(names, " ") + " ~/.cache/la-setup/"
+	return "mkdir -p ~/.cache/flocc-setup && cd " + dir + " && cp -- " + strings.Join(names, " ") + " ~/.cache/flocc-setup/"
 }
 
 // handoff lets the service user read the stage and copy it itself. Root never writes inside
@@ -120,7 +120,7 @@ func handoff(ctx context.Context, r host.Runner, stage, answersIn string, args [
 			return err
 		}
 	}
-	err = r.Interactive(ctx, host.Cmd{Name: "sudo", Args: append([]string{"-iu", steps.ServiceUser, serviceStage + "/la-setup"}, args...)})
+	err = r.Interactive(ctx, host.Cmd{Name: "sudo", Args: append([]string{"-iu", steps.ServiceUser, serviceStage + "/flocc-setup"}, args...)})
 	if err == nil && answersIn != "" {
 		dropAnswersCopy(filepath.Join(stage, filepath.Base(answersIn)))
 	}
@@ -145,7 +145,7 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "ship" {
 		return ship.Main(args[1:])
 	}
-	fs := flag.NewFlagSet("la-setup", flag.ContinueOnError)
+	fs := flag.NewFlagSet("flocc-setup", flag.ContinueOnError)
 	phase := fs.String("phase", "root", "root or service; the root phase hands off to the service phase itself")
 	answersIn := fs.String("answers", "", "answers file supplying every form value, for runs without a terminal")
 	skip := fs.Bool("skip-interactive", false, "skip the Claude and Tailscale logins and read answers from --answers")
@@ -153,25 +153,25 @@ func run(args []string) int {
 		return 2
 	}
 	if err := checkPhase(*phase, os.Geteuid()); err != nil {
-		fmt.Fprintln(os.Stderr, "la-setup:", err)
+		fmt.Fprintln(os.Stderr, "flocc-setup:", err)
 		return 2
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "la-setup:", err)
+		fmt.Fprintln(os.Stderr, "flocc-setup:", err)
 		return 1
 	}
 	stage := filepath.Dir(exe)
 	if *phase == "root" {
 		if err := checkStage(stage); err != nil {
-			fmt.Fprintln(os.Stderr, "la-setup:", err)
+			fmt.Fprintln(os.Stderr, "flocc-setup:", err)
 			return 2
 		}
 	}
 	logPath := filepath.Join(stage, "setup.log")
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "la-setup:", err)
+		fmt.Fprintln(os.Stderr, "flocc-setup:", err)
 		return 1
 	}
 	defer logf.Close()
@@ -181,7 +181,7 @@ func run(args []string) int {
 	osRelease, _ := os.ReadFile("/etc/os-release")
 	distro, err := host.ParseOSRelease(string(osRelease))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "la-setup:", err)
+		fmt.Fprintln(os.Stderr, "flocc-setup:", err)
 		return 1
 	}
 	a := &answers.Answers{}
@@ -192,18 +192,18 @@ func run(args []string) int {
 		env.AnswersPath = filepath.Join(stage, "answers.toml")
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
 			if err := a.OverlaySaved(saved); err != nil {
-				fmt.Fprintln(os.Stderr, "la-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
+				fmt.Fprintln(os.Stderr, "flocc-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
 			}
 		}
 	}
 	if *answersIn != "" {
 		in, err := answers.Load(*answersIn)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "la-setup:", err)
+			fmt.Fprintln(os.Stderr, "flocc-setup:", err)
 			return 1
 		}
 		if err := a.Overlay(in); err != nil {
-			fmt.Fprintln(os.Stderr, "la-setup:", *answersIn+":", err)
+			fmt.Fprintln(os.Stderr, "flocc-setup:", *answersIn+":", err)
 			return 1
 		}
 	}

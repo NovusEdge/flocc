@@ -20,7 +20,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 // Daytona list prices (daytona.io/pricing); the figure shown is an estimate, not what the account
@@ -49,7 +49,7 @@ func estimateHourly(cpu, memGiB, diskGiB int) float64 {
 		float64(max(diskGiB-freeDiskGiB, 0))*usdPerDiskHour
 }
 
-// Report is the JSON of linear-agents status --json.
+// Report is the JSON of flocc status --json.
 type Report struct {
 	Host     string `json:"host"`
 	Mode     string `json:"mode"`
@@ -204,7 +204,7 @@ func (c *destCache) forget(h FleetHost) {
 	c.mu.Unlock()
 }
 
-// fetch runs linear-agents status --json on one host. BatchMode keeps ssh from stopping at a
+// fetch runs flocc status --json on one host. BatchMode keeps ssh from stopping at a
 // password prompt, which would hold the view until the timeout.
 func fetch(ctx context.Context, r host.Runner, c *destCache, h FleetHost) Row {
 	row := Row{FleetHost: h}
@@ -227,7 +227,7 @@ func fetch(ctx context.Context, r host.Runner, c *destCache, h FleetHost) Row {
 		}
 	}()
 	dest.Opts = append(append([]string{}, dest.Opts...), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
-	res, err := r.Run(ctx, sshCmd(dest, false, asServiceUser([]string{"linear-agents", "status", "--json"})))
+	res, err := r.Run(ctx, sshCmd(dest, false, asServiceUser([]string{"flocc", "status", "--json"})))
 	switch {
 	case err != nil:
 		sshFailed = true
@@ -437,7 +437,7 @@ func render(rows []Row, notes []string) string {
 
 // FleetMain prints the fleet once, or redraws it every interval with --watch.
 func FleetMain(args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("la-setup fleet", flag.ContinueOnError)
+	fs := flag.NewFlagSet("flocc-setup fleet", flag.ContinueOnError)
 	watch := fs.Bool("watch", false, "redraw until interrupted")
 	interval := fs.Duration("interval", 30*time.Second, "time between redraws with --watch")
 	if err := fs.Parse(args); err != nil {
@@ -449,7 +449,7 @@ func FleetMain(args []string, out io.Writer) int {
 	}
 	home, _ := os.UserHomeDir()
 	daytonaConfig := filepath.Join(home, ".config/daytona/config.json")
-	hostsFile := filepath.Join(home, ".config/la-setup/hosts")
+	hostsFile := filepath.Join(home, ".config/flocc-setup/hosts")
 	client := &http.Client{Timeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()

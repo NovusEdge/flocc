@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/identity"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
 
 func identityEnv(t *testing.T, f *host.Fake) *Env {

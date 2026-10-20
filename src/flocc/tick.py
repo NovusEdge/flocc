@@ -7,11 +7,11 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
-from linear_agents import ledger
-from linear_agents.config import Config, trailer_enabled
-from linear_agents.escalation import Escalation, Notifier, ntfy_push
-from linear_agents.linear import Linear, LinearError, http_transport
-from linear_agents.poller import (
+from flocc import ledger
+from flocc.config import Config, trailer_enabled
+from flocc.escalation import Escalation, Notifier, ntfy_push
+from flocc.linear import Linear, LinearError, http_transport
+from flocc.poller import (
     clean_scratchpads,
     forward_comments,
     maybe_digest,
@@ -19,12 +19,12 @@ from linear_agents.poller import (
     reap_worktrees,
     route_escalations,
 )
-from linear_agents.publisher import comment_on_pr, publish
-from linear_agents.runtime import Runtime
-from linear_agents.sessions import Sessions
-from linear_agents.supervisor import supervise
-from linear_agents.tokens import check_tokens
-from linear_agents.worktree import git
+from flocc.publisher import comment_on_pr, publish
+from flocc.runtime import Runtime
+from flocc.sessions import Sessions
+from flocc.supervisor import supervise
+from flocc.tokens import check_tokens
+from flocc.worktree import git
 
 FAILS_BEFORE_PAGE = 5
 
@@ -51,7 +51,7 @@ def _require_token(path: Path) -> None:
 
 
 def build_runtime(cfg: Config, config_path: Path) -> Runtime:
-    exe, claude_exe = _which("linear-agents"), _which("claude")
+    exe, claude_exe = _which("flocc"), _which("claude")
     _require_token(cfg.agent_gh_token_file)
     con = ledger.connect(cfg.ledger_path)
     linear = Linear(http_transport(cfg.linear_key_file.read_text().strip()))
@@ -135,7 +135,7 @@ def _page_tick_failure(con, notifier, exc: Exception) -> None:
         "tick-failing",
         "The tick",
         exc,
-        "Read journalctl --user -u linear-agents",
+        "Read journalctl --user -u flocc",
     )
 
 
@@ -162,7 +162,7 @@ def tick(cfg: Config, config_path: Path) -> int:
                     Escalation(
                         2,
                         f"{claim.issue_key}:supervisor-error",
-                        "The supervisor failed on this issue; see journalctl -u linear-agents.",
+                        "The supervisor failed on this issue; see journalctl -u flocc.",
                         "Read the log",
                         issue_key=claim.issue_key,
                         waiting=True,
@@ -188,7 +188,7 @@ def tick(cfg: Config, config_path: Path) -> int:
         print(f"linear: {exc}", file=sys.stderr)
         action = "Check the API key and Linear status"
         if isinstance(exc, IssueLinearErrors):
-            commands = ", ".join(f"linear-agents release {k}" for k in exc.keys)
+            commands = ", ".join(f"flocc release {k}" for k in exc.keys)
             action += f"; if an issue was deleted, run {commands}"
         _page_after_repeats(
             rt.con, rt.notifier, "linear_failures", "linear-api", "Linear", exc, action

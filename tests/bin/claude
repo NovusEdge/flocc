@@ -1,13 +1,13 @@
 #!/bin/sh
 # Stands in for claude in tests/test_process.py.
-mode=$(cat "$LINEAR_AGENTS_STATE/fake-mode" 2>/dev/null || echo done)
+mode=$(cat "$FLOCC_STATE/fake-mode" 2>/dev/null || echo done)
 case "$mode" in
   done)
     git commit -q --allow-empty -m "fake tests"
-    linear-agents done --summary "fake $LINEAR_AGENTS_PHASE" ;;
+    flocc done --summary "fake $FLOCC_PHASE" ;;
   handoff)
-    echo "fake note" > "$LINEAR_AGENTS_STATE/handoff.md"
-    linear-agents handoff-ready ;;
+    echo "fake note" > "$FLOCC_STATE/handoff.md"
+    flocc handoff-ready ;;
   crash)
     exit 3 ;;
 esac

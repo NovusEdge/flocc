@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/ui"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 func testEnv(t *testing.T, f *host.Fake) *Env {
 	t.Helper()
 	return &Env{Run: f, UI: &ui.Scripted{A: &answers.Answers{}, Out: io.Discard}, Root: t.TempDir(),
-		Home: "/home/linear-agents", Answers: &answers.Answers{}, Mode: Systemd, Sleep: func(time.Duration) {}}
+		Home: "/home/flocc", Answers: &answers.Answers{}, Mode: Systemd, Sleep: func(time.Duration) {}}
 }
 
 func scriptedSecrets(e *Env, s *answers.Secrets) {
@@ -106,11 +106,11 @@ func TestTailscaleApplyInLoopModeStartsDaemonAndLogsIn(t *testing.T) {
 		OnSeq("tailscale status --json", host.Result{Code: 1}, host.Result{Stdout: `{"BackendState":"NeedsLogin"}`})
 	e := testEnv(t, f)
 	e.Mode = Loop
-	e.Answers.Hostname = "la-smoke"
+	e.Answers.Hostname = "flocc-smoke"
 	if err := (Tailscale{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran(daemon) || !f.Ran("interactive: tailscale up --hostname=la-smoke --ssh") || f.Ran("tailscale set --ssh") {
+	if !f.Ran(daemon) || !f.Ran("interactive: tailscale up --hostname=flocc-smoke --ssh") || f.Ran("tailscale set --ssh") {
 		t.Fatalf("calls: %v", f.Calls)
 	}
 	if f.Ran("systemctl enable --now tailscaled") {
@@ -120,33 +120,33 @@ func TestTailscaleApplyInLoopModeStartsDaemonAndLogsIn(t *testing.T) {
 
 func TestUserCheckRefusesPrivilegedGroups(t *testing.T) {
 	f := host.NewFake().
-		On("id -u linear-agents", 0, "1001").
-		On("id -nG linear-agents", 0, "linear-agents wheel").
-		On("chmod 700 /home/linear-agents", 0, "").
-		On("loginctl show-user linear-agents -p Linger --value", 0, "yes")
+		On("id -u flocc", 0, "1001").
+		On("id -nG flocc", 0, "flocc wheel").
+		On("chmod 700 /home/flocc", 0, "").
+		On("loginctl show-user flocc -p Linger --value", 0, "yes")
 	e := testEnv(t, f)
-	os.MkdirAll(e.Path("/home/linear-agents"), 0o700)
-	os.Chmod(e.Path("/home/linear-agents"), 0o700)
+	os.MkdirAll(e.Path("/home/flocc"), 0o700)
+	os.Chmod(e.Path("/home/flocc"), 0o700)
 	done, detail, _ := (User{}).Check(context.Background(), e)
 	if done || !strings.Contains(detail, "wheel") {
 		t.Fatalf("done=%v detail=%q", done, detail)
 	}
-	if err := (User{}).Apply(context.Background(), e); err == nil || !strings.Contains(err.Error(), "gpasswd -d linear-agents wheel") {
+	if err := (User{}).Apply(context.Background(), e); err == nil || !strings.Contains(err.Error(), "gpasswd -d flocc wheel") {
 		t.Fatalf("apply err=%v", err)
 	}
 }
 
 func TestUserApplyCreatesUserAndSkipsLingerInLoopMode(t *testing.T) {
 	f := host.NewFake().
-		On("useradd --create-home --shell /bin/bash linear-agents", 0, "").
-		On("chmod 700 /home/linear-agents", 0, "").
-		On("id -nG linear-agents", 0, "linear-agents")
+		On("useradd --create-home --shell /bin/bash flocc", 0, "").
+		On("chmod 700 /home/flocc", 0, "").
+		On("id -nG flocc", 0, "flocc")
 	e := testEnv(t, f)
 	e.Mode = Loop
 	if err := (User{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran("useradd --create-home --shell /bin/bash linear-agents") || f.Ran("loginctl enable-linger linear-agents") {
+	if !f.Ran("useradd --create-home --shell /bin/bash flocc") || f.Ran("loginctl enable-linger flocc") {
 		t.Fatalf("calls: %v", f.Calls)
 	}
 }

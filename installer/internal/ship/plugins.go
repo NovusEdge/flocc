@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/plugins"
+	"github.com/NovusEdge/flocc/installer/internal/plugins"
 )
 
 type planned struct {

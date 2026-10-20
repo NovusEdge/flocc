@@ -1,4 +1,4 @@
-# linear-agents
+# flocc
 
 A personal setup, parked for later: Claude Code picks up Linear issues that are assigned to
 me and carry a trigger label, works on them in the right repo, and opens a draft PR. It is

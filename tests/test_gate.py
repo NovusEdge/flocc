@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from linear_agents.gate import (
+from flocc.gate import (
     BUDGETS,
     LOG,
     Budget,
@@ -21,12 +21,12 @@ from linear_agents.gate import (
     run_id,
     running_agents,
 )
-from linear_agents.grants import Grants, launch_flags, set_block
+from flocc.grants import Grants, launch_flags, set_block
 
 NO_GRANTS = Grants()
 
 
-def agent(sub="linear-agents:task-implementer", **extra):
+def agent(sub="flocc:task-implementer", **extra):
     return {"tool_name": "Agent", "tool_input": {"subagent_type": sub, "prompt": "p", **extra}}
 
 
@@ -116,9 +116,9 @@ def test_an_ungranted_general_purpose_agent_is_not_allowed_whatever_the_flags():
 
 
 def test_agent_outside_the_phase_list_is_refused_unless_granted():
-    assert d(agent("linear-agents:wave-reviewer"), phase="test").rule == "not-allowed"
+    assert d(agent("flocc:wave-reviewer"), phase="test").rule == "not-allowed"
     g = Grants(agents=("wave-reviewer",))
-    assert d(agent("linear-agents:wave-reviewer"), phase="test", grants=g).allowed
+    assert d(agent("flocc:wave-reviewer"), phase="test", grants=g).allowed
 
 
 def test_launch_budget_and_its_grant():
@@ -169,20 +169,20 @@ def test_unknown_or_missing_phase_is_refused():
 
 
 def test_review_phase_allows_nothing():
-    assert d(agent("linear-agents:source-finder"), phase="review").rule == "not-allowed"
+    assert d(agent("flocc:source-finder"), phase="review").rule == "not-allowed"
 
 
 def test_repeat_refusal_is_keyed_by_rule_and_agent():
     first = d(agent(), launched=99)
-    assert "linear-agents escalate" in first.reason
+    assert "flocc escalate" in first.reason
     again = d(agent(), launched=99, refused={("launches", "task-implementer")})
     assert "already escalated" in again.reason and "escalate --tier" not in again.reason
     other = d(agent("code-mapper"), launched=99, refused={("launches", "task-implementer")})
-    assert "linear-agents escalate" in other.reason
+    assert "flocc escalate" in other.reason
 
 
 def test_only_grantable_refusals_offer_escalation():
-    assert "linear-agents escalate" not in d(agent(), running=BUDGETS["impl"].running).reason
+    assert "flocc escalate" not in d(agent(), running=BUDGETS["impl"].running).reason
     nested = agent()
     nested["agent_id"] = "a1"
     for payload, phase in [
@@ -190,7 +190,7 @@ def test_only_grantable_refusals_offer_escalation():
         (agent(), "deploy"),
     ]:
         reason = d(payload, phase=phase).reason
-        assert "cannot be granted" in reason and "linear-agents escalate" not in reason
+        assert "cannot be granted" in reason and "flocc escalate" not in reason
     for payload in [
         agent(model="opus"),
         agent(effort="low"),
@@ -199,9 +199,9 @@ def test_only_grantable_refusals_offer_escalation():
         agent(isolation="worktree"),
     ]:
         reason = d(payload).reason
-        assert "Retry without" in reason and "linear-agents escalate" not in reason
-    assert "linear-agents escalate" in d(agent(), launched=99).reason
-    assert "linear-agents escalate" in d(agent("code-mapper"), phase="test").reason
+        assert "Retry without" in reason and "flocc escalate" not in reason
+    assert "flocc escalate" in d(agent(), launched=99).reason
+    assert "flocc escalate" in d(agent("code-mapper"), phase="test").reason
 
 
 def test_budgets_are_pinned():
@@ -236,7 +236,7 @@ def events(state):
 def test_run_gate_logs_and_counts_per_run(tmp_path):
     for _ in range(BUDGETS["fix"].launches):
         assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
-        record_stop(tmp_path, "fix@1", 0.0, "linear-agents:task-implementer")
+        record_stop(tmp_path, "fix@1", 0.0, "flocc:task-implementer")
     assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0)
     assert run_gate(agent(), tmp_path, "fix", "fix@2", 0.0) is None, "a new run starts a new count"
     assert launches_used(tmp_path, "fix@1") == 2
@@ -253,7 +253,7 @@ def test_a_stop_frees_only_the_slot_of_its_own_type(tmp_path):
     assert run_gate(agent(), tmp_path, "fix", "fix@1", 0.0) is None
     record_stop(tmp_path, "fix@1", 1.0, "some-workflow-agent")
     assert run_gate(agent(), tmp_path, "fix", "fix@1", 2.0)
-    record_stop(tmp_path, "fix@1", 3.0, "linear-agents:fix-rereviewer")  # never launched
+    record_stop(tmp_path, "fix@1", 3.0, "flocc:fix-rereviewer")  # never launched
     reason = run_gate(agent(), tmp_path, "fix", "fix@1", 4.0)
     assert reason and "still running" in reason
 
@@ -346,7 +346,7 @@ def test_a_new_question_drops_the_old_escalation_mark(tmp_path):
 def test_running_agents_counts_launches_without_a_stop(tmp_path):
     assert running_agents(tmp_path, "impl@1", "impl") == 0
     assert run_gate(agent(), tmp_path, "impl", "impl@1", 0.0) is None
-    assert run_gate(agent("linear-agents:code-mapper"), tmp_path, "impl", "impl@1", 0.0) is None
+    assert run_gate(agent("flocc:code-mapper"), tmp_path, "impl", "impl@1", 0.0) is None
     assert running_agents(tmp_path, "impl@1", "impl") == 2
     assert running_agents(tmp_path, "impl@2", "impl") == 0
     record_stop(tmp_path, "impl@1", 1.0, "code-mapper")

@@ -5,10 +5,10 @@ import time
 
 import pytest
 
-from linear_agents.agentblock import IssueSettings
-from linear_agents.config import load
-from linear_agents.grants import Grants
-from linear_agents.sessions import (
+from flocc.agentblock import IssueSettings
+from flocc.config import load
+from flocc.grants import Grants
+from flocc.sessions import (
     Sessions,
     allowed_plugins,
     claude_argv,
@@ -27,8 +27,8 @@ def test_clean_env_keeps_only_the_allowlist(monkeypatch):
         monkeypatch.setenv(key, "/x")
     for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CONFIG_DIR"):
         monkeypatch.setenv(key, "x")
-    env = clean_env({"LINEAR_AGENTS_STATE": "/s"})
-    assert env.keys() == {"HOME", "USER", "PATH", "TERM", "LANG", "LINEAR_AGENTS_STATE"}
+    env = clean_env({"FLOCC_STATE": "/s"})
+    assert env.keys() == {"HOME", "USER", "PATH", "TERM", "LANG", "FLOCC_STATE"}
 
 
 def test_argv_wraps_claude_in_a_clean_env():
@@ -40,7 +40,7 @@ def test_argv_wraps_claude_in_a_clean_env():
         "do the thing",
         env={"HOME": "/h", "X": "1"},
         claude_exe="/opt/claude",
-        exe="/opt/linear-agents",
+        exe="/opt/flocc",
     )
     assert argv[:4] == ["/usr/bin/env", "-i", "HOME=/h", "X=1"]
     i = argv.index("/opt/claude")
@@ -50,7 +50,7 @@ def test_argv_wraps_claude_in_a_clean_env():
     assert argv[argv.index("--remote-control") + 1] == "NF-1"
     assert argv[argv.index("--model") + 1] == "opus"
     settings = json.loads(argv[argv.index("--settings") + 1])
-    assert settings["statusLine"]["command"] == "/opt/linear-agents statusline"
+    assert settings["statusLine"]["command"] == "/opt/flocc statusline"
     assert "--strict-mcp-config" in argv
 
 

@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from linear_agents.config import Config
-from linear_agents.ledger import Claim
-from linear_agents.worktree import free_disk_gb
+from flocc.config import Config
+from flocc.ledger import Claim
+from flocc.worktree import free_disk_gb
 
 
 @dataclass

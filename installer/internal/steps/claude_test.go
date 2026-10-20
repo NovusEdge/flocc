@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/plugins"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/plugins"
 )
 
-const claudeBin = "/home/linear-agents/.local/bin/claude"
+const claudeBin = "/home/flocc/.local/bin/claude"
 
 func claudeEnv(t *testing.T, f *host.Fake, l plugins.List) *Env {
 	e := testEnv(t, f)
@@ -84,7 +84,7 @@ func TestClaudeApplyAfterAbortedLoginSkipsReinstall(t *testing.T) {
 }
 
 func TestClaudeArchivedMarketplaceIsExtractedRegisteredAndTracked(t *testing.T) {
-	dir := "/home/linear-agents/agents/marketplaces/NovusEdge"
+	dir := "/home/flocc/marketplaces/NovusEdge"
 	f := host.NewFake().
 		On(claudeBin+" --version", 0, "2.1.295\n").
 		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
@@ -186,7 +186,7 @@ func TestClaudeApplyRejectsInvalidSettingsWithoutOverwriting(t *testing.T) {
 	e := claudeEnv(t, f, plugins.List{})
 	writeSettings(t, e, `{oops`)
 	err := (Claude{}).Apply(context.Background(), e)
-	if err == nil || !strings.Contains(err.Error(), "/home/linear-agents/.claude/settings.json") {
+	if err == nil || !strings.Contains(err.Error(), "/home/flocc/.claude/settings.json") {
 		t.Fatalf("err=%v", err)
 	}
 	if b, _ := os.ReadFile(e.HomePath(".claude/settings.json")); string(b) != `{oops` {

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/ui"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 type Mode string
@@ -33,7 +33,7 @@ type Env struct {
 	UI              ui.UI
 	Root            string // prefix for file access; "" outside tests
 	Home            string // the service user's home in the service phase
-	Stage           string // directory holding la-setup, the bundles and plugins.json
+	Stage           string // directory holding flocc-setup, the bundles and plugins.json
 	Mode            Mode
 	Distro          host.Distro
 	Answers         *answers.Answers

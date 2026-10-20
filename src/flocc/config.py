@@ -97,8 +97,8 @@ def trailer_enabled(cfg: Config, repo: RepoConfig) -> bool:
 
 
 def default_config_path() -> Path:
-    env = os.environ.get("LINEAR_AGENTS_CONFIG")
-    return Path(env) if env else Path.home() / ".config" / "linear-agents" / "config.toml"
+    env = os.environ.get("FLOCC_CONFIG")
+    return Path(env) if env else Path.home() / ".config" / "flocc" / "config.toml"
 
 
 def _repo(config_path: Path, name: str, table: dict) -> RepoConfig:

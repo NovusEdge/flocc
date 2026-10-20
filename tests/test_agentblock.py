@@ -1,6 +1,6 @@
 import pytest
 
-from linear_agents.agentblock import (
+from flocc.agentblock import (
     BlockError,
     IssueSettings,
     has_acceptance_criteria,

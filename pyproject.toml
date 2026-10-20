@@ -1,11 +1,11 @@
 [project]
-name = "linear-agents"
+name = "flocc"
 version = "0.2.0"
 requires-python = ">=3.13"
 dependencies = []
 
 [project.scripts]
-linear-agents = "linear_agents.cli:main"
+flocc = "flocc.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.9.9,<0.13"]

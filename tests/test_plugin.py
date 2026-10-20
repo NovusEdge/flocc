@@ -4,8 +4,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from linear_agents.context import phase_prompt
-from linear_agents.gate import CATALOGUE
+from flocc.context import phase_prompt
+from flocc.gate import CATALOGUE
 
 PLUGIN = Path(__file__).parent.parent / "plugin"
 SPEC = {
@@ -52,23 +52,23 @@ def test_hooks():
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
     pre = hooks["PreToolUse"][0]
     assert pre["matcher"] == "Agent|Task|Workflow|AskUserQuestion"
-    assert pre["hooks"][0]["command"] == "linear-agents gate"
+    assert pre["hooks"][0]["command"] == "flocc gate"
     assert pre["hooks"][0]["onFailure"] == "block"
     assert hooks["PostToolUse"][0]["matcher"] == "AskUserQuestion"
-    assert hooks["PostToolUse"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
+    assert hooks["PostToolUse"][0]["hooks"][0]["command"] == "flocc gate --answered"
     # A question cut short by an error or an interrupt never reaches PostToolUse, and an
     # `asking` left behind would hold Linear replies and the handoff for the whole session.
     assert hooks["PostToolUseFailure"][0]["matcher"] == "AskUserQuestion"
-    assert hooks["PostToolUseFailure"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
+    assert hooks["PostToolUseFailure"][0]["hooks"][0]["command"] == "flocc gate --answered"
     stop = [h["command"] for h in hooks["Stop"][0]["hooks"]]
-    assert stop == ["linear-agents gate --answered", "linear-agents idle"]
+    assert stop == ["flocc gate --answered", "flocc idle"]
     # The idle marker means "the last event was a Stop", so any later activity removes it.
-    clear = '[ -z "$LINEAR_AGENTS_STATE" ] || rm -f "$LINEAR_AGENTS_STATE/idle"'
+    clear = '[ -z "$FLOCC_STATE" ] || rm -f "$FLOCC_STATE/idle"'
     ungated = [e for e in hooks["PreToolUse"] if "matcher" not in e]
     assert [h["command"] for e in ungated for h in e["hooks"]] == [clear]
     assert [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]] == [clear]
-    assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "linear-agents gate --stopped"
-    assert hooks["SessionStart"][0]["hooks"][0]["command"] == "linear-agents session-start"
+    assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "flocc gate --stopped"
+    assert hooks["SessionStart"][0]["hooks"][0]["command"] == "flocc session-start"
 
 
 def test_the_idle_clearing_hook_removes_only_the_marker(tmp_path):
@@ -76,7 +76,7 @@ def test_the_idle_clearing_hook_removes_only_the_marker(tmp_path):
     command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
     (tmp_path / "idle").touch()
     (tmp_path / "idle-escalated").touch()
-    env = {"PATH": os.environ["PATH"], "LINEAR_AGENTS_STATE": str(tmp_path)}
+    env = {"PATH": os.environ["PATH"], "FLOCC_STATE": str(tmp_path)}
     subprocess.run(command, shell=True, env=env, check=True)
     assert not (tmp_path / "idle").exists() and (tmp_path / "idle-escalated").exists()
     subprocess.run(command, shell=True, env={"PATH": env["PATH"]}, check=True)

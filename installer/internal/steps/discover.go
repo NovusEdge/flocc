@@ -10,8 +10,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 // ParseRepos reads the output of `gh api --paginate`, which is one JSON array per page,
@@ -129,7 +129,7 @@ func MergeRepos(found, saved []answers.Repo) (out []answers.Repo, skipped []stri
 }
 
 func (e *Env) ghAPI(ctx context.Context, args ...string) (string, error) {
-	tok, err := os.ReadFile(e.HomePath(".config/linear-agents/gh-agent.token"))
+	tok, err := os.ReadFile(e.HomePath(".config/flocc/gh-agent.token"))
 	if err != nil {
 		return "", err
 	}

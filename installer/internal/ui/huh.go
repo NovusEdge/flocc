@@ -10,7 +10,7 @@ import (
 	"charm.land/huh/v2/spinner"
 	"charm.land/lipgloss/v2"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
 )
 
 type Huh struct{}

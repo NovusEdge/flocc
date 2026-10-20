@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
 )
 
 type StepStatus struct {

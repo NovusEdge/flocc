@@ -6,13 +6,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from linear_agents.grants import Grants, for_phase
+from flocc.grants import Grants, for_phase
 
-PREFIX = "linear-agents:"
+PREFIX = "flocc:"
 GENERAL = "general-purpose"
 GATED_TOOLS = frozenset({"Agent", "Task", "Workflow"})
 ESCALATE = (
-    "If the run needs it, escalate once: linear-agents escalate --tier 2 --cause grant:{rule}"
+    "If the run needs it, escalate once: flocc escalate --tier 2 --cause grant:{rule}"
     " --summary '<why it is needed>' --default '<doing it without>' --deadline-min 120,"
     " then carry on without it."
 )
@@ -35,7 +35,7 @@ BUDGETS = {
 }
 CATALOGUE = frozenset(a for b in BUDGETS.values() for a in b.agents)
 GRANTABLE = frozenset({"not-allowed", "launches", "workflow"})
-LAUNCH_GRANTS_ENV = "LINEAR_AGENTS_LAUNCH_GRANTS"
+LAUNCH_GRANTS_ENV = "FLOCC_LAUNCH_GRANTS"
 LOG = "launches.jsonl"
 
 
@@ -63,7 +63,7 @@ def _refuse(
         tail = "This was already escalated in this run; do not retry it or escalate again."
     elif tail is None:
         tail = ESCALATE.format(rule=rule)
-    return Decision(False, rule, what, f"linear-agents gate: {why} {tail}")
+    return Decision(False, rule, what, f"flocc gate: {why} {tail}")
 
 
 _FINAL = "This cannot be granted; carry on without it."

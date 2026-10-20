@@ -4,10 +4,10 @@ import time
 
 import pytest
 
-from linear_agents import ledger
-from linear_agents.cli import main
-from linear_agents.config import RepoConfig
-from linear_agents.worktree import (
+from flocc import ledger
+from flocc.cli import main
+from flocc.config import RepoConfig
+from flocc.worktree import (
     changed_files,
     contains,
     free_disk_gb,
@@ -191,10 +191,10 @@ def _check_hook_blocks(origin, tmp_path, root):
     cfg = tmp_path / "c.toml"
     cfg.write_text(
         EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"', f'ledger_path = "{db}"'
+            'ledger_path = "~/.local/state/flocc/ledger.sqlite"', f'ledger_path = "{db}"'
         )
     )
-    exe = shutil.which("linear-agents")
+    exe = shutil.which("flocc")
     assert exe
     install_hook(path, tmp_path / "hooks", exe, cfg)
     (path / "src" / "billing").mkdir(parents=True)
@@ -219,11 +219,11 @@ def test_reinstalled_hook_still_chains_to_the_repo_hook_once(origin, tmp_path):
     cfg = tmp_path / "c.toml"
     cfg.write_text(
         EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"',
+            'ledger_path = "~/.local/state/flocc/ledger.sqlite"',
             f'ledger_path = "{tmp_path / "l.sqlite"}"',
         )
     )
-    exe = shutil.which("linear-agents")
+    exe = shutil.which("flocc")
     assert exe
     for _ in range(2):  # a rerun with --keep-worktree installs into the same worktree again
         install_hook(path, tmp_path / "hooks", exe, cfg)
@@ -240,11 +240,11 @@ def _commit_with_hooks(origin, tmp_path, trailer=True):
     cfg = tmp_path / "c.toml"
     cfg.write_text(
         EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/linear-agents/ledger.sqlite"',
+            'ledger_path = "~/.local/state/flocc/ledger.sqlite"',
             f'ledger_path = "{tmp_path / "l.sqlite"}"',
         )
     )
-    exe = shutil.which("linear-agents")
+    exe = shutil.which("flocc")
     assert exe
     install_hook(path, tmp_path / "hooks", exe, cfg, trailer=trailer)
     return path
@@ -256,20 +256,20 @@ def _msg(path):
 
 def test_commit_msg_hook_adds_the_trailer_once(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "impl")
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     git("commit", "-qm", "ok", cwd=path)
-    assert _msg(path).count("Linear-Agents: NF-3 impl") == 1
+    assert _msg(path).count("Flocc: NF-3 impl") == 1
     git("commit", "-q", "--amend", "--no-edit", cwd=path)
-    assert _msg(path).count("Linear-Agents:") == 1
+    assert _msg(path).count("Flocc:") == 1
 
 
 def test_commit_msg_hook_keeps_signoff_and_strips_claude_attribution(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "test")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "test")
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     message = (
@@ -282,14 +282,14 @@ def test_commit_msg_hook_keeps_signoff_and_strips_claude_attribution(origin, tmp
     lines = _msg(path).splitlines()
     assert "Signed-off-by: Ada <a@example.test>" in lines
     assert "Co-Authored-By: Human <h@example.test>" in lines
-    assert "Linear-Agents: NF-3 test" in lines
+    assert "Flocc: NF-3 test" in lines
     assert not [ln for ln in lines if "claude" in ln.lower()]
 
 
 def test_commit_msg_hook_without_trailer_still_strips_attribution(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path, trailer=False)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "impl")
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     git("commit", "-q", "-m", "ok\n\nClaude-Session: https://claude.ai/code/x", cwd=path)
@@ -302,13 +302,13 @@ def test_hooks_chain_to_the_repos_own_commit_msg_and_other_hooks(origin, tmp_pat
         hook.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path / (name + ".log")}\n')
         hook.chmod(0o755)
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "impl")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "impl")
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     git("commit", "-qm", "ok", cwd=path)
     assert "COMMIT_EDITMSG" in (tmp_path / "commit-msg.log").read_text()
-    assert "Linear-Agents: NF-3 impl" in _msg(path)
+    assert "Flocc: NF-3 impl" in _msg(path)
     git("push", "-q", "origin", "HEAD:refs/heads/pushed", cwd=path)
     assert "origin" in (tmp_path / "pre-push.log").read_text()
 
@@ -326,8 +326,8 @@ def test_reinstall_drops_stubs_for_hooks_the_repo_no_longer_has(origin, tmp_path
 
 def test_commit_msg_hook_adds_no_trailer_in_the_review_phase(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "state" / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", "review")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "state" / "NF-3"))
+    monkeypatch.setenv("FLOCC_PHASE", "review")
     msg = tmp_path / "msg"
     msg.write_text("x\n")
     assert main(["hook", "commit-msg", str(msg)]) == 0
@@ -337,12 +337,12 @@ def test_commit_msg_hook_adds_no_trailer_in_the_review_phase(origin, tmp_path, m
 
 def test_commit_msg_hook_leaves_a_hand_made_commit_alone(origin, tmp_path, monkeypatch):
     path = _commit_with_hooks(origin, tmp_path)
-    monkeypatch.delenv("LINEAR_AGENTS_STATE", raising=False)
-    monkeypatch.delenv("LINEAR_AGENTS_PHASE", raising=False)
+    monkeypatch.delenv("FLOCC_STATE", raising=False)
+    monkeypatch.delenv("FLOCC_PHASE", raising=False)
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     git("commit", "-qm", "by hand", cwd=path)
-    assert "Linear-Agents" not in _msg(path)
+    assert "Flocc" not in _msg(path)
 
 
 def test_contains(origin, tmp_path):
@@ -363,8 +363,8 @@ def test_claim_cli(tmp_path, monkeypatch, capsys):
     con = ledger.connect(db)
     ledger.insert_claim(con, make("NF-3", ()))
     ledger.insert_claim(con, make("NF-4", ("src/billing/**",)))
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "NF-3"))
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(db))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "NF-3"))
+    monkeypatch.setenv("FLOCC_LEDGER", str(db))
     assert main(["claim", "docs/*.md"]) == 0
     assert main(["claim", "src/b*"]) == 1
     assert "NF-4" in capsys.readouterr().err

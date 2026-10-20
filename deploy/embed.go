@@ -4,7 +4,7 @@ package deploy
 
 import "embed"
 
-//go:embed linear-agents.service linear-agents.timer linear-agents-tmux.service config.example.toml
+//go:embed flocc.service flocc.timer flocc-tmux.service config.example.toml
 var Files embed.FS
 
-var Units = []string{"linear-agents.service", "linear-agents.timer", "linear-agents-tmux.service"}
+var Units = []string{"flocc.service", "flocc.timer", "flocc-tmux.service"}

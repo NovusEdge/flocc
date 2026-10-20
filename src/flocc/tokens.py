@@ -4,8 +4,8 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 
-from linear_agents import ledger
-from linear_agents.escalation import Escalation
+from flocc import ledger
+from flocc.escalation import Escalation
 
 WARN_DAYS = 14
 PAGE_DAYS = 3
@@ -43,7 +43,7 @@ def can_write_contents(token: str, slug: str, opener=urllib.request.urlopen) -> 
     url = f"https://api.github.com/repos/{slug}"
     req = urllib.request.Request(
         f"{url}/git/refs",
-        data=b'{"ref": "refs/heads/linear-agents-doctor-probe", "sha": "' + b"0" * 40 + b'"}',
+        data=b'{"ref": "refs/heads/flocc-doctor-probe", "sha": "' + b"0" * 40 + b'"}',
         headers=headers,
         method="POST",
     )

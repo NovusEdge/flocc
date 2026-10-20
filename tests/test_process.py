@@ -2,14 +2,14 @@ import shutil
 import time
 from pathlib import Path
 
-from linear_agents import ledger
-from linear_agents.config import RepoConfig
-from linear_agents.context import state_dir
-from linear_agents.publisher import PublishResult
-from linear_agents.runtime import Runtime
-from linear_agents.sessions import Sessions
-from linear_agents.supervisor import launch, supervise
-from linear_agents.worktree import git, prepare_worktree
+from flocc import ledger
+from flocc.config import RepoConfig
+from flocc.context import state_dir
+from flocc.publisher import PublishResult
+from flocc.runtime import Runtime
+from flocc.sessions import Sessions
+from flocc.supervisor import launch, supervise
+from flocc.worktree import git, prepare_worktree
 from tests.fakes import FakeLinear, FakeNotifier
 from tests.test_ledger import make
 from tests.test_supervisor import current
@@ -30,8 +30,8 @@ def test_fake_claude_through_tmux(tmp_cfg, tmux_server, origin, tmp_path):
     path, branch, base = prepare_worktree(RepoConfig(origin), tmp_cfg.worktree_root, "NF-1")
     c = make("NF-1", worktree=str(path))
     c.branch, c.base_sha = branch, base
-    exe = shutil.which("linear-agents")
-    assert exe is not None, "run under uv run so the venv's linear-agents is on PATH"
+    exe = shutil.which("flocc")
+    assert exe is not None, "run under uv run so the venv's flocc is on PATH"
     sessions = Sessions(socket=tmux_server)
     rt = Runtime(
         cfg=tmp_cfg,

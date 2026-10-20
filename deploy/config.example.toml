@@ -1,12 +1,12 @@
 team_key = "NF"
 trigger_label = "claude"
-state_root = "~/.local/state/linear-agents"
-worktree_root = "~/agents/worktrees"
-plugin_dir = "~/agents/linear-agents/plugin"
-ledger_path = "~/.local/state/linear-agents/ledger.sqlite"
-linear_key_file = "~/.config/linear-agents/linear.key"
-agent_gh_token_file = "~/.config/linear-agents/gh-agent.token"
-publish_gh_token_file = "~/.config/linear-agents/gh-publish.token"
+state_root = "~/.local/state/flocc"
+worktree_root = "~/worktrees"
+plugin_dir = "~/flocc/plugin"
+ledger_path = "~/.local/state/flocc/ledger.sqlite"
+linear_key_file = "~/.config/flocc/linear.key"
+agent_gh_token_file = "~/.config/flocc/gh-agent.token"
+publish_gh_token_file = "~/.config/flocc/gh-publish.token"
 ntfy_url = "https://ntfy.sh/replace-with-a-long-random-topic"
 digest_issue = "NF-1"
 check_timeout_s = 1800
@@ -16,7 +16,7 @@ setup_timeout_s = 900
 # Keep one uv cache under worktree_root across every ./setup, so later setups link packages
 # instead of downloading them. Leave off on small disks: the cache is never pruned.
 # shared_uv_cache = true
-# Agent commits carry a "Linear-Agents: KEY phase" trailer; set false to leave it off.
+# Agent commits carry a "Flocc: KEY phase" trailer; set false to leave it off.
 # commit_trailer = false
 # For hosts that share a Linear team and map only some of its repos: leave issues matching no
 # mapped repo alone instead of commenting that no repo matches.

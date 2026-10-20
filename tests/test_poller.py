@@ -4,13 +4,13 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
-from linear_agents import ledger
-from linear_agents.config import RepoConfig, load
-from linear_agents.context import state_dir
-from linear_agents.escalation import Notifier
-from linear_agents.grants import Grants, for_phase, set_block
-from linear_agents.linear import BOT_PREFIX, Comment, Issue, LinearError
-from linear_agents.poller import (
+from flocc import ledger
+from flocc.config import RepoConfig, load
+from flocc.context import state_dir
+from flocc.escalation import Notifier
+from flocc.grants import Grants, for_phase, set_block
+from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
+from flocc.poller import (
     clean_scratchpads,
     forward_comments,
     maybe_digest,
@@ -19,10 +19,10 @@ from linear_agents.poller import (
     repo_for,
     route_escalations,
 )
-from linear_agents.runtime import Runtime
-from linear_agents.supervisor import LaunchError
-from linear_agents.tick import tick, tick_lock
-from linear_agents.worktree import prepare_worktree
+from flocc.runtime import Runtime
+from flocc.supervisor import LaunchError
+from flocc.tick import tick, tick_lock
+from flocc.worktree import prepare_worktree
 from tests.fakes import FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -87,8 +87,8 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
         path.mkdir(parents=True, exist_ok=True)
         return path, f"agent/{key.lower()}", "sha0"
 
-    monkeypatch.setattr("linear_agents.poller.prepare_worktree", fake_prepare)
-    monkeypatch.setattr("linear_agents.poller.install_hook", lambda *a, **kw: None)
+    monkeypatch.setattr("flocc.poller.prepare_worktree", fake_prepare)
+    monkeypatch.setattr("flocc.poller.install_hook", lambda *a, **kw: None)
     return Runtime(
         cfg=tmp_cfg,
         con=ledger.connect(tmp_cfg.ledger_path),
@@ -96,7 +96,7 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
         sessions=FakeSessions(),
         notifier=FakeNotifier(),
         now=lambda: 1000.0,
-        exe="/opt/linear-agents",
+        exe="/opt/flocc",
         claude_exe="/opt/claude",
         config_path=tmp_path / "c.toml",
         publish_fn=lambda claim, title, summary: None,
@@ -159,7 +159,7 @@ def test_rerun_ignores_files_from_the_previous_claim(rt):
 def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
-        "linear_agents.poller.contains",
+        "flocc.poller.contains",
         lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
     )
     d = state_dir(rt.cfg, "NF-9")
@@ -177,7 +177,7 @@ def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeyp
 
 def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
-    monkeypatch.setattr("linear_agents.poller.contains", lambda path, sha, ref="HEAD": False)
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": False)
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -188,7 +188,7 @@ def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypa
 
 def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
-    monkeypatch.setattr("linear_agents.poller.contains", lambda path, sha, ref="HEAD": True)
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": True)
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -200,7 +200,7 @@ def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch)
 @pytest.mark.parametrize("state", ["done", "timed_out", "blocked"])
 def test_finished_or_blocked_claim_back_in_todo_is_released_and_rerun(rt, monkeypatch, state):
     removed = []
-    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: removed.append(a))
+    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: removed.append(a))
     ledger.insert_claim(rt.con, make("NF-9", state=state))
     rt.linear.ready = [issue()]
     poll(rt)
@@ -228,7 +228,7 @@ def test_running_claim_in_todo_is_left_alone(rt, phase):
 
 def test_rerun_resumes_at_the_implementer_and_clears_the_old_alerts(rt, monkeypatch):
     monkeypatch.setattr(
-        "linear_agents.poller.contains",
+        "flocc.poller.contains",
         lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
     )
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
@@ -498,7 +498,7 @@ def test_route_escalations_reads_only_new_lines(rt):
 
 def test_digest_posts_once_per_day(rt, monkeypatch):
     ledger.add_digest(rt.con, "NF-1", "draft PR ready", 1)
-    monkeypatch.setattr("linear_agents.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
+    monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
     maybe_digest(rt)
     maybe_digest(rt)
     assert len(rt.linear.comments) == 1 and "draft PR ready" in rt.linear.comments[0][1]
@@ -506,7 +506,7 @@ def test_digest_posts_once_per_day(rt, monkeypatch):
 
 def test_digest_is_kept_when_posting_fails(rt, monkeypatch):
     ledger.add_digest(rt.con, "NF-1", "draft PR ready", 1)
-    monkeypatch.setattr("linear_agents.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
+    monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
     rt.linear.comment_fails = True
     with pytest.raises(LinearError):
         maybe_digest(rt)
@@ -533,7 +533,7 @@ def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
     def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.CalledProcessError(1, ["./setup"], stderr="setup: npm is missing\n")
 
-    monkeypatch.setattr("linear_agents.poller.prepare_worktree", failing)
+    monkeypatch.setattr("flocc.poller.prepare_worktree", failing)
     rt.notifier = Notifier(rt.cfg, rt.con, rt.linear, rt.now, push=lambda *a: None)
     rt.linear.ready = [issue()]
     poll(rt)
@@ -545,7 +545,7 @@ def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
     def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
 
-    monkeypatch.setattr("linear_agents.poller.prepare_worktree", slow)
+    monkeypatch.setattr("flocc.poller.prepare_worktree", slow)
     rt.linear.ready = [issue()]
     poll(rt)
     [esc] = rt.notifier.sent
@@ -565,11 +565,9 @@ def test_tick_pages_once_runtime_setup_failures_repeat(tmp_cfg, tmp_path, monkey
     def missing(name):
         raise RuntimeError(f"{name} is not on PATH")
 
-    monkeypatch.setattr("linear_agents.tick._which", missing)
+    monkeypatch.setattr("flocc.tick._which", missing)
     pushes = []
-    monkeypatch.setattr(
-        "linear_agents.tick.ntfy_push", lambda *a, **kw: pushes.append(a), raising=False
-    )
+    monkeypatch.setattr("flocc.tick.ntfy_push", lambda *a, **kw: pushes.append(a), raising=False)
     for _ in range(5):
         with pytest.raises(RuntimeError, match="not on PATH"):
             tick(cfg, tmp_path / "c.toml")
@@ -578,12 +576,12 @@ def test_tick_pages_once_runtime_setup_failures_repeat(tmp_cfg, tmp_path, monkey
 
 
 def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
-    monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
 
     def tmux_down(rt):
         raise RuntimeError("tmux: no server running")
 
-    monkeypatch.setattr("linear_agents.tick.poll", tmux_down)
+    monkeypatch.setattr("flocc.tick.poll", tmux_down)
     for _ in range(4):
         with pytest.raises(RuntimeError):
             tick(rt.cfg, tmp_path / "c.toml")
@@ -592,7 +590,7 @@ def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
         tick(rt.cfg, tmp_path / "c.toml")
     [esc] = rt.notifier.sent
     assert (esc.tier, esc.scope) == (1, "global") and "tmux: no server" in esc.summary
-    monkeypatch.setattr("linear_agents.tick.poll", lambda rt: None)
+    monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
     assert tick(rt.cfg, tmp_path / "c.toml") == 0
     assert ledger.meta_get(rt.con, "tick_failures") == "0"
 
@@ -607,9 +605,9 @@ def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkey
             raise LinearError("Entity not found: Issue")
         supervised.append(claim.issue_key)
 
-    monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
-    monkeypatch.setattr("linear_agents.tick.supervise", supervise)
-    monkeypatch.setattr("linear_agents.tick.poll", polled.append)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("flocc.tick.supervise", supervise)
+    monkeypatch.setattr("flocc.tick.poll", polled.append)
     assert tick(rt.cfg, tmp_path / "c.toml") == 1
     assert supervised == ["NF-2"] and polled == [rt]
     assert ledger.meta_get(rt.con, "linear_failures") == "1"
@@ -626,16 +624,16 @@ def test_tick_with_a_deleted_issue_still_polls_and_pages_naming_it(rt, tmp_path,
     rt.sessions.alive_names = {"NF-1-test", "NF-2-test"}
     rt.linear.replies = {"id-NF-2": [Comment("c1", "go", "2026-10-09T10:00:00Z", mine=True)]}
     polled = []
-    monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
-    monkeypatch.setattr("linear_agents.tick.supervise", lambda rt, claim: None)
-    monkeypatch.setattr("linear_agents.tick.poll", polled.append)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("flocc.tick.supervise", lambda rt, claim: None)
+    monkeypatch.setattr("flocc.tick.poll", polled.append)
     for _ in range(5):
         assert tick(rt.cfg, tmp_path / "c.toml") == 1
     assert len(polled) == 5
     assert [e.cause for e in rt.notifier.sent[:1]] == ["NF-2:note"]
     assert rt.sessions.sent[0] == ("NF-2-test", "The owner replied on Linear: go")
     [page] = [e for e in rt.notifier.sent if e.tier == 1]
-    assert "NF-1" in page.summary and "linear-agents release NF-1" in page.action
+    assert "NF-1" in page.summary and "flocc release NF-1" in page.action
 
 
 def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monkeypatch):
@@ -647,9 +645,9 @@ def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monke
         publish_gh_token_file=tmp_path / "gh-publish.token",
     )
     cfg.agent_gh_token_file.unlink()
-    monkeypatch.setattr("linear_agents.tick._which", lambda name: f"/opt/{name}")
+    monkeypatch.setattr("flocc.tick._which", lambda name: f"/opt/{name}")
     transports = []
-    monkeypatch.setattr("linear_agents.tick.http_transport", transports.append)
+    monkeypatch.setattr("flocc.tick.http_transport", transports.append)
     with pytest.raises(RuntimeError, match="gh-agent.token"):
         tick(cfg, tmp_path / "c.toml")
     assert transports == []
@@ -693,9 +691,9 @@ def finished(rt, key, state="done"):
 def test_reap_removes_worktrees_of_closed_issues_only(rt, monkeypatch, state_type, removed):
     wt = finished(rt, "NF-5", state="timed_out")
     rt.linear.state_types = lambda keys: {k: state_type for k in keys}
-    monkeypatch.setattr("linear_agents.poller.has_uncommitted_changes", lambda path: False)
+    monkeypatch.setattr("flocc.poller.has_uncommitted_changes", lambda path: False)
     calls = []
-    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert calls == ([("worktree", "remove", "--force", str(wt))] if removed else [])
 
@@ -710,7 +708,7 @@ def test_reap_leaves_live_claims_and_skips_missing_worktrees(rt, monkeypatch):
     asked = []
     rt.linear.state_types = lambda keys: asked.append(keys) or {k: "completed" for k in keys}
     calls = []
-    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert calls == [] and asked == []
 
@@ -728,7 +726,7 @@ def test_reap_survives_a_linear_error_and_a_failed_removal(rt, monkeypatch, caps
         raise subprocess.CalledProcessError(1, "git")
 
     rt.linear.state_types = state_types
-    monkeypatch.setattr("linear_agents.poller.git", failing)
+    monkeypatch.setattr("flocc.poller.git", failing)
     reap_worktrees(rt)
     err = capsys.readouterr().err
     assert "NF-5 state not read" in err and "NF-6" in err
@@ -742,7 +740,7 @@ def test_reap_treats_a_deleted_issue_as_closed(rt, monkeypatch):
 
     rt.linear.state_types = gone
     calls = []
-    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert calls == [("worktree", "remove", "--force", str(wt))]
 
@@ -760,9 +758,9 @@ def test_reap_keeps_a_timed_out_worktree_with_uncommitted_changes(
 ):
     finished(rt, "NF-5", state=claim_state)
     rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
-    monkeypatch.setattr("linear_agents.poller.has_uncommitted_changes", lambda path: dirty)
+    monkeypatch.setattr("flocc.poller.has_uncommitted_changes", lambda path: dirty)
     calls = []
-    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert bool(calls) is removed
     assert ("uncommitted" in capsys.readouterr().err) is (not removed)
@@ -801,7 +799,7 @@ def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monke
 
     rt.linear.state_types = wrong
     calls = []
-    monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
+    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert calls == []
 
@@ -815,7 +813,7 @@ def pads(rt, key, lines):
 
 def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypatch):
     root = tmp_path / "claude-1000"
-    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
     done_pad = root / "proj" / "s1" / "scratchpad"
     live_pad = root / "proj" / "s2" / "scratchpad"
     done_pad.mkdir(parents=True)
@@ -831,7 +829,7 @@ def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypa
 
 def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
     root = tmp_path / "claude-1000"
-    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
     project = root / "proj"
     (project / "s1" / "scratchpad").mkdir(parents=True)
     outside = tmp_path / "keep"
@@ -847,7 +845,7 @@ def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
 
 def test_cleanup_does_not_follow_links(rt, tmp_path, monkeypatch):
     root = tmp_path / "claude-1000"
-    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
     other = root / "proj" / "s2" / "scratchpad"
     other.mkdir(parents=True)
     outside = tmp_path / "keep"
@@ -868,7 +866,7 @@ def test_cleanup_does_not_follow_links(rt, tmp_path, monkeypatch):
 
 def test_cleanup_covers_a_listing_with_no_claim(rt, tmp_path, monkeypatch):
     root = tmp_path / "claude-1000"
-    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
     pad = root / "proj" / "s1" / "scratchpad"
     pad.mkdir(parents=True)
     d = pads(rt, "NF-7", [pad])
@@ -878,7 +876,7 @@ def test_cleanup_covers_a_listing_with_no_claim(rt, tmp_path, monkeypatch):
 
 def test_cleanup_skips_an_unreadable_listing(rt, tmp_path, monkeypatch, capsys):
     root = tmp_path / "claude-1000"
-    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
     pad = root / "proj" / "s1" / "scratchpad"
     pad.mkdir(parents=True)
     (state_dir(rt.cfg, "NF-1") / "scratchpads").mkdir(parents=True)

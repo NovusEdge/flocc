@@ -5,12 +5,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 const (
-	repoRel      = "agents/linear-agents"
-	worktreesRel = "agents/worktrees"
+	repoRel      = "flocc"
+	worktreesRel = "worktrees"
 )
 
 type Repo struct{}
@@ -25,7 +25,7 @@ func short(sha string) string {
 }
 
 func (Repo) Check(ctx context.Context, e *Env) (bool, string, error) {
-	want, err := bundleHead(ctx, e, filepath.Join(e.Stage, "linear-agents.bundle"))
+	want, err := bundleHead(ctx, e, filepath.Join(e.Stage, "flocc.bundle"))
 	if err != nil {
 		return false, "", err
 	}
@@ -33,19 +33,19 @@ func (Repo) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if got != want {
 		return false, "checkout at " + short(got) + ", bundle at " + short(want), nil
 	}
-	if _, err := os.Stat(e.HomePath(".local/bin/linear-agents")); err != nil {
-		return false, "linear-agents not installed", nil
+	if _, err := os.Stat(e.HomePath(".local/bin/flocc")); err != nil {
+		return false, "flocc not installed", nil
 	}
 	return true, "at " + short(want), nil
 }
 
 func (Repo) Apply(ctx context.Context, e *Env) error {
 	dir := e.Real(repoRel)
-	if err := syncFromBundle(ctx, e, filepath.Join(e.Stage, "linear-agents.bundle"), dir); err != nil {
+	if err := syncFromBundle(ctx, e, filepath.Join(e.Stage, "flocc.bundle"), dir); err != nil {
 		return err
 	}
 	for _, c := range []host.Cmd{
-		// Go is only for building la-setup on the desktop; the host does not need it.
+		// Go is only for building flocc-setup on the desktop; the host does not need it.
 		{Name: "./setup", Dir: dir, Env: []string{"MISE_DISABLE_TOOLS=go"}},
 		{Name: e.Real(".local/bin/mise"), Args: []string{"exec", "--", "uv", "tool", "install", "--force", "--editable", "."}, Dir: dir},
 	} {

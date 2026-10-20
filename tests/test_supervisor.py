@@ -6,17 +6,17 @@ from dataclasses import replace
 
 import pytest
 
-from linear_agents import ledger
-from linear_agents.agentblock import IssueSettings, settings_to_json
-from linear_agents.context import state_dir
-from linear_agents.gate import record_session, record_stop, run_gate, run_id
-from linear_agents.grants import Grants, add_comment, for_phase
-from linear_agents.ledger import Claim
-from linear_agents.linear import LinearError
-from linear_agents.publisher import PublishResult
-from linear_agents.runtime import Runtime
-from linear_agents.supervisor import QUESTION_WAIT_S, LaunchError, supervise
-from linear_agents.usage import write_status
+from flocc import ledger
+from flocc.agentblock import IssueSettings, settings_to_json
+from flocc.context import state_dir
+from flocc.gate import record_session, record_stop, run_gate, run_id
+from flocc.grants import Grants, add_comment, for_phase
+from flocc.ledger import Claim
+from flocc.linear import LinearError
+from flocc.publisher import PublishResult
+from flocc.runtime import Runtime
+from flocc.supervisor import QUESTION_WAIT_S, LaunchError, supervise
+from flocc.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
 
@@ -33,7 +33,7 @@ def rt(tmp_cfg, tmp_path):
         sessions=FakeSessions(),
         notifier=FakeNotifier(),
         now=lambda: 100.0,
-        exe="/opt/linear-agents",
+        exe="/opt/flocc",
         claude_exe="/opt/claude",
         config_path=tmp_path / "c.toml",
         publish_fn=lambda claim, title, summary: PublishResult("opened", url="https://pr/1"),
@@ -206,7 +206,7 @@ def test_review_done_posts_the_comment_and_finishes_the_claim(rt):
     supervise(rt, current(rt))
     assert rt.sessions.killed[-1] == "NF-1-review"
     [(url, body)] = rt.pr_comments
-    assert url == "https://pr/1" and body.startswith("🤖 linear-agents review")
+    assert url == "https://pr/1" and body.startswith("🤖 flocc review")
     assert "a.py:1 nit" in body
     assert rt.linear.comments[-1] == "Review: approve — https://pr/1"
     assert current(rt).state == "done"
@@ -328,7 +328,7 @@ def test_check_failure_gets_one_fix_then_blocks(rt):
     done(rt)
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
-    assert "linear-agents release --keep-worktree NF-1" in rt.notifier.sent[-1].action
+    assert "flocc release --keep-worktree NF-1" in rt.notifier.sent[-1].action
 
 
 def test_publish_that_keeps_failing_blocks(rt):
@@ -345,7 +345,7 @@ def test_publish_that_keeps_failing_blocks(rt):
     assert current(rt).state == "blocked"
     [esc] = rt.notifier.sent
     assert esc.cause == "NF-1:publish-failed" and "non-fast-forward" in esc.summary
-    assert "linear-agents release --keep-worktree NF-1" in esc.action
+    assert "flocc release --keep-worktree NF-1" in esc.action
 
 
 def test_publish_failures_count_only_in_a_row(rt):
@@ -392,7 +392,7 @@ def test_touched_tests_block_names_release(rt):
     done(rt)
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
-    assert "linear-agents release" in rt.notifier.sent[-1].action
+    assert "flocc release" in rt.notifier.sent[-1].action
     assert "--accept-tests NF-1" in rt.notifier.sent[-1].action
 
 
@@ -465,7 +465,7 @@ def test_wall_clock(rt):
     supervise(rt, current(rt))
     assert current(rt).state == "timed_out"
     [(_, key, line)] = ledger.pending_digest(rt.con)
-    assert key == "NF-1" and "linear-agents release NF-1" in line
+    assert key == "NF-1" and "flocc release NF-1" in line
 
 
 def test_high_context_requests_handoff_once(rt):
@@ -554,12 +554,12 @@ def test_phase_sessions_share_one_run_id_across_relaunches(rt):
     supervise(rt, current(rt))
     started = current(rt).started_at
     env = env_of(rt.sessions.started[-1][1])
-    assert env["LINEAR_AGENTS_RUN"] == f"impl@{started}"
+    assert env["FLOCC_RUN"] == f"impl@{started}"
     assert env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "1"
     assert env["CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS"] == "1"
     rt.sessions.alive_names.clear()
     supervise(rt, current(rt))  # a crash relaunch of the same phase
-    assert env_of(rt.sessions.started[-1][1])["LINEAR_AGENTS_RUN"] == f"impl@{started}"
+    assert env_of(rt.sessions.started[-1][1])["FLOCC_RUN"] == f"impl@{started}"
 
 
 def test_only_implementer_and_fix_sessions_use_remote_control(rt):
@@ -663,7 +663,7 @@ def test_a_status_rewrite_does_not_postpone_the_escalation(rt):
 
 
 def agent_call(name):
-    return {"tool_name": "Agent", "tool_input": {"subagent_type": f"linear-agents:{name}"}}
+    return {"tool_name": "Agent", "tool_input": {"subagent_type": f"flocc:{name}"}}
 
 
 def test_a_session_waiting_on_background_agents_is_left_alone(rt):
@@ -739,7 +739,7 @@ def test_a_tester_question_escalation_points_at_the_pane(rt):
     supervise(rt, current(rt))
     (esc,) = rt.notifier.sent
     assert esc.action == (
-        "Answer it in its pane on the host (tmux -L linear-agents attach -t NF-1-test);"
+        "Answer it in its pane on the host (tmux -L flocc attach -t NF-1-test);"
         " a reply on this issue is delivered after the question is answered."
     )
 
@@ -791,13 +791,13 @@ def test_launch_tells_the_gate_which_grants_the_session_started_with(rt):
     done(rt)
     supervise(rt, current(rt))
     env = env_of(rt.sessions.started[-1][1])
-    assert env["LINEAR_AGENTS_LAUNCH_GRANTS"] == "agent:general-purpose,workflow:big-build"
+    assert env["FLOCC_LAUNCH_GRANTS"] == "agent:general-purpose,workflow:big-build"
 
 
 def test_launch_without_flag_grants_sets_an_empty_value(rt):
     add(rt)
     supervise(rt, current(rt))
-    assert env_of(rt.sessions.started[-1][1])["LINEAR_AGENTS_LAUNCH_GRANTS"] == ""
+    assert env_of(rt.sessions.started[-1][1])["FLOCC_LAUNCH_GRANTS"] == ""
 
 
 @pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
@@ -816,12 +816,12 @@ def test_review_and_fix_launches_carry_their_own_run_id_and_remote_control(rt):
     supervise(rt, current(rt))  # check fails: fix
     c = current(rt)
     argv = rt.sessions.started[-1][1]
-    assert c.phase == "fix" and env_of(argv)["LINEAR_AGENTS_RUN"] == f"fix@{c.started_at}"
+    assert c.phase == "fix" and env_of(argv)["FLOCC_RUN"] == f"fix@{c.started_at}"
     assert "--remote-control" in argv
     rt.publish_fn = lambda c, t, s: PublishResult("opened", url="https://pr/1")
     done(rt)
     supervise(rt, current(rt))  # PR opens: review
     c = current(rt)
     argv = rt.sessions.started[-1][1]
-    assert c.phase == "review" and env_of(argv)["LINEAR_AGENTS_RUN"] == f"review@{c.started_at}"
+    assert c.phase == "review" and env_of(argv)["FLOCC_RUN"] == f"review@{c.started_at}"
     assert "--remote-control" not in argv

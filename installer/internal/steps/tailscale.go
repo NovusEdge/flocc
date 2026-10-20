@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 type Tailscale struct{}
@@ -79,7 +79,7 @@ func (Tailscale) Apply(ctx context.Context, e *Env) error {
 	if tsState(ctx, e) != "Running" {
 		def := e.Answers.Hostname
 		if def == "" {
-			def = "linear-agents"
+			def = "flocc"
 		}
 		name, err := e.UI.Text("Tailscale hostname for this host", def)
 		if err != nil {

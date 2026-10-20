@@ -10,14 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/plugins"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/plugins"
 )
 
 // The gate hook's onFailure setting needs this version.
 var minClaude = [3]int{2, 1, 295}
 
-const loginNote = `Claude Code opens next, in ~/agents/worktrees.
+const loginNote = `Claude Code opens next, in ~/worktrees.
 1. Type /login. Over SSH it prints a URL; open it in a browser, sign in with the
    subscription account and paste the code it shows back here.
 2. Accept "Enable Remote Control" if asked.
@@ -143,7 +143,7 @@ func missingPlugins(e *Env, l plugins.List) []string {
 	return missing
 }
 
-const marketplacesRel = "agents/marketplaces"
+const marketplacesRel = "marketplaces"
 
 // extractArchive replaces dir (a real path) with the archive's tree and records its commit.
 func extractArchive(ctx context.Context, e *Env, archive, dir, commit string) error {
@@ -156,7 +156,7 @@ func extractArchive(ctx context.Context, e *Env, archive, dir, commit string) er
 	if _, err := e.Must(ctx, "tar", "-xf", archive, "-C", dir); err != nil {
 		return err
 	}
-	return os.WriteFile(e.Path(filepath.Join(dir, ".la-commit")), []byte(commit), 0o644)
+	return os.WriteFile(e.Path(filepath.Join(dir, ".flocc-commit")), []byte(commit), 0o644)
 }
 
 func knownMarketplaces(e *Env) map[string]json.RawMessage {
@@ -187,7 +187,7 @@ func (Claude) Check(ctx context.Context, e *Env) (bool, string, error) {
 		if m.Archive == "" {
 			continue
 		}
-		if b, _ := os.ReadFile(e.HomePath(filepath.Join(marketplacesRel, m.Name, ".la-commit"))); string(b) != m.Commit {
+		if b, _ := os.ReadFile(e.HomePath(filepath.Join(marketplacesRel, m.Name, ".flocc-commit"))); string(b) != m.Commit {
 			return false, "marketplace " + m.Name + " out of date", nil
 		}
 	}

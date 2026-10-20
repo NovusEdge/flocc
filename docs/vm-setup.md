@@ -8,11 +8,11 @@ logged in on the desktop, and, for Daytona, the Daytona CLI logged in with `dayt
 The first run on a host asks you to log in to Tailscale and to Claude (`/login`, Remote Control;
 the two push settings are written to `~/.claude/settings.json` for you), to paste the Linear key
 and the two GitHub tokens, to fill in the config form and to confirm an ntfy test push. It ends
-by running `linear-agents doctor` and starts ticking only when doctor reports no FAIL line.
-Everything it runs is logged to `/tmp/la-setup/setup.log` (root steps) and
-`~linear-agents/.cache/la-setup/setup.log` (the rest).
+by running `flocc doctor` and starts ticking only when doctor reports no FAIL line.
+Everything it runs is logged to `/tmp/flocc-setup/setup.log` (root steps) and
+`~flocc/.cache/flocc-setup/setup.log` (the rest).
 
-The root phase must run from `/tmp/la-setup`, where `just ship` puts it; running `la-setup` by
+The root phase must run from `/tmp/flocc-setup`, where `just ship` puts it; running `flocc-setup` by
 hand from anywhere else is refused.
 
 Upgrading the service on a host is `just ship <target>` again: it ships the current commit as
@@ -24,17 +24,17 @@ next launch or handoff.
 
 Debian, Ubuntu, Arch, Fedora and RHEL VMs run in systemd mode: a timer ticks every 3 minutes
 and a user unit keeps the tmux server up. Any host whose PID 1 is not systemd runs in loop mode:
-`linear-agents run` in tmux session `la-loop` ticks instead (the installer's `la-loop` session
+`flocc run` in tmux session `flocc-loop` ticks instead (the installer's `flocc-loop` session
 starts the tmux server), a process a timed-out check daemonized is not killed when its tick
 ends, and after the host stops `just ship` restarts tailscaled and the loop.
 
 A Daytona container for a smoke test, about $0.17 an hour while running:
 
 ```bash
-daytona create --snapshot daytona-medium --name la-smoke --auto-stop 0
-just ship daytona:la-smoke
+daytona create --snapshot daytona-medium --name flocc-smoke --auto-stop 0
+just ship daytona:flocc-smoke
 # when done
-daytona stop la-smoke
+daytona stop flocc-smoke
 ```
 
 `--auto-stop 0` matters: a running tick loop does not count as activity, so the default
@@ -54,7 +54,7 @@ daytona stop la-smoke
   otherwise expires after 180 days.
 - In each mapped repo, gitignore everything `./setup` and the check write, or every issue fails
   at prepare. If the mapped repos need tools outside `~/.local/bin`, the mise shims and the
-  system directories, add them to `Environment=PATH` in `deploy/linear-agents.service` and to
+  system directories, add them to `Environment=PATH` in `deploy/flocc.service` and to
   `loopCommand` in `installer/internal/steps/run.go`.
 - On your desktop, add the same scratchpad backstop the installer writes on hosts:
   `echo 'e /tmp/claude-* - - - 2d' | sudo tee /etc/tmpfiles.d/claude-scratch.conf`. The service
@@ -75,7 +75,7 @@ claim (phase, age, context use, whether its tmux session is up). `just fleet-sta
 --interval 30s` redraws until Ctrl-C.
 
 The hosts are every sandbox in the active Daytona organization, read with the Daytona CLI's login,
-plus each ssh destination listed in `~/.config/la-setup/hosts`, one per line (blank lines and lines
+plus each ssh destination listed in `~/.config/flocc-setup/hosts`, one per line (blank lines and lines
 starting with `#` are skipped):
 
 ```
@@ -83,7 +83,7 @@ starting with `#` are skipped):
 box.tailnet.ts.net
 ```
 
-Each started host answers `linear-agents status --json`, which only reads state: it takes no tick
+Each started host answers `flocc status --json`, which only reads state: it takes no tick
 lock and calls neither Linear nor GitHub. (On a WAL ledger, opening it read-only still creates
 the `-shm` and `-wal` files beside it; the ledger file itself is not changed.) Stopped sandboxes
 are listed with their state. The `est $/h` column prices started sandboxes only, from vCPU,
@@ -126,7 +126,7 @@ Three things limit it:
   fails or times out. Every setup therefore downloads its packages fresh, and the venv keeps its own
   files. The cache is on the worktree's filesystem so uv can still link instead of copy.
 - `min_free_disk_gb` (default 2.0) holds new starts while the disk holding `worktree_root` has less
-  free space than that. `linear-agents doctor` warns below twice the value and fails below it, and
+  free space than that. `flocc doctor` warns below twice the value and fails below it, and
   a doctor FAIL also stops a fresh install from starting the timer.
 - Each tick removes the worktree (not the branch) of a finished run whose Linear issue is
   completed or canceled, or no longer exists. Running and blocked claims, and issues in any other
@@ -147,9 +147,9 @@ pnpm, pip and mise caches are not managed.
 By default a session may launch only the agents in `plugin/agents/`, and only as often as its
 phase allows; grants (below) can add `general-purpose` or a named workflow. The budgets (which
 agents, the phase's total launches, how many running at once) are in
-`src/linear_agents/gate.py`; the review phase gets none. A hook refuses any other launch and tells
+`src/flocc/gate.py`; the review phase gets none. A hook refuses any other launch and tells
 the agent why. Every launch, allowed or refused, is appended to `<state_dir>/launches.jsonl`, and
-`linear-agents status` shows each running claim's count as `launches N/limit`.
+`flocc status` shows each running claim's count as `launches N/limit`.
 
 To allow more, put an `allow:` line in the issue's `agent` block, or in a comment of yours on the
 issue (a `steer_authors` comment works too). Items are comma-separated:
@@ -175,7 +175,7 @@ push. That is not yet confirmed on a host. A question left unanswered for two ho
 by the service as tier 2 regardless. While a question is open, a reply on the issue is held and
 delivered after the question is answered, and the context handoff request waits too.
 
-Implementer and fix sessions still use `linear-agents escalate`, with a default, for reversible
+Implementer and fix sessions still use `flocc escalate`, with a default, for reversible
 choices. Tester and reviewer sessions are not on Remote Control and escalate with `--waiting` for
 decisions that block them.
 
@@ -196,11 +196,11 @@ Run the escalation evals in `plugin/evals/` (`escalate-irreversible`, `escalate-
 
 ```bash
 claude plugin eval plugin --trust-plugin --no-publish --ablation none -j 3 \
-  --allow-tools "Bash(linear-agents escalate:*)"
+  --allow-tools "Bash(flocc escalate:*)"
 ```
 
 If that invocation is rejected, `claude plugin eval --help` shows the current arguments. Pass means
-every eval's graders succeed. The sandbox usually cannot run `linear-agents`, so the graders judge
+every eval's graders succeed. The sandbox usually cannot run `flocc`, so the graders judge
 the escalation the agent chose, and step 7 below exercises the real command. Fix the failing skill and rerun before going on.
 
 ### Steps
@@ -209,34 +209,34 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
    config, and create one issue in a test Linear team: labelled `claude` and the repo's label,
    assigned to you, in Todo, with an `## Acceptance criteria` list and an
    `` ```agent `` block containing `wall_clock: 30m`.
-2. Run `linear-agents tick` by hand; it takes the same lock as the timer's ticks. Pass: the issue
-   moves to In Progress, and `NF-…-test` appears in `tmux -L linear-agents ls` and in the Claude
+2. Run `flocc tick` by hand; it takes the same lock as the timer's ticks. Pass: the issue
+   moves to In Progress, and `NF-…-test` appears in `tmux -L flocc ls` and in the Claude
    app. A tick run from a shell leaves behind any process a timed-out check daemonized; under
-   the timer, or with `systemctl --user start linear-agents.service` (systemd mode only), systemd
+   the timer, or with `systemctl --user start flocc.service` (systemd mode only), systemd
    kills it when the tick ends.
 3. Before anything else, check the tester session's tools. In the app, run `/mcp` in the first
    launched session and list its tools. Pass: no claude.ai connectors, Linear in particular,
    because `--strict-mcp-config` is unverified in interactive sessions. If any connector shows up,
-   stop the rollout: `systemctl --user stop linear-agents.timer`, kill the session, and do not
+   stop the rollout: `systemctl --user stop flocc.timer`, kill the session, and do not
    proceed, since it could write to Linear through the connector. Record the result in the spec's
-   "Verified and unverified" section. Add a Linear MCP server to the `linear-agents` user's own
+   "Verified and unverified" section. Add a Linear MCP server to the `flocc` user's own
    Claude config only after this passes, and run this step again after each Claude Code upgrade.
 4. In the app, confirm the tester session is steerable. Check `ListAgents` from a second session
    and note whether `--name` changed the listed name; record the answer in the spec.
 5. Confirm lookup by human key resolves. Pass: the tick in step 2 found and claimed the issue by
-   its `NF-…` key without an error in `journalctl --user -u linear-agents`, and
-   `linear-agents release NF-…` (step 8) accepts the same key. The Linear query is
+   its `NF-…` key without an error in `journalctl --user -u flocc`, and
+   `flocc release NF-…` (step 8) accepts the same key. The Linear query is
    `issue(id: "NF-1")`; a "not found" or schema error means the key lookup in `linear.py` is
    wrong, so fix it and add the real response as a fixture.
-6. Keep running `linear-agents tick` until a PR exists and Linear has the PR comment. It is a
+6. Keep running `flocc tick` until a PR exists and Linear has the PR comment. It is a
    draft unless the repo sets `draft = false`, which a private repo of a GitHub Free
    organization needs. Then keep ticking until `NF-…-review` has run (model from `review_model`,
-   default `opus`; set it in the config to change it). Pass: the PR has a `🤖 linear-agents review`
+   default `opus`; set it in the config to change it). Pass: the PR has a `🤖 flocc review`
    comment from the publish token's account, and the issue has a `Review: …` comment.
 7. Exercise escalation: in a session, run
 
    ```bash
-   linear-agents escalate --tier 1 --cause smoke --summary test --action ignore
+   flocc escalate --tier 1 --cause smoke --summary test --action ignore
    ```
 
    then tick. Pass: one ntfy push and the `escalation` label. Repeat the command and tick again.
@@ -244,7 +244,7 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
 8. Confirm `issueAddLabel`, `User.isMe` and the `comments_since` filter worked. If any failed, fix
    `linear.py` and add the real response as a fixture.
 9. Exercise a rerun: block a second issue (kill its session twice, one tick apart), then run
-   `linear-agents release NF-…`. Pass: the issue is back in Todo, and the next tick restarts it on
+   `flocc release NF-…`. Pass: the issue is back in Todo, and the next tick restarts it on
    the kept branch. For a run that has finished (review done), timed out or blocked, dragging
    the issue back to Todo in Linear does the same: the next tick releases the old claim, comments
    once, and restarts. A running claim, review phase included, ignores the move; use `release`.
@@ -252,9 +252,9 @@ the escalation the agent chose, and step 7 below exercises the real command. Fix
     (`: > <agent_gh_token_file>`, after copying it aside), then run:
 
     ```bash
-    systemctl --user start linear-agents.service
-    journalctl --user -u linear-agents -n 20
-    systemctl --user list-timers linear-agents.timer
+    systemctl --user start flocc.service
+    journalctl --user -u flocc -n 20
+    systemctl --user list-timers flocc.timer
     ```
 
     Pass: the journal shows the tick failing on the empty token, and `list-timers` still shows a

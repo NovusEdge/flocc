@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 func TestScratchWritesTheTmpfilesRuleInSystemdMode(t *testing.T) {

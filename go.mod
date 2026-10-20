@@ -1,4 +1,4 @@
-module github.com/NovusEdge/linear-agents
+module github.com/NovusEdge/flocc
 
 go 1.27.1
 

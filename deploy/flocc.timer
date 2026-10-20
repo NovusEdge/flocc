@@ -1,5 +1,5 @@
 [Unit]
-Description=Run linear-agents every 3 minutes
+Description=Run flocc every 3 minutes
 
 [Timer]
 OnBootSec=1min

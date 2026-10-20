@@ -63,7 +63,7 @@ type Secrets struct{}
 func (Secrets) Name() string { return "Secrets" }
 
 func secretPath(e *Env, s secretSpec) string {
-	return e.HomePath(filepath.Join(".config/linear-agents", s.file))
+	return e.HomePath(filepath.Join(".config/flocc", s.file))
 }
 
 func (Secrets) Check(_ context.Context, e *Env) (bool, string, error) {
@@ -76,7 +76,7 @@ func (Secrets) Check(_ context.Context, e *Env) (bool, string, error) {
 }
 
 func (Secrets) Apply(_ context.Context, e *Env) error {
-	if err := os.MkdirAll(e.HomePath(".config/linear-agents"), 0o700); err != nil {
+	if err := os.MkdirAll(e.HomePath(".config/flocc"), 0o700); err != nil {
 		return err
 	}
 	for _, s := range secretSpecs {

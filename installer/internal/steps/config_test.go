@@ -9,16 +9,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/deploy"
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
-	"github.com/NovusEdge/linear-agents/installer/internal/ui"
+	"github.com/NovusEdge/flocc/deploy"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
 func goldenAnswers() *answers.Answers {
-	return &answers.Answers{TeamKey: "NF", DigestIssue: "NF-186", NtfyTopic: "la-test",
+	return &answers.Answers{TeamKey: "NF", DigestIssue: "NF-186", NtfyTopic: "flocc-test",
 		Repos: []answers.Repo{{Name: "nimblefox-template", URL: "https://github.com/nimble-fox-ai/nimblefox-template",
 			BaseBranch: "main", Check: "mise exec -- just check", Draft: false}}}
 }
@@ -84,7 +84,7 @@ func TestDoctorRunsWithTheServicePath(t *testing.T) {
 	e := testEnv(t, r.Fake)
 	e.Run = r
 	doctor(context.Background(), e)
-	if len(got) != 1 || !strings.HasPrefix(got[0], "PATH=/home/linear-agents/.local/bin:") {
+	if len(got) != 1 || !strings.HasPrefix(got[0], "PATH=/home/flocc/.local/bin:") {
 		t.Fatalf("env %v", got)
 	}
 }
@@ -100,10 +100,10 @@ func (r envRecorder) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 }
 
 func TestConfigCheckUsesDoctorConfigAndRepoLines(t *testing.T) {
-	bin := "/home/linear-agents/.local/bin/linear-agents doctor"
-	f := host.NewFake().On(bin, 1, "ok    config: /x\nFAIL  repo r: /home/linear-agents/src/r is not a git clone\nFAIL  claude login: none\n")
+	bin := "/home/flocc/.local/bin/flocc doctor"
+	f := host.NewFake().On(bin, 1, "ok    config: /x\nFAIL  repo r: /home/flocc/src/r is not a git clone\nFAIL  claude login: none\n")
 	done, detail, _ := (Config{}).Check(context.Background(), testEnv(t, f))
-	if done || detail != "repo r: /home/linear-agents/src/r is not a git clone" {
+	if done || detail != "repo r: /home/flocc/src/r is not a git clone" {
 		t.Fatalf("detail=%q", detail)
 	}
 	f.On(bin, 1, "ok    config: /x\nFAIL  claude login: none\n")

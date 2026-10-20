@@ -5,12 +5,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from linear_agents import ledger
-from linear_agents.cli import main
-from linear_agents.config import load
-from linear_agents.grants import Grants, set_block
-from linear_agents.linear import LinearError
-from linear_agents.runtime import Runtime
+from flocc import ledger
+from flocc.cli import main
+from flocc.config import load
+from flocc.grants import Grants, set_block
+from flocc.linear import LinearError
+from flocc.runtime import Runtime
 from tests.fakes import FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -35,7 +35,7 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
     path = tmp_path / "c.toml"
     path.write_text(
         EXAMPLE.read_text()
-        .replace('"~/.local/state/linear-agents/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
+        .replace('"~/.local/state/flocc/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
         .replace('"~/src/backend"', f'"{origin}"')
     )
     cfg = load(path)
@@ -49,7 +49,7 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
         sessions=sessions,
         notifier=FakeNotifier(),
         now=lambda: 0.0,
-        exe="/opt/linear-agents",
+        exe="/opt/flocc",
         claude_exe="/opt/claude",
         config_path=path,
         publish_fn=lambda *a: None,
@@ -57,7 +57,7 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
         review_diff=lambda c: "",
         comment_pr=lambda c, u, b: None,
     )
-    monkeypatch.setattr("linear_agents.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
     assert main(["--config", str(path), "release", "NF-1"]) == 0
     assert ledger.get_claim(con, "NF-1") is None and sessions.killed == ["NF-1-test"]
     captured = capsys.readouterr()
@@ -94,7 +94,7 @@ def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, 
     claim = make("NF-1", (), worktree=str(origin.resolve()))
     claim.phase = "review"
     ledger.insert_claim(ledger.connect(con_path), claim)
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(con_path))
+    monkeypatch.setenv("FLOCC_LEDGER", str(con_path))
     monkeypatch.chdir(origin)
     assert main(["hook", "pre-commit"]) == 1
     assert "read-only" in capsys.readouterr().err
@@ -113,9 +113,9 @@ def claims_env(tmp_path, monkeypatch):
     )
     state = tmp_path / "state" / "NF-1"
     state.mkdir(parents=True)
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(state))
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "hook.sqlite"))
-    monkeypatch.setenv("LINEAR_AGENTS_CONFIG", str(config))
+    monkeypatch.setenv("FLOCC_STATE", str(state))
+    monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "hook.sqlite"))
+    monkeypatch.setenv("FLOCC_CONFIG", str(config))
     return ledger.connect(tmp_path / "hook.sqlite")
 
 
@@ -210,7 +210,7 @@ def test_commit_hook_never_refuses_a_shared_path(claims_env, origin, monkeypatch
 
 
 def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
     assert main(["review-done"]) == 1
     (tmp_path / "review.md").write_text(" \n")
     assert main(["review-done"]) == 1
@@ -220,16 +220,16 @@ def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, ca
 
 
 def gate_env(monkeypatch, tmp_path, phase="review"):
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
-    monkeypatch.setenv("LINEAR_AGENTS_PHASE", phase)
-    monkeypatch.setenv("LINEAR_AGENTS_RUN", f"{phase}@1")
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
+    monkeypatch.setenv("FLOCC_PHASE", phase)
+    monkeypatch.setenv("FLOCC_RUN", f"{phase}@1")
     # The suite may run inside a host session, whose launch grants would leak into the gate.
-    monkeypatch.delenv("LINEAR_AGENTS_LAUNCH_GRANTS", raising=False)
+    monkeypatch.delenv("FLOCC_LAUNCH_GRANTS", raising=False)
 
 
 def test_gate_command_denies_with_hook_json(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path)
-    payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "linear-agents:source-finder"}}
+    payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "flocc:source-finder"}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert main(["gate"]) == 0
     out = json.loads(capsys.readouterr().out)
@@ -248,7 +248,7 @@ def test_gate_allows_a_flag_grant_only_for_the_session_launched_with_it(
         "next handoff"
         in json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"]
     )
-    monkeypatch.setenv("LINEAR_AGENTS_LAUNCH_GRANTS", "agent:general-purpose")
+    monkeypatch.setenv("FLOCC_LAUNCH_GRANTS", "agent:general-purpose")
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
     assert main(["gate"]) == 0
     assert capsys.readouterr().out == ""
@@ -260,7 +260,7 @@ def test_a_question_is_never_blocked_by_bookkeeping(tmp_path, monkeypatch, capsy
     def boom(*a, **kw):
         raise OSError("disk gone")
 
-    monkeypatch.setattr("linear_agents.gate.note_question", boom)
+    monkeypatch.setattr("flocc.gate.note_question", boom)
     q = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Q?"}]}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
     assert main(["gate"]) == 1
@@ -273,14 +273,14 @@ def test_gate_refuses_with_exit_2_when_it_breaks(tmp_path, monkeypatch, capsys):
     def boom(*a, **kw):
         raise RuntimeError("disk gone")
 
-    monkeypatch.setattr("linear_agents.gate.run_gate", boom)
+    monkeypatch.setattr("flocc.gate.run_gate", boom)
     monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Agent", "tool_input": {}}'))
     assert main(["gate"]) == 2
     assert "disk gone" in capsys.readouterr().err
 
 
 def test_gate_without_a_state_dir_refuses(monkeypatch, capsys):
-    monkeypatch.delenv("LINEAR_AGENTS_STATE", raising=False)
+    monkeypatch.delenv("FLOCC_STATE", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Agent", "tool_input": {}}'))
     assert main(["gate"]) == 2
 
@@ -296,7 +296,7 @@ def test_gate_records_and_clears_a_question(tmp_path, monkeypatch):
 
 def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path, "impl")
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+    monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
     (tmp_path / "status.json").write_text("{}")
     payload = {"source": "compact", "scratchpad_dir": "/tmp/claude-1000/x/s1/scratchpad"}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
@@ -309,7 +309,7 @@ def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
 
 def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path, "impl")
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+    monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
     monkeypatch.setattr("sys.stdin", io.StringIO('{"source": "startup"}'))
     assert main(["session-start"]) == 0
     line = json.loads((tmp_path / "launches.jsonl").read_text())
@@ -320,12 +320,12 @@ def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch, capsy
 
 def test_session_start_prints_the_context_when_bookkeeping_fails(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path, "impl")
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+    monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
 
     def boom(*a, **kw):
         raise OSError("disk gone")
 
-    monkeypatch.setattr("linear_agents.gate.record_session", boom)
+    monkeypatch.setattr("flocc.gate.record_session", boom)
     monkeypatch.setattr("sys.stdin", io.StringIO('{"source": "startup"}'))
     assert main(["session-start"]) == 0
     captured = capsys.readouterr()
@@ -339,9 +339,9 @@ def test_bookkeeping_failures_never_exit_2(tmp_path, monkeypatch, capsys, flag):
     def boom(*a, **kw):
         raise OSError("disk gone")
 
-    monkeypatch.setattr("linear_agents.gate.record_stop", boom)
-    monkeypatch.setattr("linear_agents.gate.clear_question", boom)
-    monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "linear-agents:code-mapper"}'))
+    monkeypatch.setattr("flocc.gate.record_stop", boom)
+    monkeypatch.setattr("flocc.gate.clear_question", boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "flocc:code-mapper"}'))
     assert main(["gate", flag]) == 1
     err = capsys.readouterr().err
     assert "disk gone" in err and "refused" not in err
@@ -392,7 +392,7 @@ def test_idle_bookkeeping_failure_exits_1_never_2(tmp_path, monkeypatch, capsys)
     def boom(*a, **kw):
         raise OSError("disk gone")
 
-    monkeypatch.setattr("linear_agents.gate.note_idle", boom)
+    monkeypatch.setattr("flocc.gate.note_idle", boom)
     monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
     assert main(["idle"]) == 1
     assert "disk gone" in capsys.readouterr().err
@@ -400,7 +400,7 @@ def test_idle_bookkeeping_failure_exits_1_never_2(tmp_path, monkeypatch, capsys)
 
 def test_stopped_records_the_agent_type_and_phase(tmp_path, monkeypatch):
     gate_env(monkeypatch, tmp_path, "impl")
-    monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "linear-agents:code-mapper"}'))
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "flocc:code-mapper"}'))
     assert main(["gate", "--stopped"]) == 0
     line = json.loads((tmp_path / "launches.jsonl").read_text())
     assert (line["event"], line["what"], line["phase"]) == ("stop", "code-mapper", "impl")
@@ -415,7 +415,7 @@ def test_gate_refuses_input_it_cannot_read(tmp_path, monkeypatch, stdin):
 
 def test_gate_refuses_when_it_cannot_print_the_denial(tmp_path, monkeypatch):
     gate_env(monkeypatch, tmp_path)
-    payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "linear-agents:source-finder"}}
+    payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "flocc:source-finder"}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
 
     real_print = print
@@ -431,7 +431,7 @@ def test_gate_refuses_when_it_cannot_print_the_denial(tmp_path, monkeypatch):
 
 def test_context_prints_the_phase_grants(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path, "impl")
-    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "l.sqlite"))
+    monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
     set_block(tmp_path / "grants.json", Grants(launches=12, fix_rounds=2))
     main(["context"])
     out = capsys.readouterr().out

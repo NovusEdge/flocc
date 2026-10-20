@@ -5,7 +5,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from linear_agents.config import RepoConfig
+from flocc.config import RepoConfig
 
 _LISTED = 20
 _DRAIN_S = 5
@@ -189,7 +189,7 @@ def install_hook(
     hook = hooks_dir / "pre-commit"
     hook.write_text(
         "#!/bin/sh\nset -e\n"
-        f'LINEAR_AGENTS_CONFIG="{config_path}" "{exe}" hook pre-commit\n'
+        f'FLOCC_CONFIG="{config_path}" "{exe}" hook pre-commit\n'
         f'if [ -x "{original}/pre-commit" ]; then exec "{original}/pre-commit" "$@"; fi\n'
     )
     hook.chmod(0o755)

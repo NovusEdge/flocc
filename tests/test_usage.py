@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from linear_agents import usage
-from linear_agents.cli import main
+from flocc import usage
+from flocc.cli import main
 
 FIX = Path(__file__).parent / "fixtures" / "status.json"
 
@@ -53,7 +53,7 @@ def test_unreadable_window_is_unknown_usage(tmp_path, monkeypatch, capsys, windo
     data["rate_limits"]["five_hour"] = window
     usage.write_status(tmp_path / "NF-1", data)
     assert usage.latest_usage(tmp_path, now=300) is None
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "NF-1"))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "NF-1"))
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
     assert main(["statusline"]) == 0
     assert "5h ?" in capsys.readouterr().out
@@ -64,7 +64,7 @@ def test_non_object_limits_are_unknown_usage(tmp_path, monkeypatch, capsys, limi
     data = {**status(20, 30), "rate_limits": limits}
     usage.write_status(tmp_path / "NF-1", data)
     assert usage.latest_usage(tmp_path, now=300) is None
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "NF-1"))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "NF-1"))
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
     assert main(["statusline"]) == 0
     assert "5h ?" in capsys.readouterr().out
@@ -102,7 +102,7 @@ def test_real_sample_parses():
 
 
 def test_statusline_cli(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "NF-7"))
+    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "NF-7"))
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(status(12, 40, ctx=34))))
     assert main(["statusline"]) == 0
     assert capsys.readouterr().out.strip() == "NF-7 · ctx 34% · 5h 12% · wk 40%"

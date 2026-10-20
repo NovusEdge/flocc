@@ -18,7 +18,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 // lockedFake serializes the Fake, which collect drives from one goroutine per host.
@@ -140,7 +140,7 @@ func TestDiscoverNotesASandboxListThatDoesNotAdvance(t *testing.T) {
 	}
 }
 
-const statusJSON = `{"host":"la-smoke","mode":"loop","last_tick":{"at":1,"exit":"0","age_s":120},
+const statusJSON = `{"host":"flocc-smoke","mode":"loop","last_tick":{"at":1,"exit":"0","age_s":120},
 "session_cap":2,"five_hour_max_pct":60,"weekly_max_pct":50,
 "claims":[{"issue":"NF-1","state":"running","phase":"impl","started_age_s":3700,"updated_age_s":5,"tmux_alive":true,"context_pct":41.6},
 {"issue":"NF-2","state":"blocked","phase":"test","started_age_s":90,"updated_age_s":null,"tmux_alive":false,"context_pct":null},
@@ -148,7 +148,7 @@ const statusJSON = `{"host":"la-smoke","mode":"loop","last_tick":{"at":1,"exit":
 "usage":{"five_hour_pct":20,"weekly_pct":55,"age_s":30},"disk":{"free_bytes":10737418240,"total_bytes":107374182400}}`
 
 func TestFleetFetchesInParallelAndNeverLeaksTheToken(t *testing.T) {
-	remote := asServiceUser([]string{"linear-agents", "status", "--json"})
+	remote := asServiceUser([]string{"flocc", "status", "--json"})
 	opts := "-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10"
 	f := &lockedFake{Fake: host.NewFake().On("ssh "+opts+" tok@gw "+remote, 0, statusJSON)}
 	f.Responses["ssh -o BatchMode=yes -o ConnectTimeout=10 down "+remote] = host.Result{Stderr: "ssh: connect to host down: Connection refused", Code: 255}

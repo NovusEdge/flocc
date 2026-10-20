@@ -7,26 +7,26 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NovusEdge/linear-agents/installer/internal/answers"
-	"github.com/NovusEdge/linear-agents/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 const sha = "1111111111111111111111111111111111111111"
 
 func repoFake(head string) *host.Fake {
 	return host.NewFake().
-		On("git bundle list-heads /stage/linear-agents.bundle", 0, sha+" HEAD\n").
-		On("git -C /home/linear-agents/agents/linear-agents rev-parse HEAD", 0, head+"\n")
+		On("git bundle list-heads /stage/flocc.bundle", 0, sha+" HEAD\n").
+		On("git -C /home/flocc/flocc rev-parse HEAD", 0, head+"\n")
 }
 
 func TestRepoCheckComparesBundleHeadAndInstall(t *testing.T) {
 	e := testEnv(t, repoFake(sha))
 	e.Stage = "/stage"
-	if done, detail, _ := (Repo{}).Check(context.Background(), e); done || detail != "linear-agents not installed" {
+	if done, detail, _ := (Repo{}).Check(context.Background(), e); done || detail != "flocc not installed" {
 		t.Fatalf("detail=%q", detail)
 	}
 	os.MkdirAll(e.HomePath(".local/bin"), 0o755)
-	os.WriteFile(e.HomePath(".local/bin/linear-agents"), nil, 0o755)
+	os.WriteFile(e.HomePath(".local/bin/flocc"), nil, 0o755)
 	if done, _, _ := (Repo{}).Check(context.Background(), e); !done {
 		t.Fatal("want done")
 	}
@@ -38,8 +38,8 @@ func TestRepoCheckComparesBundleHeadAndInstall(t *testing.T) {
 
 func TestRepoApplyStopsOnLocalEditsWithGitsMessage(t *testing.T) {
 	f := repoFake("").
-		On("git -C /home/linear-agents/agents/linear-agents fetch -q /stage/linear-agents.bundle HEAD", 0, "")
-	f.Responses["git -C /home/linear-agents/agents/linear-agents checkout -q --detach FETCH_HEAD"] = host.Result{
+		On("git -C /home/flocc/flocc fetch -q /stage/flocc.bundle HEAD", 0, "")
+	f.Responses["git -C /home/flocc/flocc checkout -q --detach FETCH_HEAD"] = host.Result{
 		Stderr: "error: Your local changes to the following files would be overwritten by checkout:\n\tplugin/evals/x.json\n", Code: 1}
 	e := testEnv(t, f)
 	e.Stage = "/stage"
@@ -69,7 +69,7 @@ func TestCleanSecret(t *testing.T) {
 func TestSecretsApplyKeepsValidFilesOnEmptyInputAndWritesMode600(t *testing.T) {
 	e := testEnv(t, host.NewFake())
 	e.Answers = &answers.Answers{}
-	dir := e.HomePath(".config/linear-agents")
+	dir := e.HomePath(".config/flocc")
 	os.MkdirAll(dir, 0o700)
 	os.WriteFile(filepath.Join(dir, "linear.key"), []byte("lin_old\n"), 0o600)
 	scriptedSecrets(e, &answers.Secrets{AgentToken: "ghp_agent\n", PublishToken: "ghp_pub"})
@@ -92,7 +92,7 @@ func TestSecretsApplyKeepsValidFilesOnEmptyInputAndWritesMode600(t *testing.T) {
 func TestSecretsApplyReplacesAWorldReadableFileWithMode600(t *testing.T) {
 	e := testEnv(t, host.NewFake())
 	e.Answers = &answers.Answers{}
-	dir := e.HomePath(".config/linear-agents")
+	dir := e.HomePath(".config/flocc")
 	os.MkdirAll(dir, 0o700)
 	loose := filepath.Join(dir, "linear.key")
 	os.WriteFile(loose, []byte("old\n"), 0o644)

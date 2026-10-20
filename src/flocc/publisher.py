@@ -5,9 +5,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from linear_agents.config import RepoConfig
-from linear_agents.ledger import Claim
-from linear_agents.worktree import changed_files, git, run_bounded
+from flocc.config import RepoConfig
+from flocc.ledger import Claim
+from flocc.worktree import changed_files, git, run_bounded
 
 _TAIL = 3000
 _FAILURE = re.compile(r"error|fail|traceback|panic|exit code [1-9]", re.IGNORECASE)
@@ -19,9 +19,7 @@ class PublishResult:
     status: str
     detail: str = ""
     url: str = ""
-    untrailed: tuple[
-        str, ...
-    ] = ()  # short SHAs of branch commits without the Linear-Agents trailer
+    untrailed: tuple[str, ...] = ()  # short SHAs of branch commits without the Flocc trailer
     log: str = ""  # the check's full output, when it ran and failed
 
 
@@ -84,7 +82,7 @@ def publish(
             f"{claim.base_sha}..{claim.branch}",
             "--format=%h",
             "--invert-grep",
-            "--grep=^Linear-Agents: ",
+            "--grep=^Flocc: ",
             cwd=wt,
         )
         untrailed = tuple(out.split())
@@ -155,7 +153,7 @@ def publish(
     return PublishResult("opened", url=pr.stdout.strip().splitlines()[-1], untrailed=untrailed)
 
 
-COMMENT_HEADER = "🤖 linear-agents review\n\n"
+COMMENT_HEADER = "🤖 flocc review\n\n"
 # GitHub rejects issue and PR comments past this many characters.
 COMMENT_LIMIT = 65_536
 _TRUNCATED = "\n\n[Truncated at GitHub's 65,536-character comment limit; full text is on the host.]"

@@ -10,24 +10,24 @@ func TestNormalizeTopic(t *testing.T) {
 		in, want string
 		ok       bool
 	}{
-		{"la-abc_123", "la-abc_123", true},
-		{"  la-abc \n", "la-abc", true},
-		{"https://ntfy.sh/la-abc", "la-abc", true},
-		{" https://ntfy.sh/la-abc ", "la-abc", true},
+		{"flocc-abc_123", "flocc-abc_123", true},
+		{"  flocc-abc \n", "flocc-abc", true},
+		{"https://ntfy.sh/flocc-abc", "flocc-abc", true},
+		{" https://ntfy.sh/flocc-abc ", "flocc-abc", true},
 		{"", "", true},
 		{strings.Repeat("a", 64), strings.Repeat("a", 64), true},
 		{strings.Repeat("a", 65), "", false},
-		{"la-abc la-def", "", false},
+		{"flocc-abc flocc-def", "", false},
 		{"la/abc", "", false},
 		{"la.abc", "", false},
 		{"https://ntfy.sh/a/b", "", false},
 		{"https://example.com/abc", "", false},
 		{"https://ntfy.sh/", "", false},
 		{"ntfy.sh/", "", false},
-		{"HTTP://NTFY.SH/la-abc", "la-abc", true},
-		{"ntfy.sh/la-abc", "la-abc", true},
-		{"https://ntfy.sh/la-abc/", "la-abc", true},
-		{"https://ntfy.sh/la-abc//", "", false},
+		{"HTTP://NTFY.SH/flocc-abc", "flocc-abc", true},
+		{"ntfy.sh/flocc-abc", "flocc-abc", true},
+		{"https://ntfy.sh/flocc-abc/", "flocc-abc", true},
+		{"https://ntfy.sh/flocc-abc//", "", false},
 	}
 	for _, c := range cases {
 		got, err := NormalizeTopic(c.in)
@@ -63,10 +63,10 @@ func TestOverlaySavedDropsBadTopicAndKeepsTheRest(t *testing.T) {
 
 func TestOverlayNormalizesTopic(t *testing.T) {
 	a := &Answers{}
-	if err := a.Overlay(&Answers{NtfyTopic: " https://ntfy.sh/la-abc "}); err != nil {
+	if err := a.Overlay(&Answers{NtfyTopic: " https://ntfy.sh/flocc-abc "}); err != nil {
 		t.Fatal(err)
 	}
-	if a.NtfyTopic != "la-abc" {
+	if a.NtfyTopic != "flocc-abc" {
 		t.Errorf("topic = %q", a.NtfyTopic)
 	}
 }
@@ -74,5 +74,11 @@ func TestOverlayNormalizesTopic(t *testing.T) {
 func TestRandomTopicIsValid(t *testing.T) {
 	if got, err := NormalizeTopic(RandomTopic()); err != nil || got == "" {
 		t.Errorf("generated topic rejected: %q, %v", got, err)
+	}
+}
+
+func TestRandomTopicHasTheFloccPrefix(t *testing.T) {
+	if got := RandomTopic(); !strings.HasPrefix(got, "flocc-") {
+		t.Fatal(got)
 	}
 }
