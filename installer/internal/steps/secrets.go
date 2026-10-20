@@ -14,20 +14,31 @@ type secretSpec struct{ id, file, title, help string }
 
 var secretSpecs = []secretSpec{
 	{"linear_key", "linear.key", "Linear API key",
-		"Linear → Settings → Security & access → Personal API keys. Limit it to team NF."},
+		"Linear → Settings → Account → Security & access → New API key, with Full access. Limit it to team NF."},
 	{"agent_token", "gh-agent.token", "GitHub agent token (read-only)",
 		"github.com/settings/personal-access-tokens, fine-grained. Resource owner: the mapped repos' owner; " +
-			"repository access: the mapped repos; permissions, all Read-only: Contents, Pull requests, Checks, Issues. " +
+			"repository access: the mapped repos; permissions, all Read-only: Contents, Pull requests, Issues, Commit statuses, Actions. " +
 			"Agents use it through gh, so it must not be able to push."},
 	{"publish_token", "gh-publish.token", "GitHub publish token",
 		"Fine-grained, same owner and repos. Contents: Read and write; Pull requests: Read and write. " +
 			"Only the service uses it, to push branches and open PRs."},
 }
 
+// SecretFile is the file under ~/.config/flocc holding the secret with this answers id; "" for
+// an unknown id.
+func SecretFile(id string) string {
+	for _, s := range secretSpecs {
+		if s.id == id {
+			return s.file
+		}
+	}
+	return ""
+}
+
 var envPrefix = regexp.MustCompile(`^[A-Z_]+=`)
 
-// cleanSecret strips what a paste adds and refuses what doctor would reject.
-func cleanSecret(v string) (string, error) {
+// CleanSecret strips what a paste adds and refuses what doctor would reject.
+func CleanSecret(v string) (string, error) {
 	v = strings.TrimSpace(v)
 	switch {
 	case strings.ContainsAny(v, "\r\n"):
@@ -46,7 +57,7 @@ func validSecret(path string) (bool, string) {
 		return false, "missing"
 	}
 	b, _ := os.ReadFile(path)
-	if _, err := cleanSecret(string(b)); err != nil {
+	if _, err := CleanSecret(string(b)); err != nil {
 		return false, err.Error()
 	}
 	if strings.TrimSpace(string(b)) == "" {
@@ -83,13 +94,59 @@ func (e *Env) KnownSecrets() []string {
 	return v
 }
 
+func scriptedSecret(e *Env, id string) string {
+	if e.Answers == nil || e.Answers.Secrets == nil {
+		return ""
+	}
+	switch id {
+	case "linear_key":
+		return e.Answers.Secrets.LinearKey
+	case "agent_token":
+		return e.Answers.Secrets.AgentToken
+	case "publish_token":
+		return e.Answers.Secrets.PublishToken
+	}
+	return ""
+}
+
+// Check fails on a scripted value that differs from the file: a ship never asks PickRedo, so
+// passing here would drop the desktop's keys (a rotate's "run flocc ship" fallback relies on it).
 func (Secrets) Check(_ context.Context, e *Env) (bool, string, error) {
 	for _, s := range secretSpecs {
-		if ok, why := validSecret(secretPath(e, s)); !ok {
+		path := secretPath(e, s)
+		if ok, why := validSecret(path); !ok {
 			return false, s.file + ": " + why, nil
+		}
+		if x := strings.TrimSpace(scriptedSecret(e, s.id)); x != "" {
+			b, _ := os.ReadFile(path)
+			if v, err := CleanSecret(x); err != nil || v != strings.TrimSpace(string(b)) {
+				return false, s.file + ": differs from the answers", nil
+			}
 		}
 	}
 	return true, "3 secrets, mode 600", nil
+}
+
+// writeSecret replaces path by rename, so the service, which reads the file on every tick, never
+// sees it missing or half written. CreateTemp makes the file 0600.
+func writeSecret(path, v string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(v + "\n"); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (Secrets) Apply(_ context.Context, e *Env) error {
@@ -113,15 +170,11 @@ func (Secrets) Apply(_ context.Context, e *Env) error {
 			}
 			return errors.New(s.title + " is required")
 		}
-		v, err := cleanSecret(raw)
+		v, err := CleanSecret(raw)
 		if err != nil {
 			return fmt.Errorf("%s: %w", s.title, err)
 		}
-		// WriteFile keeps the mode of an existing file, so a 644 file would briefly hold the token.
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if err := os.WriteFile(path, []byte(v+"\n"), 0o600); err != nil {
+		if err := writeSecret(path, v); err != nil {
 			return err
 		}
 	}

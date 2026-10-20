@@ -5,20 +5,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	answersPkg "github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
 
@@ -45,6 +42,8 @@ type Options struct {
 	// Interactive runs the host's forms on this terminal over ssh -t. Otherwise every answer,
 	// secrets included, comes from the answers reader on stdin and nothing prompts.
 	Interactive bool
+	// TTY is stdin being a terminal, where Connect can show a Tailscale approval prompt.
+	TTY bool
 	// Out receives the host's output, less the summary line; nil is stdout.
 	Out io.Writer
 }
@@ -54,6 +53,7 @@ type shipOpts struct {
 	// Dest.SSH, which holds the Daytona token.
 	Target      string
 	Interactive bool
+	TTY         bool
 	Answers     []byte
 	Out         io.Writer
 }
@@ -63,11 +63,8 @@ type usageError string
 
 func (u usageError) Error() string { return string(u) }
 
-var targetRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._:-]*$`)
-
-// ValidTarget reports whether t is safe as an ssh destination: no leading dash, which ssh would
-// read as an option, and no shell metacharacters.
-func ValidTarget(t string) bool { return targetRE.MatchString(t) }
+// ValidTarget is hosts.ValidTarget: ship and the host files take the same targets.
+func ValidTarget(t string) bool { return hosts.ValidTarget(t) }
 
 func badTarget(t string) error {
 	return usageError(fmt.Sprintf("%q is not an ssh target or daytona:<sandbox>", t))
@@ -92,8 +89,7 @@ func sshNoTTY(d Dest, remote string) host.Cmd {
 // connect resolves target to an ssh destination and a runner whose log hides its token and
 // secrets.
 func connect(ctx context.Context, target string, secrets ...string) (host.Runner, Dest, error) {
-	home, _ := os.UserHomeDir()
-	dest, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
+	dest, err := Resolve(ctx, target)
 	if err != nil {
 		return nil, Dest{}, err
 	}
@@ -135,11 +131,10 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, configDir s
 	if err := id.Write(filepath.Join(dir, "identity.json")); err != nil {
 		return err
 	}
-	bin, err := os.ReadFile(filepath.Join(root, "build", "flocc-setup-linux-"+arch))
-	if err != nil {
-		return fmt.Errorf("%w; run just build-setup", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "flocc-setup"), bin, 0o755); err != nil {
+	// Built here, not read from build/, so a stale installer never ships next to a newer bundle.
+	if _, err := host.Must(ctx, r, host.Cmd{Name: "go", Dir: root,
+		Args: []string{"build", "-o", filepath.Join(dir, "flocc-setup"), "./installer/cmd/flocc-setup"},
+		Env:  []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + arch}}); err != nil {
 		return err
 	}
 	if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "flocc.bundle"), "HEAD"}}); err != nil {
@@ -171,54 +166,6 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, configDir s
 		plan.List.Marketplaces[i].Commit = strings.TrimSpace(sha)
 	}
 	return plan.List.Write(filepath.Join(dir, "plugins.json"))
-}
-
-func Main(args []string) int {
-	fs := flag.NewFlagSet("flocc-setup ship", flag.ContinueOnError)
-	interactive := fs.Bool("interactive", false, "answer the host's forms on this terminal (ssh -t) instead of from --answers")
-	answersIn := fs.String("answers", "", `answers document, secrets included, sent to the host on stdin; "-" reads this terminal's stdin`)
-	stageOnly := fs.String("stage-only", "", "write the stage for linux/amd64 into this directory and stop")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if *interactive && *answersIn != "" {
-		fmt.Fprintln(os.Stderr, "ship: --interactive asks for every answer on the host; drop --answers")
-		return 2
-	}
-	ctx := context.Background()
-	if *stageOnly != "" {
-		r := host.Exec{Log: os.Stderr}
-		root, err := repoRoot(ctx, r)
-		if err == nil {
-			if err = os.MkdirAll(*stageOnly, 0o755); err == nil {
-				err = stageFiles(ctx, r, root, *stageOnly, "amd64", claudeConfigDir(), ghPrivate)
-			}
-		}
-		return exitCode(err, "ship")
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: flocc-setup ship [--interactive | --answers FILE|-] <ssh-target|daytona:SANDBOX>")
-		return 2
-	}
-	var in io.Reader
-	if *answersIn != "" {
-		rc, err := openAnswers(*answersIn, os.Stdin)
-		if err != nil {
-			return exitCode(err, "ship")
-		}
-		defer rc.Close()
-		in = rc
-	}
-	s, err := Ship(ctx, Options{Target: fs.Arg(0), Interactive: *interactive, Out: os.Stdout}, in)
-	s.Print(os.Stdout)
-	return exitCode(err, "ship")
-}
-
-func openAnswers(path string, stdin io.Reader) (io.ReadCloser, error) {
-	if path == "-" {
-		return io.NopCloser(stdin), nil
-	}
-	return os.Open(path)
 }
 
 // Ship stages the installer on the host named by o.Target and runs it, with the answers document
@@ -258,7 +205,7 @@ func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
 	if o.Out == nil {
 		o.Out = os.Stdout
 	}
-	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, Answers: doc, Out: o.Out})
+	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, TTY: o.TTY, Answers: doc, Out: o.Out})
 }
 
 func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts) (Summary, error) {
@@ -271,15 +218,15 @@ func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts
 }
 
 func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts, tap io.Writer) error {
+	if err := Connect(ctx, r, dest, o.Target, o.TTY); err != nil {
+		return err
+	}
 	unameM, err := host.Must(ctx, r, sshCmd(dest, false, "uname -m"))
 	if err != nil {
 		return err
 	}
 	arch, err := archFor(unameM)
 	if err != nil {
-		return err
-	}
-	if err := refuseLegacy(ctx, r, dest); err != nil {
 		return err
 	}
 	if !o.Interactive {

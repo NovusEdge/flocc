@@ -3,9 +3,8 @@ package ship
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"os"
-	"path/filepath"
+	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,22 +27,71 @@ func asServiceUser(command []string) string {
 	return "sudo -u " + steps.ServiceUser + " -H env HOME=" + serviceHome + " " + steps.ServicePath(serviceHome) + " sh -c " + shQuote(script)
 }
 
-// HostMain runs a command on a host as the service user and returns its exit code.
-func HostMain(args []string) int {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: flocc-setup host <ssh-target|daytona:SANDBOX> <command...>")
-		return 2
+// FloccLine is the host's own flocc with each argument quoted on its own, so spaces, quotes and $
+// reach the host CLI exactly as typed on the desktop.
+func FloccLine(args []string) []string {
+	line := []string{"flocc"}
+	for _, a := range args {
+		line = append(line, shQuote(a))
 	}
-	ctx := context.Background()
-	home, _ := os.UserHomeDir()
-	dest, err := resolveTarget(ctx, args[0], filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
-	if err == nil {
-		err = hostRun(ctx, host.Exec{Log: host.Redact(os.Stderr, dest.Token)}, dest, args[1:])
-	}
-	return exitCode(err, "host")
+	return line
 }
 
-// hostRun scrubs the SSH token from errors, as ship does.
-func hostRun(ctx context.Context, r host.Runner, dest Dest, command []string) error {
-	return scrubErr(r.Interactive(ctx, sshCmd(dest, true, asServiceUser(command))), dest.Token)
+// OnHost runs command, shell words, on the host as the service user with this terminal's
+// streams; tty asks ssh for a terminal.
+func OnHost(ctx context.Context, r host.Runner, dest Dest, command []string, tty bool) error {
+	return scrubErr(r.Interactive(ctx, sshCmd(dest, tty, asServiceUser(command))), dest.Token)
+}
+
+// Capture runs command on the host as the service user without a terminal and returns what it
+// printed; stdin, when set, is the command's input. Callers send and read secrets with it, so it
+// forbids a pty (sshNoTTY). BatchMode makes ssh fail instead of waiting at a prompt nobody sees.
+func Capture(ctx context.Context, r host.Runner, dest Dest, command []string, stdin io.Reader) (host.Result, error) {
+	d := dest
+	d.Opts = append([]string{"-o", "BatchMode=yes"}, dest.Opts...)
+	c := sshNoTTY(d, asServiceUser(command))
+	c.Stdin = stdin
+	res, err := r.Run(ctx, c)
+	res.Stdout = scrub(res.Stdout, dest.Token)
+	res.Stderr = scrub(res.Stderr, dest.Token)
+	return res, scrubErr(err, dest.Token)
+}
+
+// connectWait bounds Connect without a terminal: a host holding authentication for a check
+// nobody can see would otherwise keep it forever.
+var connectWait = 30 * time.Second
+
+// Connect opens the connection to dest that later ssh calls share, before a run's first Capture.
+// Capture buffers stderr, where ssh prints a Tailscale check-mode URL or a password prompt, so a
+// host waiting on one would hang with nothing shown. With tty the connection opens on this
+// terminal, where the owner can answer; without one it must open in BatchMode. A master that
+// -O check finds live needs neither. name is the host as the owner calls it.
+func Connect(ctx context.Context, r host.Runner, dest Dest, name string, tty bool) error {
+	check := host.Cmd{Name: "ssh", Args: append(slices.Clone(dest.Opts), "-O", "check", dest.SSH)}
+	if res, err := r.Run(ctx, check); err == nil && res.Code == 0 {
+		return nil
+	}
+	if tty {
+		if err := r.Interactive(ctx, sshNoTTY(dest, "true")); err != nil {
+			return fmt.Errorf("could not reach %s: %w", name, scrubErr(err, dest.Token))
+		}
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, connectWait)
+	defer cancel()
+	d := dest
+	d.Opts = append([]string{"-o", "BatchMode=yes"}, dest.Opts...)
+	res, err := r.Run(ctx, sshNoTTY(d, "true"))
+	if err == nil && res.Code == 0 {
+		return nil
+	}
+	// The last line is where Tailscale puts its URL; with it the owner can approve and retry.
+	why := firstLine(host.Tail(res.Stderr, 1))
+	switch {
+	case why == "" && err != nil:
+		why = err.Error()
+	case why == "":
+		why = fmt.Sprintf("ssh exited %d", res.Code)
+	}
+	return fmt.Errorf("could not reach %s without a prompt (%s); run it in a terminal", name, scrub(why, dest.Token))
 }

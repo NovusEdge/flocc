@@ -96,8 +96,8 @@ class Config:
         return self.ledger_path.with_suffix(".lock")
 
 
-# Branch recovery finds the tester's commits by this key, so renaming it needs the old key kept
-# in legacy.py for branches already pushed.
+# Branch recovery finds the tester's commits by this key, so renaming it strands branches already
+# pushed.
 TRAILER = "Flocc"
 
 

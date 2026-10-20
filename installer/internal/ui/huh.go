@@ -98,6 +98,12 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(u
 	if topic == "" {
 		a.NtfyTopic = suggested
 	}
+	return RepoForm(a, found, defaults)
+}
+
+// RepoForm ticks the repos agents may work on from found, then asks for more by URL. With
+// found empty it asks for every repo by URL.
+func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error {
 	start := 0
 	if len(found) > 0 {
 		byURL := map[string]answers.Repo{}

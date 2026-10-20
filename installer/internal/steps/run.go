@@ -23,7 +23,7 @@ type Run struct{}
 type DoctorFailed struct{ Fails []string }
 
 func (d *DoctorFailed) Error() string {
-	return fmt.Sprintf("doctor reports %s; fix them and run just ship again", plural(len(d.Fails), "FAIL line"))
+	return fmt.Sprintf("doctor reports %s; fix them and run flocc ship -H <host> again", plural(len(d.Fails), "FAIL line"))
 }
 
 const loginFail = "FAIL  claude login:"
@@ -112,7 +112,7 @@ func (Run) Apply(ctx context.Context, e *Env) error {
 	out, fails, ok := doctor(ctx, e)
 	e.lastDoctor = &doctorResult{out: out, fails: fails, ok: ok}
 	e.UI.Note("flocc doctor", out)
-	// A pending login fails doctor until just login runs, which starts the timer itself.
+	// A pending login fails doctor until flocc login runs, which starts the timer itself.
 	pending := slices.Contains(e.Pending, ClaudeLogin{}.Name())
 	others := fails
 	if pending {

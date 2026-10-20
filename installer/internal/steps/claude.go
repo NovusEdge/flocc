@@ -53,14 +53,14 @@ func claudeLogin(ctx context.Context, e *Env) string {
 }
 
 // ClaudeLogin reports the login and never does it: it needs a browser and the owner, so ship
-// leaves it to just login.
+// leaves it to flocc login.
 type ClaudeLogin struct{}
 
 func (ClaudeLogin) Name() string { return "Claude login" }
 
 func (ClaudeLogin) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if l := claudeLogin(ctx, e); l != "full" {
-		return false, l + "; just login does it after ship", nil
+		return false, l + "; flocc login -H <host> does it after ship", nil
 	}
 	return true, "claude.ai subscription", nil
 }

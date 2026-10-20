@@ -13,7 +13,7 @@ from flocc.escalation import Escalation
 WARN_DAYS = 14
 PAGE_DAYS = 3
 _DAY = 86400
-LOGIN_REMEDY = "on the desktop, run just login <ssh target of this host>"
+LOGIN_REMEDY = "on the desktop, run flocc login -H <this host>"
 
 
 class TokenRejected(Exception):
@@ -95,12 +95,17 @@ def check_tokens(rt, expiry=token_expiry) -> None:
         try:
             expires = expiry(token)
         except TokenRejected:
+            ledger.meta_set(rt.con, f"token_expiry:{name}", "rejected")
             _page(rt, name, path, f"GitHub rejected the {name} token: it expired or was revoked.")
             continue
         except (OSError, ValueError) as exc:
             print(f"tokens: could not check the {name} token: {exc}", file=sys.stderr)
             complete = False
             continue
+        # status reads this; it must not ask GitHub itself.
+        ledger.meta_set(
+            rt.con, f"token_expiry:{name}", "never" if expires is None else str(int(expires))
+        )
         if expires is None:
             continue
         days = int((expires - rt.now()) // _DAY)
@@ -113,10 +118,12 @@ def check_tokens(rt, expiry=token_expiry) -> None:
         ledger.meta_set(rt.con, "token_check_date", today)
 
 
-def claude_login(exe: str, run=subprocess.run) -> str | None:
+def claude_login(exe: str, run=subprocess.run, timeout: float = 30) -> str | None:
     """full, token-only (<method>) or none; None when claude auth status gave no answer."""
     try:
-        out = run([exe, "auth", "status"], capture_output=True, text=True, check=False, timeout=30)
+        out = run(
+            [exe, "auth", "status"], capture_output=True, text=True, check=False, timeout=timeout
+        )
         auth = json.loads(out.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
@@ -144,6 +151,6 @@ def check_claude_login(rt, run=subprocess.run) -> None:
     if lapsed:
         return
     summary = f"The Claude login on {socket.gethostname()} lapsed ({login}); new sessions fail."
-    action = "On the desktop, run just login <ssh target of this host>"
+    action = "On the desktop, run flocc login -H <this host>"
     rt.notifier.send(Escalation(1, "claude-login", summary, action, scope="global"), None, None)
     ledger.meta_set(rt.con, "claude_login_lapsed", "1")

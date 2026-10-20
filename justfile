@@ -1,7 +1,3 @@
-# Must match state_root in the host's config.toml. Only status/logs on non-systemd
-# (loop) hosts read it; systemd hosts use journald.
-runlog := "~/.local/state/flocc/run.log"
-
 [private]
 default:
     @just --list --unsorted
@@ -41,75 +37,68 @@ test-go:
 [group('dev')]
 check: lint test
 
-# Build flocc-setup for this machine and for linux amd64/arm64 hosts into build/
+# Build the desktop flocc command into build/
 [group('build')]
-build-setup:
+build:
     mkdir -p build
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/flocc-setup-linux-amd64 ./installer
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o build/flocc-setup-linux-arm64 ./installer
-    go build -o build/flocc-setup ./installer
-
-[private]
-build-desktop:
-    mkdir -p build
-    go build -o build/flocc-setup ./installer
+    go build -o build/flocc ./installer/cmd/flocc
 
 # Remove build/
 [group('build')]
 clean:
     rm -rf build
 
-# Set up or upgrade a host without a terminal (--answers FILE sends the answers), or --interactive
+# Set up or upgrade a host from its host file and the stored keys (--interactive: the host's own forms)
 [group('host')]
-ship target *flags: build-setup
-    build/flocc-setup ship {{flags}} {{target}}
+ship name *flags: build
+    build/flocc ship -H {{name}} {{flags}}
 
 # Log the host in to Claude, accept Remote Control and start its timer (--email picks the account)
 [group('host')]
-login target *flags: build-desktop
-    build/flocc-setup login {{flags}} {{target}}
+login name *flags: build
+    build/flocc login -H {{name}} {{flags}}
 
-# Run any command on the host as flocc, with the service PATH
+# Run a raw command on the host as flocc, with the service PATH
 [group('host')]
 [positional-arguments]
-host target *cmd: build-desktop
-    build/flocc-setup host "$@"
+host name *cmd: build
+    t=$1; shift; build/flocc host run -H "$t" -- "$@"
 
 # Run flocc doctor on the host
 [group('host')]
-doctor target: build-desktop
-    build/flocc-setup host {{target}} flocc doctor
+doctor name: build
+    build/flocc -H {{name}} doctor
 
-# Show tmux sessions, the last run.log lines and the timer on the host
+# Show the host's claims, last tick, usage, disk, Claude login and token expiries
 [group('host')]
-status target: build-desktop
-    build/flocc-setup host {{target}} 'tmux -L flocc ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers flocc.timer; true'
+status name: build
+    build/flocc -H {{name}} status
 
 # Show every host's loop, sessions, usage and disk in one table
 [group('host')]
-fleet-status *flags: build-desktop
-    build/flocc-setup fleet {{flags}}
+fleet-status *flags: build
+    build/flocc status -H all {{flags}}
 
 # Follow run.log, or the journal on a systemd host
 [group('host')]
-logs target: build-desktop
-    build/flocc-setup host {{target}} 'if [ -d /run/systemd/system ]; then journalctl --user -u flocc -f; else tail -f {{runlog}}; fi'
+logs name: build
+    build/flocc -H {{name}} logs -f
 
 # Attach read-only to a tmux session on the host
 [group('host')]
-attach target session: build-desktop
-    build/flocc-setup host {{target}} tmux -L flocc attach -r -t {{session}}
+attach name session: build
+    build/flocc -H {{name}} attach {{session}}
 
 # Run one tick by hand on the host
 [group('host')]
-tick target: build-desktop
-    build/flocc-setup host {{target}} flocc tick
+tick name: build
+    build/flocc -H {{name}} tick
 
 # Release a blocked or timed-out issue's claim on the host
 [group('host')]
 [positional-arguments]
-release target key *flags: build-desktop
-    t=$1; shift; build/flocc-setup host "$t" flocc release "$@"
+release name key *flags: build
+    t=$1; shift; build/flocc -H "$t" release "$@"
 
 # Create a Daytona sandbox that never auto-stops
 [group('daytona')]
@@ -121,11 +110,11 @@ daytona-up name:
 daytona-stop name:
     daytona stop {{name}}
 
-# Start a Daytona sandbox, then ship to it
+# Start a Daytona sandbox, then ship to it, after flocc host add {{name}} --daytona {{name}}
 [group('daytona')]
 daytona-start name:
     daytona start {{name}}
-    just ship daytona:{{name}}
+    just ship {{name}}
 
 # List Daytona sandboxes
 [group('daytona')]

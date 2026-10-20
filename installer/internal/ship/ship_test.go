@@ -20,7 +20,7 @@ import (
 
 func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 	dest := Dest{SSH: "tok123@ssh.example.test", Token: "tok123"}
-	f := host.NewFake().On("ssh tok123@ssh.example.test uname -m", 255, "")
+	f := host.NewFake().On("ssh -O check tok123@ssh.example.test", 0, "").On("ssh tok123@ssh.example.test uname -m", 255, "")
 	_, err := ship(context.Background(), f, t.TempDir(), dest, shipOpts{})
 	if err == nil || strings.Contains(err.Error(), "tok123") || !strings.Contains(err.Error(), "<token>") {
 		t.Fatalf("%v", err)
@@ -29,14 +29,13 @@ func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 
 func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 	root, dir, cfg := t.TempDir(), t.TempDir(), t.TempDir()
-	os.MkdirAll(filepath.Join(root, "build"), 0o755)
-	os.WriteFile(filepath.Join(root, "build", "flocc-setup-linux-amd64"), []byte("bin"), 0o755)
 	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"x@X": true}})
 	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{
 		"X": map[string]any{"source": map[string]string{"source": "github", "repo": "o/x"}, "installLocation": "/m/X"}})
 	f := host.NewFake().
 		On("git -C "+root+" config user.name", 0, "Ada L\n").
 		On("git -C "+root+" config user.email", 0, "ada@example.test\n").
+		On("go build -o "+dir+"/flocc-setup ./installer/cmd/flocc-setup", 0, "").
 		On("git -C "+root+" bundle create "+dir+"/flocc.bundle HEAD", 0, "").
 		On("git -C /m/X archive --format=tar -o "+dir+"/mp-X.tar HEAD", 0, "").
 		On("git -C /m/X rev-parse HEAD", 0, "abc\n")
@@ -56,6 +55,44 @@ func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 	}
 	if len(got.Marketplaces) != 1 || got.Marketplaces[0].Archive != "mp-X.tar" || got.Marketplaces[0].Commit != "abc" {
 		t.Fatalf("%s", b)
+	}
+}
+
+// cmdLog keeps every command whole, Dir and Env included, which the Fake's string keys drop.
+type cmdLog struct {
+	*host.Fake
+	cmds []host.Cmd
+}
+
+func (c *cmdLog) Run(ctx context.Context, cmd host.Cmd) (host.Result, error) {
+	c.cmds = append(c.cmds, cmd)
+	return c.Fake.Run(ctx, cmd)
+}
+
+func TestStageFilesBuildsTheInstallerForTheHostArch(t *testing.T) {
+	root, dir, cfg := t.TempDir(), t.TempDir(), t.TempDir()
+	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{})
+	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{})
+	f := &cmdLog{Fake: host.NewFake().
+		On("git -C "+root+" config user.name", 0, "Ada L\n").
+		On("git -C "+root+" config user.email", 0, "ada@example.test\n").
+		On("go build -o "+dir+"/flocc-setup ./installer/cmd/flocc-setup", 0, "").
+		On("git -C "+root+" bundle create "+dir+"/flocc.bundle HEAD", 0, "")}
+	if err := stageFiles(context.Background(), f, root, dir, "arm64", cfg, func(string) (bool, error) { return false, nil }); err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(f.cmds, func(c host.Cmd) bool { return c.Name == "go" })
+	if i < 0 {
+		t.Fatalf("no go build: %v", f.Calls)
+	}
+	build := f.cmds[i]
+	for _, want := range []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64"} {
+		if !slices.Contains(build.Env, want) {
+			t.Fatalf("%s missing from %q", want, build.Env)
+		}
+	}
+	if build.Dir != root {
+		t.Fatalf("built in %q, not the repo root", build.Dir)
 	}
 }
 
@@ -303,11 +340,13 @@ func TestStageFilesFailsWithoutAnOwnerIdentity(t *testing.T) {
 	}
 }
 
-// stageOK accepts git and scp, whose arguments hold the random stage directory.
+// stageOK accepts git, go and scp, whose arguments hold the random stage directory.
 type stageOK struct{ *host.Fake }
 
 func (s *stageOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 	switch c.Name {
+	case "go":
+		return host.Result{}, nil
 	case "git":
 		if slices.Contains(c.Args, "config") {
 			return host.Result{Stdout: "x@x.test\n"}, nil
@@ -323,8 +362,6 @@ func (s *stageOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 func shipRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, "build"), 0o755)
-	os.WriteFile(filepath.Join(root, "build", "flocc-setup-linux-amd64"), []byte("bin"), 0o755)
 	cfg := t.TempDir()
 	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{})
 	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{})
@@ -346,10 +383,15 @@ func TestRemoteCmd(t *testing.T) {
 	}
 }
 
+// mastered is a fake whose shared connection to dest is already open, so Connect does nothing.
+func mastered(dest string) *host.Fake {
+	return host.NewFake().On("ssh -O check "+dest, 0, "")
+}
+
 // okSudo is a host that passes the probes of a non-interactive ship; the ssh calls that carry
 // secrets or sudo pass -T, the uname probe does not.
 func okSudo(dest string) *stageOK {
-	return &stageOK{host.NewFake().
+	return &stageOK{mastered(dest).
 		On("ssh "+dest+" uname -m", 0, "x86_64\n").
 		On("ssh -T "+dest+" sudo -n true", 0, "").
 		On("ssh -T "+dest+" "+resetStageNoPrompt, 0, "")}
@@ -383,7 +425,7 @@ func TestNonInteractiveShipForbidsAPtyOnEverySudoAndSecretCall(t *testing.T) {
 	var checked int
 	for _, c := range f.Calls {
 		c = strings.TrimPrefix(c, "interactive: ")
-		// uname and Part 1's legacy-user probe carry no sudo and no secrets.
+		// uname carries no sudo and no secrets.
 		if !strings.HasPrefix(c, "ssh ") || !strings.Contains(c, "sudo ") {
 			continue
 		}
@@ -416,7 +458,7 @@ func TestShipWithoutAnswersStillClosesStdin(t *testing.T) {
 }
 
 func TestShipStopsBeforeStagingWithoutPasswordlessSudo(t *testing.T) {
-	f := &stageOK{host.NewFake().
+	f := &stageOK{mastered("ada@h").
 		On("ssh ada@h uname -m", 0, "x86_64\n").
 		On("ssh -T ada@h sudo -n true", 1, "").
 		On("ssh -T ada@h id -un", 0, "ada\n")}
@@ -430,15 +472,34 @@ func TestShipStopsBeforeStagingWithoutPasswordlessSudo(t *testing.T) {
 }
 
 func TestShipNamesAMissingSudo(t *testing.T) {
-	f := &stageOK{host.NewFake().On("ssh root@h uname -m", 0, "x86_64\n").On("ssh -T root@h sudo -n true", 127, "")}
+	f := &stageOK{mastered("root@h").On("ssh root@h uname -m", 0, "x86_64\n").On("ssh -T root@h sudo -n true", 127, "")}
 	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "install sudo") {
 		t.Fatalf("%v", err)
 	}
 }
 
+// uname -m is captured, so a Tailscale approval URL on its stderr would never show. The
+// connection opens on the terminal first, and the later calls share it.
+func TestShipOpensTheConnectionOnTheTerminalBeforeItsFirstCapture(t *testing.T) {
+	f := okSudo("root@h")
+	f.Responses["ssh -O check root@h"] = host.Result{Code: 255}
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Target: "root@h", TTY: true, Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	warm := slices.Index(f.Calls, "interactive: ssh -T root@h true")
+	if uname := slices.Index(f.Calls, "ssh root@h uname -m"); warm < 0 || uname < warm {
+		t.Fatalf("%v", f.Calls)
+	}
+	f = &stageOK{host.NewFake().On("ssh -O check root@h", 255, "").OnInteractive("ssh -T root@h true", errors.New("exit status 255"))}
+	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Target: "root@h", TTY: true, Out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "could not reach root@h") || f.Ran("ssh root@h uname -m") {
+		t.Fatalf("%v %v", err, f.Calls)
+	}
+}
+
 func TestShipInteractiveKeepsTheTerminal(t *testing.T) {
-	f := &stageOK{host.NewFake().On("ssh h uname -m", 0, "x86_64\n")}
+	f := &stageOK{mastered("h").On("ssh h uname -m", 0, "x86_64\n")}
 	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{Interactive: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +541,7 @@ func TestShipSummaryNamesTheTypedTargetNotTheTokenedDestination(t *testing.T) {
 	}
 	var out strings.Builder
 	got.Print(&out)
-	if !strings.Contains(out.String(), "just login daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
+	if !strings.Contains(out.String(), "flocc login -H daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
 		t.Fatalf("%q", out.String())
 	}
 }
@@ -513,26 +574,6 @@ func TestShipRejectsABrokenAnswersDocumentBeforeConnecting(t *testing.T) {
 	}
 }
 
-func TestOpenAnswersReadsStdinForDashAndAFileOtherwise(t *testing.T) {
-	rc, err := openAnswers("-", strings.NewReader("from stdin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := io.ReadAll(rc); string(b) != "from stdin" {
-		t.Fatalf("%q", b)
-	}
-	path := filepath.Join(t.TempDir(), "a.toml")
-	os.WriteFile(path, []byte("from file"), 0o600)
-	rc, err = openAnswers(path, strings.NewReader("unused"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rc.Close()
-	if b, _ := io.ReadAll(rc); string(b) != "from file" {
-		t.Fatalf("%q", b)
-	}
-}
-
 func TestValidTarget(t *testing.T) {
 	for _, ok := range []string{"root@flocc-nimble", "daytona:flocc-smoke", "box.tailnet.ts.net"} {
 		if !ValidTarget(ok) {
@@ -546,29 +587,48 @@ func TestValidTarget(t *testing.T) {
 	}
 }
 
-func TestMainRefusesInteractiveWithAnswers(t *testing.T) {
-	if code := Main([]string{"--interactive", "--answers", "a.toml", "h"}); code != 2 {
-		t.Fatalf("exit %d", code)
+// shortHome sets HOME to a directory under /tmp: the ControlPath must fit sun_path, which
+// t.TempDir's long names (and macOS's TMPDIR) do not leave room for.
+func shortHome(t *testing.T) string {
+	t.Helper()
+	home, err := os.MkdirTemp("/tmp", "fh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	return home
+}
+
+// ssh fails every connection whose ControlPath exceeds sun_path, so a long HOME goes without sharing.
+func TestSSHMuxIsSkippedWhenTheSocketPathWouldNotFit(t *testing.T) {
+	short := shortHome(t)
+	if opts, err := sshMux(); err != nil || len(opts) == 0 {
+		t.Fatalf("short home %q: %v %v", short, opts, err)
+	}
+	long := filepath.Join(short, strings.Repeat("h", 40))
+	t.Setenv("HOME", long)
+	if opts, err := sshMux(); err != nil || len(opts) != 0 {
+		t.Fatalf("home of %d bytes: %v %v", len(long), opts, err)
+	}
+	if _, err := os.Stat(filepath.Join(long, ".ssh")); err == nil {
+		t.Fatal(".ssh made though no sharing was set up")
 	}
 }
 
-func TestShipRefusesAHostThatRunsTheOldService(t *testing.T) {
-	f := host.NewFake().
-		On("ssh h uname -m", 0, "x86_64\n").
-		On("ssh h id -u "+legacyUser, 0, "998\n")
-	_, err := ship(context.Background(), f, t.TempDir(), Dest{SSH: "h"}, shipOpts{})
-	if err == nil || !strings.Contains(err.Error(), "a second poller") {
-		t.Fatalf("%v", err)
+func TestResolveSharesOneConnectionPerHost(t *testing.T) {
+	home := shortHome(t)
+	d, err := Resolve(context.Background(), "root@h")
+	if err != nil || d.SSH != "root@h" {
+		t.Fatalf("%+v %v", d, err)
 	}
-	if len(f.Calls) != 2 {
-		t.Fatalf("ran past the refusal: %v", f.Calls)
+	opts := strings.Join(d.Opts, " ")
+	for _, want := range []string{"ControlMaster=auto", "ControlPersist=10m", "ControlPath=" + filepath.Join(home, ".ssh", "flocc-%C")} {
+		if !strings.Contains(opts, want) {
+			t.Errorf("%s missing from %q", want, opts)
+		}
 	}
-	dest := Dest{SSH: "tok9@ssh.example.test", Token: "tok9"}
-	f = host.NewFake().
-		On("ssh tok9@ssh.example.test uname -m", 0, "x86_64\n").
-		On("ssh tok9@ssh.example.test id -u "+legacyUser, 0, "998\n")
-	_, err = ship(context.Background(), f, t.TempDir(), dest, shipOpts{})
-	if err == nil || strings.Contains(err.Error(), "tok9") {
-		t.Fatalf("%v", err)
+	if st, err := os.Stat(filepath.Join(home, ".ssh")); err != nil || st.Mode().Perm() != 0o700 {
+		t.Fatalf("%v %v", st, err)
 	}
 }

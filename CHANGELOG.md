@@ -4,6 +4,55 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## 0.5.0 (2026-10-20)
+
+One `flocc` command on the desktop; keys are made once, checked when pasted and reused.
+
+- `flocc` (`go install ./installer/cmd/flocc`) is the desktop command. Host commands run as
+  `flocc -H <host> <command>`, with the host picked from `$FLOCC_HOST`, the only host or the issue
+  named; `-H all` runs `status`, `doctor` and `logs`. The installer is its own binary,
+  `flocc-setup`, built by ship for the host's architecture.
+- `flocc keys` opens each key's page with a QR code, prefills GitHub's token page, reads pastes
+  with echo off (and refuses a stdin that is not a terminal), checks each key by prefix and
+  against the APIs without side effects, and keeps them in the OS keyring (else
+  `~/.config/flocc/secrets.toml`, mode 600). A paste whose check got no answer from an API is not
+  stored; you are asked whether to check it again. The ntfy topic is shown as a QR code for the
+  app and confirmed once. `flocc keys rotate github|linear` checks the new keys before storing
+  any, then pushes them to every host; after a partial push, run it again, paste nothing and
+  answer yes to push the stored keys again.
+- `flocc host add` writes `~/.config/flocc/hosts/<name>.toml` with the host's answers, creating
+  the digest issue and the labels when missing; `host add` and `ship` ask for a key the desktop
+  lacks on the spot. `flocc host import -H <name>` is the path for a host shipped before 0.5.0
+  (its host file has only `ssh`, and `flocc ship` points there): it reads the answers from the
+  host and takes each key the desktop lacks from it, checked as a paste is. A dropped
+  connection stops the import with "run flocc host import again"; a host token missing a repo is
+  fixed by editing its repository access on GitHub, then importing again. `flocc ship -H` and
+  `flocc login -H` replace `just ship` and `just login`, whose recipes now run them; run
+  `flocc ship` inside the flocc checkout. `flocc-setup ship` is gone, and with it
+  `--stage-only DIR` and `--answers FILE`.
+- `flocc ship -H <host>` replaces a host's key file when the desktop's key differs, so it brings
+  the host's keys in line with the desktop; it is the fallback when `keys rotate` could not reach
+  a host. `flocc ship`, `host import`, `keys rotate`, `doctor` and `logs` under `-H all`, and the
+  lookup of the host holding an issue first open the SSH connection in the terminal, so a
+  Tailscale check-mode approval link shows. Without a terminal, a host that needs a prompt fails
+  within 30 seconds with a message saying so instead of hanging. `status -H all` does not open
+  connections first; a host waiting on an approval shows there as unreachable.
+- The agent token asks for Actions and Commit statuses read instead of Checks, which
+  fine-grained tokens do not have. An agent token imported from a pre-0.5.0 host has neither:
+  on github.com/settings/personal-access-tokens add Actions (read) and Commit statuses (read)
+  to it (the token's value stays the same). The Linear key must be able to write; its check
+  sets a digest issue's title to the title it has.
+- `flocc status` shows the host's Claude login (full, token-only, none or unknown) and its token
+  expiries, per host under `-H all`. A pending login names the host by its desktop name:
+  `flocc login -H <name>`. The host CLI gains `logs` and `attach` and refuses the desktop
+  commands. `all` can no longer be a host name.
+- Ship no longer sends an ntfy test push on every run.
+- `Linear-Agents:` trailers, `🤖 linear-agents:` comments and the old hosts file are no longer
+  read, and ship no longer refuses a host from before 0.3.0. Hosts must be on 0.3.0 or later
+  before they upgrade to 0.5.0, since 0.5.0 no longer reads what the old names left behind. A
+  branch whose tester commits carry only the old `Linear-Agents: <KEY> test` trailer is no longer
+  recognised, so finish or merge such issues on a 0.4.x host before upgrading it.
+
 ## 0.4.0 (2026-10-20)
 
 The host side of setup: ship never asks, and the Claude login is one command.

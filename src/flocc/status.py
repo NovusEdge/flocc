@@ -13,11 +13,14 @@ from flocc.config import Config
 from flocc.gate import BUDGETS, launches_used, run_id
 from flocc.grants import for_phase
 from flocc.sessions import session_name
+from flocc.tokens import claude_login
 
 _TICK = re.compile(r"^--- tick (\S+)Z$")
 _EXIT = re.compile(r"^--- exit (.*)$")
 # A tick's own output sits between the markers, so the last pair can be far from the end.
 _LOG_TAIL = 256 * 1024
+# The desktop gives each host 20s for the whole report; a hung claude must not make it unreachable.
+_LOGIN_TIMEOUT = 5
 
 
 def last_tick(log: Path) -> dict | None:
@@ -80,21 +83,26 @@ def systemd_tick(run=subprocess.run) -> dict | None:
     return {"at": at, "exit": None if running else props.get("ExecMainStatus")}
 
 
-def _live_claims(path: Path) -> tuple[list[ledger.Claim], str | None]:
+def _read_ledger(path: Path) -> tuple[list[ledger.Claim], dict[str, str], str | None]:
     # Not ledger.connect: that creates the file, switches the journal mode and runs the schema.
     # mode=ro still creates the -shm and -wal files beside a WAL ledger, but never changes the
     # ledger file itself.
     if not path.exists():
-        return [], None
+        return [], {}, None
     try:
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
         con.row_factory = sqlite3.Row
         try:
-            return ledger.live_claims(con), None
+            expiry = {
+                name: value
+                for name in ("agent", "publish")
+                if (value := ledger.meta_get(con, f"token_expiry:{name}")) is not None
+            }
+            return ledger.live_claims(con), expiry, None
         finally:
             con.close()
     except sqlite3.Error as exc:
-        return [], str(exc)
+        return [], {}, str(exc)
 
 
 def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
@@ -136,7 +144,7 @@ def _disk(path: Path) -> dict | None:
     return {"free_bytes": free, "total_bytes": total}
 
 
-def _detect_mode() -> str:
+def detect_mode() -> str:
     # The same signal as the installer (steps.DetectMode): a container can hold /run/systemd/system
     # without systemd as PID 1.
     try:
@@ -152,15 +160,16 @@ def collect(
     now: float | None = None,
     mode: str | None = None,
     run=subprocess.run,
+    claude: str | None = None,
 ) -> dict:
     """Reads host state without taking the tick lock or touching Linear and GitHub."""
     now = time.time() if now is None else now
-    mode = mode or _detect_mode()
+    mode = mode or detect_mode()
     tick = systemd_tick(run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
     if tick is not None and tick["at"] is not None:
         tick["age_s"] = max(0.0, now - tick["at"])
     latest = usage.latest_usage(cfg.state_root, now)
-    claims, ledger_error = _live_claims(cfg.ledger_path)
+    claims, expiry, ledger_error = _read_ledger(cfg.ledger_path)
     return {
         "host": socket.gethostname(),
         "mode": mode,
@@ -181,4 +190,9 @@ def collect(
             "age_s": max(0.0, now - latest.observed_at),
         },
         "disk": _disk(cfg.state_root),
+        # null: not asked. "unknown": asked, and claude gave no answer, which is not a logout.
+        "claude_login": None
+        if claude is None
+        else claude_login(claude, run, _LOGIN_TIMEOUT) or "unknown",
+        "token_expiry": expiry,
     }

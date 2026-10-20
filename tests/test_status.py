@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -126,6 +127,9 @@ def _report(**over):
         "last_tick": None,
         "usage": None,
         "disk": None,
+        "now": 0.0,
+        "claude_login": None,
+        "token_expiry": {},
     }
     return base | over
 
@@ -137,7 +141,7 @@ def test_human_status_prints_tick_usage_and_disk(cfg, tmp_path, monkeypatch, cap
         usage={"five_hour_pct": 20, "weekly_pct": 30},
         disk={"free_bytes": 5 * 2**30},
     )
-    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions: full)
+    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions, **kw: full)
     assert main(["--config", path, "status"]) == 0
     out = capsys.readouterr().out
     assert "last tick 5m ago, ok" in out
@@ -145,23 +149,78 @@ def test_human_status_prints_tick_usage_and_disk(cfg, tmp_path, monkeypatch, cap
     assert "disk 5.0 GiB free" in out
 
     empty = _report()
-    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions: empty)
+    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions, **kw: empty)
     assert main(["--config", path, "status"]) == 0
     out = capsys.readouterr().out
     assert "last tick: none" in out and "usage: none yet" in out and "disk" not in out
 
     noage = _report(last_tick={"at": None, "exit": "0"})
-    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions: noage)
+    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions, **kw: noage)
     assert main(["--config", path, "status"]) == 0
     out = capsys.readouterr().out
     assert "last tick ok" in out and "ago" not in out
 
 
-def test_status_json_writes_nothing(cfg, tmp_path, capsys):
+def test_status_reports_the_claude_login_and_token_expiries(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.meta_set(con, "token_expiry:agent", "1900000000")
+    ledger.meta_set(con, "token_expiry:publish", "never")
+    con.close()
+
+    def run(argv, **kw):
+        assert argv == ["/opt/claude", "auth", "status"]
+        return subprocess.CompletedProcess(
+            argv, 0, '{"loggedIn": true, "authMethod": "claude.ai"}', ""
+        )
+
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=run, claude="/opt/claude")
+    assert report["token_expiry"] == {"agent": "1900000000", "publish": "never"}
+    assert report["claude_login"] == "full"
+    assert collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claude_login"] is None
+
+
+def test_a_login_the_host_cannot_read_is_unknown_not_none(cfg):
+    def run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1, '{"error": "rate limited"}', "")
+
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=run, claude="/opt/claude")
+    assert report["claude_login"] == "unknown"
+
+
+def test_a_hung_claude_probe_is_cut_short_and_reads_unknown(cfg):
+    timeouts = []
+
+    def hangs(argv, **kw):
+        timeouts.append(kw["timeout"])
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=hangs, claude="/opt/claude")
+    assert timeouts == [5] and report["claude_login"] == "unknown"
+
+
+def test_human_status_prints_the_login_and_expiries(cfg, tmp_path, monkeypatch, capsys):
+    report = _report(
+        now=1_800_000_000.0,
+        claude_login="none",
+        token_expiry={"agent": str(1_800_000_000 + 5 * 86400), "publish": "rejected"},
+    )
+    monkeypatch.setattr("flocc.status.collect", lambda cfg, sessions, **kw: report)
+    assert main(["--config", str(tmp_path / "c.toml"), "status"]) == 0
+    out = capsys.readouterr().out
+    assert "claude login none" in out
+    assert "github agent token expires 2027-01-20 (5 days)" in out
+    assert "github publish token rejected by GitHub" in out
+
+
+def test_status_json_writes_nothing(cfg, tmp_path, capsys, monkeypatch):
+    # The real claude CLI would be run otherwise.
+    monkeypatch.setattr("shutil.which", lambda name: "/opt/claude")
+    monkeypatch.setattr("flocc.status.claude_login", lambda exe, run, timeout: f"full via {exe}")
     path = tmp_path / "c.toml"
     assert main(["--config", str(path), "status", "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["claims"] == [] and report["mode"] in ("systemd", "loop")
+    assert report["claude_login"] == "full via /opt/claude"
     assert not cfg.ledger_path.exists() and not cfg.state_root.exists()
 
 

@@ -250,7 +250,7 @@ func TestServiceStepsKeepSecretsOutOfArgvAndOutput(t *testing.T) {
 	}
 }
 
-const loginFailLine = "FAIL  claude login: none; on the desktop, run just login <ssh target of this host>\n"
+const loginFailLine = "FAIL  claude login: none; on the desktop, run flocc login -H <this host>\n"
 
 func finishEnv(t *testing.T, doctorOut string) *steps.Env {
 	t.Helper()
@@ -263,7 +263,7 @@ func finishEnv(t *testing.T, doctorOut string) *steps.Env {
 		Mode: steps.Systemd, Answers: &answers.Answers{}, Sleep: func(time.Duration) {}}
 }
 
-// The desktop exits with the host's status, so these three decide what just ship reports.
+// The desktop exits with the host's status, so these three decide what flocc ship reports.
 func TestFinishExitCodesAndSummaryLine(t *testing.T) {
 	for _, c := range []struct {
 		name    string

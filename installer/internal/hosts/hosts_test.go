@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func write(t *testing.T, path, body string) {
@@ -64,32 +67,72 @@ func TestListReturnsGoodHostsByNameAndNamesTheBadOnes(t *testing.T) {
 	}
 }
 
-func TestConvertOldWritesOneFilePerHostOnce(t *testing.T) {
-	home := t.TempDir()
-	old := filepath.Join(home, "old", "hosts")
-	dir := Dir(home)
-	write(t, old, "# tailnet\nroot@la-nimble\nbox.tail1.ts.net\n-oProxyCommand=id\nuser@box.tail1.ts.net\nroot@a/b\n")
-	msg, err := ConvertOld(old, dir)
-	if err != nil {
+func TestHostFileKeepsTheAnswersFlatAndNeverASecret(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "hosts")
+	h := Host{Name: "flocc-nimble", SSH: "root@flocc-nimble", Answers: answers.Answers{
+		TeamKey: "NF", DigestIssue: "NF-186", NtfyTopic: "flocc-x",
+		Repos:   []answers.Repo{{Name: "nimblefox", URL: "https://github.com/o/nimblefox", BaseBranch: "main", Check: "just check", Draft: true}},
+		Secrets: &answers.Secrets{LinearKey: "lin_api_s3cret"},
+	}}
+	if err := Save(dir, h); err != nil {
 		t.Fatal(err)
 	}
-	list, err := List(dir)
-	got := map[string]string{}
-	for _, h := range list {
-		got[h.Name] = h.SSH
+	path := filepath.Join(dir, "flocc-nimble.toml")
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "s3cret") || strings.Contains(string(b), "secrets") {
+		t.Fatalf("a secret reached the host file:\n%s", b)
 	}
-	if err != nil || len(got) != 2 || got["la-nimble"] != "root@la-nimble" || got["box"] != "box.tail1.ts.net" {
-		t.Fatalf("%v %v", got, err)
+	// go-toml flattens the embedded Answers, so the file reads like a host's own answers.toml.
+	var raw map[string]any
+	if err := toml.Unmarshal(b, &raw); err != nil || raw["team_key"] != "NF" || raw["ssh"] != "root@flocc-nimble" || raw["Answers"] != nil {
+		t.Fatalf("%v %v\n%s", raw, err, b)
 	}
-	for _, want := range []string{"-oProxyCommand=id", "user@box.tail1.ts.net", "root@a/b", old + ".converted"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("the notice lacks %q:\n%s", want, msg)
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o", st.Mode().Perm())
+	}
+	got, err := Load(dir, "flocc-nimble")
+	if err != nil || got.Target() != "root@flocc-nimble" || got.TeamKey != "NF" || got.Repos[0].Name != "nimblefox" || got.Secrets != nil {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".host-*")); len(left) != 0 {
+		t.Fatalf("temp files left: %v", left)
+	}
+}
+
+func TestLoadRefusesWhatSSHOrTheShellWouldMisread(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "none.toml"), "team_key = \"NF\"\n")
+	write(t, filepath.Join(dir, "shell.toml"), "ssh = \"h;id\"\n")
+	write(t, filepath.Join(dir, "subst.toml"), "daytona = \"$(id)\"\n")
+	write(t, filepath.Join(dir, "all.toml"), "ssh = \"root@all\"\n")
+	write(t, filepath.Join(dir, "secret.toml"), "ssh = \"root@x\"\n[secrets]\nlinear_key = \"lin_api_s3cret\"\n")
+	for _, name := range []string{"none", "shell", "subst", "all", "../x"} {
+		if _, err := Load(dir, name); err == nil {
+			t.Errorf("%s loaded", name)
 		}
 	}
-	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("the old file would be converted again")
+	if h, err := Load(dir, "secret"); err != nil || h.Secrets != nil {
+		t.Fatalf("%+v %v", h, err)
 	}
-	if msg, err := ConvertOld(old, dir); msg != "" || err != nil {
-		t.Fatalf("%q %v", msg, err)
+	if _, err := Load(dir, "absent"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	for _, h := range []Host{{Name: "all", SSH: "root@all"}, {Name: "x", SSH: "h;id"}, {Name: "x"}} {
+		if err := Save(dir, h); err == nil {
+			t.Errorf("%+v saved", h)
+		}
+	}
+}
+
+func TestValidTarget(t *testing.T) {
+	for _, ok := range []string{"root@flocc-nimble", "daytona:flocc-smoke", "box.tailnet.ts.net"} {
+		if !ValidTarget(ok) {
+			t.Errorf("%q refused", ok)
+		}
+	}
+	for _, bad := range []string{"", "-oProxyCommand=x", "h;rm -rf ~", "a b", "$(id)", "h`id`"} {
+		if ValidTarget(bad) {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }

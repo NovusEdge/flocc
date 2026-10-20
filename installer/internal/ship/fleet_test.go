@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -229,7 +228,7 @@ func TestRenderShowsHostsClaimsFailuresAndNotes(t *testing.T) {
 	}
 	out := plainText(render(rows, []string{"daytona: no CLI config, skipped"}))
 	for _, want := range []string{
-		"2m ago, ok", "2/2", "20%", "55%", "10.0 GiB", "~$0.166",
+		"LOGIN", "TOKENS", "2m ago, ok", "2/2", "20%", "55%", "10.0 GiB", "~$0.166",
 		"NF-1", "impl", "1h", "42%",
 		"unreachable", "down: exit 255: Connection refused",
 		"stopped",
@@ -324,6 +323,42 @@ func TestTickAndDiskCellsFlagProblems(t *testing.T) {
 	}
 }
 
+func TestLoginAndTokenCellsFlagWhatWillStopSessions(t *testing.T) {
+	const red, yellow = "\x1b[31m", "\x1b[33m"
+	for _, tc := range []struct {
+		json, login, tokens, color string
+	}{
+		{`{"now":0,"claude_login":"full","token_expiry":{"agent":"2592000","publish":"never"}}`, "full", "agent 30d", ""},
+		{`{"now":0,"claude_login":"none","token_expiry":{"agent":"864000","publish":"5000000"}}`, "none", "agent 10d", yellow},
+		{`{"now":0,"claude_login":"full","token_expiry":{"agent":"never","publish":"86400"}}`, "full", "publish 1d", red},
+		{`{"now":0,"claude_login":"full","token_expiry":{"agent":"rejected"}}`, "full", "agent rejected", red},
+		{`{"now":0,"token_expiry":{"agent":"never","publish":"never"}}`, "-", "never", ""},
+		{`{"now":0}`, "-", "-", ""},
+	} {
+		var rep Report
+		if err := json.Unmarshal([]byte(tc.json), &rep); err != nil {
+			t.Fatal(err)
+		}
+		if got := plainText(loginCell(&rep)); got != tc.login {
+			t.Errorf("%s: login %q", tc.json, got)
+		}
+		cell := tokensCell(&rep)
+		if got := plainText(cell); got != tc.tokens || tc.color != "" && !strings.Contains(cell, tc.color) {
+			t.Errorf("%s: tokens %q %q", tc.json, got, cell)
+		}
+	}
+	none := Report{ClaudeLogin: new(string)}
+	*none.ClaudeLogin = "token-only (oauth_token)"
+	if !strings.Contains(loginCell(&none), red) {
+		t.Error("a login without Remote Control is not styled as bad")
+	}
+	// A login the host could not read is neither a lapse nor fine.
+	*none.ClaudeLogin = "unknown"
+	if got := loginCell(&none); plainText(got) != "unknown" || !strings.Contains(got, yellow) {
+		t.Errorf("%q", got)
+	}
+}
+
 func TestFleetRejectsATightWatchInterval(t *testing.T) {
 	for _, iv := range []string{"0s", "-1s", "1s"} {
 		if code := FleetMain([]string{"--watch", "--interval", iv}, io.Discard); code != 2 {
@@ -332,51 +367,14 @@ func TestFleetRejectsATightWatchInterval(t *testing.T) {
 	}
 }
 
-// drawWriter ends the watch loop after its second draw.
-type drawWriter struct {
-	buf    bytes.Buffer
-	cancel context.CancelFunc
-}
-
-func (w *drawWriter) Write(p []byte) (int, error) {
-	w.buf.Write(p)
-	if strings.Count(w.buf.String(), "\x1b[H\x1b[2J") == 2 && !bytes.Equal(p, []byte("\x1b[H\x1b[2J")) {
-		w.cancel()
-	}
-	return len(p), nil
-}
-
-func TestWatchShowsTheFirstNoticeOnTheFirstDrawOnly(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w := &drawWriter{cancel: cancel}
-	dir := t.TempDir()
-	code := runFleet(ctx, w, true, 10*time.Millisecond, filepath.Join(dir, "no-config.json"), filepath.Join(dir, "hosts"), []string{"hosts: dropped \"-oProxyCommand=id\""})
-	if code != exitInterrupted {
-		t.Fatal(code)
-	}
-	draws := strings.Split(w.buf.String(), "\x1b[H\x1b[2J")
-	if len(draws) != 3 || !strings.Contains(draws[1], "dropped") || strings.Contains(draws[2], "dropped") {
-		t.Fatalf("%q", draws)
-	}
-}
-
-func TestFleetPrintsWhatTheOldHostsFileConversionDropped(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	old := filepath.Join(home, legacyHostsFile)
-	if err := os.MkdirAll(filepath.Dir(old), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(old, []byte("-oProxyCommand=id\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	if code := FleetMain(nil, &out); code != 0 {
-		t.Fatal(code)
-	}
-	if got := plainText(out.String()); !strings.Contains(got, "dropped") || !strings.Contains(got, ".converted") {
-		t.Fatal(got)
+// destCache hands an ssh host its destination without minting one, so the sharing must come
+// from the cache itself.
+func TestStatusesSharesConnectionsForSSHHosts(t *testing.T) {
+	shortHome(t)
+	f := host.NewFake()
+	Statuses(context.Background(), f, []hosts.Host{{Name: "a", SSH: "root@a"}})
+	if len(f.Calls) != 1 || !strings.Contains(f.Calls[0], "ControlMaster=auto") || !strings.Contains(f.Calls[0], "BatchMode=yes") {
+		t.Fatalf("%v", f.Calls)
 	}
 }
 

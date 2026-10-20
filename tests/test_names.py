@@ -9,9 +9,7 @@ OLD = re.compile(
 # A dated doc keeps its file name, so a path naming one is not a use of the old name.
 DATED_DOC_PATH = re.compile(r"docs/[\w/.-]*?\d{4}-\d{2}-\d{2}-[\w.-]+")
 DATED = re.compile(r"\d{4}-\d{2}-\d{2}-")
-# The readers that accept la-nimble's names until 0.5.0.
-COMPAT = {"src/flocc/legacy.py", "installer/internal/ship/legacy.go"}
-EXEMPT = COMPAT | {"CHANGELOG.md", "tests/test_names.py"}
+EXEMPT = {"CHANGELOG.md", "tests/test_names.py"}
 
 
 def _exempt(path: str) -> bool:

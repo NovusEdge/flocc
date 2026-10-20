@@ -7,11 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +72,9 @@ type Report struct {
 		FreeBytes  uint64 `json:"free_bytes"`
 		TotalBytes uint64 `json:"total_bytes"`
 	} `json:"disk"`
+	Now         float64           `json:"now"`
+	ClaudeLogin *string           `json:"claude_login"` // nil: not asked
+	TokenExpiry map[string]string `json:"token_expiry"` // Unix seconds, "never" or "rejected"
 }
 
 type Claim struct {
@@ -140,10 +145,11 @@ func scrub(s, token string) string {
 // destCache keeps each Daytona host's SSH destination until shortly before its token expires, so
 // --watch does not mint a token per host on every redraw.
 type destCache struct {
-	mu   sync.Mutex
-	m    map[string]cachedDest
-	now  func() time.Time
-	mint func(context.Context, FleetHost) (Dest, error)
+	mu      sync.Mutex
+	m       map[string]cachedDest
+	now     func() time.Time
+	mint    func(context.Context, FleetHost) (Dest, error)
+	sshOpts []string // given to every ssh host, which resolve returns without minting
 }
 
 type cachedDest struct {
@@ -157,7 +163,7 @@ func newDestCache(mint func(context.Context, FleetHost) (Dest, error)) *destCach
 
 func (c *destCache) resolve(ctx context.Context, h FleetHost) (Dest, error) {
 	if !h.Daytona {
-		return Dest{SSH: h.Target}, nil
+		return Dest{SSH: h.Target, Opts: c.sshOpts}, nil
 	}
 	c.mu.Lock()
 	hit, ok := c.m[h.Target]
@@ -312,6 +318,53 @@ func diskCell(rep *Report) string {
 	return text
 }
 
+// loginCell is bad unless the login is full: only a claude.ai login opens Remote Control.
+// "unknown" is a host that could not read its login, which is no evidence of a lapse.
+func loginCell(rep *Report) string {
+	switch {
+	case rep.ClaudeLogin == nil:
+		return cell("-", dim)
+	case *rep.ClaudeLogin == "full":
+		return "full"
+	case *rep.ClaudeLogin == "unknown":
+		return cell("unknown", warn)
+	}
+	return cell(*rep.ClaudeLogin, bad)
+}
+
+// tokensCell shows the GitHub token that expires first, with the host's own clock from the
+// report, at the tick's thresholds: a digest line under 14 days, a page under 3.
+func tokensCell(rep *Report) string {
+	if len(rep.TokenExpiry) == 0 {
+		return cell("-", dim)
+	}
+	soonest, days := "", math.MaxFloat64
+	for _, name := range []string{"agent", "publish"} {
+		v, ok := rep.TokenExpiry[name]
+		switch {
+		case !ok || v == "never":
+		case v == "rejected":
+			return cell(name+" rejected", bad)
+		default:
+			at, err := strconv.ParseFloat(v, 64)
+			if d := (at - rep.Now) / 86400; err == nil && d < days {
+				soonest, days = name, d
+			}
+		}
+	}
+	if soonest == "" {
+		return "never"
+	}
+	text := fmt.Sprintf("%s %dd", soonest, int(days))
+	switch {
+	case days < 3:
+		return cell(text, bad)
+	case days < 14:
+		return cell(text, warn)
+	}
+	return text
+}
+
 func costCell(h FleetHost) string {
 	if !h.Daytona || h.State != "started" || h.CPU == 0 && h.MemGiB == 0 {
 		return cell("-", dim)
@@ -335,7 +388,7 @@ func newTable(headers ...string) *table.Table {
 // render draws the host table, the claims table and one line per host that could not be read.
 // Ages come from the hosts themselves, so the view needs no clock of its own.
 func render(rows []Row, notes []string) string {
-	hosts := newTable("HOST", "STATE", "MODE", "LAST TICK", "SESSIONS", "5H", "WEEK", "DISK FREE", "EST $/H")
+	hosts := newTable("HOST", "STATE", "MODE", "LAST TICK", "SESSIONS", "5H", "WEEK", "DISK FREE", "LOGIN", "TOKENS", "EST $/H")
 	claims := newTable("HOST", "ISSUE", "PHASE", "STATE", "AGE", "CONTEXT", "TMUX")
 	var failures []string
 	nClaims := 0
@@ -349,7 +402,7 @@ func render(rows []Row, notes []string) string {
 				failures = append(failures, fmt.Sprintf("%s: %s", name, r.Err))
 			}
 			d := cell("-", dim)
-			hosts.Row(name, cell(state, sev), d, d, d, d, d, d, costCell(r.FleetHost))
+			hosts.Row(name, cell(state, sev), d, d, d, d, d, d, d, d, costCell(r.FleetHost))
 			continue
 		}
 		rep := r.Report
@@ -371,7 +424,7 @@ func render(rows []Row, notes []string) string {
 			five = pctCell(rep.Usage.FiveHourPct, rep.FiveHourMaxPct)
 			week = pctCell(rep.Usage.WeeklyPct, rep.WeeklyMaxPct)
 		}
-		hosts.Row(name, state, rep.Mode, tickCell(rep), fmt.Sprintf("%d/%d", running, rep.SessionCap), five, week, diskCell(rep), costCell(r.FleetHost))
+		hosts.Row(name, state, rep.Mode, tickCell(rep), fmt.Sprintf("%d/%d", running, rep.SessionCap), five, week, diskCell(rep), loginCell(rep), tokensCell(rep), costCell(r.FleetHost))
 		for _, c := range rep.Claims {
 			nClaims++
 			ctxPct := cell("-", dim)
@@ -412,9 +465,21 @@ func render(rows []Row, notes []string) string {
 	return b.String()
 }
 
+// Statuses runs flocc status --json on every host in parallel, as the fleet view does.
+func Statuses(ctx context.Context, r host.Runner, hs []hosts.Host) []Row {
+	fhs := make([]FleetHost, len(hs))
+	for i, h := range hs {
+		fhs[i] = FleetHost{Name: h.Name, Target: h.Target(), Daytona: h.Daytona != ""}
+	}
+	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) { return Resolve(ctx, h.Target) })
+	// No sharing is still a working lookup, so a missing ~/.ssh does not stop it.
+	cache.sshOpts, _ = sshMux()
+	return collect(ctx, r, cache, fhs)
+}
+
 // FleetMain prints the fleet once, or redraws it every interval with --watch.
 func FleetMain(args []string, out io.Writer) int {
-	fs := flag.NewFlagSet("flocc-setup fleet", flag.ContinueOnError)
+	fs := flag.NewFlagSet("flocc status -H all", flag.ContinueOnError)
 	watch := fs.Bool("watch", false, "redraw until interrupted")
 	interval := fs.Duration("interval", 30*time.Second, "time between redraws with --watch")
 	if err := fs.Parse(args); err != nil {
@@ -427,21 +492,13 @@ func FleetMain(args []string, out io.Writer) int {
 	home, _ := os.UserHomeDir()
 	daytonaConfig := filepath.Join(home, ".config/daytona/config.json")
 	hostsDir := hosts.Dir(home)
-	// The notice goes into the first draw: the old file is renamed by now, and what the conversion
-	// dropped is named nowhere else, but --watch clears the screen before anything on stderr is read.
-	var first []string
-	if msg, err := hosts.ConvertOld(filepath.Join(home, legacyHostsFile), hostsDir); err != nil {
-		first = []string{"hosts: the old hosts file was not converted: " + err.Error()}
-	} else if msg != "" {
-		first = []string{"hosts: " + msg}
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir, first)
+	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir)
 }
 
-// runFleet draws the fleet until ctx ends, or once. first is added to the notes of the first draw.
-func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir string, first []string) int {
+// runFleet draws the fleet until ctx ends, or once.
+func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir string) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
 		auth, err := loadDaytona(daytonaConfig)
@@ -450,10 +507,9 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 		}
 		return auth.sshDest(ctx, client, h.ID, h.Name, realWaiter(io.Discard))
 	})
+	cache.sshOpts, _ = sshMux()
 	for {
 		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
-		notes = append(first, notes...)
-		first = nil
 		rows := collect(ctx, host.Exec{}, cache, found)
 		if ctx.Err() != nil {
 			return exitInterrupted
@@ -462,7 +518,7 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 			fmt.Fprint(out, "\x1b[H\x1b[2J")
 		}
 		if len(found) == 0 {
-			notes = append(notes, "no hosts: log in with daytona login or add <name>.toml holding ssh = \"root@<name>\" to "+hostsDir)
+			notes = append(notes, "no hosts: log in with daytona login, or run flocc host add <name>")
 		}
 		lipgloss.Fprint(out, render(rows, notes))
 		if !watch {
