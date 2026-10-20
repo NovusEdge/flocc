@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
@@ -382,6 +383,11 @@ func TestHostImportTakesTheHostsKeysThroughThePasteChecks(t *testing.T) {
 	if !strings.Contains(out, "Took the GitHub agent token (read-only) from h1") || !strings.Contains(out, "o/a: the token cannot push") {
 		t.Fatal(out)
 	}
+	// Only the host has the publish token's value, and editing it on GitHub keeps the value.
+	if !strings.Contains(out, `open "flocc publish", Edit`) || !strings.Contains(out, "then run flocc host import again") ||
+		strings.Contains(out, "paste it again") || strings.Contains(out, "new one") {
+		t.Fatalf("wrong remedy:\n%s", out)
+	}
 	for _, secret := range []string{"lin_api_k", "github_pat_agent", "github_pat_weak"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("%s printed", secret)
@@ -393,6 +399,40 @@ func TestHostImportTakesTheHostsKeysThroughThePasteChecks(t *testing.T) {
 			t.Errorf("no -T: %s", c)
 		}
 	}
+}
+
+// dropAfter answers the first n runs through fakeSSH, then fails each one as a lost connection
+// does: exit 255 with no error, as host.Exec returns it.
+type dropAfter struct {
+	*fakeSSH
+	n int
+}
+
+func (r *dropAfter) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
+	if r.n == 0 {
+		return host.Result{Stderr: "ssh: connect to host h1 port 22: Connection timed out", Code: 255}, nil
+	}
+	r.n--
+	return r.fakeSSH.Run(ctx, c)
+}
+
+// A connection lost after the answers are read must not pass for a host without keys: the
+// desktop would then ask for new ones, and GitHub shows a token only once.
+func TestHostImportStopsWhenTheHostDropsBeforeAKeyIsRead(t *testing.T) {
+	d, f, _ := importDeps(t)
+	f.files[".config/flocc/linear.key"] = "lin_api_k\n"
+	d.run = &dropAfter{fakeSSH: f, n: 1}
+	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code == 0 {
+		t.Fatal("exit 0")
+	}
+	errs := d.err.(*bytes.Buffer).String()
+	if !strings.Contains(errs, "could not reach h1 (ssh: connect to host h1 port 22: Connection timed out); run flocc host import again") {
+		t.Fatal(errs)
+	}
+	if v, _ := d.store().Get(keys.Linear); v != "" {
+		t.Fatalf("linear %q", v)
+	}
+	loadHost(t, d, "h1") // the answers read before the drop are kept
 }
 
 // An outage says nothing about the host's key: it is checked again while the owner asks, never

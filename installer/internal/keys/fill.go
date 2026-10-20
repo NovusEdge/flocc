@@ -147,6 +147,14 @@ func Adopt(ctx context.Context, e Env, m Mapped, s Slot, raw, from string) error
 			fmt.Fprintf(e.Out, "Did not take the %s from %s; flocc host import takes it once the check gets an answer.\n", s.Title(), from)
 			return nil
 		}
+		// Only the host has this value, so there is nothing to paste; editing the token keeps it.
+		var rp repoProblems
+		if errors.As(err, &rp) {
+			fmt.Fprintf(e.Out, "Did not take the %s from %s:\n%v\nOn github.com/settings/personal-access-tokens open %q, Edit, and fix "+
+				"the above under Repository access and Permissions (the token stays the same), then run flocc host import again.\n",
+				s.Title(), from, rp, tokenName[s])
+			return nil
+		}
 		if err != nil {
 			fmt.Fprintf(e.Out, "Did not take the %s from %s:\n%v\nflocc keys asks for a new one.\n", s.Title(), from, err)
 			return nil
