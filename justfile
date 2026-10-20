@@ -59,10 +59,15 @@ build-desktop:
 clean:
     rm -rf build
 
-# Set up or upgrade a host: an ssh destination (a Tailscale name) or daytona:<sandbox>
+# Set up or upgrade a host without a terminal (--answers FILE sends the answers), or --interactive
 [group('host')]
 ship target *flags: build-setup
     build/flocc-setup ship {{flags}} {{target}}
+
+# Log the host in to Claude, accept Remote Control and start its timer (--email picks the account)
+[group('host')]
+login target *flags: build-desktop
+    build/flocc-setup login {{flags}} {{target}}
 
 # Run any command on the host as flocc, with the service PATH
 [group('host')]

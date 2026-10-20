@@ -5,17 +5,76 @@ finished ones and resumes at the first that is not. `<target>` is an SSH destina
 the host's Tailscale name, or `daytona:<sandbox>`. It needs `go` (from `mise install`), `gh`
 logged in on the desktop, and, for Daytona, the Daytona CLI logged in with `daytona login`.
 
-The first run on a host asks you to log in to Tailscale and to Claude (`/login`, Remote Control;
-the two push settings are written to `~/.claude/settings.json` for you), to paste the Linear key
-and the two GitHub tokens, to fill in the config form and to confirm an ntfy test push. It ends
-by running `flocc doctor` and starts ticking only when doctor reports no FAIL line. The service
-phase saves the form's answers, without the tokens, in `~flocc/.config/flocc/answers.toml` on the
-host, and a rerun starts from them.
-Everything it runs is logged to `/tmp/flocc-setup/setup.log` (root steps) and
-`~flocc/.cache/flocc-setup/setup.log` (the rest).
+`just ship <target> --answers <file>` runs without a terminal (`--answers -` reads the document
+from this terminal's stdin). The answers document, secrets included, goes to the host on stdin in
+one SSH session forced to have no TTY (`ssh -T`, so a `RequestTTY` setting cannot echo it back),
+and nothing prompts. The SSH user must be root or have passwordless sudo: ship checks
+`sudo -n true` before it stages anything and stops otherwise. No secret is written on the host
+except the service's own secret files (mode 600, in `~flocc/.config/flocc/`), and none appears in a
+command line, a `setup.log` or the output; the installer also replaces the secret values of the
+answers document with `<token>` in its log (secrets typed into `--interactive` forms are not in
+that set; no step logs them). A re-ship of a host that is set up needs no `--answers`: the host
+keeps its answers, without secrets, in `~flocc/.config/flocc/answers.toml`, and its secret files.
 
-The root phase must run from `/tmp/flocc-setup`, where `just ship` puts it; running `flocc-setup` by
-hand from anywhere else is refused.
+```toml
+team_key = "NF"
+digest_issue = "NF-186"
+ntfy_topic = "flocc-a-long-random-topic"
+shared_team = false
+
+[[repos]]
+name = "nimblefox"
+url = "https://github.com/NovusEdge/nimblefox"
+base_branch = "main"
+check = "just check"
+draft = true
+
+[secrets]
+linear_key = "lin_api_…"
+agent_token = "github_pat_…"
+publish_token = "github_pat_…"
+```
+
+`just ship <target> --interactive` runs over `ssh -t` and asks on the host's terminal instead: the
+Tailscale login, the three secrets, the config form and the ntfy test push. It takes no
+`--answers`. Everything either mode runs is logged to `/tmp/flocc-setup/setup.log` (root steps)
+and `~flocc/.cache/flocc-setup/setup.log` (the rest). The root phase must run from
+`/tmp/flocc-setup`, where `just ship` puts it; running `flocc-setup` by hand from anywhere else is
+refused.
+
+Ship never logs in to Claude. It ends with a summary: the version on the host, the Claude login
+(full, token-only or none), the GitHub token expiries, each failed doctor check, the timer and the
+live sessions. It exits non-zero when a doctor check other than the Claude login fails. On a fresh
+host the login is pending, so the tmux unit runs, the timer stays off, ship exits 0 and the summary
+ends with the command to run next.
+
+## Claude login
+
+```bash
+just login <target> [--email you@example.com]
+```
+
+Sessions need a full claude.ai login: a `claude setup-token` token cannot open Remote Control
+sessions. `just login` runs on the host as `flocc`, over `ssh -t`:
+
+1. It takes the tick lock for the whole login. If a tick is running it waits for it; if sessions
+   are running it says so and asks whether to wait for them or stop, because running sessions
+   rewrite `~/.claude.json` from memory and could drop the Remote Control consent. While it waits
+   for sessions it lets the lock go, so ticks keep supervising them.
+2. Without a claude.ai login it runs `claude auth login --claudeai`. The sign-in URL opens in your
+   desktop browser and prints as a QR code. Sign in and paste the code at the prompt in the same
+   terminal. If `claude auth status` still does not show a claude.ai login, it stops there.
+3. It marks `~/worktrees` trusted (sessions trust only their own worktree, so `remote-control`
+   would stop at the folder-trust dialog), then runs `claude remote-control` once under a pty
+   (`script`), answers its `Enable Remote Control?` prompt with `y`, waits for its connected
+   line and stops it. If no connected line appears within 60 seconds it fails and shows the output;
+   run `claude remote-control` as `flocc` by hand to see what it waits for.
+4. It checks `claude auth status`, runs doctor and starts the timer, then prints the summary.
+
+The host must have been shipped with 0.4.0 or later. When the login lapses, the next tick sends one
+tier 1 push; it pages again only after a login has been seen in between. Shipping to a host whose
+login has lapsed leaves its already-enabled timer on, so the tick keeps paging until you run
+`just login`.
 
 Upgrading the service on a host is `just ship <target>` again: it ships the current commit as
 a git bundle, since the repo is private and the host has no credential for it. A session already
