@@ -122,8 +122,14 @@ def cmd_hook(args) -> int:
     if mine.phase == "review":
         print("linear-agents: the review session is read-only; do not commit", file=sys.stderr)
         return 1
-    staged = git("diff", "--cached", "--name-only", cwd=top).splitlines()
-    clash = ledger.file_conflicts(staged, ledger.live_claims(con), exclude=mine.issue_key)
+    shared = _shared_paths(args, mine.repo)
+    staged = [
+        n
+        for n in git("diff", "--cached", "--name-only", cwd=top).splitlines()
+        if not ledger.is_shared(n, shared)
+    ]
+    peers = ledger.in_repo(ledger.live_claims(con), mine.repo)
+    clash = ledger.file_conflicts(staged, peers, exclude=mine.issue_key)
     if not clash:
         return 0
     for name, owner in clash.items():
@@ -134,11 +140,41 @@ def cmd_hook(args) -> int:
     return 1
 
 
+def _shared_paths(args, repo: str) -> tuple[str, ...]:
+    # A config that will not load must not stop a commit; the check then falls back to claims only.
+    try:
+        cfg = load(Path(args.config) if args.config else default_config_path())
+    except (OSError, ValueError, TypeError):
+        return ()
+    return cfg.repos[repo].shared_paths if repo in cfg.repos else ()
+
+
 def cmd_claim(args) -> int:
     key = _state_dir().name
+    for glob in args.globs:
+        if "**" in glob:
+            print(
+                f"claim: {glob} claims a whole tree; claim the files you will edit"
+                " (a * within one directory is fine)",
+                file=sys.stderr,
+            )
+            return 1
     con = _ledger(args)
+    mine = ledger.get_claim(con, key)
+    if mine is None:
+        print(f"claim: no live claim for {key}", file=sys.stderr)
+        return 1
+    shared = _shared_paths(args, mine.repo)
+    globs = []
+    for glob in args.globs:
+        if ledger.is_shared(glob, shared):
+            print(f"claim: {glob} is shared; edit it without claiming")
+        else:
+            globs.append(glob)
+    if not globs:
+        return 0
     try:
-        clash = ledger.add_paths(con, key, args.globs)
+        clash = ledger.add_paths(con, key, globs)
     except KeyError:
         print(f"claim: no live claim for {key}", file=sys.stderr)
         return 1

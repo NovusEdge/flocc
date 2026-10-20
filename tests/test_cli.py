@@ -102,6 +102,82 @@ def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, 
     assert main(["hook", "pre-commit"]) == 0
 
 
+@pytest.fixture
+def claims_env(tmp_path, monkeypatch):
+    config = tmp_path / "c.toml"
+    config.write_text(
+        EXAMPLE.read_text().replace(
+            '[repos.backend]\npath = "~/src/backend"',
+            '[repos.backend]\npath = "~/src/backend"\nshared_paths = ["docs/verification.md"]',
+        )
+    )
+    state = tmp_path / "state" / "NF-1"
+    state.mkdir(parents=True)
+    monkeypatch.setenv("LINEAR_AGENTS_STATE", str(state))
+    monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(tmp_path / "hook.sqlite"))
+    monkeypatch.setenv("LINEAR_AGENTS_CONFIG", str(config))
+    return ledger.connect(tmp_path / "hook.sqlite")
+
+
+def test_claim_refuses_a_whole_tree(claims_env, capsys):
+    ledger.insert_claim(claims_env, make("NF-1", ()))
+    assert main(["claim", "src/a.py", "src/**"]) == 1
+    assert "src/** claims a whole tree; claim the files you will edit" in capsys.readouterr().err
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == []
+    assert main(["claim", "src/*.py"]) == 0
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == ["src/*.py"]
+
+
+def test_claim_skips_a_shared_path(claims_env, capsys):
+    ledger.insert_claim(claims_env, make("NF-1", ()))
+    assert main(["claim", "docs/verification.md"]) == 0
+    assert "docs/verification.md is shared; edit it without claiming" in capsys.readouterr().out
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == []
+    assert main(["claim", "docs/verification.md", "src/a.py"]) == 0
+    claim = ledger.get_claim(claims_env, "NF-1")
+    assert claim and claim.paths == ["src/a.py"]
+
+
+def test_claim_ignores_a_peer_in_another_repo(claims_env, capsys):
+    ledger.insert_claim(claims_env, make("NF-1", ()))
+    ledger.insert_claim(claims_env, make("NF-2", ("src/a.py",), repo="web"))
+    assert main(["claim", "src/a.py"]) == 0
+    ledger.insert_claim(claims_env, make("NF-3", ("src/b.py",)))
+    assert main(["claim", "src/b.py"]) == 1
+    assert "overlaps NF-3" in capsys.readouterr().err
+
+
+def commit_hook(claims_env, origin, monkeypatch, peer, name):
+    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
+    ledger.insert_claim(claims_env, peer)
+    (origin / name).parent.mkdir(exist_ok=True)
+    (origin / name).write_text("x")
+    subprocess.run(["git", "add", name], cwd=origin, check=True)
+    monkeypatch.chdir(origin)
+    return main(["hook", "pre-commit"])
+
+
+def test_commit_hook_ignores_a_peer_claim_in_another_repo(claims_env, origin, monkeypatch):
+    peer = make("NF-2", ("server/x.py",), repo="web", worktree="/wt/NF-2")
+    assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 0
+
+
+def test_commit_hook_still_refuses_a_peer_claim_in_the_same_repo(
+    claims_env, origin, monkeypatch, capsys
+):
+    peer = make("NF-2", ("server/x.py",), worktree="/wt/NF-2")
+    assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 1
+    assert "server/x.py is claimed by NF-2" in capsys.readouterr().err
+
+
+def test_commit_hook_never_refuses_a_shared_path(claims_env, origin, monkeypatch):
+    peer = make("NF-2", ("docs/**",), worktree="/wt/NF-2")
+    assert commit_hook(claims_env, origin, monkeypatch, peer, "docs/verification.md") == 0
+
+
 def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path))
     assert main(["review-done"]) == 1

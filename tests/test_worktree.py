@@ -365,8 +365,8 @@ def test_claim_cli(tmp_path, monkeypatch, capsys):
     ledger.insert_claim(con, make("NF-4", ("src/billing/**",)))
     monkeypatch.setenv("LINEAR_AGENTS_STATE", str(tmp_path / "NF-3"))
     monkeypatch.setenv("LINEAR_AGENTS_LEDGER", str(db))
-    assert main(["claim", "docs/**"]) == 0
+    assert main(["claim", "docs/*.md"]) == 0
     assert main(["claim", "src/b*"]) == 1
     assert "NF-4" in capsys.readouterr().err
     mine = ledger.get_claim(con, "NF-3")
-    assert mine and mine.paths == ["docs/**"]
+    assert mine and mine.paths == ["docs/*.md"]

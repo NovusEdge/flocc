@@ -65,6 +65,17 @@ def test_bad_steer_authors_is_an_error(tmp_path):
         load(p)
 
 
+def test_shared_paths_load_per_repo(tmp_path):
+    assert load(EXAMPLE).repos["backend"].shared_paths == ()
+    p = tmp_path / "c.toml"
+    table = '[repos.backend]\npath = "~/src/backend"'
+    p.write_text(EXAMPLE.read_text().replace(table, f'{table}\nshared_paths = ["docs/log.md"]'))
+    assert load(p).repos["backend"].shared_paths == ("docs/log.md",)
+    p.write_text(EXAMPLE.read_text().replace(table, f'{table}\nshared_paths = "docs/log.md"'))
+    with pytest.raises(ValueError, match="shared_paths"):
+        load(p)
+
+
 def test_missing_repos_is_an_error(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text(EXAMPLE.read_text().split("[repos.backend]")[0])

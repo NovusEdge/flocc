@@ -208,7 +208,7 @@ def poll(rt) -> None:
         live = ledger.live_claims(rt.con)
         usage = latest_usage(cfg.state_root, rt.now())
         free = rt.free_disk_gb(cfg.worktree_root)
-        decision = admit(issue.key, settings, live, usage, deps, cfg, rt.now(), free)
+        decision = admit(issue.key, repo, settings, live, usage, deps, cfg, rt.now(), free)
         if not decision.ok:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)
             continue
