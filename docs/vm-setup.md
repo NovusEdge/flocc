@@ -302,11 +302,18 @@ the permanent configuration differs from the wanted one. A reload drops every fi
 was never made permanent, whoever made it, so on a machine other people use, compare
 `firewall-cmd --list-all-zones` with the same command under `--permanent` first and look at any
 runtime-only entry other than Docker's bridge bindings. `flocc-no-docker` covers only zone
-`docker`, so create also checks that `docker0` and every `br-*` bridge are in it, and otherwise
-stops naming the bridge and its zone; Docker re-binds its bridges shortly after a reload, so run
-create again. Docker with its nftables firewall backend
-has no `DOCKER-USER` chain, so create stops there. Without firewalld nothing keeps the VM off the
-machine's services, and create says so.
+`docker`, so while Docker runs create also checks that `docker0` and each `br-<12 hex digits>`
+bridge are in it. A reload unbinds them until Docker binds them again, and create waits up to 10 s
+for that after its own reload. If a bridge is still in another zone, create stops naming the bridge
+and its zone, and leaves Docker alone: bind it with
+`sudo firewall-cmd --zone=docker --change-interface=<bridge>`, which lasts until the next reload, or
+restart Docker when nothing depends on it, then run create again.
+
+With firewalld's iptables backend, Docker's `DOCKER-USER` chain accepts the VM's traffic before
+`flocc-no-docker` sees it, so create stops before it changes anything: set
+`FirewallBackend=nftables` in `/etc/firewalld/firewalld.conf`, restart firewalld, then run create
+again. Docker with its nftables firewall backend has no `DOCKER-USER` chain, so create stops there
+too. Without firewalld nothing keeps the VM off the machine's services, and create says so.
 
 firewalld forwards by zone, so the VM can also reach any other interface in the uplink's zone. That
 includes `tailscale0` when it is in that zone: traffic forwarded out through it is masqueraded as
