@@ -18,6 +18,15 @@ type incusReport struct {
 	detail, fix string
 }
 
+// incusLine is an incus command printed for the owner to type. Without sudo it would fail on the
+// socket, or for a restricted incus group member act on that user's own project, not the shared one.
+func (e *Env) incusLine(args string) string {
+	if e.incusSudo {
+		return "sudo incus " + args
+	}
+	return "incus " + args
+}
+
 func inspectIncus(ctx context.Context, e *Env) (incusReport, error) {
 	var nw struct {
 		Managed bool   `json:"managed"`
@@ -25,7 +34,8 @@ func inspectIncus(ctx context.Context, e *Env) (incusReport, error) {
 	}
 	if json.Unmarshal([]byte(e.out(ctx, e.incus("query", "/1.0/networks/"+Bridge))), &nw) != nil || !nw.Managed || nw.Type != "bridge" {
 		return incusReport{detail: "no managed bridge " + Bridge,
-			fix: "incus admin init --minimal     (a fresh Incus: it makes " + Bridge + " and a default pool)\n  incus network create " + Bridge + "     (an Incus already set up without it)"}, nil
+			fix: e.incusLine("admin init --minimal") + "     (a fresh Incus: it makes " + Bridge + " and a default pool)\n  " +
+				e.incusLine("network create "+Bridge) + "     (an Incus already set up without it)"}, nil
 	}
 	if e.ok(ctx, e.incus("query", "/1.0/instances/"+e.Spec.Name)) {
 		// Room was checked when the VM was made; a re-run must not refuse the VM for using it.
@@ -34,7 +44,7 @@ func inspectIncus(ctx context.Context, e *Env) (incusReport, error) {
 	pool := e.out(ctx, e.incus("profile", "device", "get", "default", "root", "pool"))
 	if pool == "" {
 		return incusReport{detail: "the default profile has no root disk",
-			fix: "incus storage create default dir\n  incus profile device add default root disk path=/ pool=default"}, nil
+			fix: e.incusLine("storage create default dir") + "\n  " + e.incusLine("profile device add default root disk path=/ pool=default")}, nil
 	}
 	var res struct {
 		Space struct{ Used, Total uint64 } `json:"space"`
@@ -56,7 +66,7 @@ func inspectIncus(ctx context.Context, e *Env) (incusReport, error) {
 	}
 	if avail < uint64(e.Spec.MemoryGiB)<<30 {
 		return incusReport{detail: fmt.Sprintf("%s of memory available; the VM needs %d GiB", gib(avail), e.Spec.MemoryGiB),
-			fix: "stop another VM (incus stop <name>), or run create with a smaller --memory"}, nil
+			fix: "stop another VM (" + e.incusLine("stop <name>") + "), or run create with a smaller --memory"}, nil
 	}
 	return incusReport{ok: true, detail: fmt.Sprintf("%s; pool %s %s free; %s of memory available", Bridge, pool, gib(free), gib(avail))}, nil
 }
