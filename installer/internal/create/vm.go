@@ -121,7 +121,7 @@ func (Egress) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if e.ok(ctx, e.incus("exec", e.Spec.Name, "--", "curl", "-fsS", "-o", "/dev/null", "--max-time", "15", egressURL)) {
 		return true, "HTTPS reaches " + egressURL, nil
 	}
-	return false, "no HTTPS from the VM; see \"Host create\" in docs/vm-setup.md", nil
+	return false, "no HTTPS from the VM; see \"Making a host with flocc host create\" in docs/vm-setup.md", nil
 }
 
 func (Egress) Apply(ctx context.Context, e *Env) error {
@@ -129,7 +129,7 @@ func (Egress) Apply(ctx context.Context, e *Env) error {
 	if !e.ok(ctx, e.incus("exec", name, "--", "sh", "-c", "command -v curl")) {
 		for _, args := range [][]string{{"apt-get", "update", "-q"}, {"apt-get", "install", "-y", "-q", "curl", "ca-certificates"}} {
 			if _, err := e.must(ctx, e.incus(append([]string{"exec", name, "--env", "DEBIAN_FRONTEND=noninteractive", "--"}, args...)...)); err != nil {
-				return fmt.Errorf("the VM cannot install curl, so it likely has no way out; see \"Host create\" in docs/vm-setup.md: %w", err)
+				return fmt.Errorf("the VM cannot install curl, so it likely has no way out; see \"Making a host with flocc host create\" in docs/vm-setup.md: %w", err)
 			}
 		}
 	}
