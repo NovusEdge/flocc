@@ -49,6 +49,8 @@ func TestRotatePushesTheNewTokenOnStdinAndNamesAnUnreachableHost(t *testing.T) {
 		if strings.Contains(c.String(), "github_pat_agent2") {
 			t.Fatalf("the token is in a command line: %s", c)
 		}
+	}
+	for _, c := range f.captured() {
 		// With RequestTTY force in the owner's ssh config, a pty would echo the token.
 		if !slices.Contains(c.Args, "-T") {
 			t.Fatalf("no -T: %s", c)
@@ -64,6 +66,23 @@ func TestRotatePushesTheNewTokenOnStdinAndNamesAnUnreachableHost(t *testing.T) {
 	if !strings.Contains(out, "Pushed to a") || !strings.Contains(out, "Do not revoke the old token") ||
 		!strings.Contains(out, "daily token check") || !strings.Contains(errb, "b: ") {
 		t.Fatalf("%s\n%s", out, errb)
+	}
+}
+
+// The push to each host waits for its connection to open on the terminal, where a Tailscale
+// check-mode URL can be seen, and then writes every changed key over it.
+func TestRotateOpensEachHostsConnectionOnTheTerminalOnce(t *testing.T) {
+	// Nothing pasted and a yes: both stored tokens are pushed again.
+	d, f := rotateDeps(t, &hostScript{confirms: []bool{true}})
+	d.tty = true
+	if code := run(context.Background(), d, []string{"keys", "rotate", "github"}); code != 1 {
+		t.Fatalf("exit %d\n%s\n%s", code, d.out, d.err)
+	}
+	if got := warmUps(t, f); !slices.Equal(got, []string{"root@a", "root@b"}) || len(f.captured()) != 2 {
+		t.Fatalf("warm-ups %v captures %v", got, f.captured())
+	}
+	if errb := d.err.(*bytes.Buffer).String(); !strings.Contains(errb, "b: could not reach b") {
+		t.Fatal(errb)
 	}
 }
 

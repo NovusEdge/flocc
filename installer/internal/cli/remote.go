@@ -82,10 +82,13 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 	if name == "all" {
 		return hosts.Host{}, fmt.Errorf("-H all runs only %s; name one host", strings.Join(readOnly, ", "))
 	}
-	all := listHosts(d)
 	if name == "" {
 		name = d.getenv("FLOCC_HOST")
+		if name == "all" {
+			return hosts.Host{}, errors.New("FLOCC_HOST cannot be all; use -H all for status, doctor or logs")
+		}
 	}
+	all := listHosts(d)
 	if name != "" {
 		if i := slices.IndexFunc(all, func(h hosts.Host) bool { return h.Name == name }); i >= 0 {
 			return all[i], nil
@@ -182,20 +185,35 @@ func onAll(ctx context.Context, d *deps, args []string) int {
 		return 2
 	}
 	results := make([]host.Result, len(all))
-	var wg sync.WaitGroup
+	dests := make([]*ship.Dest, len(all))
+	// One at a time: two hosts' approval prompts on one terminal would interleave.
 	for i, h := range all {
+		dest, err := d.resolve(ctx, h.Target())
+		if err == nil {
+			// Connect goes host by host and the results print together after wg.Wait, so one
+			// blackholed host must time out fast.
+			dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
+			err = ship.Connect(ctx, d.run, dest, h.Name, d.tty)
+		}
+		if err != nil {
+			results[i] = host.Result{Stderr: err.Error(), Code: 255}
+			continue
+		}
+		dests[i] = &dest
+	}
+	var wg sync.WaitGroup
+	for i, dest := range dests {
+		if dest == nil {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			dest, err := d.resolve(ctx, h.Target())
-			if err == nil {
-				// Results print together after wg.Wait, so one blackholed host must time out fast.
-				dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
-				results[i], err = ship.Capture(ctx, d.run, dest, ship.FloccLine(args), nil)
-			}
+			res, err := ship.Capture(ctx, d.run, *dest, ship.FloccLine(args), nil)
 			if err != nil {
-				results[i] = host.Result{Stderr: err.Error(), Code: 255}
+				res = host.Result{Stderr: err.Error(), Code: 255}
 			}
+			results[i] = res
 		}()
 	}
 	wg.Wait()

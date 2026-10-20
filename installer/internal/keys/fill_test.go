@@ -306,6 +306,22 @@ func TestReplaceKeepsAKeyLeftEmptyAndStoresANewOne(t *testing.T) {
 	}
 }
 
+// A stored key has no prompt to paste a new one into, so the line names the command that has.
+func TestCheckSendsARejectedKeyToRotate(t *testing.T) {
+	gh := ghServer(t, replay.Route{Method: "GET", Path: "/user", File: "bad-credentials.http"})
+	f := newFixture(t, gh, linServer(t, "bad-key.http"), &script{})
+	f.store.m[Linear], f.store.m[Agent], f.store.m[Publish] = "lin_api_k", "github_pat_a", "github_pat_p"
+	got := Check(context.Background(), f.env, onlyA)
+	if len(got) != 4 {
+		t.Fatalf("%q", got)
+	}
+	for i, verb := range []string{"linear", "github", "github"} {
+		if !strings.HasSuffix(got[i], "; run flocc keys rotate "+verb) {
+			t.Errorf("%q", got[i])
+		}
+	}
+}
+
 func TestCheckNamesEveryProblem(t *testing.T) {
 	gh := ghServer(t, userOK, repoA, replay.Route{Method: "POST", Path: "/repos/o/a/git/refs", File: "refs-unprocessable.http"})
 	f := newFixture(t, gh, linServer(t, "bad-key.http"), &script{})
