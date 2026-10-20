@@ -5,7 +5,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from flocc.config import RepoConfig
+from flocc import legacy
+from flocc.config import TRAILER, RepoConfig
 from flocc.ledger import Claim
 from flocc.worktree import changed_files, git, run_bounded
 
@@ -82,7 +83,8 @@ def publish(
             f"{claim.base_sha}..{claim.branch}",
             "--format=%h",
             "--invert-grep",
-            "--grep=^Flocc: ",
+            f"--grep=^{TRAILER}: ",
+            f"--grep=^{legacy.TRAILER}: ",
             cwd=wt,
         )
         untrailed = tuple(out.split())

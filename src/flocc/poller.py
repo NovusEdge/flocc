@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from flocc import ledger
+from flocc import ledger, legacy
 from flocc.admission import admit
 from flocc.agentblock import (
     BlockError,
@@ -419,7 +419,7 @@ def forward_comments(rt) -> dict[str, LinearError]:
                 who = "A steering agent"
             else:
                 who = None
-            if who and not comment.body.startswith(BOT_PREFIX):
+            if who and not comment.body.startswith((BOT_PREFIX, legacy.BOT_PREFIX)):
                 # A dead session is relaunched by the next tick's supervisor, which delivers
                 # this reply and the ones after it. While a question is open, typing into the
                 # pane could select an option in the dialog, so the reply waits for the answer.
