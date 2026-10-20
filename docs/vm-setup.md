@@ -14,8 +14,8 @@ test push happened once, in `flocc keys`. The SSH session is forced to have no T
 `flocc host import -H <name>`. The SSH user must be root or have passwordless sudo, and `sudo` must be
 installed: ship checks `sudo -n true` before it stages anything and stops otherwise. Answers mode
 skips the Tailscale login (it only starts `tailscaled`), so on a host that is not yet on your
-tailnet run `tailscale up --ssh --hostname=<name>` there yourself, as in the Incus steps below,
-and disable key expiry. No secret is written on the host
+tailnet run `tailscale up --ssh --hostname=<name>` there yourself and disable key expiry
+(`flocc host create` does both for an Incus VM). No secret is written on the host
 except the service's own secret files (mode 600, in `~flocc/.config/flocc/`), and none appears in a
 command line, a `setup.log` or the output; the installer also replaces the secret values of the
 answers document with `<token>` in its log (secrets typed into `--interactive` forms are not in
@@ -210,7 +210,7 @@ Without a terminal, a host that needs a prompt fails within 30 seconds with a me
 unreachable there, and `flocc -H <name> status` brings up its link.
 `flocc status` for one host also shows its Claude login (full, token-only, none or unknown) and
 the GitHub token expiries. `ship`, `login`, `keys` and `host` are desktop commands; the host's
-`flocc` refuses them. The `just` host recipes still work and run these commands; they go in 0.6.0.
+`flocc` refuses them.
 
 ## Hosts
 
@@ -236,50 +236,102 @@ daytona stop flocc-smoke
 `daytona-medium` has less than 2 vCPU and 4 GiB, pass `--cpu 2 --memory 4096` instead of
 `--snapshot`.
 
-## A VM on an Incus machine
+## Making a host with flocc host create
 
-The owner's host is an Incus VM on the laptop `zer0-day-nimble`. Agents run unreviewed code, so it
-is a VM rather than a container. The machine is shared: never restart Docker or Incus on it, since
-a Docker restart on 2026-10-20 killed another session's build.
-
-The machine carries the bridge and forwarding settings applied by hand on 2026-10-19. Check them
-before building a VM:
+`flocc host create` makes a flocc host as an Incus VM on a Linux machine you reach over SSH with
+your own account, such as a laptop on the tailnet. Agents run unreviewed code, so the host is a VM
+rather than a container:
 
 ```bash
-incus network get incusbr0 ipv4.nat                  # true
-sudo firewall-cmd --get-zone-of-interface=incusbr0    # trusted
-sudo iptables -S FORWARD | head -1                    # -P FORWARD ACCEPT
-grep ip-forward-no-drop /etc/docker/daemon.json       # Docker leaves FORWARD alone
+flocc host create [--cpus 4] [--memory 8] [--disk 40] <machine> <name>
 ```
 
-If any differs, stop and ask the owner; do not restart Docker or Incus.
+`<name>` becomes the Incus instance, the Tailscale name and the flocc host name; it is 2 to 63
+lowercase letters, digits and `-`, starting with a letter. Memory and disk are in GiB (disk at
+least 10); size a host like the existing one (`incus config show <vm> --expanded`). On the machine
+your account needs `incus-admin` membership or sudo, and when firewalld or Docker runs there,
+passwordless sudo: create runs every root command as `sudo -n` and stops with instructions rather
+than wait for a password. This desktop must be on the tailnet.
 
-They are broad: the VM can reach every service on the machine. `flocc host create` (0.6.0)
-replaces them with rules scoped to `incusbr0`.
+Create checks each step before changing anything, so running the same command again continues a
+host that stopped half-made. In order, it:
 
-Size a new VM like an existing one, if the machine has one, and check it has room for both:
+1. checks that Incus has the managed bridge `incusbr0`, a root pool with room for the disk, and the
+   memory free, and otherwise stops with the commands to run (it never sets Incus up itself); the
+   commands carry `sudo` when your account reaches Incus through sudo rather than `incus-admin`;
+2. scopes firewalld, when it runs (below);
+3. lets the VM through Docker's forward drop, when Docker runs, or is enabled or socket-activated
+   while stopped (below);
+4. checks that no tailnet node already has `<name>`, launches `images:debian/13` as a VM with
+   `boot.autostart=true`, and waits for an IPv4 address and outbound HTTPS;
+5. joins the VM to the tailnet with Tailscale SSH: scan the QR code or open the link, or paste a
+   one-off auth key, which reaches the VM on stdin and is neither stored nor logged. A VM already
+   logged in is renamed and given SSH instead of logging in again; the control server confirms the
+   new name within 15 seconds or create stops, naming the stale node to remove;
+6. waits until this desktop's tailnet lists the node, runs `flocc host add <name> --ssh
+   root@<name>` unless `hosts/<name>.toml` exists, then `flocc ship -H <name>` and
+   `flocc login -H <name>`;
+7. takes the Incus snapshot `installed`, replacing an older one only after the new one exists;
+   `incus snapshot restore <name> installed` returns the VM to it. Each successful run retakes it.
+
+The snapshot holds the host's tokens and Claude login as of that run, so after a restore run
+`flocc ship -H <name>` again if keys were rotated since. On a `dir` storage pool a VM snapshot is a
+full copy of the root image, which the Incus step's room check does not count.
+
+Create opens the first SSH connection to the machine in your terminal, so a Tailscale SSH
+check-mode re-auth URL shows there, and the approval covers the rest of the run. The log is
+`~/.cache/flocc/create-<name>.log`. If the VM has no HTTPS, check the firewalld and Docker rules
+below, then run create again.
+
+### What create changes on the machine
+
+The machine is shared with other work, so create adds rules scoped to `incusbr0` and never starts,
+stops or restarts Docker: on 2026-10-20 a Docker restart killed another session's image build.
+
+| What | Where | Effect |
+|---|---|---|
+| zone `flocc-incus` | firewalld | `incusbr0` moves into it. It allows only `dhcp` and `dns` (Incus's dnsmasq), so the VM reaches none of the machine's own services. |
+| policy `flocc-incus-out` | firewalld | Forwards `flocc-incus` to the zone of the default route's interface. |
+| policy `flocc-no-docker` | firewalld, when Docker made its `docker` zone | Rejects `flocc-incus` to `docker`, ahead of Docker's `docker-forwarding` policy, which accepts forwarding from every zone into Docker's bridges and published ports. |
+| `flocc-docker-user.service` | `/etc/systemd/system/` | A oneshot with `After=` and `PartOf=docker.service` that adds `-i incusbr0 -j ACCEPT` and `-o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT` to `DOCKER-USER` after every Docker start (ip6tables too, where Docker made that chain). It has no `ExecStop`, so the rules stay when Docker stops: a stopped Docker leaves `FORWARD` at `DROP`, and removing them would cut the VM off. With Docker stopped it is enabled but not started, and runs at Docker's next start. |
+
+A new zone or policy needs one `firewall-cmd --reload`, which create runs whenever the runtime or
+the permanent configuration differs from the wanted one. A reload drops every firewalld change that
+was never made permanent, whoever made it, so on a machine other people use, compare
+`firewall-cmd --list-all-zones` with the same command under `--permanent` first and look at any
+runtime-only entry other than Docker's bridge bindings. Docker with its nftables firewall backend
+has no `DOCKER-USER` chain, so create stops there. Without firewalld nothing keeps the VM off the
+machine's services, and create says so.
+
+firewalld forwards by zone, so the VM can also reach any other interface in the uplink's zone. That
+includes `tailscale0` when it is in that zone: traffic forwarded out through it is masqueraded as
+the machine, and create's Firewalld line says when this holds. If the default route moves to an
+interface in another zone (Wi-Fi to Ethernet), run create again to move the policy.
+
+The new zone has no intra-zone forwarding, so with `br_netfilter` loaded (Docker loads it) two VMs
+on `incusbr0` cannot reach each other.
+
+To take it all off a machine (the VMs on `incusbr0` then have no way out until the bridge gets
+another zone):
 
 ```bash
-incus config show <existing-vm> --expanded | grep -E 'limits\.(cpu|memory)|size:'
-free -g
+sudo systemctl disable --now flocc-docker-user.service
+sudo rm /etc/systemd/system/flocc-docker-user.service && sudo systemctl daemon-reload
+sudo firewall-cmd --permanent --delete-policy=flocc-no-docker
+sudo firewall-cmd --permanent --delete-policy=flocc-incus-out
+sudo firewall-cmd --permanent --zone=flocc-incus --remove-interface=incusbr0
+sudo firewall-cmd --permanent --delete-zone=flocc-incus
+sudo firewall-cmd --reload
 ```
 
-Then, with that VM's `limits.cpu`, `limits.memory` and root disk `size` in place of the example
-values:
+### The VM on the tailnet
 
-```bash
-incus launch images:debian/13 flocc-nimble --vm -c boot.autostart=true \
-  -c limits.cpu=4 -c limits.memory=8GiB -d root,size=40GiB
-until incus exec flocc-nimble -- true 2>/dev/null; do sleep 2; done   # the Incus agent starts a few seconds after launch
-incus exec flocc-nimble -- sh -c 'until ip -4 -o addr show scope global | grep -q inet; do sleep 2; done'
-incus exec flocc-nimble -- sh -c 'apt-get update -q && apt-get install -yq curl && curl -fsSI https://pkgs.tailscale.com >/dev/null'
-incus exec flocc-nimble -- sh -c 'curl -fsSL https://tailscale.com/install.sh | sh'
-incus exec flocc-nimble -- tailscale up --ssh --hostname=flocc-nimble
-```
-
-`tailscale up` prints a login URL; open it and log in as the owner. In the Tailscale admin console,
-disable key expiry for the node. `flocc host add flocc-nimble` and `flocc ship -H flocc-nimble` then
-reach it over Tailscale SSH.
+The VM joins the tailnet as you, untagged, with Tailscale SSH on. Under the default policy it can
+therefore reach every device on the tailnet and, through the machine's uplink, the LAN. The rules
+above keep it off the machine itself and off Docker's containers, not off the rest of the network.
+Closing that means tagging the node with a policy that denies its outbound tailnet traffic, which
+changes how hosts log in; that decision is open. After the join, disable key expiry for `<name>` at
+https://login.tailscale.com/admin/machines (create prints this reminder).
 
 ## What the installer cannot do
 
