@@ -136,7 +136,7 @@ def _disk(path: Path) -> dict | None:
     return {"free_bytes": free, "total_bytes": total}
 
 
-def _detect_mode() -> str:
+def detect_mode() -> str:
     # The same signal as the installer (steps.DetectMode): a container can hold /run/systemd/system
     # without systemd as PID 1.
     try:
@@ -155,7 +155,7 @@ def collect(
 ) -> dict:
     """Reads host state without taking the tick lock or touching Linear and GitHub."""
     now = time.time() if now is None else now
-    mode = mode or _detect_mode()
+    mode = mode or detect_mode()
     tick = systemd_tick(run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
     if tick is not None and tick["at"] is not None:
         tick["age_s"] = max(0.0, now - tick["at"])
