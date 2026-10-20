@@ -60,7 +60,14 @@ var (
 // otherwise the OS keyring when it answers; otherwise a new secrets.toml.
 func Open(home string, notify io.Writer) Store {
 	path := filepath.Join(home, ".config", "flocc", "secrets.toml")
-	if _, err := os.Stat(path); err == nil {
+	if st, err := os.Stat(path); err == nil {
+		if p := st.Mode().Perm(); p&0o077 != 0 {
+			if err := os.Chmod(path, 0o600); err != nil {
+				fmt.Fprintf(notify, "%s is mode %o and could not be set to 600: %v\n", path, p, err)
+			} else {
+				fmt.Fprintf(notify, "%s was mode %o; set it to 600.\n", path, p)
+			}
+		}
 		return fileStore{path: path}
 	}
 	err := probe(notify)

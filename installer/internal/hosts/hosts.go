@@ -126,6 +126,11 @@ func Save(dir string, h Host) error {
 		tmp.Close()
 		return err
 	}
+	// The host file is the only copy of a host's answers, so a crash must not leave it empty.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}

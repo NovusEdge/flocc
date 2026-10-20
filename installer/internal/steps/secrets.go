@@ -94,13 +94,59 @@ func (e *Env) KnownSecrets() []string {
 	return v
 }
 
+func scriptedSecret(e *Env, id string) string {
+	if e.Answers == nil || e.Answers.Secrets == nil {
+		return ""
+	}
+	switch id {
+	case "linear_key":
+		return e.Answers.Secrets.LinearKey
+	case "agent_token":
+		return e.Answers.Secrets.AgentToken
+	case "publish_token":
+		return e.Answers.Secrets.PublishToken
+	}
+	return ""
+}
+
+// Check fails on a scripted value that differs from the file: a ship never asks PickRedo, so
+// passing here would drop the desktop's keys (a rotate's "run flocc ship" fallback relies on it).
 func (Secrets) Check(_ context.Context, e *Env) (bool, string, error) {
 	for _, s := range secretSpecs {
-		if ok, why := validSecret(secretPath(e, s)); !ok {
+		path := secretPath(e, s)
+		if ok, why := validSecret(path); !ok {
 			return false, s.file + ": " + why, nil
+		}
+		if x := strings.TrimSpace(scriptedSecret(e, s.id)); x != "" {
+			b, _ := os.ReadFile(path)
+			if v, err := CleanSecret(x); err != nil || v != strings.TrimSpace(string(b)) {
+				return false, s.file + ": differs from the answers", nil
+			}
 		}
 	}
 	return true, "3 secrets, mode 600", nil
+}
+
+// writeSecret replaces path by rename, so the service, which reads the file on every tick, never
+// sees it missing or half written. CreateTemp makes the file 0600.
+func writeSecret(path, v string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(v + "\n"); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (Secrets) Apply(_ context.Context, e *Env) error {
@@ -128,11 +174,7 @@ func (Secrets) Apply(_ context.Context, e *Env) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", s.title, err)
 		}
-		// WriteFile keeps the mode of an existing file, so a 644 file would briefly hold the token.
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if err := os.WriteFile(path, []byte(v+"\n"), 0o600); err != nil {
+		if err := writeSecret(path, v); err != nil {
 			return err
 		}
 	}
