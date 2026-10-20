@@ -21,8 +21,26 @@ const (
 	daemonNftables = `{"firewall-backend":"nftables"}`
 )
 
+const (
+	ruleReturnDocker0 = "-i incusbr0 -o docker0 -j RETURN"
+	ruleReturnBr      = "-i incusbr0 -o br-+ -j RETURN"
+	ruleAcceptIn      = "-i incusbr0 -j ACCEPT"
+	ruleAcceptBack    = "-o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+)
+
+var wantRules = []string{ruleReturnDocker0, ruleReturnBr, ruleAcceptIn, ruleAcceptBack}
+
+// listRules is iptables -S DOCKER-USER for a chain holding rules, top first.
+func listRules(rules ...string) string {
+	s := "-N DOCKER-USER\n"
+	for _, r := range rules {
+		s += "-A DOCKER-USER " + r + "\n"
+	}
+	return s
+}
+
 // dockerMachine has Docker running with the given daemon.json and, when installed, the unit and
-// both iptables rules. ip6tables has no DOCKER-USER chain unless a test adds one.
+// all four iptables rules in order. ip6tables has no DOCKER-USER chain unless a test adds one.
 func dockerMachine(daemon string, installed bool) *host.Fake {
 	f := host.NewFake().
 		On("systemctl is-active --quiet docker.service", 0, "").
@@ -30,10 +48,41 @@ func dockerMachine(daemon string, installed bool) *host.Fake {
 	if installed {
 		f.On("sudo -n cat "+dockerUnitPath, 0, dockerUnit()).
 			On("systemctl is-enabled --quiet "+dockerUnitName, 0, "").
-			On("sudo -n iptables -C DOCKER-USER -i incusbr0 -j ACCEPT", 0, "").
-			On("sudo -n iptables -C DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", 0, "")
+			On("sudo -n iptables -S DOCKER-USER", 0, listRules(wantRules...))
+		for _, r := range wantRules {
+			f.On("sudo -n iptables -C DOCKER-USER "+r, 0, "")
+		}
 	}
 	return f
+}
+
+func TestDockerChecksEveryRuleAndTheirOrder(t *testing.T) {
+	for _, r := range wantRules {
+		f := dockerMachine(daemonDefault, true).On("sudo -n iptables -C DOCKER-USER "+r, 1, "")
+		e, _ := testEnv(f)
+		if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || detail != "iptables DOCKER-USER lacks "+r {
+			t.Errorf("%v %q", ok, detail)
+		}
+		dockerUntouched(t, f.Calls)
+	}
+	for _, order := range [][]string{
+		{ruleReturnDocker0, ruleAcceptIn, ruleReturnBr, ruleAcceptBack},
+		{ruleAcceptIn, ruleAcceptBack, ruleReturnDocker0, ruleReturnBr},
+	} {
+		f := dockerMachine(daemonDefault, true).On("sudo -n iptables -S DOCKER-USER", 0, listRules(order...))
+		e, _ := testEnv(f)
+		if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || !strings.HasPrefix(detail, "iptables DOCKER-USER has "+ruleAcceptIn+" above ") {
+			t.Errorf("%q: %v %q", order, ok, detail)
+		}
+		dockerUntouched(t, f.Calls)
+	}
+	// The conntrack ACCEPT matches only traffic to the VM, so where it sits does not matter.
+	f := dockerMachine(daemonDefault, true).
+		On("sudo -n iptables -S DOCKER-USER", 0, listRules(ruleAcceptBack, ruleReturnDocker0, ruleReturnBr, ruleAcceptIn))
+	e, _ := testEnv(f)
+	if ok, detail, _ := (Docker{}).Check(context.Background(), e); !ok {
+		t.Errorf("%q", detail)
+	}
 }
 
 func TestDockerSkippedWhenNotRunning(t *testing.T) {
@@ -75,11 +124,17 @@ func TestDockerChecksIPv6RulesWhereDockerMadeTheChain(t *testing.T) {
 	f := dockerMachine(daemonDefault, true).On("sudo -n ip6tables -L DOCKER-USER -n", 0, "")
 	e, _ := testEnv(f)
 	ok, detail, _ := Docker{}.Check(context.Background(), e)
-	if ok || !strings.HasPrefix(detail, "ip6tables DOCKER-USER lacks -i incusbr0 -j ACCEPT") {
+	if ok || detail != "ip6tables DOCKER-USER lacks "+ruleReturnDocker0 {
 		t.Fatalf("%v %q", ok, detail)
 	}
-	f.On("sudo -n ip6tables -C DOCKER-USER -i incusbr0 -j ACCEPT", 0, "").
-		On("sudo -n ip6tables -C DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", 0, "")
+	for _, r := range wantRules {
+		f.On("sudo -n ip6tables -C DOCKER-USER "+r, 0, "")
+	}
+	f.On("sudo -n ip6tables -S DOCKER-USER", 0, listRules(ruleAcceptIn, ruleReturnDocker0, ruleReturnBr, ruleAcceptBack))
+	if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || !strings.HasPrefix(detail, "ip6tables DOCKER-USER has ") {
+		t.Fatalf("%v %q", ok, detail)
+	}
+	f.On("sudo -n ip6tables -S DOCKER-USER", 0, listRules(wantRules...))
 	if ok, detail, _ := (Docker{}).Check(context.Background(), e); !ok {
 		t.Fatalf("%q", detail)
 	}
@@ -191,9 +246,9 @@ func TestDockerUnitShape(t *testing.T) {
 			t.Errorf("lacks %q", want)
 		}
 	}
-	// A lone $t would be expanded by systemd before the shell sees it.
-	if regexp.MustCompile(`[^$]\$t\b`).MatchString(u) {
-		t.Fatalf("unescaped $t:\n%s", u)
+	// A lone $t or $m would be expanded by systemd before the shell sees it.
+	if regexp.MustCompile(`[^$]\$[tm]\b`).MatchString(u) {
+		t.Fatalf("unescaped variable:\n%s", u)
 	}
 	dockerUntouched(t, strings.Split(u, "\n"))
 }
@@ -212,18 +267,20 @@ func execLine(t *testing.T, key string) string {
 }
 
 // runUnitScript runs the unit's ExecStart script against fake iptables and ip6tables that log their
-// arguments and exit as exits gives for "<tool> <first arg>", else 0. ip6tables has no DOCKER-USER
-// chain unless exits says otherwise. It returns the log and the script's exit status.
+// arguments and exit as exits gives for the longest key that prefixes "<tool> <args>", else 0.
+// ip6tables has no DOCKER-USER chain unless exits says otherwise. It returns the log and the
+// script's exit status.
 func runUnitScript(t *testing.T, exits map[string]int) ([]string, int) {
 	t.Helper()
 	bin := t.TempDir()
 	logf := filepath.Join(bin, "log")
 	codes := map[string]int{"ip6tables -L": 1}
 	maps.Copy(codes, exits)
+	keys := slices.SortedFunc(maps.Keys(codes), func(a, b string) int { return len(b) - len(a) })
 	fake := "#!/bin/sh\necho \"$(basename \"$0\") $*\" >> " + logf + "\n" +
-		"case \"$(basename \"$0\") $1\" in\n"
-	for k, v := range codes {
-		fake += "  \"" + k + "\") exit " + strconv.Itoa(v) + " ;;\n"
+		"case \"$(basename \"$0\") $*\" in\n"
+	for _, k := range keys {
+		fake += "  \"" + k + "\"*) exit " + strconv.Itoa(codes[k]) + " ;;\n"
 	}
 	fake += "esac\nexit 0\n"
 	for _, n := range []string{"iptables", "ip6tables"} {
@@ -244,21 +301,63 @@ func runUnitScript(t *testing.T, exits map[string]int) ([]string, int) {
 	return lines, c.ProcessState.ExitCode()
 }
 
-func TestDockerUnitStartAddsMissingRules(t *testing.T) {
-	want := []string{
-		"iptables -C DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-		"iptables -I DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-		"iptables -C DOCKER-USER -i incusbr0 -j ACCEPT",
-		"iptables -I DOCKER-USER -i incusbr0 -j ACCEPT",
-		"ip6tables -L DOCKER-USER -n",
+// replay applies the -I and -D calls in log to tool's chain, top first.
+func replay(tool string, chain []string, log []string) []string {
+	chain = slices.Clone(chain)
+	for _, l := range log {
+		if r, ok := strings.CutPrefix(l, tool+" -I DOCKER-USER "); ok {
+			chain = append([]string{r}, chain...)
+		} else if r, ok := strings.CutPrefix(l, tool+" -D DOCKER-USER "); ok {
+			if i := slices.Index(chain, r); i >= 0 {
+				chain = slices.Delete(chain, i, i+1)
+			}
+		}
 	}
+	return chain
+}
+
+func TestDockerUnitStartAddsMissingRules(t *testing.T) {
 	got, code := runUnitScript(t, map[string]int{"iptables -C": 1})
-	if !slices.Equal(got, want) {
+	if chain := replay("iptables", nil, got); !slices.Equal(chain, wantRules) {
+		t.Fatalf("%q from %q", chain, got)
+	}
+	if got[len(got)-1] != "ip6tables -L DOCKER-USER -n" || slices.ContainsFunc(got, func(l string) bool { return strings.HasPrefix(l, "ip6tables -I") }) {
 		t.Fatalf("%q", got)
 	}
 	// No IPv6 DOCKER-USER chain is Docker running without IPv6, not a failure.
 	if code != 0 {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+// Whatever is missing, a rule inserted at the top must not end above a rule meant to sit over it.
+func TestDockerUnitStartKeepsTheReturnsAboveTheAccept(t *testing.T) {
+	for _, missing := range [][]string{
+		{ruleReturnDocker0, ruleReturnBr}, // a chain from the two-rule unit
+		{ruleAcceptIn},
+		{ruleReturnBr},
+		{ruleAcceptBack},
+	} {
+		exits := map[string]int{}
+		var present []string
+		for _, r := range wantRules {
+			if slices.Contains(missing, r) {
+				exits["iptables -C DOCKER-USER "+r] = 1
+			} else {
+				present = append(present, r)
+			}
+		}
+		got, code := runUnitScript(t, exits)
+		if chain := replay("iptables", present, got); !slices.Equal(chain, wantRules) || code != 0 {
+			t.Errorf("missing %q: %q (exit %d) from %q", missing, chain, code, got)
+		}
+	}
+}
+
+func TestDockerUnitStartOrdersIPv6TooWhereDockerMadeTheChain(t *testing.T) {
+	got, code := runUnitScript(t, map[string]int{"ip6tables -L": 0, "ip6tables -C DOCKER-USER -i incusbr0 -o": 1})
+	if chain := replay("ip6tables", []string{ruleAcceptIn, ruleAcceptBack}, got); !slices.Equal(chain, wantRules) || code != 0 {
+		t.Fatalf("%q (exit %d) from %q", chain, code, got)
 	}
 }
 
@@ -288,9 +387,15 @@ func TestDockerUnitStartFailsWhenAnIPv4RuleIsNotInserted(t *testing.T) {
 
 // A stopped Docker leaves FORWARD at DROP, so the rules must outlive it.
 func TestDockerUnitKeepsTheRulesWhenDockerStops(t *testing.T) {
-	u := dockerUnit()
-	if strings.Contains(u, "ExecStop") || strings.Contains(u, " -D ") {
+	if u := dockerUnit(); strings.Contains(u, "ExecStop") {
 		t.Fatalf("removes the rules:\n%s", u)
+	}
+	// The start script deletes only a rule it then inserts again.
+	got, _ := runUnitScript(t, map[string]int{"iptables -C": 1})
+	for i, l := range got {
+		if r, ok := strings.CutPrefix(l, "iptables -D "); ok && (i+1 == len(got) || got[i+1] != "iptables -I "+r) {
+			t.Fatalf("%q", got)
+		}
 	}
 }
 

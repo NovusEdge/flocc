@@ -11,9 +11,10 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 - `flocc host create <machine> <name>` makes a host as an Incus VM, over SSH as your own account:
   it checks Incus, puts `incusbr0` in a firewalld zone that allows only DHCP and DNS with a forward
   policy to the uplink, lets the VM through Docker's `DOCKER-USER` chain from a oneshot unit tied to
-  `docker.service` (Docker is never restarted), launches Debian 13 with autostart, joins Tailscale
-  by QR code or a one-off key on stdin, runs `host add`, `ship` and `login`, and snapshots the VM
-  as `installed`. Running it again continues a half-made host.
+  `docker.service` (Docker is never restarted; the VM reaches only published container ports),
+  launches Debian 13 with autostart, joins Tailscale by QR code or a one-off key on stdin, runs
+  `host add`, `ship` and `login`, and snapshots the VM as `installed`. Running it again continues
+  a half-made host.
 - The `just` recipes that wrapped `flocc` are gone; run `flocc` itself. `just` keeps the dev, build
   and Daytona recipes. In place of the removed ones:
 
