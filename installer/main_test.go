@@ -85,18 +85,24 @@ func TestCopyScriptHasNoExpansionAndCopiesTheStage(t *testing.T) {
 	}
 }
 
-func TestDropAnswersCopyKeepsSavedState(t *testing.T) {
-	d := t.TempDir()
-	keep, drop := filepath.Join(d, "answers.toml"), filepath.Join(d, "e2e.toml")
-	os.WriteFile(keep, nil, 0o600)
-	os.WriteFile(drop, nil, 0o600)
-	dropAnswersCopy(keep)
-	dropAnswersCopy(drop)
-	if _, err := os.Stat(keep); err != nil {
-		t.Error("answers.toml removed")
+func TestSavedAnswersLiveOutsideTheStage(t *testing.T) {
+	got := savedAnswersPath("/home/flocc")
+	if got != "/home/flocc/.config/flocc/answers.toml" || strings.HasPrefix(got, serviceStage) {
+		t.Fatal(got)
 	}
-	if _, err := os.Stat(drop); err == nil {
-		t.Error("e2e.toml kept")
+}
+
+func TestHandoffRemovesAStagedAnswersToml(t *testing.T) {
+	stage := fillStage(t, "flocc-setup", "answers.toml")
+	f := host.NewFake().
+		On("chown -R root:flocc "+stage, 0, "").
+		On("chmod -R g+rX,o-rwx "+stage, 0, "").
+		On("sudo -iu flocc sh -c "+copyScript(rootStage, []string{"answers.toml", "flocc-setup"}), 0, "")
+	if err := handoff(context.Background(), f, stage, "answers.toml", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(stage, "answers.toml")); err == nil {
+		t.Fatal("a staged answers.toml, which carries tokens, was kept")
 	}
 }
 

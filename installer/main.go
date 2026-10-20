@@ -23,6 +23,12 @@ import (
 
 const serviceStage = "/home/" + steps.ServiceUser + "/.cache/flocc-setup"
 
+// The service phase's saved answers: outside ~/.cache, which may be cleared, and outside the
+// stage, where every --answers copy is removed after its run.
+func savedAnswersPath(home string) string {
+	return filepath.Join(home, ".config/flocc/answers.toml")
+}
+
 const loopWarning = `PID 1 is not systemd, so this host runs in loop mode:
 - flocc run in tmux session flocc-loop ticks every 3 minutes, in place of the timer;
 - processes a timed-out check daemonized are not killed when its tick ends;
@@ -127,13 +133,8 @@ func handoff(ctx context.Context, r host.Runner, stage, answersIn string, args [
 	return err
 }
 
-// dropAnswersCopy removes a --answers file, which carries tokens, once the run no longer needs
-// it. answers.toml is the saved state of the service phase and stays.
-func dropAnswersCopy(path string) {
-	if filepath.Base(path) != "answers.toml" {
-		os.Remove(path)
-	}
-}
+// dropAnswersCopy removes a --answers file, which carries tokens, once the run no longer needs it.
+func dropAnswersCopy(path string) { os.Remove(path) }
 
 func run(args []string) int {
 	if len(args) > 0 && args[0] == "host" {
@@ -189,7 +190,7 @@ func run(args []string) int {
 		Answers: a, SkipInteractive: *skip, UID: os.Getuid(), Sleep: time.Sleep}
 	if *phase == "service" {
 		env.Home, _ = os.UserHomeDir()
-		env.AnswersPath = filepath.Join(stage, "answers.toml")
+		env.AnswersPath = savedAnswersPath(env.Home)
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
 			if err := a.OverlaySaved(saved); err != nil {
 				fmt.Fprintln(os.Stderr, "flocc-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
