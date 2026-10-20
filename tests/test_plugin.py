@@ -45,6 +45,11 @@ def test_hooks():
     assert pre["hooks"][0]["onFailure"] == "block"
     assert hooks["PostToolUse"][0]["matcher"] == "AskUserQuestion"
     assert hooks["PostToolUse"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
+    # A question cut short by an error or an interrupt never reaches PostToolUse, and an
+    # `asking` left behind would hold Linear replies and the handoff for the whole session.
+    assert hooks["PostToolUseFailure"][0]["matcher"] == "AskUserQuestion"
+    assert hooks["PostToolUseFailure"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
+    assert hooks["Stop"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
     assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "linear-agents gate --stopped"
     assert hooks["SessionStart"][0]["hooks"][0]["command"] == "linear-agents session-start"
 

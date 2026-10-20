@@ -17,6 +17,15 @@
         "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ]
+      }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ] }
+    ],
     "SubagentStop": [
       { "hooks": [ { "type": "command", "command": "linear-agents gate --stopped" } ] }
     ]

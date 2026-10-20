@@ -249,10 +249,12 @@ default, so the run does not stall.
 - Before asking, the agent records `linear-agents escalate --tier 3 --cause asked:<topic>
   --summary '<the question>'`, so the question reaches the digest and the issue history.
 - The gate's hook also matches `AskUserQuestion`: it writes `<state_dir>/asking` with the time and
-  the question text, and a `PostToolUse` hook on `AskUserQuestion` removes it.
+  the question text. A `PostToolUse` or `PostToolUseFailure` hook on `AskUserQuestion` removes it,
+  and so does `Stop`, since no question is open once the turn has ended.
 - The supervisor checks `asking` on each tick; a question older than two hours is sent once as a
-  tier 2 escalation with the question text, in case the push did not reach me. My answer in the
-  app or on Linear both unblock it. While `asking` exists, the supervisor neither forwards a
+  tier 2 escalation with the question text, in case the push did not reach me. Only an answer in
+  the session itself closes the question: in the app, or in the tmux pane for a session without
+  Remote Control. While `asking` exists, the supervisor neither forwards a
   Linear reply into the pane nor types the handoff request, since keystrokes could select an
   option in the dialog; a reply is held and delivered once the question is answered.
 - The wall clock keeps running while a question waits.
