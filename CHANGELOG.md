@@ -15,9 +15,25 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
   by QR code or a one-off key on stdin, runs `host add`, `ship` and `login`, and snapshots the VM
   as `installed`. Running it again continues a half-made host.
 - The `just` recipes that wrapped `flocc` are gone; run `flocc` itself. `just` keeps the dev, build
-  and Daytona recipes.
-- zer0-day-nimble's broad firewall settings (`incusbr0` in zone `trusted`, `ip-forward-no-drop`,
-  FORWARD ACCEPT) are replaced by the scoped ones.
+  and Daytona recipes. In place of the removed ones:
+
+  | Removed | Run instead |
+  |---|---|
+  | `just ship <h> [flags]` | `flocc ship -H <h> [flags]` |
+  | `just login <h> [flags]` | `flocc login -H <h> [flags]` |
+  | `just host <h> <cmd>…` | `flocc host run -H <h> -- <cmd>…` |
+  | `just doctor <h>` | `flocc -H <h> doctor` |
+  | `just status <h>` | `flocc -H <h> status` |
+  | `just fleet-status [flags]` | `flocc status -H all [flags]` |
+  | `just logs <h>` | `flocc -H <h> logs -f` |
+  | `just attach <h> <session>` | `flocc -H <h> attach <session>` |
+  | `just tick <h>` | `flocc -H <h> tick` |
+  | `just release <h> <key> [flags]` | `flocc -H <h> release <key> [flags]` |
+  | `just daytona-start <n>` | `daytona start <n> && flocc ship -H <n>` |
+- Create moves `incusbr0` from zone `trusted` into `flocc-incus`. It does not touch
+  zer0-day-nimble's other broad settings: `ip-forward-no-drop` and FORWARD ACCEPT are reverted by
+  hand, and the removal of `ip-forward-no-drop` from `/etc/docker/daemon.json` applies at Docker's
+  next start.
 
 ## 0.5.0 (2026-10-20)
 

@@ -249,9 +249,11 @@ flocc host create [--cpus 4] [--memory 8] [--disk 40] <machine> <name>
 `<name>` becomes the Incus instance, the Tailscale name and the flocc host name; it is 2 to 63
 lowercase letters, digits and `-`, starting with a letter. Memory and disk are in GiB (disk at
 least 10); size a host like the existing one (`incus config show <vm> --expanded`). On the machine
-your account needs `incus-admin` membership or sudo, and when firewalld or Docker runs there,
-passwordless sudo: create runs every root command as `sudo -n` and stops with instructions rather
-than wait for a password. This desktop must be on the tailnet.
+your account needs `incus-admin` membership or passwordless sudo for Incus, and passwordless sudo
+when firewalld or Docker runs there: create runs every root command as `sudo -n` and stops with
+instructions rather than wait for a password. This desktop must be on the tailnet. Run create
+inside the flocc checkout, since its ship step ships that commit; create checks this before it
+touches the machine.
 
 Create checks each step before changing anything, so running the same command again continues a
 host that stopped half-made. In order, it:
@@ -299,7 +301,10 @@ A new zone or policy needs one `firewall-cmd --reload`, which create runs whenev
 the permanent configuration differs from the wanted one. A reload drops every firewalld change that
 was never made permanent, whoever made it, so on a machine other people use, compare
 `firewall-cmd --list-all-zones` with the same command under `--permanent` first and look at any
-runtime-only entry other than Docker's bridge bindings. Docker with its nftables firewall backend
+runtime-only entry other than Docker's bridge bindings. `flocc-no-docker` covers only zone
+`docker`, so create also checks that `docker0` and every `br-*` bridge are in it, and otherwise
+stops naming the bridge and its zone; Docker re-binds its bridges shortly after a reload, so run
+create again. Docker with its nftables firewall backend
 has no `DOCKER-USER` chain, so create stops there. Without firewalld nothing keeps the VM off the
 machine's services, and create says so.
 
@@ -317,6 +322,12 @@ another zone):
 ```bash
 sudo systemctl disable --now flocc-docker-user.service
 sudo rm /etc/systemd/system/flocc-docker-user.service && sudo systemctl daemon-reload
+# the unit has no ExecStop, so its rules stay until removed; the ip6tables lines fail harmlessly
+# where Docker made no IPv6 DOCKER-USER chain
+sudo iptables -D DOCKER-USER -i incusbr0 -j ACCEPT
+sudo iptables -D DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+sudo ip6tables -D DOCKER-USER -i incusbr0 -j ACCEPT
+sudo ip6tables -D DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 sudo firewall-cmd --permanent --delete-policy=flocc-no-docker
 sudo firewall-cmd --permanent --delete-policy=flocc-incus-out
 sudo firewall-cmd --permanent --zone=flocc-incus --remove-interface=incusbr0
