@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +231,26 @@ func TestAuthKeyGoesOnStdin(t *testing.T) {
 		if strings.Contains(strings.Join(argv, " "), "SECRET") {
 			t.Fatalf("key in argv: %q", argv)
 		}
+	}
+}
+
+// Fetching a key can outlast ControlPersist; the captured up would then open a BatchMode
+// connection that waits unseen on a check-mode URL.
+func TestAuthKeyPromptIsFollowedByAReconnect(t *testing.T) {
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upKey, 0, "").
+		On("tailscale status --json", 0, tsEmpty)
+	e, _ := testEnv(f)
+	e.Local = f
+	asked := -1
+	e.UI = &fakeUI{key: "tskey-auth-k1-SECRET", onAsk: func() { asked = len(f.Calls) }}
+	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	warm := slices.IndexFunc(f.Calls, func(c string) bool {
+		return strings.HasPrefix(c, "interactive: ssh ") && strings.HasSuffix(c, " laptop true")
+	})
+	if asked < 0 || warm < asked || slices.Index(f.Calls, upKey) < warm {
+		t.Fatalf("asked at %d: %v", asked, f.Calls)
 	}
 }
 

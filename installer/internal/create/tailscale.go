@@ -122,6 +122,11 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
+	// Fetching a key can take longer than ControlPersist, and the captured up below would then
+	// open a BatchMode connection that waits unseen on a check-mode URL.
+	if err := e.connect(ctx); err != nil {
+		return err
+	}
 	if key = strings.TrimSpace(key); key == "" {
 		err = e.M.Interactive(ctx, e.incus(append(up, "--qr")...))
 	} else {

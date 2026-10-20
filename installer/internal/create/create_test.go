@@ -18,21 +18,25 @@ import (
 type fakeUI struct {
 	key   string
 	asked int
+	onAsk func()
 }
 
 func (u *fakeUI) Secret(string, string, string) (string, error) {
 	u.asked++
+	if u.onAsk != nil {
+		u.onAsk()
+	}
 	return u.key, nil
 }
 
 // testEnv runs machine commands on m directly, without the ssh wrapper, so tests name the
-// commands as the machine sees them.
+// commands as the machine sees them. With TTY, e.connect's attached ssh succeeds on any Fake.
 func testEnv(m *host.Fake) (*Env, *bytes.Buffer) {
 	var out bytes.Buffer
 	return &Env{
 		M: m, Local: host.NewFake(), UI: &fakeUI{}, Out: &out, Log: NewRedactLog(io.Discard),
 		Spec:  Spec{Machine: "laptop", Name: "flocc-a", CPUs: 4, MemoryGiB: 8, DiskGiB: 40},
-		Sleep: func(time.Duration) {}, sudo: true,
+		Sleep: func(time.Duration) {}, sudo: true, TTY: true,
 	}, &out
 }
 
