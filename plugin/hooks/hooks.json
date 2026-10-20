@@ -24,7 +24,12 @@
       }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "linear-agents gate --answered" } ] }
+      {
+        "hooks": [
+          { "type": "command", "command": "linear-agents gate --answered" },
+          { "type": "command", "command": "linear-agents idle" }
+        ]
+      }
     ],
     "SubagentStop": [
       { "hooks": [ { "type": "command", "command": "linear-agents gate --stopped" } ] }

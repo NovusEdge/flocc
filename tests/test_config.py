@@ -12,6 +12,7 @@ def test_example_loads_with_defaults():
     assert cfg.default_wall_clock_s == 10800
     assert cfg.review_wall_clock_s == 3600
     assert cfg.context_restart_pct == 60.0
+    assert cfg.idle_escalate_s == 1800.0
     assert cfg.review_model == "opus"
     assert cfg.five_hour_max_pct == 80.0
     assert cfg.weekly_max_pct == 80.0

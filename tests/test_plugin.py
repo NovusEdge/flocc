@@ -49,7 +49,8 @@ def test_hooks():
     # `asking` left behind would hold Linear replies and the handoff for the whole session.
     assert hooks["PostToolUseFailure"][0]["matcher"] == "AskUserQuestion"
     assert hooks["PostToolUseFailure"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
-    assert hooks["Stop"][0]["hooks"][0]["command"] == "linear-agents gate --answered"
+    stop = [h["command"] for h in hooks["Stop"][0]["hooks"]]
+    assert stop == ["linear-agents gate --answered", "linear-agents idle"]
     assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "linear-agents gate --stopped"
     assert hooks["SessionStart"][0]["hooks"][0]["command"] == "linear-agents session-start"
 

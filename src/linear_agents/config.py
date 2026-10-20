@@ -51,6 +51,7 @@ class Config:
     five_hour_max_pct: float = 80.0
     weekly_max_pct: float = 80.0
     context_restart_pct: float = 60.0
+    idle_escalate_s: float = 1800.0
     default_wall_clock_s: int = 3 * 3600
     review_model: str = "opus"
     # Per-phase reasoning effort, overridden by an issue's agentblock effort. The tester plans the

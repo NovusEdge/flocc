@@ -240,6 +240,16 @@ def cmd_gate(args) -> int:
     return 0
 
 
+def cmd_idle(args) -> int:
+    # Exit 2 on Stop blocks the stop and keeps the session running; see cmd_gate.
+    try:
+        gate.note_idle(_state_dir(), _hook_input(), time.time())
+    except Exception as exc:  # noqa: BLE001 - must not block the stop
+        print(f"linear-agents idle could not record the stop: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _session_bookkeeping(state: Path) -> None:
     state.mkdir(parents=True, exist_ok=True)
     payload = _hook_input()
@@ -441,6 +451,7 @@ COMMANDS = {
     "claim": cmd_claim,
     "context": cmd_context,
     "gate": cmd_gate,
+    "idle": cmd_idle,
     "session-start": cmd_session_start,
     "commit": cmd_commit,
     "done": cmd_done,
@@ -485,6 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
     which = gate.add_mutually_exclusive_group()
     which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
     which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
+    add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
     add("session-start", "Hook: record compaction and the scratchpad, print the context")
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")
     com.add_argument("-m", dest="message", required=True, help="commit message")

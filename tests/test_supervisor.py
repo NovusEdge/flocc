@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import time
 from dataclasses import replace
 
 import pytest
@@ -16,6 +18,8 @@ from linear_agents.supervisor import QUESTION_WAIT_S, LaunchError, supervise
 from linear_agents.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
+
+IDLE_S = 1800.0
 
 
 @pytest.fixture
@@ -595,11 +599,70 @@ def test_no_handoff_before_the_first_compaction(rt):
 def test_relaunch_clears_compaction_and_question_markers(rt):
     add(rt)
     d = state_dir(rt.cfg, "NF-1")
-    for name in ("compacted", "asking", "asking-escalated"):
+    names = ("compacted", "asking", "asking-escalated", "idle", "idle-escalated")
+    for name in names:
         (d / name).write_text("{}")
     supervise(rt, current(rt))  # not alive: relaunch
-    for name in ("compacted", "asking", "asking-escalated"):
+    for name in names:
         assert not (d / name).exists()
+
+
+def idle_session(rt, at=100.0 - IDLE_S, message="please run it for me"):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "idle").write_text(json.dumps({"at": at, "message": message}))
+    return d
+
+
+def test_an_idle_session_is_escalated_once_per_idle_period(rt):
+    d = idle_session(rt)
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    (esc,) = rt.notifier.sent
+    assert esc.tier == 2 and esc.waiting and esc.issue_key == "NF-1"
+    assert esc.summary == (
+        "NF-1-test has been idle for 30 min without finishing: please run it for me"
+    )
+    assert "release --keep-worktree NF-1" in esc.action
+    (d / "idle").write_text(json.dumps({"at": 50.0 - IDLE_S, "message": "again"}))
+    supervise(rt, current(rt))
+    assert len(rt.notifier.sent) == 2 and "again" in rt.notifier.sent[1].summary
+
+
+def test_an_idle_session_with_no_message_says_so(rt):
+    idle_session(rt, message="")
+    supervise(rt, current(rt))
+    assert rt.notifier.sent[0].summary.endswith("without finishing: no last message")
+
+
+def test_a_session_idle_for_less_than_the_threshold_is_left_alone(rt):
+    idle_session(rt, at=100.0 - IDLE_S + 1)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+def test_a_session_woken_since_it_went_idle_is_left_alone(rt):
+    d = idle_session(rt)
+    write_status(d, usage_status())
+    os.utime(d / "status.json", (time.time(), time.time()))
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+def test_an_idle_session_with_an_open_question_is_left_to_the_question_check(rt):
+    d = idle_session(rt)
+    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+@pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
+def test_a_malformed_idle_file_is_ignored(rt, content):
+    d = idle_session(rt)
+    (d / "idle").write_text(content)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
 
 
 def test_a_stale_question_is_escalated_once(rt):

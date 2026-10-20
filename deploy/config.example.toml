@@ -37,6 +37,8 @@ setup_timeout_s = 900
 # review_wall_clock_s = 3600
 # Restart a session when its context passes this pct.
 # context_restart_pct = 60.0
+# Escalate to the owner when a session has ended its turn and stayed quiet this many seconds.
+# idle_escalate_s = 1800.0
 # review_model = "opus"
 # Per-phase reasoning effort (low|medium|high|xhigh|max); an issue's agentblock effort overrides.
 # tester_effort = "high"

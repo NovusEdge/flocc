@@ -252,3 +252,40 @@ def note_question(state: Path, payload: dict, now: float) -> None:
 def clear_question(state: Path) -> None:
     for name in ("asking", "asking-escalated"):
         (state / name).unlink(missing_ok=True)
+
+
+IDLE_MESSAGE_CHARS = 600
+
+
+def _transcript_text(path: str) -> str:
+    for line in reversed(Path(path).read_text().splitlines()):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return content
+        blocks = content if isinstance(content, list) else []
+        texts = (b.get("text") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+        return "\n".join(t for t in texts if isinstance(t, str))
+    return ""
+
+
+def note_idle(state: Path, payload: dict, now: float) -> None:
+    message = payload.get("last_assistant_message")
+    if not isinstance(message, str) or not message:
+        transcript = payload.get("transcript_path")
+        message = _transcript_text(transcript) if isinstance(transcript, str) and transcript else ""
+    state.mkdir(parents=True, exist_ok=True)
+    # Written whole by rename: the supervisor polls this file.
+    tmp = state / "idle.tmp"
+    tmp.write_text(json.dumps({"at": now, "message": message[:IDLE_MESSAGE_CHARS]}))
+    os.replace(tmp, state / "idle")
+
+
+def clear_idle(state: Path) -> None:
+    for name in ("idle", "idle-escalated"):
+        (state / name).unlink(missing_ok=True)

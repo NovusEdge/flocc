@@ -9,7 +9,7 @@ from linear_agents import ledger
 from linear_agents.agentblock import settings_from_json
 from linear_agents.context import phase_prompt, state_dir
 from linear_agents.escalation import Escalation, scoped
-from linear_agents.gate import LAUNCH_GRANTS_ENV, clear_question, run_id
+from linear_agents.gate import LAUNCH_GRANTS_ENV, clear_idle, clear_question, run_id
 from linear_agents.ledger import Claim
 from linear_agents.linear import LinearError
 from linear_agents.publisher import review_comment
@@ -104,6 +104,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | No
     for leftover in (*_MARKERS, "status.json", "compacted"):
         (d / leftover).unlink(missing_ok=True)
     clear_question(d)
+    clear_idle(d)
     # Both keys: for a worktree, trust may be keyed on the main checkout's root instead.
     repo = rt.cfg.repos.get(claim.repo)
     trust_folders(rt.cfg.claude_json, [claim.worktree, *([repo.path] if repo else [])])
@@ -330,6 +331,41 @@ def _check_question(rt, claim: Claim, d: Path, name: str) -> None:
     (d / "asking-escalated").touch()
 
 
+def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
+    idle = d / "idle"
+    if not idle.exists() or (d / "asking").exists():
+        return
+    try:
+        raw = json.loads(idle.read_text())
+        at, message = float(raw["at"]), str(raw.get("message", ""))
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    escalated = d / "idle-escalated"
+    if escalated.exists() and escalated.read_text() == str(at):
+        return
+    # The status line rewrites status.json while the session is active, so a later mtime means a
+    # comment or a finished background shell woke it after the Stop hook wrote `idle`.
+    status = d / "status.json"
+    since = max(at, status.stat().st_mtime) if status.exists() else at
+    if rt.now() - since < rt.cfg.idle_escalate_s:
+        return
+    minutes = int((rt.now() - since) / 60)
+    esc = scoped(
+        Escalation(
+            2,
+            "idle",
+            f"{name} has been idle for {minutes} min without finishing:"
+            f" {message or 'no last message'}",
+            "Reply on this issue to steer it, or release it with"
+            f" linear-agents release --keep-worktree {claim.issue_key}",
+            waiting=True,
+        ),
+        claim.issue_key,
+    )
+    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
+    escalated.write_text(str(at))
+
+
 def supervise(rt, claim: Claim) -> None:
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
@@ -389,3 +425,4 @@ def supervise(rt, claim: Claim) -> None:
         rt.sessions.send(name, HANDOFF_ASK.format(pct=pct))
         requested.touch()
     _check_question(rt, claim, d, name)
+    _check_idle(rt, claim, d, name)

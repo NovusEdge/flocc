@@ -238,6 +238,57 @@ def test_bookkeeping_failures_never_exit_2(tmp_path, monkeypatch, capsys, flag):
     assert "disk gone" in err and "refused" not in err
 
 
+def test_idle_records_the_last_message(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+    payload = {"last_assistant_message": "x" * 700, "transcript_path": "/nonexistent"}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert main(["idle"]) == 0
+    marker = json.loads((tmp_path / "idle").read_text())
+    assert marker["message"] == "x" * 600 and marker["at"] > 0
+    assert not (tmp_path / "idle.tmp").exists()
+
+
+def test_idle_falls_back_to_the_transcript(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+
+    def line(kind, *blocks):
+        return json.dumps({"type": kind, "message": {"content": list(blocks)}})
+
+    text = {"type": "text", "text": "please run it for me"}
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                line("assistant", {"type": "text", "text": "older"}),
+                line("assistant", text, {"type": "tool_use", "name": "Bash"}),
+                line("user", {"type": "text", "text": "ignored"}),
+            ]
+        )
+    )
+    for payload in (
+        {"transcript_path": str(transcript)},
+        {"last_assistant_message": "", "transcript_path": str(transcript)},
+    ):
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+        assert main(["idle"]) == 0
+        assert json.loads((tmp_path / "idle").read_text())["message"] == "please run it for me"
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert main(["idle"]) == 0
+    assert json.loads((tmp_path / "idle").read_text())["message"] == ""
+
+
+def test_idle_bookkeeping_failure_exits_1_never_2(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("linear_agents.gate.note_idle", boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert main(["idle"]) == 1
+    assert "disk gone" in capsys.readouterr().err
+
+
 def test_stopped_records_the_agent_type_and_phase(tmp_path, monkeypatch):
     gate_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "linear-agents:code-mapper"}'))

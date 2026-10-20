@@ -275,7 +275,15 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         (d / "handoff.md").replace(d / "handoff.prev.md")
     # A previous claim's grants, scratchpads, compaction and question belong to that run; the
     # agent block's grants are written again at launch.
-    for stale in ("grants.json", "scratchpads", "compacted", "asking", "asking-escalated"):
+    for stale in (
+        "grants.json",
+        "scratchpads",
+        "compacted",
+        "asking",
+        "asking-escalated",
+        "idle",
+        "idle-escalated",
+    ):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the
