@@ -38,6 +38,26 @@ func TestIncusWithoutTheBridgeStopsWithTheCommands(t *testing.T) {
 	}
 }
 
+func TestIncusPrintsSudoCommandsWhenIncusNeedsSudo(t *testing.T) {
+	f := readyIncus().
+		On("sudo -n incus query /1.0/networks/incusbr0", 1, "").
+		On("sudo -n incus profile device get default root pool", 1, "")
+	e, _ := testEnv(f)
+	e.incusSudo = true
+	err := Incus{}.Apply(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "sudo incus network create incusbr0") || !strings.Contains(err.Error(), "sudo incus admin init --minimal") {
+		t.Fatal(err)
+	}
+	e2, _ := testEnv(readyIncus().
+		On("sudo -n incus query /1.0/networks/incusbr0", 0, `{"managed":true,"type":"bridge"}`).
+		On("sudo -n incus profile device get default root pool", 1, ""))
+	e2.incusSudo = true
+	err = Incus{}.Apply(context.Background(), e2)
+	if err == nil || !strings.Contains(err.Error(), "sudo incus profile device add default root disk path=/ pool=default") {
+		t.Fatal(err)
+	}
+}
+
 func TestIncusRefusesAnUnmanagedBridge(t *testing.T) {
 	e, _ := testEnv(readyIncus().On("incus query /1.0/networks/incusbr0", 0, `{"managed":false,"type":"bridge"}`))
 	if ok, _, _ := (Incus{}).Check(context.Background(), e); ok {
