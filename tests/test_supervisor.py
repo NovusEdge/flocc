@@ -13,7 +13,7 @@ from flocc.gate import record_session, record_stop, run_gate, run_id
 from flocc.grants import Grants, add_comment, for_phase
 from flocc.ledger import Claim
 from flocc.linear import LinearError
-from flocc.publisher import PublishResult
+from flocc.publisher import BranchMoved, PublishResult
 from flocc.runtime import Runtime
 from flocc.supervisor import QUESTION_WAIT_S, LaunchError, supervise
 from flocc.usage import write_status
@@ -333,7 +333,9 @@ def test_check_failure_gets_one_fix_then_blocks(rt):
 
 def test_publish_that_keeps_failing_blocks(rt):
     def rejected(c, t, s):
-        raise subprocess.CalledProcessError(1, ["git", "push"], stderr="rejected: non-fast-forward")
+        raise subprocess.CalledProcessError(
+            128, ["git", "push"], stderr="fatal: Authentication failed for 'https://github.com/o/r'"
+        )
 
     rt.publish_fn = rejected
     add(rt, phase="impl", tester_sha="sha-tests")
@@ -344,7 +346,24 @@ def test_publish_that_keeps_failing_blocks(rt):
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
     [esc] = rt.notifier.sent
-    assert esc.cause == "NF-1:publish-failed" and "non-fast-forward" in esc.summary
+    assert esc.cause == "NF-1:publish-failed" and "Authentication failed" in esc.summary
+    assert "flocc release --keep-worktree NF-1" in esc.action
+
+
+def test_a_branch_that_moved_on_github_blocks_at_once_and_says_so(rt):
+    def moved(c, t, s):
+        stderr = " ! [rejected]        agent/nf-1 -> agent/nf-1 (fetch first)\n"
+        raise BranchMoved(1, ["git", "push"], "", stderr)
+
+    rt.publish_fn = moved
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    [esc] = rt.notifier.sent
+    assert esc.cause == "NF-1:branch-moved"
+    assert "GitHub's copy of the branch has commits this one lacks" in esc.summary
+    assert "token" not in esc.action
     assert "flocc release --keep-worktree NF-1" in esc.action
 
 
