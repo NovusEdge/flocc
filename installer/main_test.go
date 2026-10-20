@@ -97,6 +97,26 @@ func TestSavedAnswersLiveOutsideTheStage(t *testing.T) {
 	}
 }
 
+func TestRemoveStagedAnswersDeletesLeftoverTomlOnly(t *testing.T) {
+	stage := fillStage(t, "flocc-setup", "e2e.toml", "answers.toml", "setup.log")
+	if err := removeStagedAnswers(stage); err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"e2e.toml", "answers.toml"} {
+		if _, err := os.Stat(filepath.Join(stage, gone)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: %v", gone, err)
+		}
+	}
+	for _, kept := range []string{"flocc-setup", "setup.log"} {
+		if _, err := os.Stat(filepath.Join(stage, kept)); err != nil {
+			t.Errorf("%s: %v", kept, err)
+		}
+	}
+	if err := removeStagedAnswers(stage); err != nil {
+		t.Fatalf("an empty stage is not an error: %v", err)
+	}
+}
+
 func handoffFake(stage string) *host.Fake {
 	return host.NewFake().
 		On("chown -R root:flocc "+stage, 0, "").

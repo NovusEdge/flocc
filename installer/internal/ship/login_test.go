@@ -20,7 +20,7 @@ func TestLoginRunsTheLoginPhaseOnATerminalOpensTheURLAndPrintsTheSummary(t *test
 		"\r\n\r\n"+sum.Line()+"\r\n")
 	var out strings.Builder
 	var opened []string
-	err := login(context.Background(), f, Dest{SSH: "root@h"}, "o@example.test", &out, func(u string) { opened = append(opened, u) })
+	err := login(context.Background(), f, "root@h", Dest{SSH: "root@h"}, "o@example.test", &out, func(u string) { opened = append(opened, u) })
 	if err != nil || !f.Ran("interactive: "+call) {
 		t.Fatalf("%v %v", err, f.Calls)
 	}
@@ -48,9 +48,22 @@ func TestURLWatchJoinsChunksAndOpensEachURLOnce(t *testing.T) {
 func TestLoginScrubsTheDaytonaToken(t *testing.T) {
 	dest := Dest{SSH: "tok@gw", Token: "tok"}
 	f := host.NewFake().OnInteractive("ssh -t tok@gw "+loginRemote(""), errors.New("ssh tok@gw failed"))
-	err := login(context.Background(), f, dest, "", &strings.Builder{}, func(string) {})
+	err := login(context.Background(), f, "daytona:box", dest, "", &strings.Builder{}, func(string) {})
 	if err == nil || strings.Contains(err.Error(), "tok@") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestLoginSummaryNamesTheTypedTargetNotTheTokenedDestination(t *testing.T) {
+	dest := Dest{SSH: "tok123@gw", Token: "tok123"}
+	sum := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
+	f := host.NewFake().OnInteractiveOut("ssh -t tok123@gw "+loginRemote(""), sum.Line()+"\r\n")
+	var out strings.Builder
+	if err := login(context.Background(), f, "daytona:box", dest, "", &out, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "just login daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
+		t.Fatalf("%q", out.String())
 	}
 }
 

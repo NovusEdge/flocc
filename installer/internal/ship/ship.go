@@ -50,6 +50,9 @@ type Options struct {
 }
 
 type shipOpts struct {
+	// Target is the name the owner typed, for the login command the summary shows. Never
+	// Dest.SSH, which holds the Daytona token.
+	Target      string
 	Interactive bool
 	Answers     []byte
 	Out         io.Writer
@@ -255,7 +258,7 @@ func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
 	if o.Out == nil {
 		o.Out = os.Stdout
 	}
-	return ship(ctx, r, root, dest, shipOpts{Interactive: o.Interactive, Answers: doc, Out: o.Out})
+	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, Answers: doc, Out: o.Out})
 }
 
 func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts) (Summary, error) {
@@ -263,6 +266,7 @@ func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts
 	err := scrubErr(shipTo(ctx, r, root, dest, o, tap), dest.Token)
 	tap.Flush()
 	s, _ := tap.Summary()
+	s.Target = o.Target
 	return s, err
 }
 

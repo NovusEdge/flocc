@@ -67,16 +67,18 @@ func Login(ctx context.Context, o LoginOptions) error {
 	if out == nil {
 		out = os.Stdout
 	}
-	return login(ctx, r, dest, o.Email, out, OpenURL)
+	return login(ctx, r, o.Target, dest, o.Email, out, OpenURL)
 }
 
-func login(ctx context.Context, r host.Runner, dest Dest, addr string, out io.Writer, open func(url string)) error {
+// target is the name the owner typed, never dest.SSH, which holds the Daytona token.
+func login(ctx context.Context, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {
 	tap := &summaryTap{out: &urlWatch{out: out, open: open, seen: map[string]bool{}}}
 	c := sshCmd(dest, true, loginRemote(addr))
 	c.Stdout = tap
 	err := scrubErr(r.Interactive(ctx, c), dest.Token)
 	tap.Flush()
 	if s, ok := tap.Summary(); ok {
+		s.Target = target
 		s.Print(out)
 	}
 	return err

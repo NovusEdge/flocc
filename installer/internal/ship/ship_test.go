@@ -469,6 +469,22 @@ func TestShipReturnsTheHostsSummaryAndDropsItsLine(t *testing.T) {
 	}
 }
 
+func TestShipSummaryNamesTheTypedTargetNotTheTokenedDestination(t *testing.T) {
+	sum := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
+	f := okSudo("tok123@gw")
+	f.OnInteractiveOut("ssh -T tok123@gw "+remoteCmd(false), sum.Line()+"\r\n")
+	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "tok123@gw", Token: "tok123"},
+		shipOpts{Target: "daytona:box", Out: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	got.Print(&out)
+	if !strings.Contains(out.String(), "just login daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
+		t.Fatalf("%q", out.String())
+	}
+}
+
 func TestShipKeepsTheSummaryWhenTheHostExitsNonZero(t *testing.T) {
 	sum := Summary{Version: "flocc 0.4.0", Login: "full", Failed: []string{"FAIL  linear: 401"}}
 	run := "ssh -T root@h " + remoteCmd(false)
