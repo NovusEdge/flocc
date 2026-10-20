@@ -108,6 +108,14 @@ func TestIncusSkipsRoomChecksForAnExistingVM(t *testing.T) {
 	}
 }
 
+// The check can fail on a transient query and pass again on Apply's own read.
+func TestIncusApplyOnAReadyMachineIsANoOp(t *testing.T) {
+	e, _ := testEnv(readyIncus())
+	if err := (Incus{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIncusApplyNeverChangesIncus(t *testing.T) {
 	f := readyIncus().On("incus query /1.0/networks/incusbr0", 1, "")
 	e, _ := testEnv(f)

@@ -117,18 +117,29 @@ type Egress struct{}
 
 func (Egress) Name() string { return "Egress" }
 
+func (e *Env) hasCurl(ctx context.Context) bool {
+	return e.ok(ctx, e.incus("exec", e.Spec.Name, "--", "sh", "-c", "command -v curl"))
+}
+
 func (Egress) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if e.ok(ctx, e.incus("exec", e.Spec.Name, "--", "curl", "-fsS", "-o", "/dev/null", "--max-time", "15", egressURL)) {
 		return true, "HTTPS reaches " + egressURL, nil
+	}
+	if !e.hasCurl(ctx) {
+		return false, "curl is not installed in the VM yet", nil
 	}
 	return false, "no HTTPS from the VM; see \"Making a host with flocc host create\" in docs/vm-setup.md", nil
 }
 
 func (Egress) Apply(ctx context.Context, e *Env) error {
 	name := e.Spec.Name
-	if !e.ok(ctx, e.incus("exec", name, "--", "sh", "-c", "command -v curl")) {
+	if !e.hasCurl(ctx) {
 		for _, args := range [][]string{{"apt-get", "update", "-q"}, {"apt-get", "install", "-y", "-q", "curl", "ca-certificates"}} {
 			if _, err := e.must(ctx, e.incus(append([]string{"exec", name, "--env", "DEBIAN_FRONTEND=noninteractive", "--"}, args...)...)); err != nil {
+				// Ctrl-C kills apt too, which would otherwise read as a VM with no way out.
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				return fmt.Errorf("the VM cannot install curl, so it likely has no way out; see \"Making a host with flocc host create\" in docs/vm-setup.md: %w", err)
 			}
 		}

@@ -162,9 +162,30 @@ func TestEgressNamesTheFirewallWhenAptFails(t *testing.T) {
 	}
 }
 
+func TestEgressReportsACancelDuringApt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f := host.NewFake().
+		On("incus exec flocc-a -- sh -c command -v curl", 1, "").
+		On("incus exec flocc-a --env DEBIAN_FRONTEND=noninteractive -- apt-get update -q", 130, "")
+	e, _ := testEnv(f)
+	err := Egress{}.Apply(ctx, e)
+	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "no way out") {
+		t.Fatal(err)
+	}
+}
+
 func TestEgressCheckFailureNamesTheDocs(t *testing.T) {
-	e, _ := testEnv(host.NewFake().On(curlCheck, 7, ""))
+	e, _ := testEnv(host.NewFake().On(curlCheck, 7, "").On("incus exec flocc-a -- sh -c command -v curl", 0, "/usr/bin/curl\n"))
 	if ok, detail, _ := (Egress{}).Check(context.Background(), e); ok || !strings.Contains(detail, "docs/vm-setup.md") {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+// A fresh Debian image has no curl; its first check must not read as a VM with no way out.
+func TestEgressCheckBeforeCurlIsInstalled(t *testing.T) {
+	e, _ := testEnv(host.NewFake().On("incus exec flocc-a -- sh -c command -v curl", 1, ""))
+	if ok, detail, _ := (Egress{}).Check(context.Background(), e); ok || detail != "curl is not installed in the VM yet" {
 		t.Fatalf("%v %q", ok, detail)
 	}
 }
