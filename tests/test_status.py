@@ -187,6 +187,17 @@ def test_a_login_the_host_cannot_read_is_unknown_not_none(cfg):
     assert report["claude_login"] == "unknown"
 
 
+def test_a_hung_claude_probe_is_cut_short_and_reads_unknown(cfg):
+    timeouts = []
+
+    def hangs(argv, **kw):
+        timeouts.append(kw["timeout"])
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=hangs, claude="/opt/claude")
+    assert timeouts == [5] and report["claude_login"] == "unknown"
+
+
 def test_human_status_prints_the_login_and_expiries(cfg, tmp_path, monkeypatch, capsys):
     report = _report(
         now=1_800_000_000.0,
@@ -204,7 +215,7 @@ def test_human_status_prints_the_login_and_expiries(cfg, tmp_path, monkeypatch, 
 def test_status_json_writes_nothing(cfg, tmp_path, capsys, monkeypatch):
     # The real claude CLI would be run otherwise.
     monkeypatch.setattr("shutil.which", lambda name: "/opt/claude")
-    monkeypatch.setattr("flocc.status.claude_login", lambda exe, run: f"full via {exe}")
+    monkeypatch.setattr("flocc.status.claude_login", lambda exe, run, timeout: f"full via {exe}")
     path = tmp_path / "c.toml"
     assert main(["--config", str(path), "status", "--json"]) == 0
     report = json.loads(capsys.readouterr().out)

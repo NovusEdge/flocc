@@ -118,10 +118,12 @@ def check_tokens(rt, expiry=token_expiry) -> None:
         ledger.meta_set(rt.con, "token_check_date", today)
 
 
-def claude_login(exe: str, run=subprocess.run) -> str | None:
+def claude_login(exe: str, run=subprocess.run, timeout: float = 30) -> str | None:
     """full, token-only (<method>) or none; None when claude auth status gave no answer."""
     try:
-        out = run([exe, "auth", "status"], capture_output=True, text=True, check=False, timeout=30)
+        out = run(
+            [exe, "auth", "status"], capture_output=True, text=True, check=False, timeout=timeout
+        )
         auth = json.loads(out.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
