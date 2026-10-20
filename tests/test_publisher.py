@@ -3,7 +3,13 @@ import time
 from dataclasses import replace
 
 from linear_agents.config import RepoConfig
-from linear_agents.publisher import COMMENT_LIMIT, comment_on_pr, publish, review_comment
+from linear_agents.publisher import (
+    COMMENT_LIMIT,
+    comment_on_pr,
+    failure_excerpt,
+    publish,
+    review_comment,
+)
 from linear_agents.worktree import git, prepare_worktree
 from tests.test_ledger import make
 
@@ -105,6 +111,25 @@ def test_failed_check(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'echo boom; exit 1'")
     result = publish(claim, repo, "t", "s", token="t", runner=Gh())
     assert result.status == "check_failed" and "boom" in result.detail
+
+
+def test_failure_excerpt_keeps_an_early_error_over_a_passing_tail():
+    out = "\n".join(
+        ["lint web"] * 50
+        + ["web/src/a.ts:3 error TS2304: Cannot find name 'x'"]
+        + ["tests/t.py::test_x PytestWarning: not async"] * 20
+        + ["test server ok"] * 400
+        + ["error: recipe `check` failed on line 23 with exit code 1"]
+    )
+    excerpt = failure_excerpt(out)
+    assert "TS2304" in excerpt and "recipe `check` failed" in excerpt
+    assert "PytestWarning" not in excerpt and len(excerpt) <= 3000
+
+
+def test_failed_check_keeps_the_full_output(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'seq 5000; echo boom; exit 1'")
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh())
+    assert result.log.startswith("1\n") and "boom" in result.detail
 
 
 def test_review_comment_wraps_the_review_verbatim():
