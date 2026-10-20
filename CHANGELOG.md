@@ -21,7 +21,7 @@ linear-agents is now flocc. A host set up before 0.3.0 is replaced by a new one,
 - `Linear-Agents:` trailers and `🤖 linear-agents:` comments are still read until 0.5.0.
 - The desktop's hosts are `~/.config/flocc/hosts/<name>.toml`; `just fleet-status` converts
   `~/.config/la-setup/hosts` once. The service phase saves its answers in
-  `~/.config/flocc/answers.toml`.
+  `~flocc/.config/flocc/answers.toml`.
 
 ## 0.2.0 (2026-10-20)
 

@@ -145,8 +145,8 @@ def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
             claim,
             "branch-moved",
             f"Publishing {claim.branch} failed: {exc}.\n{detail[-1500:]}".strip(),
-            f"See who pushed {claim.branch}, merge origin/{claim.branch} into the worktree's"
-            f" branch or reset it to that, then run flocc release --keep-worktree {key}",
+            f"See who pushed {claim.branch}, fetch origin, merge origin/{claim.branch} into the"
+            f" worktree's branch or reset it to that, then run flocc release --keep-worktree {key}",
         )
         ledger.meta_set(rt.con, counter, "0")
         return

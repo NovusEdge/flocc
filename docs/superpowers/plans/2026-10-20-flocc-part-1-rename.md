@@ -1609,7 +1609,7 @@ linear-agents is now flocc. A host set up before 0.3.0 is replaced by a new one,
 - `Linear-Agents:` trailers and `🤖 linear-agents:` comments are still read until 0.5.0.
 - The desktop's hosts are `~/.config/flocc/hosts/<name>.toml`; `just fleet-status` converts
   `~/.config/la-setup/hosts` once. The service phase saves its answers in
-  `~/.config/flocc/answers.toml`.
+  `~flocc/.config/flocc/answers.toml`.
 ```
 
 - [ ] **Step 6: Run everything**
@@ -1719,7 +1719,7 @@ Expected: a uid. That is the user Task 5's refusal looks for; `TestShipRefusesAH
 - [ ] **Step 4: Convert the desktop hosts file**
 
 Run: `just fleet-status`
-Expected: `fleet: converted ~/.config/la-setup/hosts (kept as ...hosts.converted) into ~/.config/flocc/hosts:` with `root@la-nimble -> .../la-nimble.toml`, then the table. The la-nimble row is an error, not a status: the 0.3.0 fleet runs `sudo -u flocc ... flocc status --json` there, and the host has no `flocc` user. The call is read-only.
+Expected: `hosts: converted /home/<user>/.config/la-setup/hosts (kept as ...hosts.converted) into ...` (the output names the absolute paths), listing `root@la-nimble -> .../la-nimble.toml`, then the table. The la-nimble row is an error, not a status: the 0.3.0 fleet runs `sudo -u flocc ... flocc status --json` there, and the host has no `flocc` user. The call is read-only.
 
 ### Task 12: Build flocc-nimble (controller and owner; spec migration step 2)
 
@@ -1829,7 +1829,7 @@ Expected: each claim with its state. Running claims finish on la-nimble; Steps 2
 ssh root@la-nimble sudo -iu linear-agents git -C /home/linear-agents/agents/worktrees/<KEY> status --short
 ```
 
-Commit what the owner keeps as the service user, with `git add -A` first (`commit -a` leaves untracked files out) and the trailer for the claim's phase, `test` or `impl`: flocc-nimble recovers a test-phase claim's commits only by a `<KEY> test` trailer, so without it the tester starts over.
+Commit what the owner keeps as the service user, with `git add -A` first (`commit -a` leaves untracked files out) and the trailer for the claim's phase, `test` or `impl`. flocc-nimble recovers the tester's commits from `origin/agent/<key>` by their `Linear-Agents: <KEY> test` trailers and resumes at `impl` when it finds any, so the trailer decides what counts as the tester's work.
 
 ```bash
 ssh root@la-nimble "sudo -iu linear-agents sh -c 'cd agents/worktrees/<KEY> && git add -A && git commit -s -m \"<message>\" -m \"Linear-Agents: <KEY> <test|impl>\"'"
@@ -1837,7 +1837,32 @@ ssh root@la-nimble "sudo -iu linear-agents sh -c 'cd agents/worktrees/<KEY> && g
 
 Or discard it (`git -C ... checkout -- . && git -C ... clean -fd`). `handoff.md` and the escalation history stay in la-nimble's state directory, so the resumed session starts without them; paste what matters into a comment on the issue.
 
-- [ ] **Step 3: Push the branch with the publish token**
+- [ ] **Step 3: Check the branch, then push it with the publish token**
+
+This push reaches GitHub without la-nimble's publisher guard (a timed-out claim never reached it), and flocc-nimble trusts the leading `test` commits it finds on the branch, so check first. The commands run on la-nimble as the `linear-agents` user, with the 0.2.0 names.
+
+For a `test` claim, push only if the owner judges the tests complete; flocc-nimble then resumes at the implementer. Otherwise push nothing: with no `agent/<key>` on `origin`, flocc-nimble cuts a fresh branch and the tester starts over.
+
+For an `impl` or `fix` claim, read the claim's `tester_sha` from la-nimble's ledger:
+
+```bash
+ssh root@la-nimble sudo -iu linear-agents python3 - <KEY> <<'PY'
+import os, sqlite3, sys
+db = sqlite3.connect(os.path.expanduser("~/.local/state/linear-agents/ledger.sqlite"))
+print(db.execute("select phase, tester_sha from claims where issue_key = ?", (sys.argv[1],)).fetchone())
+PY
+```
+
+Then check that it is an ancestor of the worktree's `HEAD` and that no `<KEY> test` trailer follows it:
+
+```bash
+ssh root@la-nimble "sudo -iu linear-agents git -C /home/linear-agents/agents/worktrees/<KEY> merge-base --is-ancestor <tester_sha> HEAD" && echo ancestor
+ssh root@la-nimble "sudo -iu linear-agents git -C /home/linear-agents/agents/worktrees/<KEY> log --first-parent --format='%(trailers:only)' <tester_sha>..HEAD" | grep "<KEY> test"
+```
+
+Expected: `ancestor`, then no output from the `grep`. If the first command fails, if the `grep` prints a line, or if `tester_sha` is empty, stop and ask the owner: the implementer amended or forged the tester's commit, and the push would put it outside the guard.
+
+Push:
 
 ```bash
 ssh root@la-nimble "sudo -iu linear-agents sh -c 'cd agents/worktrees/<KEY> && GH_TOKEN=\$(cat ~/.config/linear-agents/gh-publish.token) git -c credential.helper= -c \"credential.helper=!gh auth git-credential\" push origin agent/<key>'"

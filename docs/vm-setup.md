@@ -9,7 +9,7 @@ The first run on a host asks you to log in to Tailscale and to Claude (`/login`,
 the two push settings are written to `~/.claude/settings.json` for you), to paste the Linear key
 and the two GitHub tokens, to fill in the config form and to confirm an ntfy test push. It ends
 by running `flocc doctor` and starts ticking only when doctor reports no FAIL line. The service
-phase saves the form's answers, without the tokens, in `~/.config/flocc/answers.toml` on the
+phase saves the form's answers, without the tokens, in `~flocc/.config/flocc/answers.toml` on the
 host, and a rerun starts from them.
 Everything it runs is logged to `/tmp/flocc-setup/setup.log` (root steps) and
 `~flocc/.cache/flocc-setup/setup.log` (the rest).
@@ -59,6 +59,8 @@ sudo firewall-cmd --get-zone-of-interface=incusbr0    # trusted
 sudo iptables -S FORWARD | head -1                    # -P FORWARD ACCEPT
 grep ip-forward-no-drop /etc/docker/daemon.json       # Docker leaves FORWARD alone
 ```
+
+If any differs, stop and ask the owner; do not restart Docker or Incus.
 
 They are broad: the VM can reach every service on the machine. `flocc host create` (0.6.0)
 replaces them with rules scoped to `incusbr0`.
@@ -245,7 +247,7 @@ grant made on the old host does not move; grant it again. A push the old host ma
 one started is reported as "GitHub's copy of the branch has commits this one lacks".
 
 The new host does not read the old host's saved answers; it saves its own in
-`~/.config/flocc/answers.toml`.
+`~flocc/.config/flocc/answers.toml`.
 
 ## Smoke test
 
