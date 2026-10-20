@@ -492,17 +492,9 @@ func FleetMain(args []string, out io.Writer) int {
 	home, _ := os.UserHomeDir()
 	daytonaConfig := filepath.Join(home, ".config/daytona/config.json")
 	hostsDir := hosts.Dir(home)
-	// The notice goes into the first draw: the old file is renamed by now, and what the conversion
-	// dropped is named nowhere else, but --watch clears the screen before anything on stderr is read.
-	var first []string
-	if msg, err := hosts.ConvertOld(filepath.Join(home, legacyHostsFile), hostsDir); err != nil {
-		first = []string{"hosts: the old hosts file was not converted: " + err.Error()}
-	} else if msg != "" {
-		first = []string{"hosts: " + msg}
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir, first)
+	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir, nil)
 }
 
 // runFleet draws the fleet until ctx ends, or once. first is added to the notes of the first draw.
@@ -528,7 +520,7 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 			fmt.Fprint(out, "\x1b[H\x1b[2J")
 		}
 		if len(found) == 0 {
-			notes = append(notes, "no hosts: log in with daytona login or add <name>.toml holding ssh = \"root@<name>\" to "+hostsDir)
+			notes = append(notes, "no hosts: log in with daytona login, or run flocc host add <name>")
 		}
 		lipgloss.Fprint(out, render(rows, notes))
 		if !watch {

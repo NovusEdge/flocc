@@ -67,36 +67,6 @@ func TestListReturnsGoodHostsByNameAndNamesTheBadOnes(t *testing.T) {
 	}
 }
 
-func TestConvertOldWritesOneFilePerHostOnce(t *testing.T) {
-	home := t.TempDir()
-	old := filepath.Join(home, "old", "hosts")
-	dir := Dir(home)
-	write(t, old, "# tailnet\nroot@la-nimble\nbox.tail1.ts.net\n-oProxyCommand=id\nuser@box.tail1.ts.net\nroot@a/b\n")
-	msg, err := ConvertOld(old, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := List(dir)
-	got := map[string]string{}
-	for _, h := range list {
-		got[h.Name] = h.SSH
-	}
-	if err != nil || len(got) != 2 || got["la-nimble"] != "root@la-nimble" || got["box"] != "box.tail1.ts.net" {
-		t.Fatalf("%v %v", got, err)
-	}
-	for _, want := range []string{"-oProxyCommand=id", "user@box.tail1.ts.net", "root@a/b", old + ".converted"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("the notice lacks %q:\n%s", want, msg)
-		}
-	}
-	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("the old file would be converted again")
-	}
-	if msg, err := ConvertOld(old, dir); msg != "" || err != nil {
-		t.Fatalf("%q %v", msg, err)
-	}
-}
-
 func TestHostFileKeepsTheAnswersFlatAndNeverASecret(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hosts")
 	h := Host{Name: "flocc-nimble", SSH: "root@flocc-nimble", Answers: answers.Answers{

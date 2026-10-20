@@ -420,7 +420,7 @@ func TestNonInteractiveShipForbidsAPtyOnEverySudoAndSecretCall(t *testing.T) {
 	var checked int
 	for _, c := range f.Calls {
 		c = strings.TrimPrefix(c, "interactive: ")
-		// uname and Part 1's legacy-user probe carry no sudo and no secrets.
+		// uname carries no sudo and no secrets.
 		if !strings.HasPrefix(c, "ssh ") || !strings.Contains(c, "sudo ") {
 			continue
 		}
@@ -560,27 +560,6 @@ func TestValidTarget(t *testing.T) {
 		if ValidTarget(bad) {
 			t.Errorf("%q accepted", bad)
 		}
-	}
-}
-
-func TestShipRefusesAHostThatRunsTheOldService(t *testing.T) {
-	f := host.NewFake().
-		On("ssh h uname -m", 0, "x86_64\n").
-		On("ssh h id -u "+legacyUser, 0, "998\n")
-	_, err := ship(context.Background(), f, t.TempDir(), Dest{SSH: "h"}, shipOpts{})
-	if err == nil || !strings.Contains(err.Error(), "a second poller") {
-		t.Fatalf("%v", err)
-	}
-	if len(f.Calls) != 2 {
-		t.Fatalf("ran past the refusal: %v", f.Calls)
-	}
-	dest := Dest{SSH: "tok9@ssh.example.test", Token: "tok9"}
-	f = host.NewFake().
-		On("ssh tok9@ssh.example.test uname -m", 0, "x86_64\n").
-		On("ssh tok9@ssh.example.test id -u "+legacyUser, 0, "998\n")
-	_, err = ship(context.Background(), f, t.TempDir(), dest, shipOpts{})
-	if err == nil || strings.Contains(err.Error(), "tok9") {
-		t.Fatalf("%v", err)
 	}
 }
 
