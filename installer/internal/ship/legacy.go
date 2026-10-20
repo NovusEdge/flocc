@@ -10,6 +10,9 @@ import (
 // The service user before the rename. Its timer is a user unit, so the user alone tells.
 const legacyUser = "linear-agents"
 
+// The desktop's host list before the rename, one ssh destination per line.
+const legacyHostsFile = ".config/la-setup/hosts"
+
 // refuseLegacy stops a ship to a host still running the service under its old name: the new
 // service would install beside it, and both pollers would claim the same issues.
 func refuseLegacy(ctx context.Context, r host.Runner, dest Dest) error {

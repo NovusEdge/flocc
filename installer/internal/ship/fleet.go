@@ -1,7 +1,6 @@
 package ship
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +20,7 @@ import (
 	"charm.land/lipgloss/v2/table"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/hosts"
 )
 
 // Daytona list prices (daytona.io/pricing); the figure shown is an estimate, not what the account
@@ -96,34 +96,9 @@ type Row struct {
 	Err    string
 }
 
-// readHostsFile returns the ssh destinations and the lines it refused. A line starting with "-"
-// would reach ssh as an option (-oProxyCommand=... runs a local command).
-func readHostsFile(path string) (targets, rejected []string, err error) {
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		switch {
-		case line == "" || strings.HasPrefix(line, "#"):
-		case strings.HasPrefix(line, "-"):
-			rejected = append(rejected, line)
-		default:
-			targets = append(targets, line)
-		}
-	}
-	return targets, rejected, sc.Err()
-}
-
-// discover lists the Daytona org's sandboxes and the hosts file. Neither failing stops the other:
-// the problems come back as notes for the view to print.
-func discover(ctx context.Context, daytonaConfig, hostsFile string, client *http.Client) (hosts []FleetHost, notes []string) {
+// discover lists the Daytona org's sandboxes and the ssh hosts in hostsDir. Neither failing stops
+// the other: the problems come back as notes for the view to print.
+func discover(ctx context.Context, daytonaConfig, hostsDir string, client *http.Client) (found []FleetHost, notes []string) {
 	auth, err := loadDaytona(daytonaConfig)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -137,20 +112,22 @@ func discover(ctx context.Context, daytonaConfig, hostsFile string, client *http
 		}
 		sort.Slice(sbs, func(i, j int) bool { return sbs[i].Name < sbs[j].Name })
 		for _, s := range sbs {
-			hosts = append(hosts, FleetHost{Name: s.Name, Target: "daytona:" + s.Name, State: strings.ToLower(s.State), ID: s.ID, CPU: s.CPU, MemGiB: s.Memory, DiskGiB: s.Disk, Daytona: true})
+			found = append(found, FleetHost{Name: s.Name, Target: "daytona:" + s.Name, State: strings.ToLower(s.State), ID: s.ID, CPU: s.CPU, MemGiB: s.Memory, DiskGiB: s.Disk, Daytona: true})
 		}
 	}
-	targets, rejected, err := readHostsFile(hostsFile)
+	list, err := hosts.List(hostsDir)
 	if err != nil {
-		notes = append(notes, "hosts file: "+err.Error())
+		for _, line := range strings.Split(err.Error(), "\n") {
+			notes = append(notes, "hosts: "+line)
+		}
 	}
-	for _, r := range rejected {
-		notes = append(notes, fmt.Sprintf("hosts file: ignored %q, a destination cannot start with '-'", r))
+	// Daytona hosts came from the API above.
+	for _, h := range list {
+		if h.SSH != "" {
+			found = append(found, FleetHost{Name: h.Name, Target: h.SSH})
+		}
 	}
-	for _, t := range targets {
-		hosts = append(hosts, FleetHost{Name: t, Target: t})
-	}
-	return hosts, notes
+	return found, notes
 }
 
 func scrub(s, token string) string {
@@ -449,7 +426,12 @@ func FleetMain(args []string, out io.Writer) int {
 	}
 	home, _ := os.UserHomeDir()
 	daytonaConfig := filepath.Join(home, ".config/daytona/config.json")
-	hostsFile := filepath.Join(home, ".config/flocc-setup/hosts")
+	hostsDir := hosts.Dir(home)
+	if msg, err := hosts.ConvertOld(filepath.Join(home, legacyHostsFile), hostsDir); err != nil {
+		fmt.Fprintln(os.Stderr, "fleet: the old hosts file was not converted:", err)
+	} else if msg != "" {
+		fmt.Fprintln(os.Stderr, "fleet:", msg)
+	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -461,16 +443,16 @@ func FleetMain(args []string, out io.Writer) int {
 		return auth.sshDest(ctx, client, h.ID, h.Name, realWaiter(io.Discard))
 	})
 	for {
-		hosts, notes := discover(ctx, daytonaConfig, hostsFile, client)
-		rows := collect(ctx, host.Exec{}, cache, hosts)
+		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
+		rows := collect(ctx, host.Exec{}, cache, found)
 		if ctx.Err() != nil {
 			return exitInterrupted
 		}
 		if *watch {
 			fmt.Fprint(out, "\x1b[H\x1b[2J")
 		}
-		if len(hosts) == 0 {
-			notes = append(notes, "no hosts: log in with daytona login or list ssh destinations in "+hostsFile)
+		if len(found) == 0 {
+			notes = append(notes, "no hosts: log in with daytona login or add <name>.toml holding ssh = \"root@<name>\" to "+hostsDir)
 		}
 		lipgloss.Fprint(out, render(rows, notes))
 		if !*watch {

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/hosts"
 )
 
 // lockedFake serializes the Fake, which collect drives from one goroutine per host.
@@ -62,28 +62,16 @@ func TestCostIsOnlyShownForStartedSandboxes(t *testing.T) {
 	}
 }
 
-func TestReadHostsFileSkipsBlanksAndComments(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "hosts")
-	if err := os.WriteFile(p, []byte("# tailnet\n\nbox1.ts.net\n  box2  \n#off.ts.net\n-oProxyCommand=id\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, rejected, err := readHostsFile(p)
-	if err != nil || strings.Join(got, ",") != "box1.ts.net,box2" || strings.Join(rejected, ",") != "-oProxyCommand=id" {
-		t.Fatalf("%q %q %v", got, rejected, err)
-	}
-	if got, _, err := readHostsFile(filepath.Join(t.TempDir(), "none")); got != nil || err != nil {
-		t.Fatalf("%q %v", got, err)
-	}
-}
-
-func TestDiscoverSkipsDaytonaWithoutItsConfigAndKeepsTheHostsFile(t *testing.T) {
+func TestDiscoverSkipsDaytonaWithoutItsConfigAndKeepsTheHostsDir(t *testing.T) {
 	dir := t.TempDir()
-	hosts := filepath.Join(dir, "hosts")
-	if err := os.WriteFile(hosts, []byte("box1\n"), 0o600); err != nil {
-		t.Fatal(err)
+	hostsDir := filepath.Join(dir, "hosts")
+	for _, h := range []hosts.Host{{Name: "box1", SSH: "root@box1"}, {Name: "sb", Daytona: "sb"}} {
+		if err := hosts.Save(hostsDir, h); err != nil {
+			t.Fatal(err)
+		}
 	}
-	got, notes := discover(context.Background(), filepath.Join(dir, "no-config.json"), hosts, http.DefaultClient)
-	if len(got) != 1 || got[0].Target != "box1" || len(notes) != 1 || !strings.Contains(notes[0], "skipped") {
+	got, notes := discover(context.Background(), filepath.Join(dir, "no-config.json"), hostsDir, http.DefaultClient)
+	if len(got) != 1 || got[0].Name != "box1" || got[0].Target != "root@box1" || len(notes) != 1 || !strings.Contains(notes[0], "skipped") {
 		t.Fatalf("%+v %q", got, notes)
 	}
 }
