@@ -95,12 +95,17 @@ def check_tokens(rt, expiry=token_expiry) -> None:
         try:
             expires = expiry(token)
         except TokenRejected:
+            ledger.meta_set(rt.con, f"token_expiry:{name}", "rejected")
             _page(rt, name, path, f"GitHub rejected the {name} token: it expired or was revoked.")
             continue
         except (OSError, ValueError) as exc:
             print(f"tokens: could not check the {name} token: {exc}", file=sys.stderr)
             complete = False
             continue
+        # status reads this; it must not ask GitHub itself.
+        ledger.meta_set(
+            rt.con, f"token_expiry:{name}", "never" if expires is None else str(int(expires))
+        )
         if expires is None:
             continue
         days = int((expires - rt.now()) // _DAY)

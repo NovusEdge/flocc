@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -448,7 +449,7 @@ def cmd_status(args) -> int:
     from flocc.status import collect
 
     cfg, _ = _config(args)
-    report = collect(cfg, Sessions())
+    report = collect(cfg, Sessions(), claude=shutil.which("claude"))
     if args.json:
         print(json.dumps(report))
         return 0
@@ -461,6 +462,10 @@ def cmd_status(args) -> int:
         print(f"  ledger unreadable: {report['ledger_error']}")
     elif not report["claims"]:
         print("  no live claims")
+    if report["claude_login"]:
+        print(f"  claude login {report['claude_login']}")
+    for name, value in report["token_expiry"].items():
+        print(f"  github {name} token {_expiry(value, report['now'])}")
     t = report["last_tick"]
     if t is None:
         print("  last tick: none")
@@ -500,6 +505,16 @@ def cmd_attach(args) -> int:
 
     argv = ["tmux", "-L", SOCKET, "attach", "-r", "-t", args.session]
     os.execvp(argv[0], argv)
+
+
+def _expiry(value: str, now: float) -> str:
+    if value == "never":
+        return "never expires"
+    if value == "rejected":
+        return "rejected by GitHub"
+    at = float(value)
+    day = time.strftime("%Y-%m-%d", time.gmtime(at))
+    return f"expires {day} ({int((at - now) // 86400)} days)"
 
 
 def _age(seconds: float) -> str:
