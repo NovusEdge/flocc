@@ -295,7 +295,8 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             "tests-touched",
             f"The implementer changed the tester's files: {result.detail}",
             "If the test change is wrong, revert it on the branch, then run"
-            f" linear-agents release --keep-worktree {key}",
+            f" linear-agents release --keep-worktree {key}. If it is right, run"
+            f" linear-agents release --accept-tests {key}",
         )
 
 

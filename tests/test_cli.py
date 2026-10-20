@@ -66,6 +66,13 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
     ledger.insert_claim(con, make("NF-1", worktree=str(tmp_path / "wt" / "NF-1")))
     assert main(["--config", str(path), "release", "NF-1", "--keep-worktree"]) == 0
     assert "worktree kept" in capsys.readouterr().out
+    ledger.insert_claim(con, make("NF-1", worktree=str(tmp_path / "wt" / "NF-1")))
+    assert main(["--config", str(path), "release", "NF-1", "--accept-tests"]) == 1
+    assert "no tester commit" in capsys.readouterr().err
+    ledger.remember_tests(con, "NF-1", "sha-base", "sha-tests")
+    assert main(["--config", str(path), "release", "NF-1", "--accept-tests"]) == 0
+    assert "worktree kept" in capsys.readouterr().out
+    assert ledger.accepted_tests(con, "NF-1") == "sha0"
 
 
 def test_bad_config_fails_cleanly_for_every_command(tmp_path, capsys):

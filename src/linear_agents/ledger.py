@@ -279,6 +279,19 @@ def meta_get(con, key: str) -> str | None:
 # tester commit to resume at the implementer with the tests_touched guard intact.
 def remember_tests(con, issue_key: str, base_sha: str, tester_sha: str) -> None:
     meta_set(con, f"tests:{issue_key}", json.dumps([base_sha, tester_sha]))
+    # An acceptance approved the previous tester's files, not these.
+    with transaction(con):
+        con.execute("DELETE FROM meta WHERE key = ?", (f"tests-accepted:{issue_key}",))
+
+
+# The owner's approval of the tester's files as they stand at `sha`: the publisher's guard then
+# compares those files against `sha` instead of the tester's commit.
+def accept_tests(con, issue_key: str, sha: str) -> None:
+    meta_set(con, f"tests-accepted:{issue_key}", sha)
+
+
+def accepted_tests(con, issue_key: str) -> str | None:
+    return meta_get(con, f"tests-accepted:{issue_key}")
 
 
 def remembered_tests(con, issue_key: str) -> tuple[str, str] | None:
@@ -291,7 +304,10 @@ def remembered_tests(con, issue_key: str) -> tuple[str, str] | None:
 
 def forget_tests(con, issue_key: str) -> None:
     with transaction(con):
-        con.execute("DELETE FROM meta WHERE key = ?", (f"tests:{issue_key}",))
+        con.execute(
+            "DELETE FROM meta WHERE key IN (?, ?)",
+            (f"tests:{issue_key}", f"tests-accepted:{issue_key}"),
+        )
 
 
 def meta_set(con, key: str, value: str) -> None:

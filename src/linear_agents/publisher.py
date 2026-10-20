@@ -30,12 +30,13 @@ def publish(
     runner=subprocess.run,
     check_timeout_s: float = 1800,
     trailer: bool = True,
+    accepted_sha: str | None = None,
 ) -> PublishResult:
     wt = Path(claim.worktree)
     if claim.base_sha is None or claim.tester_sha is None:
         raise ValueError(f"{claim.issue_key} has no recorded tester commit to guard")
     tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
-    touched = changed_files(wt, claim.tester_sha, "HEAD") & tester_files
+    touched = changed_files(wt, accepted_sha or claim.tester_sha, "HEAD") & tester_files
     if touched:
         return PublishResult("tests_touched", ", ".join(sorted(touched)))
     # Only commits are pushed, and the guard above compares commits only; a check on the working
