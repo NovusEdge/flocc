@@ -17,11 +17,22 @@ var secretSpecs = []secretSpec{
 		"Linear → Settings → Account → Security & access → New API key, with Full access. Limit it to team NF."},
 	{"agent_token", "gh-agent.token", "GitHub agent token (read-only)",
 		"github.com/settings/personal-access-tokens, fine-grained. Resource owner: the mapped repos' owner; " +
-			"repository access: the mapped repos; permissions, all Read-only: Contents, Pull requests, Issues, Commit statuses, Actions." +
+			"repository access: the mapped repos; permissions, all Read-only: Contents, Pull requests, Issues, Commit statuses, Actions. " +
 			"Agents use it through gh, so it must not be able to push."},
 	{"publish_token", "gh-publish.token", "GitHub publish token",
 		"Fine-grained, same owner and repos. Contents: Read and write; Pull requests: Read and write. " +
 			"Only the service uses it, to push branches and open PRs."},
+}
+
+// SecretFile is the file under ~/.config/flocc holding the secret with this answers id; "" for
+// an unknown id.
+func SecretFile(id string) string {
+	for _, s := range secretSpecs {
+		if s.id == id {
+			return s.file
+		}
+	}
+	return ""
 }
 
 var envPrefix = regexp.MustCompile(`^[A-Z_]+=`)
