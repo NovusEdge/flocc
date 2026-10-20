@@ -108,7 +108,7 @@ func TestPlanPluginsBundlesPrivateAndSkipsDisabled(t *testing.T) {
 		"NovusEdge": map[string]any{"source": map[string]string{"source": "github", "repo": "NovusEdge/docket"}, "installLocation": "/m/NovusEdge"},
 		"curt":      map[string]any{"source": map[string]string{"source": "github", "repo": "o/curt"}, "installLocation": "/m/curt"},
 	})
-	p, err := planPlugins(dir, func(repo string) (bool, error) { return repo == "NovusEdge/docket", nil })
+	p, err := planPlugins(dir, nil, func(repo string) (bool, error) { return repo == "NovusEdge/docket", nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +125,58 @@ func TestPlanPluginsBundlesPrivateAndSkipsDisabled(t *testing.T) {
 	}
 	if len(p.Warnings) != 1 {
 		t.Fatalf("warnings %v", p.Warnings)
+	}
+}
+
+func TestPlanPluginsKeepsOnlyTheAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	writeJSON(t, filepath.Join(dir, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{
+		"docket@NovusEdge": true, "curt@curt": true}})
+	writeJSON(t, filepath.Join(dir, "plugins/known_marketplaces.json"), map[string]any{
+		"NovusEdge": map[string]any{"source": map[string]string{"source": "github", "repo": "NovusEdge/docket"}},
+		"curt":      map[string]any{"source": map[string]string{"source": "github", "repo": "o/curt"}},
+	})
+	pub := func(string) (bool, error) { return false, nil }
+	p, err := planPlugins(dir, []string{"docket@NovusEdge"}, pub)
+	if err != nil || !slices.Equal(p.List.Plugins, []string{"docket@NovusEdge"}) || len(p.List.Marketplaces) != 1 {
+		t.Fatalf("%+v %v", p.List, err)
+	}
+	if _, err := planPlugins(dir, []string{"ghost@x"}, pub); err == nil || !strings.Contains(err.Error(), "ghost@x") {
+		t.Fatalf("want an error naming ghost@x, got %v", err)
+	}
+}
+
+func TestReadAllowlistSkipsCommentsAndBlanks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-plugins.txt")
+	if err := os.WriteFile(path, []byte("# agents\ndocket@NovusEdge\n\ncurt@curt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readAllowlist(path)
+	if err != nil || !slices.Equal(got, []string{"docket@NovusEdge", "curt@curt"}) {
+		t.Fatalf("%v %v", got, err)
+	}
+	if got, err := readAllowlist(filepath.Join(t.TempDir(), "none")); got != nil || err != nil {
+		t.Fatalf("missing file: %v %v", got, err)
+	}
+}
+
+func TestAllowlistWithOnlyCommentsShipsNoPlugins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-plugins.txt")
+	if err := os.WriteFile(path, []byte("# nothing yet\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	allow, err := readAllowlist(path)
+	if err != nil || allow == nil || len(allow) != 0 {
+		t.Fatalf("want a non-nil empty list, got %#v %v", allow, err)
+	}
+	writeJSON(t, filepath.Join(dir, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"docket@NovusEdge": true}})
+	writeJSON(t, filepath.Join(dir, "plugins/known_marketplaces.json"), map[string]any{
+		"NovusEdge": map[string]any{"source": map[string]string{"source": "github", "repo": "NovusEdge/docket"}},
+	})
+	p, err := planPlugins(dir, allow, func(string) (bool, error) { return false, nil })
+	if err != nil || len(p.List.Plugins) != 0 {
+		t.Fatalf("want no plugins, got %+v %v", p.List, err)
 	}
 }
 

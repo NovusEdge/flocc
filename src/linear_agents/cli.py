@@ -1,4 +1,5 @@
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -7,9 +8,10 @@ import sys
 import time
 from pathlib import Path
 
-from linear_agents import ledger, usage
+from linear_agents import gate, ledger, usage
 from linear_agents.config import default_config_path, load
 from linear_agents.escalation import Escalation, validate
+from linear_agents.grants import for_phase
 
 
 def _state_dir() -> Path:
@@ -164,10 +166,107 @@ def cmd_context(args) -> int:
         f"## Peers in this repo\n\n{names}. ListAgents shows them under generated names; match"
         " on the tmux session name it lists. Message no other session.\n"
     )
+    g = for_phase(state / "grants.json", os.environ.get("LINEAR_AGENTS_PHASE", ""))
+    items = [f"launches {g.launches}"] if g.launches is not None else []
+    items += [f"agent {a}" for a in g.agents] + [f"workflow {w}" for w in g.workflows]
+    items += [f"fix-rounds {g.fix_rounds}"] if g.fix_rounds is not None else []
+    print(f"## Grants\n\n{', '.join(items) or 'none'}.\n")
     handoff = state / "handoff.md"
     if handoff.exists():
         print(handoff.read_text())
     return 0
+
+
+def _hook_input(strict: bool = False) -> dict:
+    """Strict raises on input that is not a JSON object; lenient gives {} for it."""
+    raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        if strict:
+            raise
+        return {}
+    if isinstance(data, dict):
+        return data
+    if strict:
+        raise ValueError("hook input is not a JSON object")
+    return {}
+
+
+def cmd_gate(args) -> int:
+    run = os.environ.get("LINEAR_AGENTS_RUN")
+    phase = os.environ.get("LINEAR_AGENTS_PHASE")
+    # Exit 2 on SubagentStop blocks the stop and keeps the agent alive, so bookkeeping
+    # failures exit 1, which Claude Code treats as non-blocking.
+    if args.stopped or args.answered:
+        try:
+            state = _state_dir()
+            if args.stopped:
+                agent_type = str(_hook_input().get("agent_type", ""))
+                gate.record_stop(state, run, time.time(), agent_type, phase)
+            else:
+                gate.clear_question(state)
+        except Exception as exc:  # noqa: BLE001 - must not block the stop
+            print(f"linear-agents gate could not record the event: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    # Exit 2 refuses a PreToolUse call in every Claude Code version, whatever the hook's
+    # onFailure setting does; any error of the gate's own must refuse, never allow.
+    try:
+        state = _state_dir()
+        payload = _hook_input(strict=True)
+        if payload.get("tool_name") == "AskUserQuestion":
+            # A question spends nothing, so a bookkeeping failure must not refuse it.
+            try:
+                gate.note_question(state, payload, time.time())
+            except Exception as exc:  # noqa: BLE001
+                print(f"linear-agents gate could not record the question: {exc}", file=sys.stderr)
+                return 1
+            return 0
+        flags = frozenset(filter(None, os.environ.get(gate.LAUNCH_GRANTS_ENV, "").split(",")))
+        reason = gate.run_gate(payload, state, phase, run, time.time(), flags)
+        if reason is not None:
+            out = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+            print(json.dumps(out))
+    except Exception as exc:  # noqa: BLE001 - see above
+        print(f"linear-agents gate failed, so the launch is refused: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _session_bookkeeping(state: Path) -> None:
+    state.mkdir(parents=True, exist_ok=True)
+    payload = _hook_input()
+    if payload.get("source") == "compact":
+        # status.json still holds the pre-compaction reading; the supervisor would hand off at once.
+        (state / "compacted").touch()
+        (state / "status.json").unlink(missing_ok=True)
+    else:
+        # Background agents survive compaction, so only a real start resets the running count.
+        run = os.environ.get("LINEAR_AGENTS_RUN")
+        gate.record_session(state, run, time.time(), os.environ.get("LINEAR_AGENTS_PHASE"))
+    pad = payload.get("scratchpad_dir")
+    if isinstance(pad, str) and pad:
+        known = state / "scratchpads"
+        listed = known.read_text().splitlines() if known.exists() else []
+        if pad not in listed:
+            with known.open("a") as f:
+                f.write(pad + "\n")
+
+
+def cmd_session_start(args) -> int:
+    # The context is the hook's output; a bookkeeping failure must not take it away.
+    try:
+        _session_bookkeeping(_state_dir())
+    except Exception as exc:  # noqa: BLE001
+        print(f"linear-agents session-start bookkeeping failed: {exc}", file=sys.stderr)
+    return cmd_context(args)
 
 
 def cmd_done(args) -> int:
@@ -195,6 +294,25 @@ def cmd_handoff_ready(args) -> int:
         return 1
     (state / "handoff-ready").touch()
     return 0
+
+
+def cmd_commit(args) -> int:
+    from linear_agents.worktree import git
+
+    paths = [p for p in args.paths if p != "--"]
+    if not paths:
+        print("commit: name the paths to commit after --", file=sys.stderr)
+        return 2
+    git_dir = Path(git("rev-parse", "--absolute-git-dir", cwd=Path.cwd()))
+    # Parallel task-implementers share one worktree and its index: one commit at a time, each
+    # with only its own paths.
+    with (git_dir / "la-commit.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        added = subprocess.run(["git", "add", "--", *paths], check=False)
+        if added.returncode:
+            return added.returncode
+        commit = ["git", "commit", "-m", args.message, "--", *paths]
+        return subprocess.run(commit, check=False).returncode
 
 
 def _config(args):
@@ -270,7 +388,8 @@ def cmd_status(args) -> int:
     print(f"{report['host']} ({report['mode']}), cap {report['session_cap']}")
     for c in report["claims"]:
         alive = "up" if c["tmux_alive"] else "down"
-        print(f"  {c['issue']}  {c['phase']}  {c['state']}  ctx {_pct(c['context_pct'])}  {alive}")
+        line = f"  {c['issue']}  {c['phase']}  {c['state']}  ctx {_pct(c['context_pct'])}  {alive}"
+        print(f"{line}  launches {c['launches']}/{c['launch_limit']}")
     if report["ledger_error"]:
         print(f"  ledger unreadable: {report['ledger_error']}")
     elif not report["claims"]:
@@ -312,6 +431,9 @@ COMMANDS = {
     "hook": cmd_hook,
     "claim": cmd_claim,
     "context": cmd_context,
+    "gate": cmd_gate,
+    "session-start": cmd_session_start,
+    "commit": cmd_commit,
     "done": cmd_done,
     "review-done": cmd_review_done,
     "handoff-ready": cmd_handoff_ready,
@@ -350,6 +472,14 @@ def build_parser() -> argparse.ArgumentParser:
     claim = add("claim", "Claim file globs for this issue")
     claim.add_argument("globs", nargs="+", help="file globs to claim")
     add("context", "Print the issue's claims and context")
+    gate = add("gate", "Hook: allow or refuse a subagent or workflow launch, track questions")
+    which = gate.add_mutually_exclusive_group()
+    which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
+    which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
+    add("session-start", "Hook: record compaction and the scratchpad, print the context")
+    com = add("commit", "Commit only the given paths, one commit at a time per worktree")
+    com.add_argument("-m", dest="message", required=True, help="commit message")
+    com.add_argument("paths", nargs=argparse.REMAINDER, help="-- then the paths to commit")
     done = add("done", "Mark the work done")
     done.add_argument("--summary", required=True, help="what was done")
     add("review-done", "Mark the review done (reads review.md)")

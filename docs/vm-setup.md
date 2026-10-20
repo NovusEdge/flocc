@@ -16,7 +16,9 @@ The root phase must run from `/tmp/la-setup`, where `just ship` puts it; running
 hand from anywhere else is refused.
 
 Upgrading the service on a host is `just ship <target>` again: it ships the current commit as
-a git bundle, since the repo is private and the host has no credential for it.
+a git bundle, since the repo is private and the host has no credential for it. A session already
+running keeps the plugin, hooks and settings it was launched with; the upgrade reaches it at its
+next launch or handoff.
 
 ## Hosts
 
@@ -54,6 +56,12 @@ daytona stop la-smoke
   at prepare. If the mapped repos need tools outside `~/.local/bin`, the mise shims and the
   system directories, add them to `Environment=PATH` in `deploy/linear-agents.service` and to
   `loopCommand` in `installer/internal/steps/run.go`.
+- On your desktop, add the same scratchpad backstop the installer writes on hosts:
+  `echo 'e /tmp/claude-* - - - 2d' | sudo tee /etc/tmpfiles.d/claude-scratch.conf`. The service
+  deletes a run's recorded scratchpads when its claim stops running; this line catches anything
+  left over. Loop-mode hosts have no tmpfiles timer and rely on the service alone.
+- `deploy/agent-plugins.txt` decides which of your plugins agent sessions get. A plugin listed
+  there must be enabled on your desktop, or `just ship` stops and names it.
 
 Watch it from the desktop with `just status <target>` (sessions, last log lines, timer),
 `just logs <target>` (the journal in systemd mode, `run.log` in loop mode) and
@@ -133,6 +141,43 @@ the disk.
 
 The cache change covers uv inside `./setup` only. Sessions still use `~/.cache/uv`, and the npm,
 pnpm, pip and mise caches are not managed.
+
+## Subagents in agent sessions
+
+By default a session may launch only the agents in `plugin/agents/`, and only as often as its
+phase allows; grants (below) can add `general-purpose` or a named workflow. The budgets (which
+agents, the phase's total launches, how many running at once) are in
+`src/linear_agents/gate.py`; the review phase gets none. A hook refuses any other launch and tells
+the agent why. Every launch, allowed or refused, is appended to `<state_dir>/launches.jsonl`, and
+`linear-agents status` shows each running claim's count as `launches N/limit`.
+
+To allow more, put an `allow:` line in the issue's `agent` block, or in a comment of yours on the
+issue (a `steer_authors` comment works too). Items are comma-separated:
+
+```
+allow: launches 14, agent code-mapper, workflow <name>, fix-rounds 2
+```
+
+A comment is applied once the supervisor has delivered it to the live session. A `launches` grant
+in the agent block applies to the implementer phase; from a comment it applies to the phase
+running when the comment arrives. `fix-rounds` raises the implementer's fix rounds.
+
+The items `agent general-purpose` and `workflow <name>` change the session's launch flags, so
+from a comment they take effect at the next handoff; the other items apply within one tick. Until
+the handoff the gate refuses them with the rule `next-session`. A granted workflow starts once per
+run and counts as one launch. `launches N` is the phase's total launches, workflows included.
+Comment grants do not survive a release: a new claim discards them and rewrites only the agent
+block's `allow:` line. To keep a grant across a release, put it in the agent block.
+
+The implementer and fix sessions are the only ones connected to Remote Control. When one of them
+needs an answer it asks with `AskUserQuestion`, which is meant to arrive in the Claude app with a
+push. That is not yet confirmed on a host. A question left unanswered for two hours is escalated
+by the service as tier 2 regardless. While a question is open, a reply on the issue is held and
+delivered after the question is answered, and the context handoff request waits too.
+
+Implementer and fix sessions still use `linear-agents escalate`, with a default, for reversible
+choices. Tester and reviewer sessions are not on Remote Control and escalate with `--waiting` for
+decisions that block them.
 
 ## Upgrading
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from linear_agents.agentblock import IssueSettings
 from linear_agents.config import Config
+from linear_agents.grants import Grants
 
 SOCKET = "linear-agents"
 # --no-verify skips the pre-commit claim check and the commit-msg trailer. Flag order varies, so
@@ -15,7 +16,11 @@ _DENY = [
     "Bash(git commit * --no-verify*)",
     "Bash(git commit * -n *)",
     "Bash(git commit * -n)",
+    # A second claude process is a session the gate and the usage caps never see.
+    "Bash(claude:*)",
 ]
+_GENERAL_DENY = "Agent(general-purpose)"
+NO_GRANTS = Grants()
 _KEEP = ("HOME", "USER", "PATH", "LANG", "TERM")
 # $0 is the token file. Reading it inside the pane keeps the token off the tmux and ps command
 # lines, and a missing file stops the session instead of leaving gh to find other credentials.
@@ -59,6 +64,20 @@ def session_name(issue_key: str, phase: str) -> str:
     return f"{issue_key}-{phase}" if phase in ("test", "review") else issue_key
 
 
+def installed_plugins(path: Path) -> tuple[str, ...]:
+    try:
+        return tuple(json.loads(path.read_text()).get("plugins", {}))
+    except (OSError, ValueError, AttributeError):
+        return ()
+
+
+def allowed_plugins(path: Path) -> tuple[str, ...] | None:
+    if not path.exists():
+        return None
+    lines = (line.strip() for line in path.read_text().splitlines())
+    return tuple(line for line in lines if line and not line.startswith("#"))
+
+
 def claude_argv(
     cfg: Config,
     name: str,
@@ -67,14 +86,23 @@ def claude_argv(
     env: dict[str, str],
     claude_exe: str,
     exe: str,
+    grants: Grants = NO_GRANTS,
+    disabled_plugins: tuple[str, ...] = (),
+    remote_control: bool = True,
 ) -> list[str]:
     servers = {s: cfg.mcp_servers[s] for s in settings.mcp}
-    session_settings = {
+    deny = list(_DENY)
+    if "general-purpose" not in grants.agents:
+        deny.append(_GENERAL_DENY)
+    session_settings: dict = {
         "statusLine": {"type": "command", "command": f"{exe} statusline"},
         "autoContinueAtUsageLimit": True,
         "attribution": False,
-        "permissions": {"deny": _DENY},
+        "permissions": {"deny": deny},
+        "disableWorkflows": not grants.workflows,
     }
+    if disabled_plugins:
+        session_settings["enabledPlugins"] = {p: False for p in disabled_plugins}
     # The pane would otherwise inherit the tmux server's environment, which is whatever the
     # process that started the server had.
     argv = [
@@ -87,8 +115,8 @@ def claude_argv(
         str(cfg.agent_gh_token_file),
         claude_exe,
         prompt,
-        "--remote-control",
-        name,
+        # The Claude app announces every Remote Control session; only the long phases get one.
+        *(["--remote-control", name] if remote_control else []),
         "--name",
         name,
         "--plugin-dir",

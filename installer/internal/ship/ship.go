@@ -77,7 +77,11 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, answersIn, 
 	if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "linear-agents.bundle"), "HEAD"}}); err != nil {
 		return err
 	}
-	plan, err := planPlugins(configDir, private)
+	allow, err := readAllowlist(filepath.Join(root, "deploy", "agent-plugins.txt"))
+	if err != nil {
+		return err
+	}
+	plan, err := planPlugins(configDir, allow, private)
 	if err != nil {
 		return err
 	}

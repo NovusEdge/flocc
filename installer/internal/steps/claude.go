@@ -14,8 +14,8 @@ import (
 	"github.com/NovusEdge/linear-agents/installer/internal/plugins"
 )
 
-// The --name and --remote-control flags the launcher passes need this version.
-var minClaude = [3]int{2, 1, 293}
+// The gate hook's onFailure setting needs this version.
+var minClaude = [3]int{2, 1, 295}
 
 const loginNote = `Claude Code opens next, in ~/agents/worktrees.
 1. Type /login. Over SSH it prints a URL; open it in a browser, sign in with the
@@ -172,7 +172,7 @@ func (Claude) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return false, "", err
 	}
 	if ok, v := claudeVersion(ctx, e); !ok {
-		return false, "claude " + v + "; needs 2.1.293", nil
+		return false, "claude " + v + "; needs 2.1.295", nil
 	}
 	if !loggedIn(ctx, e) {
 		return false, "not logged in to a claude.ai subscription", nil

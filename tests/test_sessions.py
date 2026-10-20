@@ -7,7 +7,16 @@ import pytest
 
 from linear_agents.agentblock import IssueSettings
 from linear_agents.config import load
-from linear_agents.sessions import Sessions, claude_argv, clean_env, session_name, trust_folders
+from linear_agents.grants import Grants
+from linear_agents.sessions import (
+    Sessions,
+    allowed_plugins,
+    claude_argv,
+    clean_env,
+    installed_plugins,
+    session_name,
+    trust_folders,
+)
 from tests.paths import EXAMPLE
 
 CFG = load(EXAMPLE)
@@ -97,3 +106,47 @@ def test_no_server_is_an_error_not_a_new_server(tmp_path):
     s = Sessions(socket=f"la-none-{time.time_ns()}")
     with pytest.raises(subprocess.CalledProcessError):
         s.start("NF-1", tmp_path, ["true"])
+
+
+def settings_of(argv):
+    return json.loads(argv[argv.index("--settings") + 1])
+
+
+def argv_with(**kw):
+    return claude_argv(CFG, "NF-1", IssueSettings(), "p", env={}, claude_exe="c", exe="x", **kw)
+
+
+def test_settings_deny_general_purpose_and_nested_claude_but_allow_questions():
+    s = settings_of(argv_with())
+    deny = s["permissions"]["deny"]
+    assert "Agent(general-purpose)" in deny and "Bash(claude:*)" in deny
+    assert "AskUserQuestion" not in deny
+    assert s["disableWorkflows"] is True
+
+
+def test_grants_lift_the_matching_launch_flags():
+    s = settings_of(argv_with(grants=Grants(agents=("general-purpose",), workflows=("w",))))
+    assert "Agent(general-purpose)" not in s["permissions"]["deny"]
+    assert s["disableWorkflows"] is False
+
+
+def test_unlisted_plugins_are_disabled():
+    s = settings_of(argv_with(disabled_plugins=("glowup@glowup",)))
+    assert s["enabledPlugins"] == {"glowup@glowup": False}
+
+
+def test_remote_control_can_be_left_off():
+    assert "--remote-control" in argv_with()
+    argv = argv_with(remote_control=False)
+    assert "--remote-control" not in argv and argv[argv.index("--name") + 1] == "NF-1"
+
+
+def test_installed_and_allowed_plugin_files(tmp_path):
+    inst = tmp_path / "installed_plugins.json"
+    inst.write_text(json.dumps({"plugins": {"a@m": [{"scope": "user"}], "b@m": []}}))
+    assert installed_plugins(inst) == ("a@m", "b@m")
+    assert installed_plugins(tmp_path / "none.json") == ()
+    allow = tmp_path / "agent-plugins.txt"
+    allow.write_text("# comment\na@m\n\n")
+    assert allowed_plugins(allow) == ("a@m",)
+    assert allowed_plugins(tmp_path / "none.txt") is None

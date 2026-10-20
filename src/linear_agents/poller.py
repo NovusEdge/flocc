@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from linear_agents.agentblock import (
 from linear_agents.config import trailer_enabled
 from linear_agents.context import state_dir, write_context
 from linear_agents.escalation import DEDUPE_S, Escalation, scoped
+from linear_agents.grants import GrantError, add_comment, allow_lines, parse_allow
 from linear_agents.ledger import Claim
 from linear_agents.linear import BOT_PREFIX, Issue, LinearError
 from linear_agents.sessions import session_name
@@ -102,6 +104,43 @@ def reap_worktrees(rt) -> None:
             git("worktree", "remove", "--force", claim.worktree, cwd=rt.cfg.repos[claim.repo].path)
         except (subprocess.CalledProcessError, OSError, KeyError) as exc:
             print(f"reap: worktree {claim.worktree} not removed: {exc}", file=sys.stderr)
+
+
+def scratch_root() -> Path:
+    return Path(f"/tmp/claude-{os.getuid()}")
+
+
+def _scratch_path(line: str) -> Path | None:
+    if not line.strip():
+        return None
+    root = scratch_root()
+    path = Path(line.strip())
+    try:
+        rel = path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return None
+    # A link or ".." in the listed path would make the delete land on another session's pad.
+    if path != root / rel:
+        return None
+    # <project>/<session>/<scratchpad>: anything shorter is shared by other sessions.
+    return path if len(rel.parts) >= 3 else None
+
+
+def clean_scratchpads(rt) -> None:
+    """Removes the Claude Code scratchpads of claims that are no longer running."""
+    for listing in rt.cfg.state_root.glob("*/scratchpads"):
+        claim = ledger.get_claim(rt.con, listing.parent.name)
+        if claim is not None and claim.state == "running":
+            continue
+        # A bad listing must not abort the tick: poll comes after this.
+        try:
+            for line in listing.read_text().splitlines():
+                path = _scratch_path(line)
+                if path is not None:
+                    shutil.rmtree(path, ignore_errors=True)
+            listing.unlink(missing_ok=True)
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"scratchpads: {listing} not cleaned: {exc}", file=sys.stderr)
 
 
 def poll(rt) -> None:
@@ -234,6 +273,10 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     # handoff-ready before the new session wrote its own. Kept for the owner.
     if (d / "handoff.md").exists():
         (d / "handoff.md").replace(d / "handoff.prev.md")
+    # A previous claim's grants, scratchpads, compaction and question belong to that run; the
+    # agent block's grants are written again at launch.
+    for stale in ("grants.json", "scratchpads", "compacted", "asking", "asking-escalated"):
+        (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.
@@ -333,6 +376,18 @@ def route_escalations(rt) -> dict[str, LinearError]:
     return failed
 
 
+def _apply_grants(rt, claim: Claim, body: str) -> None:
+    path = state_dir(rt.cfg, claim.issue_key) / "grants.json"
+    for line in allow_lines(body):
+        try:
+            add_comment(path, parse_allow(line), claim.phase)
+        except GrantError as exc:
+            try:
+                rt.linear.comment(claim.issue_id, f"{BOT_PREFIX} grant not applied: {exc}")
+            except LinearError as err:
+                print(f"{claim.issue_key}: grant reply not posted: {err}", file=sys.stderr)
+
+
 def forward_comments(rt) -> dict[str, LinearError]:
     """Returns the Linear failures by issue key, like route_escalations."""
     failed = {}
@@ -358,10 +413,17 @@ def forward_comments(rt) -> dict[str, LinearError]:
                 who = None
             if who and not comment.body.startswith(BOT_PREFIX):
                 # A dead session is relaunched by the next tick's supervisor, which delivers
-                # this reply and the ones after it.
-                if not rt.sessions.alive(name):
+                # this reply and the ones after it. While a question is open, typing into the
+                # pane could select an option in the dialog, so the reply waits for the answer.
+                if (
+                    not rt.sessions.alive(name)
+                    or (state_dir(rt.cfg, claim.issue_key) / "asking").exists()
+                ):
                     break
                 rt.sessions.send(name, f"{who} replied on Linear: {comment.body}")
+                # After delivery: a dead session breaks out above with last_comment_at unmoved, so
+                # the comment is seen again and neither applied nor answered twice.
+                _apply_grants(rt, claim, comment.body)
             ledger.update_claim(rt.con, claim.issue_key, last_comment_at=comment.created_at)
     return failed
 

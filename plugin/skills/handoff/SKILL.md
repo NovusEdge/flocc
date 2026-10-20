@@ -11,4 +11,9 @@ without you. Include:
 - decisions you made and why, and anything you ruled out;
 - open questions and escalations you raised.
 
-Commit any work in progress first. Then run `linear-agents handoff-ready` and stop.
+If you started agents, wait until they have all finished before handing off; a handoff kills the
+session and every agent it is running. In `handoff.md`, also record `plan.md`'s path, the waves
+done, and the wave in progress.
+
+Commit any work in progress with `linear-agents commit -m '<message>' -- <paths>`. Then run
+`linear-agents handoff-ready` and stop.

@@ -13,6 +13,8 @@ _COMMANDS = """## Commands
 - `linear-agents done --summary '<one paragraph>'` when this phase is finished.
 - `linear-agents review-done` after writing review.md, in the review phase only.
 - `linear-agents handoff-ready` after writing handoff.md when asked to hand off.
+- `linear-agents commit -m '<message>' -- <paths>` to commit only those paths.
+- "Grants" below lists what you may do beyond the defaults; the gate refuses anything else.
 """
 
 
@@ -52,6 +54,7 @@ def phase_prompt(phase: str, issue_key: str, extra: str = "") -> str:
     else:
         body = (
             f"You are fixing {issue_key} after the service's check failed. Follow the"
-            " implementer skill, fix the failure below, then run linear-agents done."
+            " implementer skill's Fix phase section, fix the failure below, then run"
+            " linear-agents done."
         )
     return f"{body}\n\n{extra}".strip()

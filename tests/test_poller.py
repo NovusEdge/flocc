@@ -8,8 +8,10 @@ from linear_agents import ledger
 from linear_agents.config import RepoConfig, load
 from linear_agents.context import state_dir
 from linear_agents.escalation import Notifier
+from linear_agents.grants import Grants, for_phase, set_block
 from linear_agents.linear import BOT_PREFIX, Comment, Issue, LinearError
 from linear_agents.poller import (
+    clean_scratchpads,
     forward_comments,
     maybe_digest,
     poll,
@@ -356,6 +358,102 @@ def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
     assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
 
 
+def test_a_reply_is_held_while_a_question_is_open_and_delivered_after(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True),
+        ]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "asking").write_text("{}")
+    before = ledger.get_claim(rt.con, "NF-1")
+    forward_comments(rt)
+    after = ledger.get_claim(rt.con, "NF-1")
+    assert rt.sessions.sent == [] and before is not None and after is not None
+    assert after.last_comment_at == before.last_comment_at
+    assert not (d / "grants.json").exists()
+    (d / "asking").unlink()
+    forward_comments(rt)
+    assert [body for _, body in rt.sessions.sent] == [
+        "The owner replied on Linear: allow: launches 4"
+    ]
+    assert for_phase(d / "grants.json", "test").launches == 4
+
+
+def test_an_open_question_does_not_hold_other_claims(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    ledger.insert_claim(rt.con, make("NF-2", ()))
+    rt.linear.replies = {
+        "id-NF-2": [Comment("c1", "use B", "2026-10-09T10:00:00Z", mine=True)],
+    }
+    rt.sessions.alive_names.update({"NF-1-test", "NF-2-test"})
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "asking").write_text("{}")
+    forward_comments(rt)
+    assert rt.sessions.sent == [("NF-2-test", "The owner replied on Linear: use B")]
+
+
+def test_owner_and_steer_author_allow_comments_grant_for_the_running_phase(rt):
+    rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "go ahead\nallow: launches 4", "2026-10-09T10:00:00Z", mine=True),
+            Comment("c2", "allow: agent code-mapper", "2026-10-09T10:01:00Z", author="hermes-id"),
+            Comment("c3", "allow: agent general-purpose", "2026-10-09T10:02:00Z", author="x"),
+        ]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    forward_comments(rt)
+    path = state_dir(rt.cfg, "NF-1") / "grants.json"
+    assert for_phase(path, "test") == Grants(launches=4, agents=("code-mapper",))
+    assert for_phase(path, "impl").launches is None
+    assert rt.sessions.sent[0][1].startswith("The owner replied on Linear: go ahead")
+
+
+def test_bad_allow_comment_is_answered_once_and_keeps_grants(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "allow: launches 9", "2026-10-09T10:00:00Z", mine=True),
+            Comment("c2", "allow: launches lots", "2026-10-09T10:01:00Z", mine=True),
+        ]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    forward_comments(rt)
+    # Real Linear returns each comment once (last_comment_at advances); PollLinear ignores it.
+    assert for_phase(state_dir(rt.cfg, "NF-1") / "grants.json", "test").launches == 9
+    replies = [body for _, body in rt.linear.comments if "launches lots" in body]
+    assert len(replies) == 1
+
+
+def test_grants_wait_for_a_live_session(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    rt.linear.replies = {
+        "id-NF-1": [Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True)]
+    }
+    forward_comments(rt)  # session down: nothing applied, nothing advanced
+    assert not (state_dir(rt.cfg, "NF-1") / "grants.json").exists()
+
+
+def test_a_new_claim_starts_without_the_last_claims_state(rt):
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir(parents=True)
+    from_before = Grants(launches=5)
+    set_block(d / "grants.json", from_before)
+    for name in ("scratchpads", "compacted", "asking"):
+        (d / name).write_text("x")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    for name in ("scratchpads", "compacted", "asking"):
+        assert not (d / name).exists()
+    assert for_phase(d / "grants.json", "impl").launches is None
+
+
 def test_escalations_sent_before_a_failure_are_not_resent(rt):
     ledger.insert_claim(rt.con, make("NF-1", ()))
     d = state_dir(rt.cfg, "NF-1")
@@ -696,3 +794,88 @@ def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monke
     monkeypatch.setattr("linear_agents.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert calls == []
+
+
+def pads(rt, key, lines):
+    d = state_dir(rt.cfg, key)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "scratchpads").write_text("".join(f"{x}\n" for x in lines))
+    return d
+
+
+def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    done_pad = root / "proj" / "s1" / "scratchpad"
+    live_pad = root / "proj" / "s2" / "scratchpad"
+    done_pad.mkdir(parents=True)
+    live_pad.mkdir(parents=True)
+    ledger.insert_claim(rt.con, make("NF-1", (), state="blocked"))
+    ledger.insert_claim(rt.con, make("NF-2", ()))
+    d1 = pads(rt, "NF-1", [done_pad])
+    pads(rt, "NF-2", [live_pad])
+    clean_scratchpads(rt)
+    assert not done_pad.exists() and live_pad.exists()
+    assert not (d1 / "scratchpads").exists()
+
+
+def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    project = root / "proj"
+    (project / "s1" / "scratchpad").mkdir(parents=True)
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
+    (project / "s2" / "scratchpad").mkdir(parents=True)
+    listed = [root, project, project / "s1", outside, "", "/", f"{project}/../.."]
+    pads(rt, "NF-1", [*listed, project / "s2" / "scratchpad"])
+    clean_scratchpads(rt)
+    assert root.exists() and (project / "s1" / "scratchpad").exists() and outside.exists()
+    assert not (project / "s2" / "scratchpad").exists()
+
+
+def test_cleanup_does_not_follow_links(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    other = root / "proj" / "s2" / "scratchpad"
+    other.mkdir(parents=True)
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    s1 = root / "proj" / "s1"
+    s1.mkdir(parents=True)
+    in_tree = s1 / "scratchpad"
+    in_tree.symlink_to(other)
+    out_tree = s1 / "elsewhere"
+    out_tree.symlink_to(outside)
+    via_parent = s1 / "up"
+    via_parent.symlink_to(root / "proj" / "s2")
+    ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
+    pads(rt, "NF-1", [in_tree, out_tree, via_parent / "scratchpad"])
+    clean_scratchpads(rt)
+    assert other.exists() and outside.exists()
+
+
+def test_cleanup_covers_a_listing_with_no_claim(rt, tmp_path, monkeypatch):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    pad = root / "proj" / "s1" / "scratchpad"
+    pad.mkdir(parents=True)
+    d = pads(rt, "NF-7", [pad])
+    clean_scratchpads(rt)
+    assert not pad.exists() and not (d / "scratchpads").exists()
+
+
+def test_cleanup_skips_an_unreadable_listing(rt, tmp_path, monkeypatch, capsys):
+    root = tmp_path / "claude-1000"
+    monkeypatch.setattr("linear_agents.poller.scratch_root", lambda: root)
+    pad = root / "proj" / "s1" / "scratchpad"
+    pad.mkdir(parents=True)
+    (state_dir(rt.cfg, "NF-1") / "scratchpads").mkdir(parents=True)
+    bad = state_dir(rt.cfg, "NF-2")
+    bad.mkdir(parents=True)
+    (bad / "scratchpads").write_bytes(b"\xff\xfe\n")
+    pads(rt, "NF-3", [pad])
+    clean_scratchpads(rt)
+    assert not pad.exists()
+    assert capsys.readouterr().err.count("not cleaned") == 2

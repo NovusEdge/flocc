@@ -26,6 +26,8 @@ def test_example_loads_with_defaults():
     assert cfg.shared_uv_cache is False
     assert cfg.state_root.is_absolute()
     assert cfg.mcp_servers["sentry"]["type"] == "http"
+    assert cfg.agent_plugins_file is None
+    assert cfg.installed_plugins_file.name == "installed_plugins.json"
 
 
 def test_effort_for_maps_phase_to_config():
