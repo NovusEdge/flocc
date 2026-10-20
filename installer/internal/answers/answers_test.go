@@ -127,6 +127,40 @@ func TestLoadMissingIsEmpty(t *testing.T) {
 	}
 }
 
+// go-toml's own message quotes the offending line, and in an answers document that line can
+// be a token.
+func TestParseErrorsNeverQuoteTheDocument(t *testing.T) {
+	for _, doc := range []string{
+		"[secrets]\nlinear_key = \"lin_api_s3cret\n",
+		"[secrets]\nagent_token = \"github_pat_s3cret\" junk\n",
+		"[secrets]\npublish_token = [\"github_pat_s3cret\"]\n",
+	} {
+		_, err := Parse([]byte(doc))
+		if err == nil || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("%q: %v", doc, err)
+		}
+	}
+	if _, err := Parse([]byte("[secrets]\nlinear_key = \"x\n")); err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("want the line number, got %v", err)
+	}
+}
+
+func TestParseReadsSecretsAndValuesSkipsEmptyOnes(t *testing.T) {
+	a, err := Parse([]byte("team_key = \"NF\"\n[secrets]\nlinear_key = \"lin_api_x\"\npublish_token = \"github_pat_y\"\n"))
+	if err != nil || a.TeamKey != "NF" {
+		t.Fatalf("%+v %v", a, err)
+	}
+	if got := a.Secrets.Values(); !slices.Equal(got, []string{"lin_api_x", "github_pat_y"}) {
+		t.Fatalf("%v", got)
+	}
+	if (*Secrets)(nil).Values() != nil {
+		t.Fatal("a document without [secrets] has no values")
+	}
+	if a, err := Parse(nil); err != nil || a.Secrets != nil {
+		t.Fatalf("empty document: %+v %v", a, err)
+	}
+}
+
 func TestOverlayKeepsUnsetFields(t *testing.T) {
 	a := &Answers{TeamKey: "NF", DigestIssue: "NF-186"}
 	if err := a.Overlay(&Answers{DigestIssue: "NF-1", Secrets: &Secrets{AgentToken: "t"}}); err != nil {
