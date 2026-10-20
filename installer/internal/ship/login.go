@@ -1,0 +1,162 @@
+package ship
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"regexp"
+	"runtime"
+	"strings"
+
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/qr"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
+)
+
+var emailRE = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$`)
+
+// LoginOptions are what Login needs. Email picks the claude.ai account and may be empty.
+type LoginOptions struct {
+	Target, Email string
+	Out           io.Writer // the host's output and the summary; nil is stdout
+}
+
+// LoginMain runs the host's login phase over ssh -t and opens the sign-in URL it prints here.
+func LoginMain(args []string) int {
+	fs := flag.NewFlagSet("flocc-setup login", flag.ContinueOnError)
+	addr := fs.String("email", "", "the claude.ai account to sign in as")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: flocc-setup login [--email ADDR] <ssh-target|daytona:SANDBOX>")
+		return 2
+	}
+	return exitCode(Login(context.Background(), LoginOptions{Target: fs.Arg(0), Email: *addr, Out: os.Stdout}), "login")
+}
+
+func loginRemote(addr string) string {
+	cmd := "sudo -iu " + steps.ServiceUser + " " + serviceHome + "/.cache/flocc-setup/flocc-setup --phase login"
+	if addr != "" {
+		cmd += " --email " + addr
+	}
+	return cmd
+}
+
+// Login runs the login phase on the host over ssh -t, opens each sign-in URL it prints in the
+// desktop browser and as a QR code, and prints the summary the host ends with. A host that
+// reports a failed check exits non-zero, so the error is returned after the summary is shown.
+func Login(ctx context.Context, o LoginOptions) error {
+	if !ValidTarget(o.Target) {
+		return badTarget(o.Target)
+	}
+	// The address goes into the remote command line, which sudo -i hands to a login shell.
+	if o.Email != "" && !emailRE.MatchString(o.Email) {
+		return usageError(fmt.Sprintf("%q is not an email address", o.Email))
+	}
+	r, dest, err := connect(ctx, o.Target)
+	if err != nil {
+		return err
+	}
+	out := o.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	return login(ctx, r, dest, o.Email, out, OpenURL)
+}
+
+func login(ctx context.Context, r host.Runner, dest Dest, addr string, out io.Writer, open func(url string)) error {
+	tap := &summaryTap{out: &urlWatch{out: out, open: open, seen: map[string]bool{}}}
+	c := sshCmd(dest, true, loginRemote(addr))
+	c.Stdout = tap
+	err := scrubErr(r.Interactive(ctx, c), dest.Token)
+	tap.Flush()
+	if s, ok := tap.Summary(); ok {
+		s.Print(out)
+	}
+	return err
+}
+
+var (
+	oauthURL = regexp.MustCompile(`https://\S*oauth\S*`)
+	ansi     = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
+)
+
+// urlWatch passes the host's output through and opens each OAuth URL in it once.
+type urlWatch struct {
+	out  io.Writer
+	open func(string)
+	line []byte
+	seen map[string]bool
+}
+
+func (u *urlWatch) Write(p []byte) (int, error) {
+	n, err := u.out.Write(p)
+	u.line = append(u.line, p...)
+	for {
+		i := bytes.IndexByte(u.line, '\n')
+		if i < 0 {
+			break
+		}
+		for _, m := range oauthURL.FindAllString(ansi.ReplaceAllString(string(u.line[:i]), ""), -1) {
+			if !u.seen[m] {
+				u.seen[m] = true
+				u.open(m)
+			}
+		}
+		u.line = u.line[i+1:]
+	}
+	return n, err
+}
+
+// OpenURL opens u in the desktop's browser and prints it as a QR code for a phone. ssh -t holds
+// this terminal in raw mode; qr.Write ends its lines with \r\n for that.
+func OpenURL(u string) {
+	opener := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		opener = "open"
+	}
+	if cmd := exec.Command(opener, u); cmd.Start() == nil {
+		go cmd.Wait()
+	}
+	if err := qr.Write(os.Stderr, u); err != nil {
+		fmt.Fprintf(os.Stderr, "\r\nno QR code: %v\r\n", err)
+	}
+}
+
+// exitCode passes on the remote command's exit status; ssh killed by a signal reports -1. A
+// usageError exits 2.
+func exitCode(err error, what string) int {
+	if err == nil {
+		return 0
+	}
+	var usage usageError
+	if errors.As(err, &usage) {
+		fmt.Fprintln(os.Stderr, what+":", usage)
+		return 2
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		if code := exit.ExitCode(); code >= 0 {
+			return code
+		}
+		return 255
+	}
+	fmt.Fprintln(os.Stderr, what+":", err)
+	return 1
+}
+
+// scrubErr removes a Daytona SSH token from an error's text. An ExitError carries no command line
+// and is kept as it is, so callers can still read its exit code.
+func scrubErr(err error, token string) error {
+	var exit *exec.ExitError
+	if err == nil || token == "" || errors.As(err, &exit) {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), token, "<token>"))
+}
