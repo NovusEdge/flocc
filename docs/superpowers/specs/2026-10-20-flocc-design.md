@@ -68,8 +68,10 @@ after the whole run. `prepare_worktree` changes:
 - A test acceptance granted on the old host (`accept_tests`) does not travel; the owner grants it
   again if needed.
 
-The publisher names a non-fast-forward rejection as "the branch moved on GitHub (another host or a
-person pushed)" instead of a token problem.
+The publisher names a non-fast-forward rejection as "GitHub's copy of the branch has commits this
+one lacks (another host or a person pushed, or a pushed commit was rewritten)" instead of a token
+problem. Recovery still finds the tester's commits after the branch merged its base, because they
+stay outside the new merge-base.
 
 ## Old names still read
 
@@ -85,14 +87,21 @@ that loses tester recovery):
 
 1. Merge Part 1, tag `v0.3.0`. Ship refuses a target that has a `linear-agents` user or timer, so
    it cannot install a second poller on la-nimble.
-2. Check the laptop has memory for two VMs. Build `flocc-nimble` by the Incus steps Part 1 adds to
-   `docs/vm-setup.md` (`images:debian/13`, the bridge and forwarding fixes of 2026-10-19), then
-   `just ship root@flocc-nimble` with an `--answers` file whose `[secrets]` block holds la-nimble's
-   three secret files (GitHub shows a token only once). Set its `session_cap` to the intended total
-   minus la-nimble's running sessions.
-3. Drain la-nimble: set its `trigger_label` to `claude-drained`, a label no issue has. Only
-   flocc-nimble starts issues; la-nimble keeps supervising, publishing, reviewing and forwarding
-   comments for its claims. For each blocked or timed-out claim on la-nimble:
+2. From here until flocc-nimble is shipped and la-nimble's trigger label is switched, the owner
+   adds `claude` to no new issue, so neither host can start one. Check the laptop has memory for
+   two VMs and build `flocc-nimble` by the Incus steps Part 1 adds to `docs/vm-setup.md`
+   (`images:debian/13`, the bridge and forwarding fixes of 2026-10-19).
+3. Create the label `claude-drained` in Linear (doctor requires the trigger label to exist), and set
+   la-nimble's `trigger_label` to it: a label that exists but no issue carries. Only flocc-nimble
+   will start issues; la-nimble keeps supervising, publishing, reviewing and forwarding comments for
+   its claims.
+4. Ship flocc-nimble in two passes, with an answers file whose `[secrets]` block holds la-nimble's
+   three secret files (GitHub shows a token only once). Pass 1, `--skip-interactive --answers A`,
+   installs everything and stops at the Claude login with no timer; then set `session_cap` to the
+   intended total minus la-nimble's running sessions. Pass 2, `--answers A` in the owner's own
+   terminal, does the Claude login (an interactive ship reads `[secrets]` only through the answers
+   file it was given, and its forms and `/login` need a TTY).
+5. For each blocked or timed-out claim on la-nimble:
    1. commit or discard what its worktree holds;
    2. push `agent/<key>` with the publish token (the agent token is read-only):
       `GH_TOKEN=$(cat ~/.config/linear-agents/gh-publish.token) git -c credential.helper= -c
@@ -103,8 +112,8 @@ that loses tester recovery):
    Never move an issue la-nimble holds to Todo by hand during the drain: la-nimble no longer polls,
    so its claim would never clear, and its later `release` would move flocc-nimble's issue back to
    Todo. Drain commands are plain SSH: `ssh root@la-nimble sudo -iu linear-agents linear-agents
-   status`.
-4. When no claim on la-nimble is running: wait for that day's digest, copy
+   status`. Once flocc-nimble is shipped, the owner may label issues again.
+6. When no claim on la-nimble is running: wait for that day's digest, copy
    `~/.local/state/linear-agents` and `~/.claude/projects` to the desktop, stop its timer and the
    VM, remove it from the hosts, and raise flocc-nimble's `session_cap`. Delete the VM 7 days later.
 
@@ -133,7 +142,8 @@ Today ship runs `ssh -t` because sudo may prompt, the root phase hands off to th
 through an interactive `sudo -iu`, and answers travel as a file that is left behind when a run
 fails.
 
-- Non-interactive ship opens one SSH session with no TTY. It first checks `sudo -n true` and stops
+- Non-interactive ship runs its setup in one SSH session forced to have no TTY (`ssh -T`, so a
+  `RequestTTY` setting cannot make a pty echo the secrets). It first checks `sudo -n true` and stops
   with "give <user> passwordless sudo, or use root" otherwise.
 - The answers document, secrets included, goes on stdin. The root phase reads stdin to EOF before
   anything else and passes it to `sudo -iu flocc flocc-setup --phase service --answers -` through a
@@ -159,8 +169,10 @@ chat screen, so nothing is scraped:
 3. `ssh -t <host> sudo -iu flocc claude auth login --claudeai [--email <owner>]`. The URL it prints
    is also opened on the desktop and shown as a QR code; the owner signs in and pastes the code
    straight into the remote prompt.
-4. Run `claude remote-control` once and answer its `Enable Remote Control? (y/n)` line prompt
-   with `y`, then stop it.
+4. Trust `~/worktrees` (the `hasTrustDialogAccepted` write the service already does for
+   worktrees), then run `claude remote-control` once under a pty (`script -qfec`), answer its
+   `Enable Remote Control? (y/n)` prompt with `y`, wait for its connected line, and stop it. No
+   connected line within the timeout is a failure that attaches the owner, never a silent success.
 5. `claude auth status` again, then the Run step: doctor, then the timer.
 
 The `just` recipe is `just login <target>` until 2b adds `flocc login -H`.
