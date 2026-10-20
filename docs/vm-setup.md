@@ -1,16 +1,17 @@
 # Host setup
 
-`just ship <target>` sets a host up and is safe to run again: it checks every step, skips the
-finished ones and resumes at the first that is not. `<target>` is an SSH destination, such as
-the host's Tailscale name, or `daytona:<sandbox>`. It needs `go` (from `mise install`), `gh`
-logged in on the desktop, and, for Daytona, the Daytona CLI logged in with `daytona login`.
+`flocc ship -H <name>` sets a host up and is safe to run again: it checks every step, skips the
+finished ones and resumes at the first that is not. `<name>` is a host the desktop knows, added
+with `flocc host add` (see The desktop command below); its host file holds the SSH destination,
+such as the host's Tailscale name, or the Daytona sandbox. It needs `go` (from `mise install`),
+`gh` logged in on the desktop, and, for Daytona, the Daytona CLI logged in with `daytona login`.
 
-A first ship needs `--answers <file>` or `--interactive`; without either, ship has no secrets and
-stops with "Linear API key is required". `--answers <file>` runs without a terminal (`--answers -`
-reads the document from this terminal's stdin). The answers document, secrets included, goes to
-the host on stdin in one SSH session forced to have no TTY (`ssh -T`, so a `RequestTTY` setting
-cannot echo it back), and nothing prompts. The document must have `team_key`, `digest_issue` and
-at least one `[[repos]]`. The SSH user must be root or have passwordless sudo, and `sudo` must be
+`flocc ship -H <name>` runs without a terminal: it sends the host file's answers and the stored
+keys as one answers document on stdin over one SSH session, and nothing prompts; the ntfy topic's
+test push happened once, in `flocc keys`. The SSH session is forced to have no TTY (`ssh -T`, so a
+`RequestTTY` setting cannot echo the document back). The document must have `team_key`,
+`digest_issue` and at least one `[[repos]]`; a host file without them is refused with a pointer to
+`flocc host import -H <name>`. The SSH user must be root or have passwordless sudo, and `sudo` must be
 installed: ship checks `sudo -n true` before it stages anything and stops otherwise. Answers mode
 skips the Tailscale login (it only starts `tailscaled`), so on a host that is not yet on your
 tailnet run `tailscale up --ssh --hostname=<name>` there yourself, as in the Incus steps below,
@@ -18,8 +19,10 @@ and disable key expiry. No secret is written on the host
 except the service's own secret files (mode 600, in `~flocc/.config/flocc/`), and none appears in a
 command line, a `setup.log` or the output; the installer also replaces the secret values of the
 answers document with `<token>` in its log (secrets typed into `--interactive` forms are not in
-that set; no step logs them). A re-ship of a host that is set up needs no `--answers`: the host
-keeps its answers, without secrets, in `~flocc/.config/flocc/answers.toml`, and its secret files.
+that set; no step logs them). The host keeps its answers, without secrets, in
+`~flocc/.config/flocc/answers.toml`, and its secret files.
+
+The document looks like this:
 
 ```toml
 team_key = "NF"
@@ -40,11 +43,12 @@ agent_token = "github_pat_…"
 publish_token = "github_pat_…"
 ```
 
-`just ship <target> --interactive` runs over `ssh -t` and asks on the host's terminal instead: the
-Tailscale login, the three secrets, the config form and the ntfy test push. It takes no
-`--answers`. Everything either mode runs is logged to `/tmp/flocc-setup/setup.log` (root steps)
+`flocc ship -H <name> --interactive` runs over `ssh -t` and asks on the host's terminal instead: the
+Tailscale login, the three secrets, the config form and the ntfy test push. It sends no answers
+document; afterwards it copies the host's answers back into the host file, as `flocc host import`
+does. Everything either mode runs is logged to `/tmp/flocc-setup/setup.log` (root steps)
 and `~flocc/.cache/flocc-setup/setup.log` (the rest). The root phase must run from
-`/tmp/flocc-setup`, where `just ship` puts it; running `flocc-setup` by hand from anywhere else is
+`/tmp/flocc-setup`, where `flocc ship` puts it; running `flocc-setup` by hand from anywhere else is
 refused.
 
 Ship never logs in to Claude. It ends with a summary: the version on the host, the Claude login
@@ -52,17 +56,17 @@ Ship never logs in to Claude. It ends with a summary: the version on the host, t
 live sessions. It exits non-zero when a doctor check fails, except the Claude login while that
 login is pending. On a fresh
 host the login is pending, so the tmux unit runs, the timer stays off and ship exits 0. The command
-to run next is on the summary's `claude login` row, as `just login <target>` with the target you
+to run next is on the summary's `claude login` row, as `flocc login -H <name>` with the host you
 gave ship; each failed doctor check prints below the other rows.
 
 ## Claude login
 
 ```bash
-just login <target> [--email you@example.com]
+flocc login -H <name> [--email you@example.com]
 ```
 
 Sessions need a full claude.ai login: a `claude setup-token` token cannot open Remote Control
-sessions. `just login` runs on the host as `flocc`, over `ssh -t`:
+sessions. `flocc login` runs on the host as `flocc`, over `ssh -t`:
 
 1. It takes the tick lock for the whole login. If a tick is running it waits for it; if sessions
    are running it says so and asks whether to wait for them or stop, because running sessions
@@ -81,12 +85,120 @@ sessions. `just login` runs on the host as `flocc`, over `ssh -t`:
 The host must have been shipped with 0.4.0 or later. When the login lapses, the next tick sends one
 tier 1 push; it pages again only after a login has been seen in between. Shipping to a host whose
 login has lapsed leaves its already-enabled timer on, so ticks keep running and the one page
-stands until you run `just login`.
+stands until you run `flocc login -H <name>`.
 
-Upgrading the service on a host is `just ship <target>` again: it ships the current commit as
+Upgrading the service on a host is `flocc ship -H <name>` again: it ships the current commit as
 a git bundle, since the repo is private and the host has no credential for it. A session already
 running keeps the plugin, hooks and settings it was launched with; the upgrade reaches it at its
 next launch or handoff.
+
+## The desktop command
+
+Everything on the desktop goes through `flocc`, built from this repo:
+
+```bash
+go install ./installer/cmd/flocc     # puts flocc in ~/go/bin
+```
+
+Run `flocc ship` from inside the flocc checkout: ship sends that checkout's commit and builds the
+installer from it, so it needs the checkout and Go on the desktop.
+
+A new host takes these commands, in this order:
+
+```bash
+flocc keys                 # once per desktop: the Linear key, both GitHub tokens, the ntfy topic
+flocc host add flocc-nimble
+flocc ship -H flocc-nimble
+flocc login -H flocc-nimble
+```
+
+`flocc keys` first is the usual order, but not required: `host add` and `ship` ask for any key
+the desktop does not have yet, with the same prompt and checks.
+
+A host that already runs flocc (shipped before 0.5.0, or from another desktop) has no answers in
+a host file, only `ssh`, and `flocc ship` refuses it with a pointer to the import. Import it first,
+so the desktop takes its answers, its keys and its ntfy topic instead of making new ones:
+
+```bash
+flocc host import -H flocc-nimble   # its answers, plus each key the desktop lacks
+flocc keys                          # asks only for what the host did not have
+```
+
+Run `flocc keys` before the import and it mints a new ntfy topic; the next ship then moves the
+host off the topic your phone follows.
+
+The import reads each key from the host's secret files and checks it as a paste is checked
+before storing it, printing "Took the ..." with the key's expiry, never its value. If the
+connection drops partway, it stops with "run flocc host import again" instead of asking for a new
+token, because GitHub shows a token only once. A host token that does not cover a repo is not
+taken; the message names the token. On github.com/settings/personal-access-tokens open it, Edit,
+fix the repository access, then run the import again.
+
+`flocc keys` asks for each key it does not have yet, and only in a terminal: it reads with echo
+off, so a stdin that is not a terminal is refused. For each key it opens the page where the key
+is made, with a QR code for a phone; GitHub's token page arrives with the name, description,
+owner, permissions and the longest expiry (366 days) filled in, and the repos to tick are printed
+beside it. A fine-grained token serves one owner, so map only repos of one owner per token. Paste
+the key at the prompt: nothing shows while you paste, and a key is never taken as a command-line
+argument, so none lands in shell history. Each paste is checked before it is stored, first by
+its prefix (a Linear key in a GitHub slot is refused at once), then against the APIs without
+changing anything: the Linear key must see the hosts' teams and be able to write (it sets a
+digest issue's title to the title it already has, so make the key with Full access), the agent
+token must read every mapped repo and must not be able to push, and the publish token must be
+able to push and open pull requests. The agent token asks for Contents, Pull requests, Issues,
+Commit statuses and Actions, all read-only; fine-grained tokens have no Checks permission, and
+Actions read is what shows workflow runs and their logs. The publish token's page opens only
+after the agent token passed. When an API gives no answer (an outage, a rate limit), the paste is
+not stored, and you are asked "Check the same paste again?"; answering no ends the command, and
+the next `flocc keys` asks for the key again. Last comes the ntfy topic: scan its QR code with
+the ntfy app and confirm the test push. Keys live in the OS keyring (Secret Service, macOS
+Keychain); without one they go in `~/.config/flocc/secrets.toml`, mode 600, and once that file
+exists it is used even after a keyring appears. `flocc keys check` names the store in use and
+runs every check again.
+
+When a stored token does not cover a repo, typically the publish token after `host add` mapped a
+new repo, nothing needs pasting: on github.com/settings/personal-access-tokens open the token
+("flocc agent" or "flocc publish"), Edit, add the repo under Repository access (the token's value
+stays the same), then run `flocc keys check`.
+
+`flocc host add <name> [--ssh DEST | --daytona SANDBOX]` writes
+`~/.config/flocc/hosts/<name>.toml`, the only place a host's answers live: the repos the agent
+token can read (offered ticked), the Linear team (picked for you when the key sees one), the
+digest issue (another host's on the same team, else an open issue titled `flocc digest`, else a
+new one to pin), and the labels `claude`, `escalation`, `needs-decision` and one per repo, created
+when missing. It then checks the keys again against every host's repos and says what a token
+lacks. The SSH destination defaults to `root@<name>`; `all` cannot be a host name. `flocc host
+import -H <name>` builds the file from a host's own saved answers instead; `flocc ship -H <name>
+--interactive` runs the host's own forms and copies its answers back.
+
+`flocc keys rotate github` reopens both token pages (an empty paste keeps a token), checks the new
+ones, and only then stores them and writes them into every host's secret files over SSH; Ctrl-C
+during the checks changes nothing. It lists the hosts it could not reach. Once those are up, run
+the command again, paste nothing and answer yes to "Push the stored keys to ... again?", or run
+`flocc ship -H <host>`. Do not revoke the old token until the sessions running now have ended:
+each reads `GH_TOKEN` when it starts. `flocc status -H all` shows the new expiry after each host's
+next daily token check. `flocc keys rotate linear` does the same for the Linear key.
+
+Any other command runs on a host as `flocc`, with the host's own grammar, so every remedy line a
+host prints works on the desktop with `-H` added:
+
+```bash
+flocc -H flocc-nimble doctor
+flocc release NF-12 --keep-worktree   # the host holding NF-12
+flocc -H flocc-nimble logs -f
+flocc -H flocc-nimble attach NF-12-review
+flocc status -H all                   # every host, with its Claude login and token expiries
+flocc host run -H flocc-nimble -- tmux -L flocc ls
+```
+
+Without `-H` the host is `$FLOCC_HOST`, then the only host, then, for a command naming an issue
+key, the host whose `flocc status --json` holds that claim. `-H` is taken from anywhere before
+`--`, so an argument that is literally `-H` goes after `--`. `-H all` runs only `status`, `doctor`
+and `logs` (without `-f`). SSH to a host, `flocc ship` and `flocc login` included, shares one
+connection per host for ten minutes, so a Tailscale check-mode approval covers a whole run.
+`flocc status` for one host also shows its Claude login (full, token-only, none or unknown) and
+the GitHub token expiries. `ship`, `login`, `keys` and `host` are desktop commands; the host's
+`flocc` refuses them. The `just` host recipes still work and run these commands; they go in 0.6.0.
 
 ## Hosts
 
@@ -94,13 +206,15 @@ Debian, Ubuntu, Arch, Fedora and RHEL VMs run in systemd mode: a timer ticks eve
 and a user unit keeps the tmux server up. Any host whose PID 1 is not systemd runs in loop mode:
 `flocc run` in tmux session `flocc-loop` ticks instead (the installer's `flocc-loop` session
 starts the tmux server), a process a timed-out check daemonized is not killed when its tick
-ends, and after the host stops `just ship` restarts tailscaled and the loop.
+ends, and after the host stops `flocc ship` restarts tailscaled and the loop.
 
 A Daytona container for a smoke test, about $0.17 an hour while running:
 
 ```bash
 daytona create --snapshot daytona-medium --name flocc-smoke --auto-stop 0
-just ship daytona:flocc-smoke --answers answers.toml   # or --interactive
+flocc host add flocc-smoke --daytona flocc-smoke
+flocc ship -H flocc-smoke              # or --interactive
+flocc login -H flocc-smoke
 # when done
 daytona stop flocc-smoke
 ```
@@ -152,8 +266,8 @@ incus exec flocc-nimble -- tailscale up --ssh --hostname=flocc-nimble
 ```
 
 `tailscale up` prints a login URL; open it and log in as the owner. In the Tailscale admin console,
-disable key expiry for the node. `just ship root@flocc-nimble --answers answers.toml` (or
-`--interactive`) then reaches it over Tailscale SSH.
+disable key expiry for the node. `flocc host add flocc-nimble` and `flocc ship -H flocc-nimble` then
+reach it over Tailscale SSH.
 
 ## What the installer cannot do
 
@@ -161,8 +275,8 @@ disable key expiry for the node. `just ship root@flocc-nimble --answers answers.
   must exist in the team. A label per mapped repo (named exactly as its `[repos.<name>]` key)
   is optional: a repo without one is mapped but gets no issues. Doctor fails on the first
   three and warns about missing repo labels.
-- GitHub tokens are made in the browser. The installer shows the permissions each needs next to
-  its input.
+- GitHub tokens are made in the browser. `flocc keys` opens each page with the permissions
+  filled in and prints the repos to tick.
 - In the Tailscale admin console, disable key expiry for the host; an untagged node's key
   otherwise expires after 180 days.
 - In each mapped repo, gitignore everything `./setup` and the check write, or every issue fails
@@ -174,31 +288,22 @@ disable key expiry for the node. `just ship root@flocc-nimble --answers answers.
   deletes a run's recorded scratchpads when its claim stops running; this line catches anything
   left over. Loop-mode hosts have no tmpfiles timer and rely on the service alone.
 - `deploy/agent-plugins.txt` decides which of your plugins agent sessions get. A plugin listed
-  there must be enabled on your desktop, or `just ship` stops and names it.
+  there must be enabled on your desktop, or `flocc ship` stops and names it.
 
-Watch it from the desktop with `just status <target>` (sessions, last log lines, timer),
-`just logs <target>` (the journal in systemd mode, `run.log` in loop mode) and
-`just attach <target> NF-123` (read-only tmux).
+Watch it from the desktop with `flocc -H <name> status` (sessions, last log lines, timer),
+`flocc -H <name> logs -f` (the journal in systemd mode, `run.log` in loop mode) and
+`flocc -H <name> attach NF-123` (read-only tmux).
 
 ### Fleet view
 
-`just fleet-status` shows every host in two tables: one row per host (mode, last tick and exit
-status, running sessions against the cap, 5h and weekly usage, free disk) and one row per live
-claim (phase, age, context use, whether its tmux session is up). `just fleet-status --watch
---interval 30s` redraws until Ctrl-C.
+`flocc status -H all` shows every host in two tables: one row per host (mode, last tick and exit
+status, running sessions against the cap, 5h and weekly usage, free disk, Claude login, token
+expiry) and one row per live claim (phase, age, context use, whether its tmux session is up).
+`flocc status -H all --watch --interval 30s` redraws until Ctrl-C.
 
 The hosts are every sandbox in the active Daytona organization, read with the Daytona CLI's login,
-plus one file per ssh host in `~/.config/flocc/hosts/`, named `<name>.toml`:
-
-```toml
-ssh = "root@flocc-nimble"
-```
-
-A file sets `ssh` or, for a Daytona sandbox, `daytona = "<sandbox>"`; the fleet lists sandboxes
-from the Daytona API either way. The first `just fleet-status` after 0.3.0 converts the old
-one-destination-per-line hosts file into these files, naming each host by its destination without
-`user@` and from the first dot on (`root@box.tail1.ts.net` becomes `box.toml`), renames the old file
-to `hosts.converted` and prints what it did.
+plus every host in `~/.config/flocc/hosts/` reached over SSH (`flocc host add` writes them;
+Daytona hosts come from the Daytona API).
 
 Each started host answers `flocc status --json`, which only reads state: it takes no tick
 lock and calls neither Linear nor GitHub. (On a WAL ledger, opening it read-only still creates
@@ -209,7 +314,10 @@ sandboxes show `-` because their rate is not confirmed. A host file whose `ssh` 
 is skipped with a note, since ssh would read it as an option. An
 unreachable host gets a row and an error line, and the rest still render. Cells are colored for usage at
 the configured `five_hour_max_pct` and `weekly_max_pct`, disk under 15% free, a last tick older
-than 10 minutes, and a non-zero tick exit. Without a Daytona login the Daytona hosts are skipped
+than 10 minutes, and a non-zero tick exit. LOGIN is the host's Claude login, red unless it is a
+full claude.ai login (yellow `unknown` when the host could not read it); TOKENS is the GitHub
+token that expires first, yellow under 14 days and red under 3 days or when GitHub rejected it.
+Without a Daytona login the Daytona hosts are skipped
 with a note.
 
 ### Running more than one host
@@ -230,7 +338,7 @@ so an unmapped issue just sits in Todo.
 
 The hosts share the owner's Claude login and so its 5h and weekly usage limits; each applies
 `five_hour_max_pct` and `weekly_max_pct` to the same account, so size the caps with that in mind.
-`just fleet-status` shows all hosts together. Tailscale hostnames must differ between hosts.
+`flocc status -H all` shows all hosts together. Tailscale hostnames must differ between hosts.
 
 ## Disk use
 
@@ -303,10 +411,9 @@ agents' pre-commit hook, so commits in running sessions are refused. Add it befo
 
 ## Hosts from before 0.3.0
 
-`just ship` refuses a host set up before 0.3.0: it has the service user of the old name, and a
-second poller there would claim the same issues. Build a new host and drain the old one; the steps
-used for la-nimble are tasks 12, 14 and 15 of
-`docs/superpowers/plans/2026-10-20-flocc-part-1-rename.md`.
+A host set up before 0.3.0 is replaced by a new one, not upgraded. Since 0.5.0 `flocc ship` no
+longer checks for such a host, so drain the old one yourself: a second poller there would claim
+the same issues.
 
 A branch the old host pushed continues on the new one: with no local `agent/<key>`, the new host
 fetches it, finds the tester's commits on it and resumes at the implementer. An `--accept-tests`
