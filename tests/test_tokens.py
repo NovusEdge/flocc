@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from flocc import ledger
+from flocc.tick import tick
 from flocc.tokens import TokenRejected, check_claude_login, check_tokens, claude_login, token_expiry
 from tests.fakes import FakeNotifier
 
@@ -165,3 +166,31 @@ def test_unanswered_login_probe_does_not_page(rt):
     rt.claude_exe = "/opt/claude"
     check_claude_login(rt, auth_run("not json"))
     assert rt.notifier.sent == []
+
+
+def test_error_json_without_logged_in_is_no_answer(rt):
+    rt.claude_exe = "/opt/claude"
+    assert claude_login("/opt/claude", auth_run('{"error": "rate limited"}')) is None
+    check_claude_login(rt, auth_run('{"error": "rate limited"}'))
+    assert rt.notifier.sent == []
+    assert ledger.meta_get(rt.con, "claude_login_lapsed") is None
+
+
+def test_tick_runs_the_login_check(rt, tmp_path, monkeypatch):
+    # conftest stubs the check out of every other tick test.
+    rt.claude_exe = "/opt/claude"
+    monkeypatch.setattr("flocc.tick.check_claude_login", lambda r: check_claude_login(r, out))
+    out = auth_run(LOGGED_OUT)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    for name in (
+        "route_escalations",
+        "forward_comments",
+        "reap_worktrees",
+        "clean_scratchpads",
+        "poll",
+        "maybe_digest",
+    ):
+        monkeypatch.setattr(f"flocc.tick.{name}", lambda r: set())
+    assert tick(rt.cfg, tmp_path / "c.toml") == 0
+    [esc] = rt.notifier.sent
+    assert esc.cause == "claude-login"

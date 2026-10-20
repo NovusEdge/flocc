@@ -120,7 +120,10 @@ def claude_login(exe: str, run=subprocess.run) -> str | None:
         auth = json.loads(out.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
-    if not isinstance(auth, dict) or not auth.get("loggedIn"):
+    # A CLI error comes back as JSON without loggedIn; only an explicit false is a logout.
+    if not isinstance(auth, dict) or "loggedIn" not in auth:
+        return None
+    if not auth["loggedIn"]:
         return "none"
     method = auth.get("authMethod") or "unknown"
     # Only a claude.ai login opens Remote Control sessions; a setup-token login cannot.
