@@ -16,7 +16,7 @@ import (
 
 // Resolve is resolveTarget with SSH connection sharing.
 func Resolve(ctx context.Context, target string) (Dest, error) {
-	mux, err := sshMux()
+	mux, err := SSHMux()
 	if err != nil {
 		return Dest{}, err
 	}
@@ -29,10 +29,10 @@ func Resolve(ctx context.Context, target string) (Dest, error) {
 	return d, nil
 }
 
-// sshMux makes every ssh to one host in the next ten minutes reuse the first connection, so one
+// SSHMux makes every ssh to one host in the next ten minutes reuse the first connection, so one
 // Tailscale check-mode approval covers a whole run. %C is a hash of the connection, which keeps
 // the socket path inside the 104 bytes macOS allows.
-func sshMux() ([]string, error) {
+func SSHMux() ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err

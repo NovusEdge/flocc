@@ -473,7 +473,7 @@ func Statuses(ctx context.Context, r host.Runner, hs []hosts.Host) []Row {
 	}
 	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) { return Resolve(ctx, h.Target) })
 	// No sharing is still a working lookup, so a missing ~/.ssh does not stop it.
-	cache.sshOpts, _ = sshMux()
+	cache.sshOpts, _ = SSHMux()
 	return collect(ctx, r, cache, fhs)
 }
 
@@ -507,7 +507,7 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 		}
 		return auth.sshDest(ctx, client, h.ID, h.Name, realWaiter(io.Discard))
 	})
-	cache.sshOpts, _ = sshMux()
+	cache.sshOpts, _ = SSHMux()
 	for {
 		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
 		rows := collect(ctx, host.Exec{}, cache, found)
