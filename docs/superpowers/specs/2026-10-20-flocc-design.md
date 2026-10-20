@@ -212,28 +212,37 @@ The desktop gets a Go binary `flocc` (`installer/cmd/flocc`); the staged install
 phase. On a host, the Python `flocc` is installed only for the service user; on the owner's
 desktop the Python CLI runs as `uv run flocc` in the repo, so `flocc` on a PATH is the Go binary.
 
+`flocc ship` runs inside the flocc checkout and builds `flocc-setup` for the host's architecture
+itself; `flocc-setup ship`, `--stage-only` and `--answers FILE` go away in 0.5.0.
+
 `flocc -H <name> <host command line>` runs that line on the host as the service user, each argument
 quoted on its own, with `ssh -t` only when stdin is a terminal. The remedy lines the service writes
 therefore work on the desktop with `-H` added. Without `-H`: `$FLOCC_HOST`; then the only host;
 then, for a command naming an issue key, the host whose `status --json` holds that claim.
 `-H all` is allowed for read-only commands (`status`, `doctor`, `logs`). SSH uses
-`ControlMaster`/`ControlPersist`, so a Tailscale check-mode approval covers a whole run.
+`ControlMaster`/`ControlPersist`, so a Tailscale check-mode approval covers a whole run. `-H` is
+taken from anywhere before `--`, so a literal `-H` argument goes after `--`.
 
 Desktop-only verbs: `ship`, `login`, `keys`, `host`. The host CLI answers them with "that is a
 desktop command". The `just` recipes become one-line wrappers, then go in 0.6.0.
 
 ## Hosts and their answers live on the desktop
 
+A host file is Part 1's `hosts` package with `answers.Answers` embedded. Its destination must pass
+`ValidTarget` (no shell metacharacters), and `all` is a reserved name.
+
 `flocc host add <name> [--ssh root@<name>]` writes `~/.config/flocc/hosts/<name>.toml`, the only
-source of a host's answers (an `--interactive` ship copies the host's answers back to it):
+source of a host's answers (an `--interactive` ship copies the host's answers back to it). It asks
+for any missing key on the spot, then:
 
 - discovers the repos the agent token can read and offers them ticked;
 - picks the Linear team, automatically when the key sees one;
 - finds or creates the digest issue;
-- creates the missing labels: `claude`, `escalation`, `needs-decision` and one per repo (this also
-  proves the Linear key can write).
+- creates the missing labels: `claude`, `escalation`, `needs-decision` and one per repo.
 
-`flocc host import -H <name>` builds the file from an existing host (flocc-nimble, after Part 1).
+`flocc host import -H <name>` builds the file from an existing host (flocc-nimble, after Part 1),
+and takes each key the desktop lacks from the host, checked as a paste is, so moving a host never
+forces new tokens. `flocc ship` also asks for a missing key on the spot rather than stopping.
 
 ## Keys: made once, checked on entry, reused everywhere
 
@@ -245,13 +254,19 @@ reading pastes with echo off and never taking a key as a flag:
   GitHub tokens use the fine-grained token page with name, description, owner, permissions and
   `expires_in=366` (the maximum) filled in; the repos to tick, which GitHub cannot prefill, are
   printed beside it from all `hosts/*.toml`. The publish token's page opens only after the agent
-  token is accepted.
+  token is accepted. The agent token asks for Contents, Pull requests, Issues, Commit statuses and
+  Actions, all read. Fine-grained tokens have no Checks permission and cannot call the Checks API
+  (docs.github.com: permissions required for fine-grained personal access tokens; managing your
+  personal access tokens).
 - A paste is checked by prefix first (`github_pat_`, `lin_api_`) so a key in the wrong slot is
-  refused at once, then live, without side effects: the Linear key reads the viewer and team (its
-  write access is proven by `host add`); each GitHub token reads every repo in `hosts/*.toml`, and
+  refused at once, then live: the Linear key reads the viewer and team, and proves it can write by
+  setting a mapped digest issue's title to the title it already has (an empty update might not
+  check the key's scope); each GitHub token reads every repo in `hosts/*.toml`, and
   the zero-SHA ref probe (`tokens.can_write_contents`) must fail for the agent token and pass for
   the publish token; a `POST /pulls` naming a head that does not exist must return 422, not 403,
-  for the publish token. Checks re-run when a host is added.
+  for the publish token. Checks re-run when a host is added. A stored token that misses a repo is
+  fixed by editing the token's repository access on GitHub (its value stays the same) and running
+  `flocc keys check`; only a failed paste is asked for again.
 - The ntfy topic is generated and shown as a QR code (`ntfy://ntfy.sh/<topic>?display=flocc` for
   Android, the https URL beside it), then one test push with "did it arrive?". Ship no longer asks
   this every time.
@@ -260,6 +275,8 @@ reading pastes with echo off and never taking a key as a flag:
   `GH_TOKEN` at start).
 
 `flocc status -H all` adds the Claude login and token expiries per host.
+
+0.5.0 removes the old-name readers, so it is tagged and released only after la-nimble is deleted.
 
 ## Part 2b testing
 
@@ -327,5 +344,10 @@ open-source users ask for it.
   sessions read, and the wording of its prompt and connected line under a pty (the login's
   matchers are guesses until Part 2a's Daytona trial captures them).
 - `claude plugin marketplace add` and `claude plugin install` work before any Claude login.
+- A token with Actions and Commit statuses read sees Actions results in `gh pr checks`; otherwise
+  agents use `gh run list --branch` and `gh run view --log-failed`.
+- The Linear write probe refuses a read-only key and adds no history entry to the digest issue.
+- `https://linear.app/settings/account/security` is the API-key page; the menu path (Settings →
+  Account → Security & access) is printed as the fallback.
 - GitHub checks the caller's permission before validating `head` on `POST /pulls`.
 - dockerd does not reset `DOCKER-USER` on `docker network create`.

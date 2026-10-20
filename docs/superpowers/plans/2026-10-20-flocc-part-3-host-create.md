@@ -78,7 +78,7 @@ The plan relies on these outputs and behaviors, taken from docs or one reading a
 | `installer/internal/create/vm.go` (+ `_test`) | VM launch and egress steps | 5 |
 | `installer/internal/create/tailscale.go` (+ `_test`) | Tailscale join step | 6 |
 | `installer/internal/create/install.go` (+ `_test`) | `Installer`, `Steps`, `Create`, snapshot, `ParseArgs`, `Main` | 7 |
-| `installer/internal/cli/create.go` (+ `_test`), `host.go`, `cli.go` (Part 2b's package; names pending Part 2b's final form) | `hostInstaller` adapter, `host create` → `create.Main`, usage line | 7 |
+| `installer/internal/cli/create.go` (+ `_test`), `host.go`, `cli.go` (Part 2b's package; names as in Task 7's Consumes) | `hostInstaller` adapter, `host create` → `create.Main`, usage line | 7 |
 | `justfile`, `tests/test_just_wrappers_removed.py` | recipe wrappers removed | 8 |
 | `docs/vm-setup.md`, `CHANGELOG.md`, `pyproject.toml`, `plugin/.claude-plugin/plugin.json` | docs, release 0.6.0 | 8 |
 | `docs/vm-setup.md` (record), `~/.claude/CLAUDE.md`, issue NF-215 | manual run on zer0-day-nimble; instructions that name removed recipes | 9 (controller) |
@@ -2612,7 +2612,14 @@ git commit -s -m "create: join the VM to the tailnet by QR or a one-off key on s
 
 **Interfaces:**
 - Consumes: every step type (Tasks 2–6), `RunSteps`, `Probe`, `Remote`, `ControlOpts`, `RedactLog`, `tailnetHas`, `cmd`, test helpers `testEnv`, `fakeStep`, `tsStatus`, `tsEmpty` (Task 1); `host.Exec{Log}`; `ui.NewHuh()` (its `Secret(id, title, help string) (string, error)` satisfies `Prompter`).
-- Consumes from Part 2b, **pending**: the 2b names below are as the 2b plan stands today, and that plan is still being finalised. Every call site is marked "reconcile with Part 2b's final names before dispatch", and nothing outside those four marked places names a 2b identifier (the `create` package sees 2b only through `Installer`). The likely final shape, from the 2b plan as read: the `host <sub>` dispatch is `hostVerb` in `cli.go` and receives the words after `host`, so the case is `case "create": return create.Main(args[1:], hostInstaller{d: d})` and `host.go` is not edited; 2b Task 3 removes `hostFile`, so `HostKnown` becomes `_, err := ship.LoadHost(ship.HostsDir(h.d.home), name); return err == nil` (or `!errors.Is(err, os.ErrNotExist)`); 2b routes `ship` and `login` to `ship.Main` and `ship.LoginMain`, so `shipHost` and `loginHost` become small wrappers that call them (non-interactive for ship, and a run whose only open item is the Claude login counts as success). As the 2b plan stands today, package `cli` has: `type deps struct { out, err io.Writer; home string; getenv func(string) string }` and `testDeps(t *testing.T) (*deps, *bytes.Buffer, *bytes.Buffer)` (2b Task 1; the fields 2b adds to `deps` stay zero in tests, so no create test may reach the real verbs), `func hostCmd(ctx context.Context, d *deps, name string, args []string) int` (the `host <sub>` dispatch: `name` is the `-H` value, `args` the line after `host`, `args[0]` the sub-verb), `func hostFile(d *deps, name string) string` (`<home>/.config/flocc/hosts/<name>.toml`), `func hostAdd(ctx context.Context, d *deps, name, sshDest string) error` (`flocc host add <name> --ssh <dest>` after parsing), `func shipHost(ctx context.Context, d *deps, name string) error` (non-interactive `flocc ship -H <name>`; a run whose only open item is the Claude login returns nil), `func loginHost(ctx context.Context, d *deps, name string) error` (`flocc login -H <name>`).
+- Consumes from Part 2b (final names; the `create` package sees 2b only through `Installer`, and only the adapter, the dispatch case and the usage line below name a 2b identifier), all in package `cli`:
+  - `type deps struct { … }` in `installer/internal/cli/cli.go`, and `testDeps(t *testing.T) (*deps, *bytes.Buffer, *bytes.Buffer)` in `cli_test.go` (2b Task 1). The fields later 2b tasks add to `deps` stay zero in `testDeps`, so no create test reaches the real verbs.
+  - `func run(ctx context.Context, d *deps, args []string) int` (2b Tasks 1 and 4; it takes `-H` out of `args` before dispatching) and the `usage` constant in `cli.go`, whose host lines end with `flocc host import -H <name> [--ssh DEST | --daytona SANDBOX]` then `flocc host run -H <name> -- <command...>`.
+  - `func hostCmd(ctx context.Context, d *deps, name string, args []string) int` in `installer/internal/cli/host.go` (2b Tasks 4 and 9): `args` is the line after `host`, `args[0]` the sub-verb (`run`, `add`, `import`), `name` the `-H` value; its `switch args[0]` is where the `create` case goes. There is no `hostVerb`.
+  - `func hostFile(d *deps, name string) string` in `cli/host.go` (2b Task 9): `filepath.Join(hosts.Dir(d.home), name+".toml")`, that is `<home>/.config/flocc/hosts/<name>.toml`. 2b keeps it; there is no `ship.LoadHost`.
+  - `func hostAdd(ctx context.Context, d *deps, name, sshDest string) error` in `cli/host.go` (2b Task 9): `flocc host add <name> --ssh <dest>` after parsing; `sshDest == ""` keeps the file's destination or defaults to `root@<name>`. It is interactive (the repo form, the team pick) and asks on the spot for any key the desktop lacks (Linear key and agent token before the repo form, publish token and ntfy topic after the host file is saved); an empty paste returns an error wrapping `keys.ErrStopped`.
+  - `func shipHost(ctx context.Context, d *deps, name string) error` in `installer/internal/cli/ship.go` (2b Task 10): a non-interactive `flocc ship -H <name>` that asks for any key still missing, calls Part 2a's `ship.Ship` and prints the summary to `d.out` with the host's name in its remedy lines; it returns nil when the only open item is the Claude login.
+  - `func loginHost(ctx context.Context, d *deps, name string) error` in `cli/ship.go` (2b Task 10): `flocc login -H <name>` with no `--email`, through Part 2a's `ship.Login`, which prints the host's summary.
 - Produces: `type Installer interface { HostKnown(name string) bool; AddHost(ctx, name, ssh string) error; Ship(ctx, name string) error; Login(ctx, name string) error }`; `Steps() []Step`; `Create(ctx, e *Env, inst Installer, steps []Step) error`; `waitTailnet(ctx, e) error`; `snapshot(ctx, e) error`; `ParseArgs(args []string) (Spec, error)`; `Main(args []string, inst Installer) int`; in `cli`: `type hostInstaller struct{ d *deps }`.
 
 - [ ] **Step 1: Write the failing create tests**
@@ -3029,7 +3036,7 @@ Expected: every listed test `PASS`.
 
 - [ ] **Step 5: Write the failing cli tests**
 
-Reconcile with Part 2b's final names before dispatch: this file uses `testDeps`, `run`, `hostFile` and `usage`.
+This file uses 2b's `testDeps`, `run`, `hostFile` and `usage`, as listed under Consumes.
 
 `installer/internal/cli/create_test.go`:
 
@@ -3079,7 +3086,7 @@ Expected: FAIL, `undefined: hostInstaller`.
 
 - [ ] **Step 7: Write the adapter and the dispatch**
 
-Reconcile with Part 2b's final names before dispatch: the adapter below calls `deps`, `hostFile`, `hostAdd`, `shipHost` and `loginHost`.
+The adapter below calls 2b's `deps`, `hostFile`, `hostAdd`, `shipHost` and `loginHost` with the signatures listed under Consumes.
 
 `installer/internal/cli/create.go`:
 
@@ -3110,9 +3117,7 @@ func (h hostInstaller) Login(ctx context.Context, name string) error {
 }
 ```
 
-Reconcile with Part 2b's final names before dispatch: the dispatch point is `hostCmd` in `host.go` as the 2b plan stands today; the likely final home is `hostVerb` in `cli.go`.
-
-In `installer/internal/cli/host.go`, in `hostCmd`'s `switch` on the sub-verb `args[0]`, add:
+The dispatch point is 2b's `hostCmd` in `installer/internal/cli/host.go`. In its `switch` on the sub-verb `args[0]`, beside `case "run":` and `case "add", "import":`, add:
 
 ```go
 	case "create":
@@ -3121,9 +3126,7 @@ In `installer/internal/cli/host.go`, in `hostCmd`'s `switch` on the sub-verb `ar
 
 with `"github.com/NovusEdge/flocc/installer/internal/create"` added to the imports. `hostCmd` gets the line after `host`, so `args[1:]` is exactly `[flags] <machine> <name>`. Its `name` parameter (the `-H` value) is not used by create: the new host's name is a positional argument.
 
-Reconcile with Part 2b's final names before dispatch: the `usage` constant and the `flocc host import` line it sits under.
-
-In `installer/internal/cli/cli.go`, add to `usage`, under the `flocc host import` line:
+In `installer/internal/cli/cli.go`, add to 2b's `usage` constant, under the `flocc host import -H <name> [--ssh DEST | --daytona SANDBOX]` line:
 
 ```
   flocc host create [--cpus N] [--memory GiB] [--disk GiB] <machine> <name>
@@ -3460,10 +3463,9 @@ grep shared_team ~/.config/flocc/hosts/flocc-trial.toml
 ```
 
 Map only the scratch repo from Step 1 and answer yes to "Do other hosts handle the unticked
-repos?". The grep must print `shared_team = true`, which renders `skip_unmapped` on the host. (As
-the 2b plan stands, `host add` reads the keys and Linear, not the host. If it turns out to need the
-VM, skip this block and answer the same prompt when create reaches `host add`.) Create finds the
-file and skips its own `host add`. Then:
+repos?". The grep must print `shared_team = true`, which renders `skip_unmapped` on the host. (`host
+add` reads the keys, GitHub and Linear, never the host, so it works before the VM exists.) Create
+finds the file and skips its own `host add`. Then:
 
 ```bash
 build/flocc host create --cpus 2 --memory 4 --disk 20 zer0-day-nimble flocc-trial

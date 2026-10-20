@@ -2105,7 +2105,7 @@ git commit -s -m "Log a host in to Claude under the tick lock and answer the Rem
   - `type Options struct{ Target string; Interactive bool; Out io.Writer }`, `func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error)`, `type Summary = steps.Summary`
   - `type LoginOptions struct{ Target, Email string; Out io.Writer }`, `func Login(ctx context.Context, o LoginOptions) error`
   - `func Main(args []string) int` (`flocc-setup ship`), `func LoginMain(args []string) int`, `func ValidTarget(t string) bool`, `func OpenURL(u string)`
-  - unexported: `type shipOpts struct{ Interactive bool; Answers []byte; Out io.Writer }`, `func ship(ctx, r host.Runner, root string, dest Dest, o shipOpts) (Summary, error)` (replaces the old `ship`; scrubs the Daytona token), `func login(ctx, r host.Runner, dest Dest, email string, out io.Writer, open func(url string)) error`, `type summaryTap`, `func sshNoTTY(d Dest, remote string) host.Cmd`, `type usageError string`, `func connect(ctx, target string) (host.Runner, Dest, error)`, `func repoRoot(ctx, r host.Runner) (string, error)`, `func openAnswers(path string, stdin io.Reader) (io.ReadCloser, error)`
+  - unexported: `type shipOpts struct{ Interactive bool; Answers []byte; Out io.Writer }`, `func ship(ctx, r host.Runner, root string, dest Dest, o shipOpts) (Summary, error)` (replaces the old `ship`; scrubs the Daytona token), `func login(ctx, r host.Runner, dest Dest, email string, out io.Writer, open func(url string)) error`, `type summaryTap`, `func sshNoTTY(d Dest, remote string) host.Cmd`, `type usageError string`, `func connect(ctx, target string, secrets ...string) (host.Runner, Dest, error)` (the runner's log redacts the secrets and the Daytona token; `Ship` passes the answers document's `Secrets.Values()`, and Part 2b Task 4 makes it resolve through `Resolve` for SSH connection sharing), `func repoRoot(ctx, r host.Runner) (string, error)`, `func openAnswers(path string, stdin io.Reader) (io.ReadCloser, error)`
   - `const resetStage`, `const resetStageNoPrompt`; `stageFiles(ctx, r, root, dir, arch, configDir string, private func(string) (bool, error)) error` (no answers argument)
 
 - [ ] **Step 1: Write the failing ship tests**
@@ -2542,14 +2542,15 @@ func badTarget(t string) error {
 	return usageError(fmt.Sprintf("%q is not an ssh target or daytona:<sandbox>", t))
 }
 
-// connect resolves target to an ssh destination and a runner whose log hides its token.
-func connect(ctx context.Context, target string) (host.Runner, Dest, error) {
+// connect resolves target to an ssh destination and a runner whose log hides its token and
+// secrets.
+func connect(ctx context.Context, target string, secrets ...string) (host.Runner, Dest, error) {
 	home, _ := os.UserHomeDir()
 	dest, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
 	if err != nil {
 		return nil, Dest{}, err
 	}
-	return host.Exec{Log: host.Redact(os.Stderr, dest.Token)}, dest, nil
+	return host.Exec{Log: host.Redact(os.Stderr, append(secrets, dest.Token)...)}, dest, nil
 }
 
 func repoRoot(ctx context.Context, r host.Runner) (string, error) {
@@ -2626,20 +2627,24 @@ func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
 		return Summary{}, badTarget(o.Target)
 	}
 	var doc []byte
+	var secrets []string
 	if answers != nil {
 		if o.Interactive {
 			return Summary{}, usageError("--interactive asks for every answer on the host; drop the answers")
 		}
 		var err error
+		var a *answersPkg.Answers
 		if doc, err = io.ReadAll(answers); err == nil {
 			// Here, so a typo fails before anything reaches the host.
-			_, err = answersPkg.Parse(doc)
+			a, err = answersPkg.Parse(doc)
 		}
 		if err != nil {
 			return Summary{}, err
 		}
+		// A second guard on this side: no command line carries them, but the log must not either.
+		secrets = a.Secrets.Values()
 	}
-	r, dest, err := connect(ctx, o.Target)
+	r, dest, err := connect(ctx, o.Target, secrets...)
 	if err != nil {
 		return Summary{}, err
 	}
