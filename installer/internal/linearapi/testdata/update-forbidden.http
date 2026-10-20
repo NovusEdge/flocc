@@ -1,0 +1,4 @@
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+
+{"data":null,"errors":[{"message":"Invalid scope: `write` required","extensions":{"type":"forbidden","code":"FORBIDDEN","statusCode":403,"userPresentableMessage":"You do not have permission to perform this action."}}]}
