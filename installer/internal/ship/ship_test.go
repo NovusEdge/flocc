@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,48 +18,13 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
 
-func TestRemoteCmdMakesTheBinaryExecutable(t *testing.T) {
-	want := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo /tmp/flocc-setup/flocc-setup --answers /tmp/flocc-setup/a.toml --skip-interactive"
-	if got := remoteCmd("/x/a.toml", true); got != want {
-		t.Fatalf("%q", got)
-	}
-}
-
 func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 	dest := Dest{SSH: "tok123@ssh.example.test", Token: "tok123"}
 	f := host.NewFake().On("ssh tok123@ssh.example.test uname -m", 255, "")
-	err := ship(context.Background(), f, t.TempDir(), dest, "", false)
+	_, err := ship(context.Background(), f, t.TempDir(), dest, shipOpts{})
 	if err == nil || strings.Contains(err.Error(), "tok123") || !strings.Contains(err.Error(), "<token>") {
 		t.Fatalf("%v", err)
 	}
-}
-
-func TestShipClearsTheStageWithSudoOnATerminal(t *testing.T) {
-	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, "build"), 0o755)
-	os.WriteFile(filepath.Join(root, "build", "flocc-setup-linux-amd64"), []byte("bin"), 0o755)
-	cfg := t.TempDir()
-	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{})
-	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{})
-	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
-	f := &bundleOK{host.NewFake().On("ssh h uname -m", 0, "x86_64\n")}
-	ship(context.Background(), f, root, Dest{SSH: "h"}, "", false)
-	if !f.Ran("interactive: ssh -t h sudo rm -rf /tmp/flocc-setup && mkdir -p /tmp/flocc-setup") {
-		t.Fatalf("%v", f.Calls)
-	}
-}
-
-// bundleOK accepts git commands, whose paths hold a random temp dir.
-type bundleOK struct{ *host.Fake }
-
-func (b *bundleOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
-	if c.Name == "git" {
-		if slices.Contains(c.Args, "config") {
-			return host.Result{Stdout: "x@x.test\n"}, nil
-		}
-		return host.Result{}, nil
-	}
-	return b.Fake.Run(ctx, c)
 }
 
 func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
@@ -74,7 +40,7 @@ func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 		On("git -C "+root+" bundle create "+dir+"/flocc.bundle HEAD", 0, "").
 		On("git -C /m/X archive --format=tar -o "+dir+"/mp-X.tar HEAD", 0, "").
 		On("git -C /m/X rev-parse HEAD", 0, "abc\n")
-	err := stageFiles(context.Background(), f, root, dir, "amd64", "", cfg, func(string) (bool, error) { return true, nil })
+	err := stageFiles(context.Background(), f, root, dir, "amd64", cfg, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,9 +297,242 @@ func TestArchFor(t *testing.T) {
 
 func TestStageFilesFailsWithoutAnOwnerIdentity(t *testing.T) {
 	f := host.NewFake().On("git -C /r config user.name", 0, "\n").On("git -C /r config user.email", 0, "\n")
-	err := stageFiles(context.Background(), f, "/r", t.TempDir(), "amd64", "", t.TempDir(), nil)
+	err := stageFiles(context.Background(), f, "/r", t.TempDir(), "amd64", t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "user.name") {
 		t.Fatalf("%v", err)
+	}
+}
+
+// stageOK accepts git and scp, whose arguments hold the random stage directory.
+type stageOK struct{ *host.Fake }
+
+func (s *stageOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
+	switch c.Name {
+	case "git":
+		if slices.Contains(c.Args, "config") {
+			return host.Result{Stdout: "x@x.test\n"}, nil
+		}
+		return host.Result{}, nil
+	case "scp":
+		s.Fake.Calls = append(s.Fake.Calls, "scp")
+		return host.Result{}, nil
+	}
+	return s.Fake.Run(ctx, c)
+}
+
+func shipRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "build"), 0o755)
+	os.WriteFile(filepath.Join(root, "build", "flocc-setup-linux-amd64"), []byte("bin"), 0o755)
+	cfg := t.TempDir()
+	writeJSON(t, filepath.Join(cfg, "settings.json"), map[string]any{})
+	writeJSON(t, filepath.Join(cfg, "plugins/known_marketplaces.json"), map[string]any{})
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	return root
+}
+
+func TestRemoteCmd(t *testing.T) {
+	for _, c := range []struct {
+		interactive bool
+		want        string
+	}{
+		{false, "chmod 755 /tmp/flocc-setup/flocc-setup && sudo -n /tmp/flocc-setup/flocc-setup --answers -"},
+		{true, "chmod 755 /tmp/flocc-setup/flocc-setup && sudo /tmp/flocc-setup/flocc-setup"},
+	} {
+		if got := remoteCmd(c.interactive); got != c.want {
+			t.Errorf("interactive=%v: %q", c.interactive, got)
+		}
+	}
+}
+
+// okSudo is a host that passes the probes of a non-interactive ship; the ssh calls that carry
+// secrets or sudo pass -T, the uname probe does not.
+func okSudo(dest string) *stageOK {
+	return &stageOK{host.NewFake().
+		On("ssh "+dest+" uname -m", 0, "x86_64\n").
+		On("ssh -T "+dest+" sudo -n true", 0, "").
+		On("ssh -T "+dest+" "+resetStageNoPrompt, 0, "")}
+}
+
+func TestShipSendsTheAnswersOnStdinWithoutATerminal(t *testing.T) {
+	root := shipRoot(t)
+	doc := []byte("[secrets]\nlinear_key = \"lin_api_s3cret\"\n")
+	run := "ssh -T root@h " + remoteCmd(false)
+	f := okSudo("root@h")
+	if _, err := ship(context.Background(), f, root, Dest{SSH: "root@h"}, shipOpts{Answers: doc, Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("interactive: "+run) || f.Stdins[run] != string(doc) {
+		t.Fatalf("calls %v stdin %q", f.Calls, f.Stdins[run])
+	}
+	for _, c := range f.Calls {
+		if strings.Contains(c, "ssh -t") || strings.Contains(c, "s3cret") {
+			t.Errorf("%s", c)
+		}
+	}
+}
+
+// A RequestTTY setting in the owner's ssh config would otherwise give the run a pty, which
+// echoes the answers document back and never passes EOF.
+func TestNonInteractiveShipForbidsAPtyOnEverySudoAndSecretCall(t *testing.T) {
+	f := okSudo("root@h")
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	var checked int
+	for _, c := range f.Calls {
+		c = strings.TrimPrefix(c, "interactive: ")
+		// uname and Part 1's legacy-user probe carry no sudo and no secrets.
+		if !strings.HasPrefix(c, "ssh ") || !strings.Contains(c, "sudo ") {
+			continue
+		}
+		checked++
+		if !strings.HasPrefix(c, "ssh -T ") {
+			t.Errorf("no -T: %s", c)
+		}
+	}
+	if checked != 3 {
+		t.Fatalf("want the sudo probe, the stage reset and the run, got %d: %v", checked, f.Calls)
+	}
+}
+
+func TestSSHNoTTYPutsDashTAfterTheOptions(t *testing.T) {
+	c := sshNoTTY(Dest{SSH: "u@h", Opts: []string{"-o", "BatchMode=yes"}}, "true")
+	if got := c.String(); got != "ssh -o BatchMode=yes -T u@h true" {
+		t.Fatal(got)
+	}
+}
+
+func TestShipWithoutAnswersStillClosesStdin(t *testing.T) {
+	run := "ssh -T h " + remoteCmd(false)
+	f := okSudo("h")
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := f.Stdins[run]; !ok || s != "" {
+		t.Fatalf("the run must get an empty stdin, not the terminal: %q %v", s, ok)
+	}
+}
+
+func TestShipStopsBeforeStagingWithoutPasswordlessSudo(t *testing.T) {
+	f := &stageOK{host.NewFake().
+		On("ssh ada@h uname -m", 0, "x86_64\n").
+		On("ssh -T ada@h sudo -n true", 1, "").
+		On("ssh -T ada@h id -un", 0, "ada\n")}
+	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "ada@h"}, shipOpts{Out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "give ada passwordless sudo, or use root") {
+		t.Fatalf("%v", err)
+	}
+	if f.Ran("scp") || f.Ran("ssh -T ada@h "+resetStageNoPrompt) {
+		t.Fatalf("staged anyway: %v", f.Calls)
+	}
+}
+
+func TestShipNamesAMissingSudo(t *testing.T) {
+	f := &stageOK{host.NewFake().On("ssh root@h uname -m", 0, "x86_64\n").On("ssh -T root@h sudo -n true", 127, "")}
+	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "install sudo") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestShipInteractiveKeepsTheTerminal(t *testing.T) {
+	f := &stageOK{host.NewFake().On("ssh h uname -m", 0, "x86_64\n")}
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{Interactive: true, Out: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"interactive: ssh -t h " + resetStage, "interactive: ssh -t h " + remoteCmd(true)} {
+		if !f.Ran(want) {
+			t.Errorf("missing %s in %v", want, f.Calls)
+		}
+	}
+	for _, c := range f.Calls {
+		if strings.Contains(c, "sudo -n true") || strings.Contains(c, " -T ") {
+			t.Errorf("an interactive ship lets sudo ask on the terminal: %s", c)
+		}
+	}
+}
+
+func TestShipReturnsTheHostsSummaryAndDropsItsLine(t *testing.T) {
+	want := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
+	run := "ssh -T root@h " + remoteCmd(false)
+	f := okSudo("root@h")
+	f.OnInteractiveOut(run, "setup chatter\r\n\r\n"+want.Line()+"\r\n")
+	var out strings.Builder
+	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: &out})
+	if err != nil || got.Version != want.Version || !got.LoginPending {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if out.String() != "setup chatter\r\n\r\n" {
+		t.Fatalf("output %q", out.String())
+	}
+}
+
+func TestShipKeepsTheSummaryWhenTheHostExitsNonZero(t *testing.T) {
+	sum := Summary{Version: "flocc 0.4.0", Login: "full", Failed: []string{"FAIL  linear: 401"}}
+	run := "ssh -T root@h " + remoteCmd(false)
+	f := okSudo("root@h")
+	f.OnInteractiveOut(run, sum.Line()+"\n").OnInteractive(run, errors.New("exit status 1"))
+	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard})
+	if err == nil || !got.Failing() {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestShipRefusesAnUnsafeTargetAndInteractiveAnswers(t *testing.T) {
+	var u usageError
+	if _, err := Ship(context.Background(), Options{Target: "-oProxyCommand=x"}, nil); !errors.As(err, &u) {
+		t.Fatalf("%v", err)
+	}
+	if _, err := Ship(context.Background(), Options{Target: "h", Interactive: true}, strings.NewReader("")); !errors.As(err, &u) {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestShipRejectsABrokenAnswersDocumentBeforeConnecting(t *testing.T) {
+	_, err := Ship(context.Background(), Options{Target: "h"}, strings.NewReader("[secrets]\nlinear_key = \"lin_api_s3cret\n"))
+	if err == nil || strings.Contains(err.Error(), "s3cret") || !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestOpenAnswersReadsStdinForDashAndAFileOtherwise(t *testing.T) {
+	rc, err := openAnswers("-", strings.NewReader("from stdin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := io.ReadAll(rc); string(b) != "from stdin" {
+		t.Fatalf("%q", b)
+	}
+	path := filepath.Join(t.TempDir(), "a.toml")
+	os.WriteFile(path, []byte("from file"), 0o600)
+	rc, err = openAnswers(path, strings.NewReader("unused"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	if b, _ := io.ReadAll(rc); string(b) != "from file" {
+		t.Fatalf("%q", b)
+	}
+}
+
+func TestValidTarget(t *testing.T) {
+	for _, ok := range []string{"root@flocc-nimble", "daytona:flocc-smoke", "box.tailnet.ts.net"} {
+		if !ValidTarget(ok) {
+			t.Errorf("%q refused", ok)
+		}
+	}
+	for _, bad := range []string{"", "-oProxyCommand=x", "h;rm -rf ~", "a b", "$(id)", "h`id`"} {
+		if ValidTarget(bad) {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestMainRefusesInteractiveWithAnswers(t *testing.T) {
+	if code := Main([]string{"--interactive", "--answers", "a.toml", "h"}); code != 2 {
+		t.Fatalf("exit %d", code)
 	}
 }
 
@@ -341,7 +540,7 @@ func TestShipRefusesAHostThatRunsTheOldService(t *testing.T) {
 	f := host.NewFake().
 		On("ssh h uname -m", 0, "x86_64\n").
 		On("ssh h id -u "+legacyUser, 0, "998\n")
-	err := ship(context.Background(), f, t.TempDir(), Dest{SSH: "h"}, "", false)
+	_, err := ship(context.Background(), f, t.TempDir(), Dest{SSH: "h"}, shipOpts{})
 	if err == nil || !strings.Contains(err.Error(), "a second poller") {
 		t.Fatalf("%v", err)
 	}
@@ -352,7 +551,7 @@ func TestShipRefusesAHostThatRunsTheOldService(t *testing.T) {
 	f = host.NewFake().
 		On("ssh tok9@ssh.example.test uname -m", 0, "x86_64\n").
 		On("ssh tok9@ssh.example.test id -u "+legacyUser, 0, "998\n")
-	err = ship(context.Background(), f, t.TempDir(), dest, "", false)
+	_, err = ship(context.Background(), f, t.TempDir(), dest, shipOpts{})
 	if err == nil || strings.Contains(err.Error(), "tok9") {
 		t.Fatalf("%v", err)
 	}
