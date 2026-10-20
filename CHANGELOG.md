@@ -30,9 +30,16 @@ One `flocc` command on the desktop; keys are made once, checked when pasted and 
   `flocc login -H` replace `just ship` and `just login`, whose recipes now run them; run
   `flocc ship` inside the flocc checkout. `flocc-setup ship` is gone, and with it
   `--stage-only DIR` and `--answers FILE`.
+- `flocc ship -H <host>` replaces a host's key file when the desktop's key differs, so it brings
+  the host's keys in line with the desktop; it is the fallback when `keys rotate` could not reach
+  a host. `host import`, `keys rotate` and `-H all` first open the SSH connection in the
+  terminal, so a Tailscale check-mode approval link shows; without a terminal they fail with a
+  message saying so instead of hanging.
 - The agent token asks for Actions and Commit statuses read instead of Checks, which
-  fine-grained tokens do not have. The Linear key must be able to write; its check sets a
-  digest issue's title to the title it has.
+  fine-grained tokens do not have. An agent token imported from a pre-0.5.0 host has neither:
+  on github.com/settings/personal-access-tokens add Actions (read) and Commit statuses (read)
+  to it (the token's value stays the same). The Linear key must be able to write; its check
+  sets a digest issue's title to the title it has.
 - `flocc status` shows the host's Claude login (full, token-only, none or unknown) and its token
   expiries, per host under `-H all`. A pending login names the host by its desktop name:
   `flocc login -H <name>`. The host CLI gains `logs` and `attach` and refuses the desktop
