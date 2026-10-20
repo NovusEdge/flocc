@@ -1,7 +1,3 @@
-# Must match state_root in the host's config.toml. Only status/logs on non-systemd
-# (loop) hosts read it; systemd hosts use journald.
-runlog := "~/.local/state/flocc/run.log"
-
 [private]
 default:
     @just --list --unsorted
@@ -62,47 +58,47 @@ ship target *flags: build
 login target *flags: build
     build/flocc login {{flags}} {{target}}
 
-# Run any command on the host as flocc, with the service PATH
+# Run a raw command on the host as flocc, with the service PATH
 [group('host')]
 [positional-arguments]
-host target *cmd: build
-    build/flocc host "$@"
+host name *cmd: build
+    t=$1; shift; build/flocc host run -H "$t" -- "$@"
 
 # Run flocc doctor on the host
 [group('host')]
-doctor target: build
-    build/flocc host {{target}} flocc doctor
+doctor name: build
+    build/flocc -H {{name}} doctor
 
 # Show tmux sessions, the last run.log lines and the timer on the host
 [group('host')]
-status target: build
-    build/flocc host {{target}} 'tmux -L flocc ls; tail -n 10 {{runlog}}; [ -d /run/systemd/system ] && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers flocc.timer; true'
+status name: build
+    build/flocc -H {{name}} status
 
 # Show every host's loop, sessions, usage and disk in one table
 [group('host')]
 fleet-status *flags: build
-    build/flocc fleet {{flags}}
+    build/flocc status -H all {{flags}}
 
 # Follow run.log, or the journal on a systemd host
 [group('host')]
-logs target: build
-    build/flocc host {{target}} 'if [ -d /run/systemd/system ]; then journalctl --user -u flocc -f; else tail -f {{runlog}}; fi'
+logs name: build
+    build/flocc -H {{name}} logs -f
 
 # Attach read-only to a tmux session on the host
 [group('host')]
-attach target session: build
-    build/flocc host {{target}} tmux -L flocc attach -r -t {{session}}
+attach name session: build
+    build/flocc -H {{name}} attach {{session}}
 
 # Run one tick by hand on the host
 [group('host')]
-tick target: build
-    build/flocc host {{target}} flocc tick
+tick name: build
+    build/flocc -H {{name}} tick
 
 # Release a blocked or timed-out issue's claim on the host
 [group('host')]
 [positional-arguments]
-release target key *flags: build
-    t=$1; shift; build/flocc host "$t" flocc release "$@"
+release name key *flags: build
+    t=$1; shift; build/flocc -H "$t" release "$@"
 
 # Create a Daytona sandbox that never auto-stops
 [group('daytona')]

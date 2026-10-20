@@ -609,3 +609,21 @@ func TestShipRefusesAHostThatRunsTheOldService(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestResolveSharesOneConnectionPerHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	d, err := Resolve(context.Background(), "root@h")
+	if err != nil || d.SSH != "root@h" {
+		t.Fatalf("%+v %v", d, err)
+	}
+	opts := strings.Join(d.Opts, " ")
+	for _, want := range []string{"ControlMaster=auto", "ControlPersist=10m", "ControlPath=" + filepath.Join(home, ".ssh", "flocc-%C")} {
+		if !strings.Contains(opts, want) {
+			t.Errorf("%s missing from %q", want, opts)
+		}
+	}
+	if st, err := os.Stat(filepath.Join(home, ".ssh")); err != nil || st.Mode().Perm() != 0o700 {
+		t.Fatalf("%v %v", st, err)
+	}
+}

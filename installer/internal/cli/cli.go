@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 )
 
@@ -34,33 +35,46 @@ type deps struct {
 	out, err io.Writer
 	home     string
 	getenv   func(string) string
+	run      host.Runner
+	tty      bool // stdin is a terminal, so ssh gets -t
+	resolve  func(context.Context, string) (ship.Dest, error)
+	fleet    func(args []string) int
 }
 
 func Main(args []string) int {
 	home, _ := os.UserHomeDir()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return run(ctx, &deps{out: os.Stdout, err: os.Stderr, home: home, getenv: os.Getenv}, args)
+	st, _ := os.Stdin.Stat()
+	d := &deps{out: os.Stdout, err: os.Stderr, home: home, getenv: os.Getenv,
+		run: host.Exec{}, tty: st != nil && st.Mode()&os.ModeCharDevice != 0, resolve: ship.Resolve,
+		fleet: func(args []string) int { return ship.FleetMain(args, os.Stdout) }}
+	return run(ctx, d, args)
 }
 
 func run(ctx context.Context, d *deps, args []string) int {
-	if len(args) == 0 {
+	name, rest, err := splitHost(args)
+	if err != nil {
+		fmt.Fprintln(d.err, "flocc:", err)
+		return 2
+	}
+	if len(rest) == 0 {
 		fmt.Fprint(d.err, usage)
 		return 2
 	}
-	switch args[0] {
+	switch rest[0] {
 	case "help", "-h", "--help":
 		fmt.Fprint(d.out, usage)
 		return 0
 	case "ship":
-		return ship.Main(args[1:])
+		return ship.Main(rest[1:])
 	case "login":
-		return ship.LoginMain(args[1:])
-	case "fleet":
-		return ship.FleetMain(args[1:], d.out)
+		return ship.LoginMain(rest[1:])
 	case "host":
-		return ship.HostMain(args[1:])
+		return hostCmd(ctx, d, name, rest[1:])
 	}
-	fmt.Fprintf(d.err, "flocc: unknown command %q; flocc help lists them\n", args[0])
-	return 2
+	if name == "all" {
+		return onAll(ctx, d, rest)
+	}
+	return onHost(ctx, d, name, rest)
 }

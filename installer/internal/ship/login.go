@@ -37,7 +37,7 @@ func LoginMain(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: flocc-setup login [--email ADDR] <ssh-target|daytona:SANDBOX>")
 		return 2
 	}
-	return exitCode(Login(context.Background(), LoginOptions{Target: fs.Arg(0), Email: *addr, Out: os.Stdout}), "login")
+	return ExitCode(Login(context.Background(), LoginOptions{Target: fs.Arg(0), Email: *addr, Out: os.Stdout}), "login")
 }
 
 func loginRemote(addr string) string {
@@ -131,9 +131,9 @@ func OpenURL(u string) {
 	}
 }
 
-// exitCode passes on the remote command's exit status; ssh killed by a signal reports -1. A
+// ExitCode passes on the remote command's exit status; ssh killed by a signal reports -1. A
 // usageError exits 2.
-func exitCode(err error, what string) int {
+func ExitCode(err error, what string) int {
 	if err == nil {
 		return 0
 	}

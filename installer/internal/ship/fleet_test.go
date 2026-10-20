@@ -380,6 +380,17 @@ func TestFleetPrintsWhatTheOldHostsFileConversionDropped(t *testing.T) {
 	}
 }
 
+// destCache hands an ssh host its destination without minting one, so the sharing must come
+// from the cache itself.
+func TestStatusesSharesConnectionsForSSHHosts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := host.NewFake()
+	Statuses(context.Background(), f, []hosts.Host{{Name: "a", SSH: "root@a"}})
+	if len(f.Calls) != 1 || !strings.Contains(f.Calls[0], "ControlMaster=auto") || !strings.Contains(f.Calls[0], "BatchMode=yes") {
+		t.Fatalf("%v", f.Calls)
+	}
+}
+
 func TestAge(t *testing.T) {
 	for in, want := range map[float64]string{5: "5s", 119: "1m", 3700: "1h", 200000: "2d"} {
 		if got := age(in); got != want {
