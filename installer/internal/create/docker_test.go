@@ -2,11 +2,14 @@ package create
 
 import (
 	"context"
+	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -208,52 +211,77 @@ func execLine(t *testing.T, key string) string {
 	return ""
 }
 
-// runUnitScript runs the unit's key= script against fake iptables and ip6tables that log their
-// arguments. iptables has DOCKER-USER, and -C exits checkExit; ip6tables has no DOCKER-USER chain.
-func runUnitScript(t *testing.T, key, checkExit string) []string {
+// runUnitScript runs the unit's ExecStart script against fake iptables and ip6tables that log their
+// arguments and exit as exits gives for "<tool> <first arg>", else 0. ip6tables has no DOCKER-USER
+// chain unless exits says otherwise. It returns the log and the script's exit status.
+func runUnitScript(t *testing.T, exits map[string]int) ([]string, int) {
 	t.Helper()
 	bin := t.TempDir()
 	logf := filepath.Join(bin, "log")
+	codes := map[string]int{"ip6tables -L": 1}
+	maps.Copy(codes, exits)
 	fake := "#!/bin/sh\necho \"$(basename \"$0\") $*\" >> " + logf + "\n" +
-		"case \"$(basename \"$0\") $1\" in\n" +
-		"  \"iptables -L\") exit 0 ;;\n" +
-		"  \"iptables -C\") exit " + checkExit + " ;;\n" +
-		"  \"ip6tables -L\") exit 1 ;;\n" +
-		"esac\nexit 0\n"
+		"case \"$(basename \"$0\") $1\" in\n"
+	for k, v := range codes {
+		fake += "  \"" + k + "\") exit " + strconv.Itoa(v) + " ;;\n"
+	}
+	fake += "esac\nexit 0\n"
 	for _, n := range []string{"iptables", "ip6tables"} {
 		if err := os.WriteFile(filepath.Join(bin, n), []byte(fake), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	c := exec.Command("sh", "-c", execLine(t, key))
+	c := exec.Command("sh", "-c", execLine(t, "ExecStart"))
 	c.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin")
-	if out, err := c.CombinedOutput(); err != nil {
-		t.Fatalf("%s: %v %s", key, err, out)
+	out, err := c.CombinedOutput()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatalf("%v %s", err, out)
 	}
 	b, _ := os.ReadFile(logf)
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	dockerUntouched(t, lines)
-	return lines
+	return lines, c.ProcessState.ExitCode()
 }
 
 func TestDockerUnitStartAddsMissingRules(t *testing.T) {
 	want := []string{
-		"iptables -L DOCKER-USER -n",
 		"iptables -C DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
 		"iptables -I DOCKER-USER -o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
 		"iptables -C DOCKER-USER -i incusbr0 -j ACCEPT",
 		"iptables -I DOCKER-USER -i incusbr0 -j ACCEPT",
 		"ip6tables -L DOCKER-USER -n",
 	}
-	if got := runUnitScript(t, "ExecStart", "1"); !slices.Equal(got, want) {
+	got, code := runUnitScript(t, map[string]int{"iptables -C": 1})
+	if !slices.Equal(got, want) {
 		t.Fatalf("%q", got)
+	}
+	// No IPv6 DOCKER-USER chain is Docker running without IPv6, not a failure.
+	if code != 0 {
+		t.Fatalf("exit %d", code)
 	}
 }
 
 func TestDockerUnitStartAddsNothingTwice(t *testing.T) {
-	for _, line := range runUnitScript(t, "ExecStart", "0") {
+	lines, code := runUnitScript(t, nil)
+	for _, line := range lines {
 		if strings.Contains(line, " -I ") {
 			t.Fatalf("inserted a present rule: %s", line)
+		}
+	}
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+}
+
+// The unit's status is the only trace a boot leaves, so a VM left behind FORWARD's DROP must fail it.
+func TestDockerUnitStartFailsWhenAnIPv4RuleIsNotInserted(t *testing.T) {
+	for name, exits := range map[string]map[string]int{
+		"insert fails": {"iptables -C": 1, "iptables -I": 1},
+		"no chain":     {"iptables -L": 1, "iptables -C": 1, "iptables -I": 1},
+	} {
+		if _, code := runUnitScript(t, exits); code == 0 {
+			t.Errorf("%s: exit 0", name)
 		}
 	}
 }
