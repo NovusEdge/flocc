@@ -20,7 +20,11 @@ import (
 
 // Installer runs the desktop's host verbs (Part 2b) once the VM is on the tailnet.
 type Installer interface {
-	HostKnown(name string) bool
+	// Ready fails when ship would, for a reason known before create changes the machine.
+	Ready() error
+	// HostKnown reports whether name has a host file, and fails when that file reaches the host
+	// some other way than ssh: skipping host add would then ship to that host, not the VM.
+	HostKnown(name, ssh string) (bool, error)
 	AddHost(ctx context.Context, name, ssh string) error
 	Ship(ctx context.Context, name string) error
 	Login(ctx context.Context, name string) error
@@ -44,8 +48,13 @@ func Create(ctx context.Context, e *Env, inst Installer, steps []Step) error {
 	if err := waitTailnet(ctx, e); err != nil {
 		return err
 	}
-	if !inst.HostKnown(name) {
-		if err := inst.AddHost(ctx, name, "root@"+name); err != nil {
+	ssh := "root@" + name
+	known, err := inst.HostKnown(name, ssh)
+	if err != nil {
+		return err
+	}
+	if !known {
+		if err := inst.AddHost(ctx, name, ssh); err != nil {
 			return fmt.Errorf("host add: %w", err)
 		}
 	}
@@ -160,6 +169,15 @@ func Main(args []string, inst Installer) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "flocc host create:", err)
 		return 2
+	}
+	// Ship and host add would hit these only after the firewall, the VM and the tailnet changed.
+	err = inst.Ready()
+	if err == nil {
+		_, err = inst.HostKnown(spec.Name, "root@"+spec.Name)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "flocc host create:", err)
+		return 1
 	}
 	logPath, logf, err := openLog(spec.Name)
 	if err != nil {

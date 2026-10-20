@@ -80,7 +80,7 @@ func (Incus) Check(ctx context.Context, e *Env) (bool, string, error) {
 // machine shared with other work.
 func (Incus) Apply(ctx context.Context, e *Env) error {
 	r, err := inspectIncus(ctx, e)
-	if err != nil {
+	if err != nil || r.ok {
 		return err
 	}
 	return fmt.Errorf("%s. On %s run:\n  %s\nthen run create again", r.detail, e.Spec.Machine, r.fix)

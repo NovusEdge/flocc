@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -13,14 +15,21 @@ import (
 )
 
 type fakeInst struct {
-	known   bool
-	shipErr error
-	calls   []string
+	known    bool
+	readyErr error
+	knownErr error
+	shipErr  error
+	calls    []string
 }
 
-func (f *fakeInst) HostKnown(name string) bool {
-	f.calls = append(f.calls, "known "+name)
-	return f.known
+func (f *fakeInst) Ready() error {
+	f.calls = append(f.calls, "ready")
+	return f.readyErr
+}
+
+func (f *fakeInst) HostKnown(name, ssh string) (bool, error) {
+	f.calls = append(f.calls, "known "+name+" "+ssh)
+	return f.known, f.knownErr
 }
 
 func (f *fakeInst) AddHost(_ context.Context, name, ssh string) error {
@@ -70,7 +79,7 @@ func TestCreateRunsStepsThenTheVerbsThenSnapshots(t *testing.T) {
 	if f.Calls[0] != "interactive: true" || step.applied != 1 {
 		t.Fatalf("%v applied=%d", f.Calls, step.applied)
 	}
-	if want := []string{"known flocc-a", "add flocc-a root@flocc-a", "ship flocc-a", "login flocc-a"}; !slices.Equal(inst.calls, want) {
+	if want := []string{"known flocc-a root@flocc-a", "add flocc-a root@flocc-a", "ship flocc-a", "login flocc-a"}; !slices.Equal(inst.calls, want) {
 		t.Fatalf("%q", inst.calls)
 	}
 	if !f.Ran(snapCreate) || !f.Ran(snapRename) || f.Ran(snapDelete) {
@@ -90,7 +99,7 @@ func TestCreateWaitsForThisDesktopToSeeTheNode(t *testing.T) {
 	if err := Create(context.Background(), e, inst, nil); err != nil {
 		t.Fatal(err)
 	}
-	if sleeps != 2 || inst.calls[0] != "known flocc-a" {
+	if sleeps != 2 || inst.calls[0] != "known flocc-a root@flocc-a" {
 		t.Fatalf("sleeps=%d %q", sleeps, inst.calls)
 	}
 }
@@ -111,8 +120,17 @@ func TestCreateSkipsHostAddForAKnownHost(t *testing.T) {
 	if err := Create(context.Background(), e, inst, nil); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"known flocc-a", "ship flocc-a", "login flocc-a"}; !slices.Equal(inst.calls, want) {
+	if want := []string{"known flocc-a root@flocc-a", "ship flocc-a", "login flocc-a"}; !slices.Equal(inst.calls, want) {
 		t.Fatalf("%q", inst.calls)
+	}
+}
+
+func TestCreateStopsWhenTheHostFileReachesSomethingElse(t *testing.T) {
+	e, _ := createEnv(createMachine())
+	inst := &fakeInst{known: true, knownErr: errors.New("flocc-a.toml reaches daytona:flocc-a")}
+	err := Create(context.Background(), e, inst, nil)
+	if err == nil || !strings.Contains(err.Error(), "daytona:flocc-a") || len(inst.calls) != 1 {
+		t.Fatalf("%v %q", err, inst.calls)
 	}
 }
 
@@ -262,5 +280,39 @@ func TestParseArgs(t *testing.T) {
 func TestMainRejectsBadArgumentsBeforeConnecting(t *testing.T) {
 	if code := Main([]string{"box"}, &fakeInst{}); code != 2 {
 		t.Fatal(code)
+	}
+}
+
+// mainStderr runs Main with no ssh on PATH, so a Main that went on to connect fails without
+// reaching any machine, and returns its exit code and what it wrote to os.Stderr.
+func mainStderr(t *testing.T, args []string, inst Installer) (int, string) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = w
+	code := Main(args, inst)
+	os.Stderr = stderr
+	w.Close()
+	got, _ := io.ReadAll(r)
+	return code, string(got)
+}
+
+func TestMainChecksTheCheckoutBeforeConnecting(t *testing.T) {
+	inst := &fakeInst{readyErr: errors.New("flocc ship ships the flocc checkout it runs in; cd into it")}
+	code, stderr := mainStderr(t, []string{"box", "flocc-a"}, inst)
+	if code != 1 || !strings.Contains(stderr, "flocc host create: flocc ship ships the flocc checkout") || !slices.Equal(inst.calls, []string{"ready"}) {
+		t.Fatalf("%d %q %q", code, stderr, inst.calls)
+	}
+}
+
+func TestMainChecksTheHostFileBeforeConnecting(t *testing.T) {
+	inst := &fakeInst{knownErr: errors.New("flocc-a.toml reaches daytona:flocc-a")}
+	code, stderr := mainStderr(t, []string{"box", "flocc-a"}, inst)
+	if code != 1 || !strings.Contains(stderr, "daytona:flocc-a") || !slices.Equal(inst.calls, []string{"ready", "known flocc-a root@flocc-a"}) {
+		t.Fatalf("%d %q %q", code, stderr, inst.calls)
 	}
 }
