@@ -14,10 +14,10 @@ type secretSpec struct{ id, file, title, help string }
 
 var secretSpecs = []secretSpec{
 	{"linear_key", "linear.key", "Linear API key",
-		"Linear → Settings → Security & access → Personal API keys. Limit it to team NF."},
+		"Linear → Settings → Account → Security & access → New API key, with Full access. Limit it to team NF."},
 	{"agent_token", "gh-agent.token", "GitHub agent token (read-only)",
 		"github.com/settings/personal-access-tokens, fine-grained. Resource owner: the mapped repos' owner; " +
-			"repository access: the mapped repos; permissions, all Read-only: Contents, Pull requests, Checks, Issues. " +
+			"repository access: the mapped repos; permissions, all Read-only: Contents, Pull requests, Issues, Commit statuses, Actions." +
 			"Agents use it through gh, so it must not be able to push."},
 	{"publish_token", "gh-publish.token", "GitHub publish token",
 		"Fine-grained, same owner and repos. Contents: Read and write; Pull requests: Read and write. " +

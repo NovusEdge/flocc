@@ -6,10 +6,18 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
+	"time"
 
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/linearapi"
+	"github.com/NovusEdge/flocc/installer/internal/qr"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 )
 
@@ -39,6 +47,16 @@ type deps struct {
 	tty      bool // stdin is a terminal, so ssh gets -t
 	resolve  func(context.Context, string) (ship.Dest, error)
 	fleet    func(args []string) int
+
+	store     func() keys.Store // opened on first use: host commands never wait on the keyring
+	prompt    keys.Prompt
+	open      func(url string)
+	qr        func(text string)
+	http      *http.Client
+	githubAPI string
+	linearAPI string
+	ntfyBase  string
+	newTopic  func() string
 }
 
 func Main(args []string) int {
@@ -49,6 +67,17 @@ func Main(args []string) int {
 	d := &deps{out: os.Stdout, err: os.Stderr, home: home, getenv: os.Getenv,
 		run: host.Exec{}, tty: st != nil && st.Mode()&os.ModeCharDevice != 0, resolve: ship.Resolve,
 		fleet: func(args []string) int { return ship.FleetMain(args, os.Stdout) }}
+	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, os.Stderr) })
+	d.prompt = keys.Huh{}
+	d.open = ship.OpenURL
+	d.qr = func(text string) {
+		if err := qr.Write(os.Stdout, text); err != nil {
+			fmt.Fprintln(os.Stderr, "no QR code:", err)
+		}
+	}
+	d.http = &http.Client{Timeout: 30 * time.Second}
+	d.githubAPI, d.linearAPI, d.ntfyBase = githubapi.DefaultBase, linearapi.DefaultURL, "https://ntfy.sh"
+	d.newTopic = answers.RandomTopic
 	return run(ctx, d, args)
 }
 
@@ -72,6 +101,8 @@ func run(ctx context.Context, d *deps, args []string) int {
 		return ship.LoginMain(rest[1:])
 	case "host":
 		return hostCmd(ctx, d, name, rest[1:])
+	case "keys":
+		return keysCmd(ctx, d, rest[1:])
 	}
 	if name == "all" {
 		return onAll(ctx, d, rest)
