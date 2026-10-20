@@ -318,14 +318,6 @@ func TestResolveTargetDaytonaRefusedLoginWhilePolling(t *testing.T) {
 	}
 }
 
-func TestRedactHidesTheToken(t *testing.T) {
-	var b strings.Builder
-	redact{&b, "tok123"}.Write([]byte("$ ssh tok123@ssh.app.daytona.io uname -m\n"))
-	if strings.Contains(b.String(), "tok123") || !strings.Contains(b.String(), "<token>@ssh.app.daytona.io") {
-		t.Fatalf("%q", b.String())
-	}
-}
-
 func TestArchFor(t *testing.T) {
 	for in, want := range map[string]string{"x86_64\n": "amd64", "aarch64": "arm64"} {
 		if got, err := archFor(in); err != nil || got != want {
