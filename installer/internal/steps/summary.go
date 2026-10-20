@@ -25,7 +25,7 @@ type Summary struct {
 	Login        string               `json:"login"` // full, token-only (<method>) or none
 	LoginPending bool                 `json:"login_pending"`
 	TokenExpiry  map[string]time.Time `json:"token_expiry,omitempty"` // by "agent token" / "publish token"; the zero time never expires
-	Failed       []string             `json:"failed,omitempty"`       // doctor FAIL lines, the Claude login's left out
+	Failed       []string             `json:"failed,omitempty"`       // doctor FAIL lines, a pending Claude login's left out
 	Timer        bool                 `json:"timer"`
 	Sessions     []string             `json:"sessions,omitempty"` // live sessions, "NF-1 impl"
 	SessionsErr  string               `json:"sessions_err,omitempty"`
@@ -128,10 +128,14 @@ func Summarize(ctx context.Context, e *Env) Summary {
 	s := Summary{
 		Version: e.Output(ctx, e.Real(".local/bin/flocc"), "--version"),
 		Login:   claudeLogin(ctx, e),
-		Failed:  withoutLogin(d.fails),
+		Failed:  d.fails,
 		Timer:   timerOn(ctx, e),
 	}
 	s.LoginPending = s.Login != "full"
+	// With a full login, doctor's login FAIL (a probe timeout, say) kept the timer off.
+	if s.LoginPending {
+		s.Failed = withoutLogin(d.fails)
+	}
 	if !d.ok && len(d.fails) == 0 {
 		s.Failed = []string{"FAIL  doctor: did not run cleanly; run flocc doctor on the host"}
 	}
@@ -158,7 +162,7 @@ func Summarize(ctx context.Context, e *Env) Summary {
 	return s
 }
 
-// Failing reports a FAIL line other than the Claude login's, which just login fixes.
+// Failing reports a FAIL line other than a pending Claude login's, which just login fixes.
 func (s Summary) Failing() bool { return len(s.Failed) > 0 }
 
 // Print writes the summary the owner reads; Target is the desktop's name for the host.
