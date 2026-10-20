@@ -74,10 +74,11 @@ func TestTailnetInstallsAgainWhenTailscaledIsNotRunning(t *testing.T) {
 	if !f.Ran(installTS) {
 		t.Fatalf("%v", f.Calls)
 	}
+	dockerUntouched(t, f.Calls)
 }
 
 func TestTailnetStopsOnANameCollisionBeforeAsking(t *testing.T) {
-	f := host.NewFake().On(hasTS, 0, "")
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin","Self":{"PublicKey":"nodekey:bb"}}`)
 	e, _ := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsStatus)
 	err := Tailnet{}.Apply(context.Background(), e)
@@ -86,6 +87,69 @@ func TestTailnetStopsOnANameCollisionBeforeAsking(t *testing.T) {
 	}
 	if e.UI.(*fakeUI).asked != 0 {
 		t.Fatal("asked for a key")
+	}
+	for _, c := range f.Calls {
+		if strings.Contains(c, "tailscale up") {
+			t.Fatalf("joined: %s", c)
+		}
+	}
+}
+
+// tsWithVM is this desktop's view once the VM has joined: the VM, node key nodekey:aa, is a peer,
+// offline while its tailscaled is down or logged out.
+const tsWithVM = `{"Self":{"HostName":"desk","DNSName":"desk.tail1.ts.net."},
+ "Peer":{"nodekey:aa":{"HostName":"flocc-a","DNSName":"flocc-a.tail1.ts.net."}}}`
+
+func TestTailnetRejoinsAStoppedVMAsItself(t *testing.T) {
+	up := "interactive: incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a"
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"Stopped","Self":{"PublicKey":"nodekey:aa"}}`)
+	e, _ := testEnv(f)
+	e.Local = host.NewFake().On("tailscale status --json", 0, tsWithVM)
+	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran(up) || e.UI.(*fakeUI).asked != 0 {
+		t.Fatalf("asked=%d %v", e.UI.(*fakeUI).asked, f.Calls)
+	}
+}
+
+func TestTailnetLogsAnExpiredVMInAgainAsItself(t *testing.T) {
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin","Self":{"PublicKey":"nodekey:aa"}}`)
+	e, _ := testEnv(f)
+	e.Local = host.NewFake().On("tailscale status --json", 0, tsWithVM)
+	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("interactive: "+upQR) || e.UI.(*fakeUI).asked != 1 {
+		t.Fatalf("asked=%d %v", e.UI.(*fakeUI).asked, f.Calls)
+	}
+}
+
+// Right after a boot tailscaled does not answer, then reports NoState, before it knows it is logged out.
+func TestTailnetWaitsForTailscaledToSettle(t *testing.T) {
+	f := host.NewFake().On(hasTS, 0, "").
+		OnSeq(tsInVM, host.Result{Code: 1}, host.Result{Stdout: `{"BackendState":"NoState"}`}, host.Result{Stdout: `{"BackendState":"NeedsLogin"}`})
+	e, _ := testEnv(f)
+	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
+	slept := 0
+	e.Sleep = func(time.Duration) { slept++ }
+	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if slept != 2 || !f.Ran("interactive: "+upQR) {
+		t.Fatalf("slept %d %v", slept, f.Calls)
+	}
+}
+
+func TestTailnetStopsWhenTailscaledNeverAnswers(t *testing.T) {
+	f := host.NewFake().On(hasTS, 0, "")
+	e, _ := testEnv(f)
+	e.Local = host.NewFake().On("tailscale status --json", 0, tsWithVM)
+	var slept time.Duration
+	e.Sleep = func(d time.Duration) { slept += d }
+	err := Tailnet{}.Apply(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "does not answer") || slept != 15*time.Second {
+		t.Fatalf("%v after %v", err, slept)
 	}
 	for _, c := range f.Calls {
 		if strings.Contains(c, "tailscale up") {
@@ -152,7 +216,7 @@ func TestTailnetStopsWaitingForTheRenameWhenCancelled(t *testing.T) {
 }
 
 func TestAuthKeyGoesOnStdin(t *testing.T) {
-	f := host.NewFake().On(hasTS, 0, "").On(upKey, 0, "")
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upKey, 0, "")
 	e, _ := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
 	e.UI = &fakeUI{key: "  tskey-auth-k1-SECRET\n"}
@@ -169,12 +233,15 @@ func TestAuthKeyGoesOnStdin(t *testing.T) {
 	}
 }
 
+// needsLogin makes a fake ssh answer the VM's tailscale status as a node that is not logged in.
+const needsLogin = `case "$*" in *status*) echo '{"BackendState":"NeedsLogin"}'; exit 0;; esac` + "\n"
+
 // The key must reach the VM's tailscale and nothing else: not ssh's argv, not the log create
 // writes, not the terminal. This runs the real host.Exec against a fake ssh.
 func TestAuthKeyNeverReachesArgvOrTheLog(t *testing.T) {
 	bin := t.TempDir()
 	got := filepath.Join(bin, "stdin")
-	script := "#!/bin/sh\ncat > " + got + "\n"
+	script := "#!/bin/sh\n" + needsLogin + "cat > " + got + "\n"
 	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +273,7 @@ func TestAuthKeyNeverReachesArgvOrTheLog(t *testing.T) {
 func TestAuthKeyEchoedByTheVMStaysOutOfTheLogAndTheError(t *testing.T) {
 	bin := t.TempDir()
 	// Only the command that was given a key fails; the install and status probes before it pass.
-	script := "#!/bin/sh\nk=$(cat)\nif [ -n \"$k\" ]; then echo \"invalid key: $k\" >&2; exit 1; fi\n"
+	script := "#!/bin/sh\n" + needsLogin + "k=$(cat)\nif [ -n \"$k\" ]; then echo \"invalid key: $k\" >&2; exit 1; fi\n"
 	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +302,7 @@ func TestAuthKeyEchoedByTheVMStaysOutOfTheLogAndTheError(t *testing.T) {
 
 func TestAuthKeyIsScrubbedFromErrors(t *testing.T) {
 	const key = "tskey-auth-k1-SECRET"
-	f := host.NewFake().On(hasTS, 0, "").On(upKey, 1, "backend error: invalid key: "+key)
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upKey, 1, "backend error: invalid key: "+key)
 	e, _ := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
 	e.UI = &fakeUI{key: key}

@@ -178,6 +178,12 @@ func (n *tsNode) named(name string) bool {
 // tailnetHas reports whether a node on the owner's tailnet already uses name, as this desktop
 // sees the tailnet.
 func tailnetHas(ctx context.Context, e *Env, name string) (bool, error) {
+	return tailnetHasExcept(ctx, e, name, "")
+}
+
+// tailnetHasExcept is tailnetHas without the peer whose node key is except. The VM is such a peer
+// while its tailscaled is down or logged out, and this desktop lists it offline under its name.
+func tailnetHasExcept(ctx context.Context, e *Env, name, except string) (bool, error) {
 	out, err := host.Must(ctx, e.Local, cmd("tailscale", "status", "--json"))
 	if err != nil {
 		return false, fmt.Errorf("reading the tailnet on this desktop: %w", err)
@@ -192,8 +198,9 @@ func tailnetHas(ctx context.Context, e *Env, name string) (bool, error) {
 	if st.Self.named(name) {
 		return true, nil
 	}
-	for _, p := range st.Peer {
-		if p.named(name) {
+	// Peer is keyed by node public key, the form Self.PublicKey takes in the VM's own status.
+	for k, p := range st.Peer {
+		if k != except && p.named(name) {
 			return true, nil
 		}
 	}

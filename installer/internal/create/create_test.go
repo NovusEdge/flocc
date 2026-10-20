@@ -358,6 +358,16 @@ func TestTailnetHasMatchesDNSLabelOrHostName(t *testing.T) {
 	}
 }
 
+func TestTailnetHasExceptSkipsOnlyThatNodeKey(t *testing.T) {
+	e, _ := testEnv(host.NewFake())
+	e.Local = host.NewFake().On("tailscale status --json", 0, tsStatus)
+	for except, want := range map[string]bool{"k1": false, "k2": true, "": true} {
+		if got, err := tailnetHasExcept(context.Background(), e, "flocc-a", except); err != nil || got != want {
+			t.Errorf("except %q: %v %v", except, got, err)
+		}
+	}
+}
+
 func TestTailnetHasFailsWhenThisDesktopIsOffTheTailnet(t *testing.T) {
 	e, _ := testEnv(host.NewFake())
 	e.Local = host.NewFake().On("tailscale status --json", 1, "")
