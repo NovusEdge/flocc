@@ -47,12 +47,14 @@ var nimble = hosts.Host{Name: "flocc-nimble", SSH: "root@flocc-nimble", Machine:
 // doneOps is a desktop with nothing left to do: one host on zer0-day-nimble, every key stored.
 func doneOps(l *opsLog) setupOps {
 	return setupOps{
-		checkout:   func() (string, string, error) { return "/repo", "0.8.0", nil },
-		fillKeys:   func(_ context.Context, s []keys.Slot) error { l.add("keys %v", s); return nil },
-		checkKeys:  func(context.Context) []string { return nil },
-		hosts:      func() []hosts.Host { return []hosts.Host{nimble} },
-		saveHost:   func(h hosts.Host) error { l.add("save %s machine=%s", h.Name, h.Machine); return nil },
-		createLogs: func() []string { return nil },
+		checkout:        func() (string, string, error) { return "/repo", "0.8.0", nil },
+		fillKeys:        func(_ context.Context, s []keys.Slot) error { l.add("keys %v", s); return nil },
+		checkKeys:       func(context.Context) []string { return nil },
+		tailnetClient:   func() (tailnetAPI, bool) { return nil, false },
+		tailscaleStatus: func(context.Context) ([]byte, error) { return []byte(tsStatus(true)), nil },
+		hosts:           func() []hosts.Host { return []hosts.Host{nimble} },
+		saveHost:        func(h hosts.Host) error { l.add("save %s machine=%s", h.Name, h.Machine); return nil },
+		createLogs:      func() []string { return nil },
 		machine: func(_ context.Context, m string) machineState {
 			l.add("machine %s", m)
 			return machineState{Sudo: true}
@@ -367,7 +369,7 @@ func TestSetupGroupsRowsBySection(t *testing.T) {
 			groups = append(groups, e.Name)
 		}
 	}
-	if want := []string{"Checkout", "Keys", "Hosts", "Keys", "Old versions", "Cardinal", "Logins"}; !slices.Equal(groups, want) {
+	if want := []string{"Checkout", "Keys", "Tailnet", "Hosts", "Keys", "Old versions", "Cardinal", "Logins"}; !slices.Equal(groups, want) {
 		t.Fatalf("%q", groups)
 	}
 }
@@ -385,7 +387,8 @@ func TestSetupSendsWhatTheOwnerMustDoToTheTodoBox(t *testing.T) {
 	if r := rowOf(t, p, "flocc-nimble"); r.State != ui.Pending {
 		t.Fatalf("%+v", r)
 	}
-	if got := todos(p); len(got) != 1 || !strings.HasPrefix(got[0], "flocc-nimble: disk: 1.0 GB free") {
+	// The first to-do is the missing Tailscale OAuth client.
+	if got := todos(p); len(got) != 2 || !strings.HasPrefix(got[1], "flocc-nimble: disk: 1.0 GB free") {
 		t.Fatalf("%q", got)
 	}
 }
