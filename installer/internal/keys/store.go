@@ -21,10 +21,18 @@ const (
 	Agent   Slot = "agent_token"
 	Publish Slot = "publish_token"
 	Ntfy    Slot = "ntfy_topic"
+
+	// Tailscale holds "id:secret" of an OAuth client. It is optional, so it is not in Slots: ship
+	// and the answers document would refuse a desktop that never made one.
+	Tailscale Slot = "tailscale_oauth"
 )
 
-// Slots is the fill order: the publish token's page opens only after the agent token passes.
+// Slots is the required keys in fill order: the publish token's page opens only after the agent
+// token passes.
 var Slots = []Slot{Linear, Agent, Publish, Ntfy}
+
+// fillOrder is Slots with the optional slot, which Fill asks for only when the caller names it.
+var fillOrder = []Slot{Linear, Agent, Publish, Tailscale, Ntfy}
 
 func (s Slot) Title() string {
 	switch s {
@@ -34,6 +42,8 @@ func (s Slot) Title() string {
 		return "GitHub agent token (read-only)"
 	case Publish:
 		return "GitHub publish token"
+	case Tailscale:
+		return "Tailscale OAuth client"
 	}
 	return "ntfy topic"
 }
@@ -207,6 +217,16 @@ func CheckPrefix(s Slot, v string) error {
 		return errors.New("a Linear personal API key starts with lin_api_")
 	case (s == Agent || s == Publish) && !strings.HasPrefix(v, "github_pat_"):
 		return errors.New("a fine-grained GitHub token starts with github_pat_")
+	case s == Tailscale && !validClient(v):
+		return errors.New("paste the client ID, a colon, then the secret: <id>:<secret>")
 	}
 	return nil
 }
+
+// SplitClient cuts a Tailscale paste into the OAuth client's ID and secret.
+func SplitClient(v string) (id, secret string, ok bool) {
+	id, secret, ok = strings.Cut(v, ":")
+	return id, secret, ok && id != "" && secret != ""
+}
+
+func validClient(v string) bool { _, _, ok := SplitClient(v); return ok }

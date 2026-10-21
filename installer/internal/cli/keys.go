@@ -17,7 +17,7 @@ import (
 )
 
 func keysEnv(d *deps) keys.Env {
-	return keys.Env{Store: d.store(), Prompt: d.prompt, Out: d.out, Open: d.open, QR: d.qr, HTTP: d.http,
+	return keys.Env{Store: d.store(), Prompt: d.prompt, UI: d.ui, Open: d.open, HTTP: d.http,
 		GitHubAPI: d.githubAPI, LinearAPI: d.linearAPI, NtfyBase: d.ntfyBase, NewTopic: d.newTopic}
 }
 
@@ -45,11 +45,15 @@ func looksLikeKey(s string) bool {
 	return slices.ContainsFunc([]string{"lin_api_", "github_pat_", "ghp_", "gho_"}, func(p string) bool { return strings.HasPrefix(s, p) })
 }
 
-// report prints the problems keys.Check found and returns the exit status.
+// report turns the next step of each problem keys.Check found into a todo, once, and returns the
+// exit status. Check has already failed the problem's row.
 func report(d *deps, problems []string) int {
+	var seen []string
 	for _, p := range problems {
-		what, next := ui.SplitNext(p)
-		d.oe().FailLine(what, next)
+		if _, next := ui.SplitNext(p); next != "" && !slices.Contains(seen, next) {
+			seen = append(seen, next)
+			d.ui.Todo(next)
+		}
 	}
 	if len(problems) > 0 {
 		return 1
@@ -67,14 +71,15 @@ func keysCmd(ctx context.Context, d *deps, args []string) int {
 	case len(args) == 0:
 		e := keysEnv(d)
 		if err := keys.Fill(ctx, e, m, keys.Slots); err != nil {
-			fmt.Fprintf(d.err, "flocc keys: %v; run flocc keys again to go on\n", err)
+			d.ui.Step("Fill keys").Fail(err)
+			d.ui.Todo("run flocc keys again to go on")
 			return 1
 		}
 		return report(d, keys.Check(ctx, e, m))
 	case len(args) == 1 && args[0] == "check":
 		e := keysEnv(d)
 		// A desktop whose keyring once failed stays on secrets.toml; this shows it.
-		fmt.Fprintf(d.out, "Keys are in %s.\n", e.Store.Where())
+		d.ui.Step("Keys store").Done(e.Store.Where())
 		return report(d, keys.Check(ctx, e, m))
 	case len(args) == 2 && args[0] == "rotate":
 		return rotate(ctx, d, args[1])
@@ -98,7 +103,7 @@ func rotate(ctx context.Context, d *deps, which string) int {
 	changed, err := keys.Replace(ctx, keysEnv(d), mapped(all), slots)
 	code := 0
 	if err != nil {
-		fmt.Fprintln(d.err, "flocc keys rotate:", err)
+		d.ui.Step("Rotate keys").Fail(err)
 		code = 1
 	}
 	if len(changed) == 0 {
@@ -109,34 +114,34 @@ func rotate(ctx context.Context, d *deps, which string) int {
 		// and a rerun pastes nothing, so the stored keys are offered to the hosts again.
 		var perr error
 		if changed, perr = offerRepush(d, all, slots); perr != nil {
-			fmt.Fprintln(d.err, "flocc keys rotate:", perr)
+			d.ui.Step("Rotate keys").Fail(perr)
 			return 1
 		}
 		if len(changed) == 0 {
-			d.o().Line("Nothing changed.")
+			d.ui.Step("Rotate keys").Skip("nothing changed")
 			return 0
 		}
 	}
-	var failed []string
+	failed := false
 	pushed := 0
 	for _, h := range all {
+		st := d.ui.Step("Push keys to " + h.Name)
 		// Ctrl-C must not stop a push once a key is stored: the hosts would hold the old key
 		// and the desktop the new one.
-		err := pushKeys(context.WithoutCancel(ctx), d, h, d.store(), changed)
-		if err != nil {
-			failed = append(failed, h.Name+": "+err.Error())
+		if err := pushKeys(context.WithoutCancel(ctx), d, h, d.store(), changed); err != nil {
+			st.Fail(err)
+			failed = true
 			continue
 		}
 		pushed++
-		d.o().Line("Pushed to %s.", h.Name)
+		st.Done("")
 	}
 	if pushed > 0 && which == "github" {
-		d.o().WarnLine("Do not revoke the old token until the sessions running now end: each read GH_TOKEN when it started.")
-		d.o().Line("flocc status -H all shows the new expiry after each host's next daily token check.")
+		d.ui.Todo("revoke the old token once the sessions running now end: each read GH_TOKEN when it started")
+		d.ui.Note("Token expiry", "flocc status -H all shows the new expiry after each host's next daily token check.")
 	}
-	if len(failed) > 0 {
-		d.oe().FailLine("Not pushed:\n  "+strings.Join(failed, "\n  "),
-			fmt.Sprintf("once these are up, run flocc keys rotate %s again, paste nothing and answer yes to push the stored keys again, or run flocc ship -H <host>", which))
+	if failed {
+		d.ui.Todo(fmt.Sprintf("once the hosts that failed are up, run flocc keys rotate %s again, paste nothing and answer yes to push the stored keys again, or run flocc ship -H <host>", which))
 		return 1
 	}
 	return code
