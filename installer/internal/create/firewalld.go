@@ -51,21 +51,39 @@ func readFirewall(ctx context.Context, e *Env, permanent bool) fwState {
 		s.Services = f(q("--zone="+fwZone, "--list-services"))
 		s.Ports = f(q("--zone="+fwZone, "--list-ports"))
 	}
+	// firewall-cmd 2.5 answers --get-target and --get-priority for a policy only with --permanent;
+	// --info-policy carries both in either configuration.
 	if slices.Contains(s.Policies, fwOut) {
 		s.OutIn = f(q("--policy="+fwOut, "--list-ingress-zones"))
 		s.OutEg = f(q("--policy="+fwOut, "--list-egress-zones"))
-		s.OutTarget = q("--policy="+fwOut, "--get-target")
+		s.OutTarget, _ = policyInfo(q("--info-policy=" + fwOut))
 	}
 	if slices.Contains(s.Policies, fwNoDocker) {
 		s.NoDockerIn = f(q("--policy="+fwNoDocker, "--list-ingress-zones"))
 		s.NoDockerEg = f(q("--policy="+fwNoDocker, "--list-egress-zones"))
-		s.NoDockerTarget = q("--policy="+fwNoDocker, "--get-target")
-		s.NoDockerPriority, _ = strconv.Atoi(q("--policy="+fwNoDocker, "--get-priority"))
+		s.NoDockerTarget, s.NoDockerPriority = policyInfo(q("--info-policy=" + fwNoDocker))
 	}
 	if slices.Contains(s.Policies, dockerFwd) {
-		s.DockerFwdPriority, _ = strconv.Atoi(q("--policy="+dockerFwd, "--get-priority"))
+		_, s.DockerFwdPriority = policyInfo(q("--info-policy=" + dockerFwd))
 	}
 	return s
+}
+
+// policyInfo reads the target and priority lines of firewall-cmd --info-policy.
+func policyInfo(out string) (target string, priority int) {
+	for _, l := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(l), ":")
+		if !ok {
+			continue
+		}
+		switch v = strings.TrimSpace(v); k {
+		case "target":
+			target = v
+		case "priority":
+			priority, _ = strconv.Atoi(v)
+		}
+	}
+	return target, priority
 }
 
 // readBoth reads the runtime and the permanent configuration. Docker's zone counts as present in
