@@ -6,7 +6,7 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## 0.8.0 (2026-10-21)
 
-`flocc cardinal`, the always-on assistant's setup command.
+`flocc cardinal`, the always-on assistant's setup command, and `flocc setup`, one command for the whole setup.
 
 - `flocc cardinal setup|login|status|attach|restart|remove` sets up cardinal as an unprivileged
   user on the machine that holds the Incus hosts, keeps it alive in a systemd user unit with a
@@ -16,6 +16,10 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
   as root over the Incus bridge with a key limited to the bridge gateway.
 - `flocc status -H all` shows a CARDINAL table, and a failing or unreachable cardinal in its
   failure list.
+- `flocc setup` walks the keys, a host (create, add, or ship to repair), the old `linear-agents`
+  user from the hand-setup era, cardinal and the logins, in order and safe to rerun. An old user is
+  removed only on a yes, after the root pass re-checks it, with its home archived under `/root`;
+  that removal and cardinal's root work share one sudo password. Host files gain `machine`.
 
 ## 0.7.0 (2026-10-21)
 
