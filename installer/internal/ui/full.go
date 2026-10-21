@@ -90,6 +90,7 @@ type fullModel struct {
 	form        *huh.Form
 	result      func() any
 	reply       chan promptReply
+	stopping    bool // the open form is the stop question, not a prompt of the session
 	interrupted bool
 	interrupt   func()
 }
@@ -126,7 +127,7 @@ func (m fullModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case promptMsg:
 		m.form, m.result = formFor(msg.req)
-		m.reply = msg.reply
+		m.reply, m.stopping = msg.reply, false
 		return m, m.form.Init()
 	case handoffMsg:
 		return m, tea.ExecProcess(msg.cmd, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
@@ -154,8 +155,9 @@ func (m fullModel) key(k string) (tea.Model, tea.Cmd) {
 	page := max(m.bodyHeight()-1, 1)
 	switch k {
 	case "q", "ctrl+c":
-		m.interrupted = true
-		m.interrupt()
+		m.form, m.result = stopForm(m.title)
+		m.stopping = true
+		return m, m.form.Init()
 	case "l":
 		m.logView, m.scroll = !m.logView, 0
 	case "esc":
@@ -370,9 +372,6 @@ func (m fullModel) rail() []string {
 
 func (m fullModel) paneLines(width int) []string {
 	out := Out{Color: true}
-	if m.form != nil {
-		return strings.Split(m.form.View(), "\n")
-	}
 	if m.logView {
 		return m.logLines(width)
 	}
@@ -436,6 +435,17 @@ func cell(s string, w int) string {
 }
 
 func (m fullModel) View() tea.View {
+	w, h := m.dims()
+	frame := m.frame()
+	if m.form != nil {
+		frame = overlay(frame, modalBox(m.form.View(), w), w, h)
+	}
+	v := tea.NewView(frame)
+	v.AltScreen = true
+	return v
+}
+
+func (m fullModel) frame() string {
 	w, _ := m.dims()
 	out := Out{Color: true}
 	dim := func(s string) string { return out.paint("2", s) }
@@ -468,9 +478,7 @@ func (m fullModel) View() tea.View {
 	bar := m.bar
 	bar.SetWidth(max(min(40, w-lipgloss.Width(keys)-8), 10))
 	lines = append(lines, rule, bar.ViewAs(m.fraction())+"  "+dim(keys))
-	v := tea.NewView(strings.Join(lines, "\n"))
-	v.AltScreen = true
-	return v
+	return strings.Join(lines, "\n")
 }
 
 // toForm gives the open form every message it was not handed already, and closes it when it ends.
@@ -478,16 +486,19 @@ func (m fullModel) toForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.form == nil {
 		return m, nil
 	}
-	_, cmd := m.form.Update(msg)
-	switch m.form.State {
-	case huh.StateCompleted:
-		m.reply <- promptReply{v: m.result()}
-	case huh.StateAborted:
-		m.reply <- promptReply{err: huh.ErrUserAborted}
-	default:
+	cmd, reply, ended := advance(m.form, m.result, msg)
+	if !ended {
 		return m, cmd
 	}
-	m.form, m.result, m.reply = nil, nil, nil
+	if m.stopping {
+		if stop, _ := reply.v.(bool); stop {
+			m.interrupted = true
+			m.interrupt()
+		}
+	} else {
+		m.reply <- reply
+	}
+	m.form, m.result, m.reply, m.stopping = nil, nil, nil, false
 	return m, cmd
 }
 

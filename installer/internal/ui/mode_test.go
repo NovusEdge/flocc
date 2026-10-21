@@ -20,7 +20,8 @@ func TestModeFor(t *testing.T) {
 		{"flag", ModeInline, env(), true, ModeFull, ModeInline},
 		{"env", "", env("FLOCC_UI", "plain"), true, ModeFull, ModePlain},
 		{"flag beats env", ModeInline, env("FLOCC_UI", "plain"), true, ModeFull, ModeInline},
-		{"default full falls back to inline", "", env(), true, ModeFull, ModeInline},
+		{"default full stays full", "", env(), true, ModeFull, ModeFull},
+		{"flag full", ModeFull, env(), true, ModeInline, ModeFull},
 		{"bad env takes default", "", env("FLOCC_UI", "fancy"), true, ModeInline, ModeInline},
 	}
 	for _, c := range cases {

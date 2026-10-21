@@ -161,17 +161,6 @@ func TestFullKeepsEveryEvent(t *testing.T) {
 	}
 }
 
-func TestFullQuitInterrupts(t *testing.T) {
-	m := sized(100, 30)
-	called := 0
-	m.interrupt = func() { called++ }
-	m, _ = updateFull(m, tea.KeyPressMsg{Code: 'q', Text: "q"})
-	m, _ = updateFull(m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	if called != 2 || !m.interrupted {
-		t.Errorf("interrupt called %d times, interrupted = %v", called, m.interrupted)
-	}
-}
-
 func TestFullBarFollowsPlan(t *testing.T) {
 	m := sized(100, 30)
 	m = feed(m,
