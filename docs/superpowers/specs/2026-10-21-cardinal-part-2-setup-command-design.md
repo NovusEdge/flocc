@@ -40,7 +40,7 @@ setup shape the design:
 `cardinal` is a desktop verb, like `ship` and `host`.
 
 ```
-flocc cardinal setup [--user NAME] [--only HOST]... [--key PATH] [<machine>]
+flocc cardinal setup [--user NAME] [--only HOST]... [--key PATH] [--adopt] [<machine>]
 flocc cardinal login [--user NAME] [--email ADDR]
 flocc cardinal status [--user NAME]
 flocc cardinal attach [--user NAME] [--write]
@@ -65,8 +65,8 @@ flocc cardinal remove [--user NAME] [--purge]
   the Linear authorisation.
 - `restart` restarts the unit, and with it the session and the loop.
 
-The saved file holds `machine`, `user`, `hosts`, cardinal's public key once it is known, and
-`renew_hour` (default `4`). It holds no secret.
+The saved file holds `machine`, `user`, `hosts`, cardinal's public key once it is known,
+`renew_hour` (default `4`), and `removed` after a plain `remove`. It holds no secret.
 
 cardinal's own `~/.local/bin/flocc` is the desktop binary, because `flocc -H <host> status` is
 routed on the desktop side. It can therefore run `ship`, `keys`, `host create` and `cardinal`, but
@@ -88,6 +88,38 @@ there and have root write through it, which is why `handoff` in `installer/cmd/f
 keeps the same rule. Root changes only the mode of the home directory itself. Every write inside
 the home happens as the user: in the root pass through `runuser -u <user> --`, everywhere else over
 the user's own SSH.
+
+**cardinal has no tailnet.** Tailscale authenticates a node, not a local user. Every node on the
+tailnet is the owner's (`NovusEdge@`), and the desktop, zer0-day-nimble, flocc-nimble and
+la-nimble all run Tailscale SSH. So without a block, any process running as cardinal could connect
+as the owner's node: to the desktop with its secrets and checkout, or as root to la-nimble. The root
+pass therefore installs a per-uid egress block on the machine. It writes
+`/etc/flocc-cardinal/<user>.nft`, which creates the table `inet flocc-cardinal-<user>` with an
+`output` chain:
+
+- `meta skuid <uid>` to `100.100.100.100` or `fd7a:115c:a1e0::53` on port 53 is accepted, because
+  the machine's resolver is MagicDNS and tailscaled answers it locally;
+- `meta skuid <uid>` to any other address in `100.64.0.0/10` or `fd7a:115c:a1e0::/48` is dropped.
+
+A system unit, `flocc-cardinal-egress@<user>.service`, loads that file with `nft -f` (oneshot,
+`RemainAfterExit`). It runs `Before=user@<uid>.service` and is wanted by `multi-user.target`, so the
+block is in place before cardinal's user manager starts at boot. `ExecStop` deletes the table. The
+table is its own, so Docker's and Incus's tables are left alone, and `nftables.service` (disabled
+on this machine) is not used. cardinal's hosts are on the Incus bridge, and Claude and Linear are
+on the internet, so the block costs cardinal nothing it needs.
+
+**Which route reaches the machine.** The desktop's `ssh zer0-day-nimble` resolves through MagicDNS,
+and the laptop runs Tailscale SSH. So for `<user>@<machine>` the tailnet policy decides, not
+`authorized_keys`. The Desktop key step still writes the key, so an OpenSSH route works too. A
+policy rule in `check` mode can stop at a browser prompt that `BatchMode` does not refuse, so every
+outcome check over this route has a 20 s limit and reports a timeout as "the tailnet policy is
+asking for a check".
+
+**Every ssh to the user** (user pass, login, attach, status, the fleet view) passes `-o
+ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes`. Today's `~/.ssh/config` resolves
+these to off, but a later `Host *` block must not hand the owner's agent to cardinal during `attach
+--write`. `<machine>` may hold a user part (`owner@host`). The user's destination is `<user>@` plus
+the host part alone, and the key comment and the install record use the host part too.
 
 **The root pass's stage.** The owner's SSH makes it with `mktemp -d /tmp/flocc-cardinal.XXXXXX`, so
 its name cannot be claimed first, and it is the owner's, mode 700. `scp` puts `flocc-setup` and
@@ -119,10 +151,13 @@ document holds no secrets: the user, the machine name, the rendered host files a
    it yet. Daytona hosts are skipped the same way.
 2. **Build.** The desktop builds `flocc` (`./installer/cmd/flocc`) and `flocc-setup` for the
    machine's architecture, from the checkout it runs in, as ship does. It renders one host file
-   per host in scope: the desktop's own file with `ssh = "root@<addr>"`.
+   per host in scope, holding only `ssh = "root@<addr>"`. The desktop's file also carries repos,
+   permissions and `ntfy_topic`, which works as a bearer secret on ntfy.sh. `flocc -H <host>
+   status` needs none of them.
 3. **Root pass, only if needed.** First the desktop checks the root outcomes without sudo: `id -nG
-   <user>`, `loginctl show-user <user> -p Linger`, and `ssh -o BatchMode=yes <user>@<machine>
-   true`. If any of them fails, it runs the root pass in the terminal. Without a terminal it
+   <user>`, `loginctl show-user <user> -p Linger`, `systemctl is-active
+   flocc-cardinal-egress@<user>`, and `ssh -o BatchMode=yes <user>@<machine> true`. If any of them
+   fails, it runs the root pass in the terminal. Without a terminal it
    refuses: "the machine's sudo asks for a password; run this in a terminal". A rerun on a finished
    machine never asks for the password.
 4. **Host pass**, for each host in scope, with the saved key when there is one. It returns each
@@ -141,13 +176,19 @@ document holds no secrets: the user, the machine name, the rendered host files a
    the pass stops and names the distro's install command. It never installs packages: the machine
    is shared, as for `host create`.
 2. **User.** `useradd --create-home --shell /bin/bash <user>`, then home mode 700 and linger on.
-   The pass stops with the `gpasswd -d` command to run if the user is in `sudo`, `wheel`, `admin`,
+   An account that already exists is taken over only when the saved file names it or `setup` was
+   given `--adopt`. Otherwise the pass refuses, because on a shared laptop a mistyped `--user`
+   could name another person's or service's account. The pass stops with the `gpasswd -d` command to run if the user is in `sudo`, `wheel`, `admin`,
    `adm`, `systemd-journal`, `disk`, `incus`, `incus-admin`, `lxd`, `docker` or `libvirt`, and
    names the sudoers file to fix if `sudo -l -U <user>` lists any rule. It never removes a group or
    a rule itself.
-3. **Desktop key.** As the user, through `runuser`, with the key line passed as an argument and
-   never put into a shell string: `~/.ssh` 700, `authorized_keys` 600, the line added once. Every
-   other line is kept.
+3. **Desktop key.** Root reads the staged `desktop.pub`, then runs `runuser -u <user> --
+   /bin/sh -c '<fixed script>' sh '<key line>'`: `~/.ssh` 700, `authorized_keys` 600, the line
+   added once, every other line kept. The key line is an argument and never part of the script.
+   The staged binary cannot run as the user, because the stage is the owner's and mode 700.
+4. **Egress block.** `/etc/flocc-cardinal/<user>.nft` and the template unit (cardinal has no
+   tailnet), then `systemctl enable --now flocc-cardinal-egress@<user>`. A rerun reloads it only
+   when the file changed.
 
 If `ssh <user>@<machine>` still fails after this pass, setup stops and says so. The machine's sshd
 may have `AllowUsers` set, for example. The desktop does not edit the machine's sshd.
@@ -179,18 +220,21 @@ may have `AllowUsers` set, for example. The desktop does not edit the machine's 
    keys `inputNeededNotifEnabled` and `agentPushNotifEnabled`, both true, as live. A session does
    not rewrite that file.
 8. **Hosts reachable.** For each host: `ssh -o BatchMode=yes root@<addr> true`, then `flocc -H
-   <host> status`. Pending until the host pass has the current key.
+   <host> status`. Pending until the host pass has the current key. Then the reverse: a TCP
+   connect to port 22 on each of the desktop's tailnet addresses (sent in the answers document)
+   must fail within 3 s. A connect that succeeds fails the step: the egress block is not holding.
 9. **Units.** The three files under Keeping it alive are written to `~/.config/systemd/user/`,
    followed by `daemon-reload`. `cardinal.service` and `cardinal-renew.timer` are enabled. The step
-   starts `cardinal.service` when the login is full and the service is not running. It never
+   runs `systemctl --user reset-failed cardinal.service` and then starts it when the login is full and the service is not running. It never
    restarts a running cardinal. A changed brief or unit file takes effect at the next renewal or
    at `flocc cardinal restart`, and the summary says so. The one exception is the hand setup's
    session (Moving the hand setup over).
 
 ### Host pass steps (desktop to the host, as root)
 
-1. **sshd and host key.** One remote command: `apt-get install -y openssh-server` when it is
-   missing, then `cat /etc/ssh/ssh_host_ed25519_key.pub`. Hosts come from `host create`, which
+1. **sshd and host key.** One remote command: first the step 2 drop-in and sysctl file, so that
+   sshd never runs with Debian's defaults (password login, every address); then `apt-get install
+   -y openssh-server` when it is missing, then `cat /etc/ssh/ssh_host_ed25519_key.pub`. Hosts come from `host create`, which
    makes Debian VMs; any other distro stops with a message. The key comes back over the connection
    opened before the install, so a slow install that outlasts `ControlPersist` cannot strand the
    pass behind a changed host key. The pass turns it into cardinal's `known_hosts` line, `<addr>
@@ -291,11 +335,16 @@ WantedBy=timers.target
   stopping the unit ends claude through tmux's hangup, not through the cgroup.
 - A user unit cannot order itself after the system's `network-online.target`. A start before the
   network is up relies on Claude Code retrying, and failing that on `Restart=always`.
-- `flocc cardinal attach` runs `ssh -t <user>@<machine> tmux -L <user> attach -t <user>`.
+- `flocc cardinal attach` runs `ssh -t <user>@<machine> tmux -L <user> attach -r -t <user>`, and
+  leaves out `-r` with `--write`.
+- `restart` and `login` run `systemctl --user reset-failed cardinal.service` before they start
+  it. Once a unit hits its start limit, systemd refuses manual starts as well until the hour is up.
 
-Two brief edits land with the implementation. cardinal records each pending ask in `~/state.md`
+Three brief edits land with the implementation. cardinal records each pending ask in `~/state.md`
 with its exact command, drops it when answered, and raises the open ones in the first check of a
-session. And the machine and user names become placeholders that the Brief step renders. Until
+session. The machine and user names become placeholders that the Brief step renders. And the line
+telling cardinal not to touch "the laptop's VMs" names the VMs that are not its hosts, since it has
+root SSH on its hosts. Until
 then the committed copy is byte-for-byte the live file.
 
 ## Login, and what a person still does
@@ -306,7 +355,9 @@ then the committed copy is byte-for-byte the live file.
 1. If `cardinal.service` is active, it asks to stop it, because a running session would rewrite
    the new login and consent out of `~/.claude.json` (User pass, step 7).
 2. Without a claude.ai login it runs `claude auth login --claudeai [--email]`. The sign-in URL
-   opens in the desktop browser and prints as a QR code (ship's `urlWatch`).
+   opens in the desktop browser and prints as a QR code (ship's `urlWatch`). cardinal can rewrite
+   the binary that prints this output, so for cardinal `urlWatch` opens only URLs whose host is
+   `claude.ai` or `claude.com`. Any other URL is printed and not opened.
 3. It checks the login is full, runs the prestart, and answers the Remote Control consent with
    `answerConsent`, run in `~`.
 4. It starts `cardinal.service`, waits for the tmux session, and prints the summary and the steps
@@ -345,13 +396,14 @@ The first `flocc cardinal setup zer0-day-nimble` runs over the live install:
   cannot fix it over a connection that fails verification. The pass stops and names the fix:
   `ssh-keygen -R` for the host, and the new fingerprint read with `incus exec flocc-nimble --
   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` to compare on the next connect.
+- The `cardinal` account exists and no saved file names it yet, so this one run takes `--adopt`.
 - The user pass keeps cardinal's key. The host pass finds flocc-nimble's hand-made line by its key
   and replaces it with the restricted one, whatever its comment.
 - The Units step stops the transient `cardinal-tmux` unit, kills a `cardinal` session left on
   tmux's default socket, and starts `cardinal.service`. This ends the hand session's conversation
   once, and the summary says so.
 - flocc-nimble's sshd was installed by hand, so it has no `ssh-installed` marker. `remove` leaves
-  its sshd running and says so.
+  its sshd running, with `cardinal.conf` in place, and says so.
 
 ## Status and failures
 
@@ -374,22 +426,38 @@ unit also shows the last 20 lines of `journalctl --user -u cardinal`, or `system
 cardinal` when the journal refuses the user, and the pane's last 15 lines, leaving out any line
 that holds `code=`.
 
-Setup failures stop the pass at the failing step, with the step's error and its log: `setup.log`
-in the kept stage for the root pass, `~<user>/.cache/flocc-cardinal/setup.log` for the user pass,
+Setup failures stop the pass at the failing step, with the step's error and its log. `flocc-setup`
+writes `setup.log` next to its own binary: in the kept stage for the root pass,
+`~<user>/.cache/flocc-cardinal/stage/setup.log` for the user pass and `login`, and
+`~<user>/.local/lib/flocc-cardinal/setup.log` for the phases the units run,
 and `~/.cache/flocc/cardinal-<user>.log` on the desktop for the Incus and host passes. A failed host
 does not stop the other hosts. The summary marks it, and setup exits non-zero.
 
 The rows come from `~/.local/lib/flocc-cardinal/flocc-setup --phase cardinal-status`, which prints
-them as JSON. `flocc cardinal status` renders that JSON and adds the journal and pane lines.
+them as JSON with a `schema` number. `flocc cardinal status` renders that JSON and adds the journal
+and pane lines. cardinal can rewrite the binary that writes this output, so the desktop treats it as
+untrusted: it strips control characters from every string and cuts each to 200 characters before
+printing.
 
 **The desktop's `flocc status -H all` shows cardinal too**, so a dead cardinal shows where the owner
-already looks. `discover` also reads every `~/.config/flocc/cardinal/<user>.toml`, and `collect`
-fetches each one in parallel with the hosts: `ssh -T <user>@<machine>` running the
-`cardinal-status` phase, with `BatchMode=yes` and `ConnectTimeout=10` as `fetch` uses. `render`
-prints a CARDINAL table under the hosts table: user, machine, unit, session age, last turn, login,
-Linear, and hosts reached out of saved. A row that fails, by the same rules as the exit code, or
-that cannot be reached adds a line to the failure list naming `flocc cardinal status --user
-<user>`. No saved file, no table. The journal and pane lines stay in `flocc cardinal status`.
+already looks.
+
+- `discover` also reads every `~/.config/flocc/cardinal/<user>.toml` and skips one marked `removed`.
+  These become a separate `[]CardinalRow`, not host `Row`s, because `fetch` runs the host-side
+  `flocc status --json` as the service user and decodes a host `Report`.
+- `collect` fetches each one in parallel with the hosts, over `ssh -T <user>@<host part>` with the
+  pinned options, `BatchMode=yes` and `ConnectTimeout=10`, as `fetch` does. It runs
+  `cardinal-status --quick`, which reads only local state: unit, session age, last turn, and the
+  login from the credentials file. It never runs `claude mcp list` or reaches the hosts, so a
+  `--watch` redraw stays within `hostTimeout`.
+- `render` prints a CARDINAL table under the hosts table: user, machine, unit, session age, last
+  turn, login.
+- A failing row (inactive unit, login not full, last turn older than 45 minutes, session older than
+  6 days), an unreachable machine, or a `schema` the desktop does not know adds a line to the
+  failure list. The line names `flocc cardinal status --user <user>`, or `flocc cardinal setup`
+  for an unknown schema.
+- With no saved file, there is no table. Linear, the hosts, the journal and the pane stay in
+  `flocc cardinal status`.
 
 ## Removing it
 
@@ -397,15 +465,22 @@ that cannot be reached adds a line to the failure list naming `flocc cardinal st
 
 1. **User pass.** `systemctl --user disable --now cardinal.service cardinal-renew.timer`, then
    delete the three unit files and `daemon-reload`. The home, the login, the key and `~/state.md`
-   stay.
+   stay. The desktop marks `cardinal/<user>.toml` `removed = true`, so the fleet view stops
+   checking it, and the next `setup` clears the mark.
 2. **Host pass**, for each saved host. Delete the lines carrying this install's key and its
-   `installs/<user>@<machine>` record. Only when no install record is left on the host, also delete
-   `cardinal.conf` and the sysctl file, and, if `ssh-installed` is there, run `systemctl disable
-   --now ssh.service ssh.socket`. Another install on the same host keeps its access.
+   `installs/<user>@<machine>` record. Only when no install record is left on the host and
+   `ssh-installed` is there, also run `systemctl disable --now ssh.service ssh.socket`, then delete
+   `cardinal.conf` and the sysctl file. Without the marker, sshd keeps running, so `cardinal.conf`
+   stays: deleting it would leave sshd on every address with password login at its next restart.
+   Another install on the same host keeps its access.
    `openssh-server` and its host keys stay: removing the keys would change the host's Tailscale SSH
    host key a second time. The address pin stays; it is harmless.
-3. **`--purge`** adds a root pass, under the same stage rules: `loginctl disable-linger`, then
-   `pkill -u <user>`, then `userdel -r <user>`. The desktop then deletes `cardinal/<user>.toml`.
+3. **`--purge`** adds a root pass, under the same stage rules. It runs `loginctl disable-linger`
+   and `loginctl terminate-user <user>`, then `pkill -KILL -u <user>`. It polls `pgrep -u <user>`
+   for up to 10 s, because `userdel` refuses a user with live processes, and tmux's pane scopes
+   outlive the session. Then `userdel -r <user>`. It disables the egress unit and deletes
+   `/etc/flocc-cardinal/<user>.nft` only after the user is gone. The desktop then deletes
+   `cardinal/<user>.toml`.
    The pool login and the Linear authorisation go with the home; the accounts themselves are
    untouched.
 
@@ -425,7 +500,8 @@ Unit tests, with `host.Fake` and a temporary `Env.Root`, as the existing step te
   hand-made line without `from=` and the replaced key's line both become the rendered line. Other
   lines and their order are left alone, and rerunning changes nothing.
 - Removal with two install records on one host: the first `remove` leaves the drop-in, the sysctl
-  file and ssh; the second removes them, and disables ssh only when `ssh-installed` exists.
+  file and ssh. The second disables ssh and removes both files when `ssh-installed` exists, and
+  otherwise leaves all three.
 - The sshd drop-in and sysctl content, and a restart only when the drop-in changed.
 - Merging `known_hosts`, and replacing the desktop's entry from the key read in the install's own
   command.
@@ -440,8 +516,15 @@ Unit tests, with `host.Fake` and a temporary `Env.Root`, as the existing step te
 - The status exit code for each failing row; no pane line holding `code=` is printed; the
   `systemctl status` fallback when the journal refuses.
 - `flocc cardinal -H x status` is refused.
-- The fleet view with a saved cardinal file: a CARDINAL table from a `cardinal-status` fixture, a
-  failure line for a failing row and for an unreachable machine, and no table without a saved file.
+- The fleet view with a saved cardinal file: a CARDINAL table from a `cardinal-status --quick`
+  fixture; a failure line for a failing row, an unreachable machine and an unknown schema; control
+  characters stripped from a hostile fixture; no table without a saved file or with `removed`.
+- Every ssh argv to the user carries the forwarding options, and a `<machine>` of `owner@host`
+  gives `<user>@host`.
+- The rendered nft file: the uid, both tailnet ranges dropped, and MagicDNS port 53 accepted
+  before the drop. The rendered host file holds only `ssh`.
+- The root pass refusing an existing user that is neither saved nor `--adopt`ed.
+- `urlWatch` for cardinal not opening a URL outside `claude.ai` and `claude.com`.
 
 Live run, on zer0-day-nimble with `--user cardinal-test` and a throwaway VM from `flocc host create
 zer0-day-nimble flocc-cardtest`, passing `--only flocc-cardtest` so that the live cardinal and
@@ -469,7 +552,10 @@ flocc-nimble are not touched until the last step. Record the results in `docs/vm
    `systemctl --user list-timers` shows the next window.
 9. `incus stop flocc-cardtest`, then `incus start`, three times. Each time the address is the
    same, `systemctl is-active ssh` says active, and sshd listens on the address.
-10. On flocc-cardtest, add a throwaway key made on the VM to root's `authorized_keys`, with the
+10. As cardinal-test: `ssh -o BatchMode=yes -o ConnectTimeout=5` to the desktop's and
+    la-nimble's tailnet names fails, `curl https://api.anthropic.com` succeeds, and so does a
+    MagicDNS lookup. After a reboot (step 7) the egress unit is active before the user manager.
+    On flocc-cardtest, add a throwaway key made on the VM to root's `authorized_keys`, with the
     same options as cardinal's line. `ssh` with it from the VM to its own address is refused
     (`from=`), and so is password login. cardinal-test's key never leaves the machine.
 11. A second install, `--user cardinal-test2 --only flocc-cardtest`, then `remove --purge` for it.
@@ -491,7 +577,10 @@ flocc-nimble are not touched until the last step. Record the results in `docs/vm
 - **cardinal reaching VMs through `incus exec`.** `incus-admin` is root on the machine (d101).
 - **cardinal over Tailscale SSH from the machine.** Tailscale authenticates the machine's node,
   which is the owner's identity, so every local user would get the owner's rights, and check mode
-  prompts.
+  prompts. The same fact is why the egress block exists.
+- **Tagging the laptop to narrow its tailnet rights.** A tag changes what the owner's own sessions
+  on the laptop can reach, and a policy change is out of this command's reach. The per-uid block
+  limits only cardinal.
 - **Ordering `ssh.service` after `network-online.target`.** Whether that target waits for the
   lease depends on the image's network stack; the sysctl works with any.
 - **Ansible, cloud-init or a shell script.** The `Step` framework already does checked,
@@ -510,6 +599,9 @@ flocc-nimble are not touched until the last step. Record the results in `docs/vm
 - Whether the Linear MCP can be authorised outside the TUI.
 - That connections from the machine reach the VM from the `incusbr0` gateway address, which `from=`
   relies on.
+- That `meta skuid` in an `output` chain catches cardinal's connections to the tailnet, including
+  connections to the machine's own tailnet address, and that tailscaled answers MagicDNS on
+  `100.100.100.100` without sending cardinal's packets over the tailnet.
 
 ## Owner's choices
 
