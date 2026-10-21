@@ -181,7 +181,9 @@ def wildcards_an_interpreter(rule: str) -> bool:
     tokens = [t for t in re.split(r"[\s:]+", body) if t]
     while tokens and _ENV_ASSIGN.match(tokens[0]):
         tokens.pop(0)
-    if not tokens or tokens[0].startswith("*"):
+    # Claude Code matches "*" anywhere in a rule, so "py* *" reaches python; a quoted or escaped
+    # program name is not one this check can resolve.
+    if not tokens or re.search(r"""[*?\[\]"'`\\]""", tokens[0]):
         return True
     program = tokens[0].rsplit("/", 1)[-1].lower()
     return "*" in body and (

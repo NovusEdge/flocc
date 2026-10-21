@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from flocc.config import load, trailer_enabled
@@ -173,6 +175,26 @@ def test_no_permissions_file_means_no_rules_and_no_judge():
 def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule):
     with pytest.raises(ValueError, match="interpreter"):
         load(with_permissions(tmp_path, f'allow = ["{rule}"]\n'))
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "Bash(py* *)",
+        "Bash(pyth* *)",
+        "Bash(?ython *)",
+        "Bash(p*:*)",
+        "Bash([a-z]* *)",
+        "Bash(/usr/bin/* *)",
+        'Bash("python" *)',
+        "Bash('python' *)",
+        'Bash(FOO="a b" python *)',
+        "Bash(pyth\\on *)",
+    ],
+)
+def test_a_glob_or_quote_in_the_program_token_is_refused(tmp_path, rule):
+    with pytest.raises(ValueError, match="interpreter"):
+        load(with_permissions(tmp_path, f"allow = [{json.dumps(rule)}]\n"))
 
 
 @pytest.mark.parametrize(
