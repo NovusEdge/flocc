@@ -23,6 +23,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // hostScript ticks every repo offered, picks the first team and pastes secrets in order. With
@@ -516,6 +517,8 @@ func TestHostImportNamesTheHostItCouldNotReach(t *testing.T) {
 // checks as a paste, and one that fails them is left for flocc keys.
 func TestHostImportTakesTheHostsKeysThroughThePasteChecks(t *testing.T) {
 	d, f, lin := importDeps(t)
+	rec := &ui.Recorder{}
+	d.ui = ui.New(rec)
 	f.files[".config/flocc/linear.key"] = "lin_api_k\n"
 	f.files[".config/flocc/gh-agent.token"] = "github_pat_agent\n"
 	f.files[".config/flocc/gh-publish.token"] = "github_pat_weak\n"
@@ -535,8 +538,8 @@ func TestHostImportTakesTheHostsKeysThroughThePasteChecks(t *testing.T) {
 	if lin.updates != 1 {
 		t.Fatalf("the Linear key's write probe ran %d times", lin.updates)
 	}
-	out := d.out.(*bytes.Buffer).String()
-	if !strings.Contains(out, "Took the GitHub agent token (read-only) from h1") || !strings.Contains(out, "o/a: the token cannot push") {
+	out := sessionText(rec)
+	if row(rec, "Check GitHub agent token (read-only) from h1").State != ui.Done || !strings.Contains(out, "o/a: the token cannot push") {
 		t.Fatal(out)
 	}
 	// Only the host has the publish token's value, and editing it on GitHub keeps the value.
@@ -602,13 +605,15 @@ func TestHostImportRechecksAKeyLinearCouldNotCheck(t *testing.T) {
 	f.files[".config/flocc/linear.key"] = "lin_api_k\n"
 	p := d.prompt.(*hostScript)
 	p.confirms = []bool{true, false}
+	rec := &ui.Recorder{}
+	d.ui = ui.New(rec)
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	if v, _ := d.store().Get(keys.Linear); v != "" {
 		t.Fatalf("stored unchecked: %q", v)
 	}
-	out := d.out.(*bytes.Buffer).String()
+	out := sessionText(rec)
 	if len(p.confirms) != 0 || strings.Count(out, "Rate limit exceeded") != 2 || strings.Contains(out, "new one") {
 		t.Fatalf("confirms left %v\n%s", p.confirms, out)
 	}
