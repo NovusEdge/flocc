@@ -53,7 +53,7 @@ func TestCardinalUserRefusesAnExistingUnadoptedUser(t *testing.T) {
 	f := withCardinal(host.NewFake(), "cardinal")
 	e := cardinalEnv(t, f)
 	os.MkdirAll(e.Path("/home/cardinal"), 0o700)
-	u := CardinalUser{User: "cardinal"}
+	u := &CardinalUser{User: "cardinal"}
 	if done, _, _ := u.Check(context.Background(), e); done {
 		t.Fatal("an unadopted user passed the check")
 	}
@@ -72,7 +72,7 @@ func TestCardinalUserRefusesPrivilegedGroupsAndSudoRules(t *testing.T) {
 		On("sudo -l -U cardinal", 0, "User cardinal may run the following commands on m:\n    (ALL) ALL\n")
 	e := cardinalEnv(t, f)
 	os.MkdirAll(e.Path("/home/cardinal"), 0o755)
-	err := CardinalUser{User: "cardinal", Adopt: true}.Apply(context.Background(), e)
+	err := (&CardinalUser{User: "cardinal", Adopt: true}).Apply(context.Background(), e)
 	for _, want := range []string{"gpasswd -d cardinal docker", "gpasswd -d cardinal adm", "sudo -l -U cardinal lists rules"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %q: %v", want, err)
@@ -85,17 +85,20 @@ func TestCardinalUserRefusesPrivilegedGroupsAndSudoRules(t *testing.T) {
 	}
 }
 
+// Through RunAll, whose check after Apply must pass on a user Apply just made.
 func TestCardinalUserCreatesAndLingers(t *testing.T) {
+	none := host.Result{Code: 2}
 	f := host.NewFake().
-		OnSeq("getent passwd cardinal", host.Result{Code: 2}, host.Result{Stdout: "cardinal:x:1002:1002::/home/cardinal:/bin/bash\n"}).
+		OnSeq("getent passwd cardinal", none, none, host.Result{Stdout: "cardinal:x:1002:1002::/home/cardinal:/bin/bash\n"}).
 		On("useradd --create-home --shell /bin/bash cardinal", 0, "").
 		On("chmod 700 /home/cardinal", 0, "").
 		On("id -nG cardinal", 0, "cardinal\n").
 		On("sudo -l -U cardinal", 0, "").
-		On("loginctl enable-linger cardinal", 0, "")
+		On("loginctl enable-linger cardinal", 0, "").
+		On("loginctl show-user cardinal -p Linger --value", 0, "yes\n")
 	e := cardinalEnv(t, f)
-	os.MkdirAll(e.Path("/home/cardinal"), 0o755)
-	if err := (CardinalUser{User: "cardinal"}).Apply(context.Background(), e); err != nil {
+	os.MkdirAll(e.Path("/home/cardinal"), 0o700)
+	if err := RunAll(context.Background(), e, []Step{&CardinalUser{User: "cardinal"}}); err != nil {
 		t.Fatalf("%v; calls %v", err, f.Calls)
 	}
 }
@@ -134,7 +137,7 @@ func TestCardinalRootStepsNeverTouchTheHomeAsRoot(t *testing.T) {
 		On("runuser -u cardinal -- /bin/sh -c "+desktopKeyScript+" sh "+testKey+" /home/cardinal", 0, "")
 	e := cardinalEnv(t, f)
 	os.MkdirAll(e.Path("/home/cardinal"), 0o755)
-	for _, s := range []Step{CardinalUser{User: "cardinal", Adopt: true}, DesktopKey{User: "cardinal"}} {
+	for _, s := range []Step{&CardinalUser{User: "cardinal", Adopt: true}, DesktopKey{User: "cardinal"}} {
 		if err := s.Apply(context.Background(), e); err != nil {
 			t.Fatal(err)
 		}
@@ -186,18 +189,19 @@ func TestEgressRestartsOnlyWhenTheRulesChange(t *testing.T) {
 
 func TestCheckCardinalStage(t *testing.T) {
 	uid := os.Getuid()
+	files := []string{"flocc-setup", "desktop.pub"}
 	good := func(t *testing.T) string {
 		dir, err := os.MkdirTemp("/tmp", "flocc-cardinal.")
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { os.RemoveAll(dir) })
-		for _, f := range CardinalStageFiles {
+		for _, f := range files {
 			os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600)
 		}
 		return dir
 	}
-	if err := CheckCardinalStage(good(t), uid); err != nil {
+	if err := CheckCardinalStage(good(t), uid, files...); err != nil {
 		t.Fatalf("good stage refused: %v", err)
 	}
 	loose := good(t)
@@ -215,7 +219,7 @@ func TestCheckCardinalStage(t *testing.T) {
 		"fixed stage":     {"/tmp/flocc-setup", uid},
 		"outside of /tmp": {"/var/tmp/flocc-cardinal.abcdef", uid},
 	} {
-		if err := CheckCardinalStage(c.dir, c.uid); err == nil {
+		if err := CheckCardinalStage(c.dir, c.uid, files...); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -231,7 +235,7 @@ func TestCardinalPurgeWaitsForProcessesThenDeletes(t *testing.T) {
 		On("systemctl disable --now flocc-cardinal-egress@cardinal.service", 0, "")
 	e := cardinalEnv(t, f)
 	os.MkdirAll(e.Path("/etc/flocc-cardinal"), 0o755)
-	os.WriteFile(e.Path(egressRulesPath("cardinal")), []byte("x"), 0o644)
+	os.WriteFile(e.Path(EgressRulesPath("cardinal")), []byte("x"), 0o644)
 	if err := CardinalPurge(context.Background(), e, "cardinal"); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +243,7 @@ func TestCardinalPurgeWaitsForProcessesThenDeletes(t *testing.T) {
 	if userdel < 0 || userdel > slices.Index(f.Calls, "systemctl disable --now flocc-cardinal-egress@cardinal.service") || strings.Count(strings.Join(f.Calls, "\n"), "pgrep") != 2 {
 		t.Fatalf("calls %v", f.Calls)
 	}
-	if _, err := os.Stat(e.Path(egressRulesPath("cardinal"))); !os.IsNotExist(err) {
+	if _, err := os.Stat(e.Path(EgressRulesPath("cardinal"))); !os.IsNotExist(err) {
 		t.Fatal("rules left behind")
 	}
 }

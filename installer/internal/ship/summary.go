@@ -10,20 +10,21 @@ import (
 // Summary is what the host's service and login phases end with; Print renders it.
 type Summary = steps.Summary
 
-var marker = []byte(steps.SummaryMarker)
+// LineTap passes a stream through and takes out each line that starts with Marker and that Take
+// accepts. The stream arrives in pty chunks, so the line can be split anywhere, and a prompt has no
+// newline after it: a line is held back only while it could still turn into the marker.
+type LineTap struct {
+	Out    io.Writer
+	Marker string
+	// Take gets the line without its line ending; false passes it on.
+	Take func(line string) bool
 
-// summaryTap passes the host's output through and takes out the flocc-summary line. The output
-// arrives in pty chunks, so the line can be split anywhere, and the sign-in prompt has no newline
-// after it: a line is held back only while it could still turn into the marker.
-type summaryTap struct {
-	out     io.Writer
 	held    []byte // the current line so far, while it is a prefix of the marker or starts with it
 	passing bool   // the current line has diverged from the marker and goes straight through
-	sum     Summary
-	have    bool
 }
 
-func (t *summaryTap) Write(p []byte) (int, error) {
+func (t *LineTap) Write(p []byte) (int, error) {
+	marker := []byte(t.Marker)
 	var emit []byte
 	for _, b := range p {
 		if t.passing {
@@ -33,9 +34,7 @@ func (t *summaryTap) Write(p []byte) (int, error) {
 		}
 		t.held = append(t.held, b)
 		if b == '\n' {
-			if s, ok := steps.ParseSummaryLine(string(bytes.TrimRight(t.held, "\r\n"))); ok {
-				t.sum, t.have = s, true
-			} else {
+			if !t.Take(string(bytes.TrimRight(t.held, "\r\n"))) {
 				emit = append(emit, t.held...)
 			}
 			t.held = t.held[:0]
@@ -45,7 +44,7 @@ func (t *summaryTap) Write(p []byte) (int, error) {
 		}
 	}
 	if len(emit) > 0 {
-		if _, err := t.out.Write(emit); err != nil {
+		if _, err := t.Out.Write(emit); err != nil {
 			return 0, err
 		}
 	}
@@ -53,11 +52,30 @@ func (t *summaryTap) Write(p []byte) (int, error) {
 }
 
 // Flush passes on a held partial line, which the stream ended in the middle of.
-func (t *summaryTap) Flush() {
+func (t *LineTap) Flush() {
 	if len(t.held) > 0 {
-		t.out.Write(t.held)
+		t.Out.Write(t.held)
 		t.held = t.held[:0]
 	}
+}
+
+// summaryTap takes out the flocc-summary line.
+type summaryTap struct {
+	LineTap
+	sum  Summary
+	have bool
+}
+
+func newSummaryTap(out io.Writer) *summaryTap {
+	t := &summaryTap{}
+	t.LineTap = LineTap{Out: out, Marker: steps.SummaryMarker, Take: func(line string) bool {
+		s, ok := steps.ParseSummaryLine(line)
+		if ok {
+			t.sum, t.have = s, true
+		}
+		return ok
+	}}
+	return t
 }
 
 func (t *summaryTap) Summary() (Summary, bool) { return t.sum, t.have }

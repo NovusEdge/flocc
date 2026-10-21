@@ -243,8 +243,6 @@ type CardinalRow struct {
 	Err    string
 }
 
-const cardinalStatusSchema = 1
-
 // fetchCardinal runs the quick status as the cardinal user. Its binary is cardinal's to rewrite,
 // so the output is only parsed here and sanitized where render prints it.
 func fetchCardinal(ctx context.Context, r host.Runner, mux []string, s saved.Saved) CardinalRow {
@@ -262,7 +260,7 @@ func fetchCardinal(ctx context.Context, r host.Runner, mux []string, s saved.Sav
 		row.Err = fmt.Sprintf("exit %d: %s", res.Code, firstLine(host.Tail(res.Out(), 1)))
 	case json.Unmarshal([]byte(res.Stdout), &st) != nil:
 		row.Err = "unreadable status output"
-	case st.Schema != cardinalStatusSchema:
+	case st.Schema != steps.CardinalStatusSchema:
 		row.Err = fmt.Sprintf("status schema %d is not one this desktop reads; run flocc cardinal setup --user %s", st.Schema, s.User)
 	default:
 		row.Status = &st

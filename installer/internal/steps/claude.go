@@ -17,6 +17,8 @@ import (
 // The gate hook's onFailure setting needs this version.
 var minClaude = [3]int{2, 1, 295}
 
+var needsClaude = fmt.Sprintf("needs %d.%d.%d", minClaude[0], minClaude[1], minClaude[2])
+
 const settingsRel = ".claude/settings.json"
 
 // pushSettings are the /config toggles "Push when actions required" and "Push when Claude decides".
@@ -180,7 +182,7 @@ func (Claude) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return false, "", err
 	}
 	if ok, v := claudeVersion(ctx, e); !ok {
-		return false, "claude " + v + "; needs 2.1.295", nil
+		return false, "claude " + v + "; " + needsClaude, nil
 	}
 	if !pushSettingsApplied(e, pushSettings) {
 		return false, "push settings not applied", nil

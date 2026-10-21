@@ -106,6 +106,22 @@ func validHostDoc(d HostDoc) error {
 	return nil
 }
 
+// foreignDropIn refuses a cardinal.conf that listens anywhere but addr: setup did not write it,
+// and replacing it could take away access someone set up on purpose. The hand setup's file listens
+// on the VM's address, so it is taken over.
+func foreignDropIn(e *Env, addr string) error {
+	b, err := os.ReadFile(e.Path(sshdDropIn))
+	if err != nil {
+		return nil
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(l); len(f) == 2 && strings.EqualFold(f[0], "ListenAddress") && f[1] != addr {
+			return fmt.Errorf("%s listens on %s, not %s, and setup did not write it; move it away and run setup again", sshdDropIn, f[1], addr)
+		}
+	}
+	return nil
+}
+
 // CardinalHost readies a host for cardinal: sshd on the bridge address only, key login only, and
 // cardinal's key restricted to the machine. The drop-in goes in before the install, so the sshd
 // that apt starts never runs with Debian's defaults (password login, every address).
@@ -116,6 +132,9 @@ func CardinalHost(ctx context.Context, e *Env, d HostDoc) (CardinalReport, error
 	}
 	if e.Distro.Manager != host.Apt {
 		return r, fmt.Errorf("cardinal's hosts come from flocc host create, which makes Debian VMs; this host is %s", e.Distro.ID)
+	}
+	if err := foreignDropIn(e, d.Addr); err != nil {
+		return r, err
 	}
 	confChanged, err := writeIfChanged(e.Path(sshdDropIn), []byte(sshdConf(d.Addr)), 0o644)
 	if err != nil {

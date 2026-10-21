@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"strings"
 	"time"
@@ -27,25 +28,33 @@ func (e *Env) instance(ctx context.Context) (instance, bool) {
 	return in, raw != "" && json.Unmarshal([]byte(raw), &in) == nil
 }
 
-// ipv4 is the VM's first global IPv4 address, or "" before DHCP. The agent reports the guest's
-// own interface names (enp5s0 on Debian), so none is assumed.
-func (e *Env) ipv4(ctx context.Context) string {
-	var st struct {
-		Network map[string]struct {
-			Addresses []struct{ Family, Address, Scope string } `json:"addresses"`
-		} `json:"network"`
-	}
-	if json.Unmarshal([]byte(e.out(ctx, e.incus("query", "/1.0/instances/"+e.Spec.Name+"/state"))), &st) != nil {
-		return ""
-	}
-	for _, n := range slices.Sorted(maps.Keys(st.Network)) {
-		for _, a := range st.Network[n].Addresses {
-			if n != "lo" && a.Family == "inet" && a.Scope == "global" {
+// Network is an instance state's network map as incus reports it.
+type Network map[string]struct {
+	Addresses []struct{ Family, Address, Scope string } `json:"addresses"`
+}
+
+// FirstIPv4 is the first global IPv4 address, inside subnet unless it is nil, or "" before DHCP.
+// The agent reports the guest's own interface names (enp5s0 on Debian), so none is assumed, and a
+// VM on the tailnet also has a global address on tailscale0.
+func (n Network) FirstIPv4(subnet *net.IPNet) string {
+	for _, name := range slices.Sorted(maps.Keys(n)) {
+		for _, a := range n[name].Addresses {
+			if name != "lo" && a.Family == "inet" && a.Scope == "global" && (subnet == nil || subnet.Contains(net.ParseIP(a.Address))) {
 				return a.Address
 			}
 		}
 	}
 	return ""
+}
+
+func (e *Env) ipv4(ctx context.Context) string {
+	var st struct {
+		Network Network `json:"network"`
+	}
+	if json.Unmarshal([]byte(e.out(ctx, e.incus("query", "/1.0/instances/"+e.Spec.Name+"/state"))), &st) != nil {
+		return ""
+	}
+	return st.Network.FirstIPv4(nil)
 }
 
 type VM struct{}

@@ -58,13 +58,15 @@ func TestCardinalStatusFailures(t *testing.T) {
 func TestQuickStatusSkipsLinearAndHosts(t *testing.T) {
 	f := host.NewFake()
 	e := userEnv(t, f)
+	os.MkdirAll(e.HomePath(".claude"), 0o700)
+	os.WriteFile(e.HomePath(".claude/.credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"x"}}`), 0o600)
 	s := CollectCardinalStatus(context.Background(), e, "cardinal", true, time.Now())
 	for _, c := range f.Calls {
-		if strings.Contains(c, "mcp list") || strings.HasPrefix(c, "ssh ") {
+		if strings.Contains(c, "mcp list") || strings.HasPrefix(c, "ssh ") || strings.Contains(c, ".local/bin/claude") {
 			t.Fatalf("quick status ran %q", c)
 		}
 	}
-	if !s.Quick || s.Schema != 1 || s.Unit != "unknown" {
+	if !s.Quick || s.Schema != 1 || s.Unit != "unknown" || s.Login != "full" {
 		t.Fatalf("%+v", s)
 	}
 }

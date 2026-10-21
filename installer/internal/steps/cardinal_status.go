@@ -2,8 +2,10 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,11 +15,12 @@ import (
 )
 
 const (
-	renewAge     = 20 * time.Hour
-	renewQuiet   = 5 * time.Minute
-	staleTurn    = 45 * time.Minute
-	oldSession   = 6 * 24 * time.Hour
-	statusSchema = 1
+	renewAge   = 20 * time.Hour
+	renewQuiet = 5 * time.Minute
+	staleTurn  = 45 * time.Minute
+	oldSession = 6 * 24 * time.Hour
+	// CardinalStatusSchema changes when CardinalStatus does; a desktop refuses another.
+	CardinalStatusSchema = 1
 )
 
 // RenewAge is how old a session must be before the daily renewal replaces it.
@@ -142,8 +145,22 @@ func linearState(ctx context.Context, e *Env) string {
 	return "not configured"
 }
 
+// credentialsLogin reads the login from Claude Code's credentials file instead of starting claude,
+// which the fleet view's redraws would do for every install: "full" when it holds a claude.ai OAuth
+// login, "none" otherwise.
+func credentialsLogin(e *Env) string {
+	var c struct {
+		OAuth json.RawMessage `json:"claudeAiOauth"`
+	}
+	b, err := os.ReadFile(e.HomePath(".claude/.credentials.json"))
+	if err != nil || json.Unmarshal(b, &c) != nil || len(c.OAuth) == 0 || string(c.OAuth) == "null" {
+		return "none"
+	}
+	return "full"
+}
+
 func CollectCardinalStatus(ctx context.Context, e *Env, user string, quick bool, now time.Time) CardinalStatus {
-	s := CardinalStatus{Schema: statusSchema, User: user, Quick: quick, Login: claudeLogin(ctx, e)}
+	s := CardinalStatus{Schema: CardinalStatusSchema, User: user, Quick: quick}
 	s.Unit = userShow(ctx, e, "cardinal.service", "ActiveState")
 	if s.Unit == "" {
 		s.Unit = "unknown"
@@ -158,10 +175,12 @@ func CollectCardinalStatus(ctx context.Context, e *Env, user string, quick bool,
 	s.Tmux = e.Ok(ctx, "tmux", "-L", user, "has-session", "-t", "="+user)
 	s.Claude = strings.Contains(e.Output(ctx, "tmux", "-L", user, "list-panes", "-t", "="+user, "-F", "#{pane_current_command}"), "claude")
 	s.NextRenew = userShow(ctx, e, "cardinal-renew.timer", "NextElapseUSecRealtime")
-	_, s.ClaudeVersion = claudeVersion(ctx, e)
 	if quick {
+		s.Login = credentialsLogin(e)
 		return s
 	}
+	s.Login = claudeLogin(ctx, e)
+	_, s.ClaudeVersion = claudeVersion(ctx, e)
 	s.Linear = linearState(ctx, e)
 	s.Hosts = map[string]bool{}
 	list, _ := hosts.List(e.HomePath(cardinalHosts))
@@ -177,7 +196,9 @@ func CardinalJournal(ctx context.Context, e *Env) string {
 	if out := e.Output(ctx, "journalctl", "--user", "-u", "cardinal", "-n", "20", "--no-pager"); out != "" && !strings.Contains(out, "No journal files") {
 		return out
 	}
-	return e.Output(ctx, "systemctl", "--user", "status", "cardinal", "--no-pager", "-n", "20")
+	r, _ := e.Run.Run(ctx, e.userctl("status", "cardinal", "--no-pager", "-n", "20"))
+	// systemctl status exits 3 for an inactive unit, which is when it is asked for.
+	return strings.TrimSpace(r.Stdout)
 }
 
 // CardinalPane is the pane's last lines, less any holding code=: the Linear authorisation is

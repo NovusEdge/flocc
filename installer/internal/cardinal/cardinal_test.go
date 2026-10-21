@@ -23,11 +23,31 @@ func testDeps(t *testing.T, f *host.Fake) (Deps, *strings.Builder) {
 
 var card = saved.Saved{Machine: "owner@zer0-day-nimble", User: "cardinal", RenewHour: 4}
 
+// The live flocc-nimble, as incus list -f json printed it on 2026-10-21 (trimmed to the fields
+// read): the guest names its NIC enp5s0 and has a second global address on tailscale0.
+func TestIncusPassTakesTheBridgeAddressFromARecordedList(t *testing.T) {
+	rec, err := os.ReadFile("testdata/incus-list-flocc-nimble.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := host.NewFake().
+		On("incus list -f json", 0, string(rec)).
+		On("incus network get incusbr0 ipv4.address", 0, "10.131.47.1/24\n").
+		On("incus config device override flocc-nimble eth0 ipv4.address=10.131.47.206", 0, "")
+	d, _ := testDeps(t, f)
+	ce := &create.Env{M: f, Spec: create.Spec{Machine: "zer0-day-nimble"}}
+	scope, _, gw, err := d.incusPass(context.Background(), ce, nil, []hosts.Host{{Name: "flocc-nimble", SSH: "root@flocc-nimble"}})
+	if err != nil || gw != "10.131.47.1" || len(scope) != 1 || scope[0].Addr != "10.131.47.206" {
+		t.Fatalf("gw %q scope %+v err %v; %v", gw, scope, err, f.Calls)
+	}
+	if !f.Ran("incus config device override flocc-nimble eth0 ipv4.address=10.131.47.206") {
+		t.Fatalf("not pinned: %v", f.Calls)
+	}
+}
+
 const incusJSON = `[
- {"name":"flocc-nimble","devices":{},"expanded_devices":{"eth0":{"network":"incusbr0","type":"nic"}},
-  "state":{"network":{"eth0":{"addresses":[{"family":"inet6","address":"fd42::1"},{"family":"inet","address":"10.131.47.206"}]}}}},
  {"name":"flocc-cardtest","devices":{"eth0":{"type":"nic"}},"expanded_devices":{"eth0":{"type":"nic"}},
-  "state":{"network":{"eth0":{"addresses":[{"family":"inet","address":"10.131.47.50"}]}}}},
+  "state":{"network":{"enp5s0":{"addresses":[{"family":"inet","address":"10.131.47.50","scope":"global"}]}}}},
  {"name":"pinned","devices":{},"expanded_devices":{"eth0":{"ipv4.address":"10.131.47.9"}},"state":null},
  {"name":"kairos-dev","devices":{},"expanded_devices":{},"state":null}
 ]`
@@ -36,17 +56,16 @@ func TestIncusPassPinsAddressesAndSkipsOthers(t *testing.T) {
 	f := host.NewFake().
 		On("incus list -f json", 0, incusJSON).
 		On("incus network get incusbr0 ipv4.address", 0, "10.131.47.1/24\n").
-		On("incus config device override flocc-nimble eth0 ipv4.address=10.131.47.206", 0, "").
 		On("incus config device set flocc-cardtest eth0 ipv4.address=10.131.47.50", 0, "")
 	d, _ := testDeps(t, f)
 	ce := &create.Env{M: f, Spec: create.Spec{Machine: "zer0-day-nimble"}}
-	files := []hosts.Host{{Name: "flocc-nimble", SSH: "root@flocc-nimble"}, {Name: "flocc-cardtest", SSH: "root@flocc-cardtest"},
+	files := []hosts.Host{{Name: "flocc-cardtest", SSH: "root@flocc-cardtest"},
 		{Name: "pinned", SSH: "root@pinned"}, {Name: "la-nimble", SSH: "root@la-nimble"}, {Name: "sb", Daytona: "sb"}}
 	scope, skipped, gw, err := d.incusPass(context.Background(), ce, nil, files)
 	if err != nil {
 		t.Fatalf("%v; %v", err, f.Calls)
 	}
-	if gw != "10.131.47.1" || len(scope) != 3 || scope[0].Addr != "10.131.47.206" || scope[2].Addr != "10.131.47.9" {
+	if gw != "10.131.47.1" || len(scope) != 2 || scope[0].Addr != "10.131.47.50" || scope[1].Addr != "10.131.47.9" {
 		t.Fatalf("gw %q scope %+v", gw, scope)
 	}
 	if len(skipped) != 2 || !strings.Contains(skipped[0], "la-nimble: not an Incus instance") || !strings.Contains(skipped[1], "Daytona") {
@@ -72,15 +91,25 @@ func TestUserCommandsPinForwardingAndUseTheHostPart(t *testing.T) {
 func TestRootPassIsSkippedWhenItsOutcomesHold(t *testing.T) {
 	d, _ := testDeps(t, host.NewFake())
 	f := d.Run.(*host.Fake)
-	for _, remote := range []string{"id -u cardinal", `test "$(loginctl show-user cardinal -p Linger --value)" = yes`, "systemctl is-active --quiet flocc-cardinal-egress@cardinal.service"} {
-		f.On(d.owner(card.Machine, false, remote).String(), 0, "")
+	on := func(remote string, code int, out string) {
+		f.On(d.owner(card.Machine, false, remote).String(), code, out)
 	}
+	on("id -u cardinal", 0, "1002\n")
+	on("id -nG cardinal", 0, "cardinal\n")
+	on("cat "+steps.EgressRulesPath("cardinal"), 0, steps.EgressRules("cardinal", 1002))
+	on("cat "+steps.EgressUnitPath, 0, steps.EgressUnit)
+	on(`test "$(loginctl show-user cardinal -p Linger --value)" = yes`, 0, "")
+	on("systemctl is-active --quiet flocc-cardinal-egress@cardinal.service", 0, "")
 	f.On(d.user(card, false, "true").String(), 0, "")
 	if why := d.rootOutcomes(context.Background(), card); why != "" {
 		t.Fatalf("outcomes: %q", why)
 	}
-	f.On(d.owner(card.Machine, false, "systemctl is-active --quiet flocc-cardinal-egress@cardinal.service").String(), 3, "")
-	if why := d.rootOutcomes(context.Background(), card); why != "no tailnet block" {
+	on("cat "+steps.EgressRulesPath("cardinal"), 0, "table inet old\n")
+	if why := d.rootOutcomes(context.Background(), card); why != "tailnet block missing or out of date" {
+		t.Fatalf("outcomes: %q", why)
+	}
+	on("id -nG cardinal", 0, "cardinal docker\n")
+	if why := d.rootOutcomes(context.Background(), card); why != "cardinal is in group docker" {
 		t.Fatalf("outcomes: %q", why)
 	}
 }

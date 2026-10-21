@@ -10,13 +10,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -25,7 +25,8 @@ import (
 var (
 	cardinalRootPhases = []string{"cardinal-root", "cardinal-purge", "cardinal-host", "cardinal-host-remove"}
 	cardinalUserPhases = []string{"cardinal", "cardinal-login", "cardinal-prestart", "cardinal-renew", "cardinal-status"}
-	cardinalUserName   = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	// stageFiles are what each machine root phase reads from its stage.
+	stageFiles = map[string][]string{"cardinal-root": {"flocc-setup", "desktop.pub"}, "cardinal-purge": {"flocc-setup"}}
 )
 
 // cardinalPhase finds a cardinal phase in args before the flag set parses them: the cardinal
@@ -58,14 +59,6 @@ func checkCardinalPhase(phase string, euid int) error {
 	return nil
 }
 
-func readJSON(r io.Reader, v any) error {
-	b, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(b, v)
-}
-
 func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("flocc-setup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -83,7 +76,8 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "flocc-setup:", err)
 		return code
 	}
-	if *user != "" && !cardinalUserName.MatchString(*user) {
+	files, staged := stageFiles[*phase]
+	if (*user != "" || staged) && !saved.ValidUser(*user) {
 		return fail(2, fmt.Errorf("--user %q is not a user name", *user))
 	}
 	if err := checkCardinalPhase(*phase, os.Geteuid()); err != nil {
@@ -94,15 +88,12 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(1, err)
 	}
 	stage := filepath.Dir(exe)
-	if *phase == "cardinal-root" || *phase == "cardinal-purge" {
-		if !cardinalUserName.MatchString(*user) {
-			return fail(2, fmt.Errorf("--user %q is not a user name", *user))
-		}
+	if staged {
 		sudoUID, err := strconv.Atoi(os.Getenv("SUDO_UID"))
 		if err != nil {
 			return fail(2, errors.New("run the root pass through sudo; SUDO_UID names the stage's owner"))
 		}
-		if err := steps.CheckCardinalStage(stage, sudoUID); err != nil {
+		if err := steps.CheckCardinalStage(stage, sudoUID, files...); err != nil {
 			return fail(2, err)
 		}
 	}
@@ -157,7 +148,7 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if err := wantStdin(); err != nil {
 			return fail(2, err)
 		}
-		if err := readJSON(stdin, &d); err != nil {
+		if err := json.NewDecoder(stdin).Decode(&d); err != nil {
 			return fail(1, err)
 		}
 		do := steps.CardinalHost
@@ -170,7 +161,7 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if err := wantStdin(); err != nil {
 			return fail(2, err)
 		}
-		if err := readJSON(stdin, &d); err != nil {
+		if err := json.NewDecoder(stdin).Decode(&d); err != nil {
 			return fail(1, err)
 		}
 		var notes []string

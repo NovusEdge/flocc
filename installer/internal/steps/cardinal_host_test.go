@@ -157,6 +157,20 @@ func TestCardinalHostRemoveKeepsAHandInstalledSSHD(t *testing.T) {
 	}
 }
 
+func TestCardinalHostRefusesAForeignDropIn(t *testing.T) {
+	f := sshdFake(true)
+	e := hostEnv(t, f)
+	os.MkdirAll(e.Path("/etc/ssh/sshd_config.d"), 0o755)
+	os.WriteFile(e.Path(sshdDropIn), []byte("ListenAddress 0.0.0.0\n"), 0o644)
+	if _, err := CardinalHost(context.Background(), e, hostDoc()); err == nil || !strings.Contains(err.Error(), "move it away") {
+		t.Fatalf("err = %v", err)
+	}
+	os.WriteFile(e.Path(sshdDropIn), []byte("ListenAddress 10.131.47.206\nPasswordAuthentication no\n"), 0o644)
+	if _, err := CardinalHost(context.Background(), e, hostDoc()); err != nil {
+		t.Fatalf("the hand setup's drop-in was refused: %v", err)
+	}
+}
+
 func TestHostDocRefusesInjection(t *testing.T) {
 	for _, d := range []HostDoc{
 		{Addr: "10.0.0.1\nListenAddress 0.0.0.0", Gateway: "10.0.0.1", Install: "c@m"},

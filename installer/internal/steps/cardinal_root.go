@@ -19,14 +19,14 @@ import (
 
 var cardinalStageName = regexp.MustCompile(`^/tmp/flocc-cardinal\.[A-Za-z0-9]{6,}$`)
 
-// CardinalStageFiles are what the desktop puts in the root pass's stage, and all it may hold
-// besides the pass's own setup.log.
-var CardinalStageFiles = []string{"flocc-setup", "desktop.pub"}
+// ValidCardinalStage reports whether dir is a name mktemp -d /tmp/flocc-cardinal.XXXXXX gives.
+func ValidCardinalStage(dir string) bool { return cardinalStageName.MatchString(dir) }
 
 // CheckCardinalStage refuses a stage the root pass cannot trust. The owner's mktemp made it, so
 // anything not owned by SUDO_UID, a symlink or a looser mode means someone else had a hand in it.
-func CheckCardinalStage(dir string, sudoUID int) error {
-	if !cardinalStageName.MatchString(dir) {
+// files are the ones the pass reads from it.
+func CheckCardinalStage(dir string, sudoUID int, files ...string) error {
+	if !ValidCardinalStage(dir) {
 		return fmt.Errorf("the root pass runs from a /tmp/flocc-cardinal.XXXXXX stage, not %s", dir)
 	}
 	owned := func(p string, wantDir bool) error {
@@ -50,7 +50,7 @@ func CheckCardinalStage(dir string, sudoUID int) error {
 	if err := owned(dir, true); err != nil {
 		return err
 	}
-	for _, f := range CardinalStageFiles {
+	for _, f := range files {
 		if err := owned(filepath.Join(dir, f), false); err != nil {
 			return err
 		}
@@ -58,8 +58,8 @@ func CheckCardinalStage(dir string, sudoUID int) error {
 	return nil
 }
 
-// cardinalPrivileged are groups that give root on the machine, or read it all.
-var cardinalPrivileged = []string{"sudo", "wheel", "admin", "adm", "systemd-journal", "disk", "incus", "incus-admin", "lxd", "docker", "libvirt"}
+// CardinalPrivileged are groups that give root on the machine, or read it all.
+var CardinalPrivileged = []string{"sudo", "wheel", "admin", "adm", "systemd-journal", "disk", "incus", "incus-admin", "lxd", "docker", "libvirt"}
 
 // cardinalHome is the user's home from the passwd database, "" when the user does not exist.
 func cardinalHome(ctx context.Context, e *Env, user string) string {
@@ -129,7 +129,7 @@ func (u CardinalUser) problems(ctx context.Context, e *Env, home string) (string
 func (u CardinalUser) refusals(ctx context.Context, e *Env) error {
 	var errs []error
 	for _, g := range strings.Fields(e.Output(ctx, "id", "-nG", u.User)) {
-		if slices.Contains(cardinalPrivileged, g) {
+		if slices.Contains(CardinalPrivileged, g) {
 			errs = append(errs, fmt.Errorf("%s is in group %s, which reaches root on this machine; run sudo gpasswd -d %s %s, then setup again", u.User, g, u.User, g))
 		}
 	}
@@ -139,7 +139,7 @@ func (u CardinalUser) refusals(ctx context.Context, e *Env) error {
 	return errors.Join(errs...)
 }
 
-func (u CardinalUser) Check(ctx context.Context, e *Env) (bool, string, error) {
+func (u *CardinalUser) Check(ctx context.Context, e *Env) (bool, string, error) {
 	home := cardinalHome(ctx, e, u.User)
 	if home == "" {
 		return false, "no " + u.User + " user", nil
@@ -156,13 +156,16 @@ func (u CardinalUser) Check(ctx context.Context, e *Env) (bool, string, error) {
 	return true, "exists, home 700, lingering, no privileged group", nil
 }
 
-func (u CardinalUser) Apply(ctx context.Context, e *Env) error {
+// Apply has a pointer receiver: a user it creates is this install's, which RunAll's check after
+// Apply must see.
+func (u *CardinalUser) Apply(ctx context.Context, e *Env) error {
 	home := cardinalHome(ctx, e, u.User)
 	switch {
 	case home == "":
 		if _, err := e.Must(ctx, "useradd", "--create-home", "--shell", "/bin/bash", u.User); err != nil {
 			return err
 		}
+		u.Adopt = true
 		home = cardinalHome(ctx, e, u.User)
 	case !u.Adopt:
 		return fmt.Errorf("a user named %s already exists and no saved cardinal file names it; if it is a cardinal install, run setup again with --adopt", u.User)
@@ -242,7 +245,9 @@ func (d DesktopKey) Apply(ctx context.Context, e *Env) error {
 	return err
 }
 
-const egressUnit = `[Unit]
+// EgressUnit loads EgressRules at boot. The desktop compares both files with what the machine
+// holds, so a release that changes them runs the root pass again.
+const EgressUnit = `[Unit]
 Description=Block %i's connections to the tailnet
 # user@<uid>.service runs after systemd-user-sessions, so the block holds before any of the
 # user's processes start, lingering ones included.
@@ -258,9 +263,9 @@ ExecStop=nft delete table inet flocc-cardinal-%i
 WantedBy=multi-user.target
 `
 
-const egressUnitPath = "/etc/systemd/system/flocc-cardinal-egress@.service"
+const EgressUnitPath = "/etc/systemd/system/flocc-cardinal-egress@.service"
 
-func egressRulesPath(user string) string { return "/etc/flocc-cardinal/" + user + ".nft" }
+func EgressRulesPath(user string) string { return "/etc/flocc-cardinal/" + user + ".nft" }
 
 // EgressRules keeps uid off the tailnet: Tailscale authenticates the machine's node, which is the
 // owner's, so any local user could otherwise reach the owner's other machines as the owner.
@@ -300,10 +305,10 @@ func (g Egress) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if err != nil {
 		return false, "no user yet", nil
 	}
-	rules, _ := os.ReadFile(e.Path(egressRulesPath(g.User)))
-	unit, _ := os.ReadFile(e.Path(egressUnitPath))
+	rules, _ := os.ReadFile(e.Path(EgressRulesPath(g.User)))
+	unit, _ := os.ReadFile(e.Path(EgressUnitPath))
 	switch {
-	case string(rules) != want || string(unit) != egressUnit:
+	case string(rules) != want || string(unit) != EgressUnit:
 		return false, "rules not installed or out of date", nil
 	case !e.Ok(ctx, "systemctl", "is-enabled", "--quiet", g.unit()):
 		return false, "not enabled", nil
@@ -318,16 +323,16 @@ func (g Egress) Apply(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
-	old, _ := os.ReadFile(e.Path(egressRulesPath(g.User)))
-	for _, d := range []string{"/etc/flocc-cardinal", filepath.Dir(egressUnitPath)} {
+	old, _ := os.ReadFile(e.Path(EgressRulesPath(g.User)))
+	for _, d := range []string{"/etc/flocc-cardinal", filepath.Dir(EgressUnitPath)} {
 		if err := os.MkdirAll(e.Path(d), 0o755); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile(e.Path(egressRulesPath(g.User)), []byte(want), 0o644); err != nil {
+	if err := os.WriteFile(e.Path(EgressRulesPath(g.User)), []byte(want), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(e.Path(egressUnitPath), []byte(egressUnit), 0o644); err != nil {
+	if err := os.WriteFile(e.Path(EgressUnitPath), []byte(EgressUnit), 0o644); err != nil {
 		return err
 	}
 	start := "start"
@@ -343,7 +348,7 @@ func (g Egress) Apply(ctx context.Context, e *Env) error {
 }
 
 func CardinalRootSteps(user string, adopt bool) []Step {
-	return []Step{CardinalTools{}, CardinalUser{User: user, Adopt: adopt}, DesktopKey{User: user}, Egress{User: user}}
+	return []Step{CardinalTools{}, &CardinalUser{User: user, Adopt: adopt}, DesktopKey{User: user}, Egress{User: user}}
 }
 
 // purgeWait bounds the wait for the user's processes to end; userdel refuses while any is left,
@@ -371,7 +376,7 @@ func CardinalPurge(ctx context.Context, e *Env, user string) error {
 		}
 	}
 	e.Ok(ctx, "systemctl", "disable", "--now", Egress{User: user}.unit())
-	if err := os.Remove(e.Path(egressRulesPath(user))); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(e.Path(EgressRulesPath(user))); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil

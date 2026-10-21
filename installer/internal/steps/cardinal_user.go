@@ -68,7 +68,7 @@ func (CardinalClaude) Check(ctx context.Context, e *Env) (bool, string, error) {
 	ok, v := claudeVersion(ctx, e)
 	switch {
 	case !ok:
-		return false, "claude " + v + "; needs 2.1.295", nil
+		return false, "claude " + v + "; " + needsClaude, nil
 	case !pushSettingsApplied(e, cardinalPush):
 		return false, "push settings not applied", nil
 	}

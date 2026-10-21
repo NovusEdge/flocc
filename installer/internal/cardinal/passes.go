@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,10 +49,7 @@ const (
 	identityMsg = "REMOTE HOST IDENTIFICATION HAS CHANGED"
 )
 
-var (
-	rootStage = regexp.MustCompile(`^/tmp/flocc-cardinal\.[A-Za-z0-9]{6,}$`)
-	hostStage = regexp.MustCompile(`^/tmp/flocc-cardinal-host\.[A-Za-z0-9]{6,}$`)
-)
+var hostStage = regexp.MustCompile(`^/tmp/flocc-cardinal-host\.[A-Za-z0-9]{6,}$`)
 
 func sshArgs(opts []string, tty bool, dest, remote string) host.Cmd {
 	args := append([]string{}, opts...)
@@ -158,9 +157,7 @@ type incusInstance struct {
 	Devices         map[string]map[string]string `json:"devices"`
 	ExpandedDevices map[string]map[string]string `json:"expanded_devices"`
 	State           *struct {
-		Network map[string]struct {
-			Addresses []struct{ Family, Address string } `json:"addresses"`
-		} `json:"network"`
+		Network create.Network `json:"network"`
 	} `json:"state"`
 }
 
@@ -179,7 +176,11 @@ func (d Deps) incusPass(ctx context.Context, ce *create.Env, only []string, file
 	if err != nil {
 		return nil, nil, "", err
 	}
-	gateway, _, _ := strings.Cut(strings.TrimSpace(gw), "/")
+	gwIP, bridge, err := net.ParseCIDR(strings.TrimSpace(gw))
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("%s's ipv4.address %q: %w", create.Bridge, strings.TrimSpace(gw), err)
+	}
+	gateway := gwIP.String()
 	var scope []inScope
 	var skipped []string
 	for _, h := range files {
@@ -197,15 +198,12 @@ func (d Deps) incusPass(ctx context.Context, ce *create.Env, only []string, file
 		}
 		inst := list[i]
 		addr := inst.ExpandedDevices["eth0"]["ipv4.address"]
-		if addr == "" && inst.State != nil {
-			for _, a := range inst.State.Network["eth0"].Addresses {
-				if a.Family == "inet" {
-					addr = a.Address
-					break
-				}
+		if addr == "" {
+			if inst.State != nil {
+				addr = inst.State.Network.FirstIPv4(bridge)
 			}
 			if addr == "" {
-				skipped = append(skipped, h.Name+": no IPv4 address on eth0; start it and run setup again")
+				skipped = append(skipped, h.Name+": no IPv4 address yet; start it and run setup again")
 				continue
 			}
 			verb := "override"
@@ -261,7 +259,7 @@ func (d Deps) hostPass(ctx context.Context, h hosts.Host, bin, phase string, doc
 	case !ok:
 		return r, fmt.Errorf("%s: the host pass ended without a report (exit %d):\n%s", h.Name, res.Code, passOutput(res, 20))
 	case r.Error != "":
-		return r, fmt.Errorf("%s: %s", h.Name, r.Error)
+		return r, fmt.Errorf("%s: %s", h.Name, saved.Sanitize(r.Error))
 	}
 	return r, nil
 }
@@ -300,21 +298,37 @@ func (d Deps) refreshKnownHost(ctx context.Context, h hosts.Host, hostKey string
 // rootOutcomes reports the first missing root outcome, "" when the root pass has nothing to do.
 // None of these needs sudo.
 func (d Deps) rootOutcomes(ctx context.Context, s saved.Saved) string {
-	ok := func(c host.Cmd) bool {
-		r, err := d.Run.Run(ctx, c)
-		return err == nil && r.Code == 0
+	// out is the command's stdout when it succeeded, and ok whether it did.
+	out := func(remote string) (string, bool) {
+		r, err := d.Run.Run(ctx, d.owner(s.Machine, false, remote))
+		return r.Stdout, err == nil && r.Code == 0
 	}
-	switch {
-	case !ok(d.owner(s.Machine, false, "id -u "+s.User)):
+	uidText, exists := out("id -u " + s.User)
+	if !exists {
 		return "no " + s.User + " user"
-	case !ok(d.owner(s.Machine, false, "test \"$(loginctl show-user "+s.User+" -p Linger --value)\" = yes")):
-		return "lingering off"
-	case !ok(d.owner(s.Machine, false, "systemctl is-active --quiet flocc-cardinal-egress@"+s.User+".service")):
-		return "no tailnet block"
 	}
-	ctx, cancel := context.WithTimeout(ctx, reachLimit)
+	groups, _ := out("id -nG " + s.User)
+	for _, g := range strings.Fields(groups) {
+		if slices.Contains(steps.CardinalPrivileged, g) {
+			return s.User + " is in group " + g
+		}
+	}
+	uid, _ := strconv.Atoi(strings.TrimSpace(uidText))
+	rules, _ := out("cat " + steps.EgressRulesPath(s.User))
+	unit, _ := out("cat " + steps.EgressUnitPath)
+	_, lingering := out("test \"$(loginctl show-user " + s.User + " -p Linger --value)\" = yes")
+	_, active := out("systemctl is-active --quiet flocc-cardinal-egress@" + s.User + ".service")
+	switch {
+	case !lingering:
+		return "lingering off"
+	case rules != steps.EgressRules(s.User, uid) || unit != steps.EgressUnit:
+		return "tailnet block missing or out of date"
+	case !active:
+		return "tailnet block not active"
+	}
+	reach, cancel := context.WithTimeout(ctx, reachLimit)
 	defer cancel()
-	if !ok(d.user(s, false, "true")) {
+	if r, err := d.Run.Run(reach, d.user(s, false, "true")); err != nil || r.Code != 0 {
 		return "the desktop key cannot log in as " + s.User
 	}
 	return ""
@@ -332,14 +346,18 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey, phas
 	if err != nil {
 		return err
 	}
-	if !rootStage.MatchString(dir) {
+	if !steps.ValidCardinalStage(dir) {
 		return fmt.Errorf("mktemp on %s returned %q", s.Machine, dir)
 	}
-	pub := filepath.Join(bin, "desktop.pub")
-	if err := os.WriteFile(pub, []byte(desktopKey+"\n"), 0o600); err != nil {
-		return err
+	files := []string{filepath.Join(bin, "flocc-setup")}
+	if desktopKey != "" {
+		pub := filepath.Join(bin, "desktop.pub")
+		if err := os.WriteFile(pub, []byte(desktopKey+"\n"), 0o600); err != nil {
+			return err
+		}
+		files = append(files, pub)
 	}
-	if _, err := host.Must(ctx, d.Run, d.scp(d.Mux, s.Machine+":"+dir+"/", filepath.Join(bin, "flocc-setup"), pub)); err != nil {
+	if _, err := host.Must(ctx, d.Run, d.scp(d.Mux, s.Machine+":"+dir+"/", files...)); err != nil {
 		return err
 	}
 	remote := "chmod 755 " + dir + "/flocc-setup && sudo " + dir + "/flocc-setup --phase " + phase + " --user " + s.User
@@ -347,40 +365,41 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey, phas
 		remote += " --adopt"
 	}
 	remote += " && rm -rf " + dir
-	var out bytes.Buffer
+	var r steps.CardinalReport
+	tap := reportTap(d.Out, &r)
 	c := d.owner(s.Machine, true, remote)
-	c.Stdout = io.MultiWriter(&markerFilter{w: d.Out}, &out)
-	if err := d.Run.Interactive(ctx, c); err != nil {
+	c.Stdout = tap
+	err = d.Run.Interactive(ctx, c)
+	tap.Flush()
+	if err != nil {
 		return fmt.Errorf("the root pass failed; its log is %s/setup.log on %s: %w", dir, s.Machine, err)
 	}
-	if r, ok := report(out.String()); ok {
+	if len(r.Steps) > 0 {
 		d.printSteps("Root pass", r)
 	}
 	return nil
 }
 
-// markerFilter passes output through without the report line, which printSteps renders.
-type markerFilter struct {
-	w    io.Writer
-	line []byte
-}
-
-func (m *markerFilter) Write(p []byte) (int, error) {
-	for _, b := range p {
-		m.line = append(m.line, b)
-		if b == '\n' {
-			if !bytes.HasPrefix(bytes.TrimLeft(m.line, "\r"), []byte(steps.CardinalMarker)) {
-				m.w.Write(m.line)
-			}
-			m.line = m.line[:0]
+// reportTap passes a pass's output through as it comes, prompts included, and keeps its
+// flocc-cardinal line in r for printSteps.
+func reportTap(out io.Writer, r *steps.CardinalReport) *ship.LineTap {
+	return &ship.LineTap{Out: out, Marker: steps.CardinalMarker, Take: func(line string) bool {
+		got, ok := steps.ParseCardinalLine(line)
+		if ok {
+			*r = got
 		}
-	}
-	return len(p), nil
+		return ok
+	}}
 }
 
 // userPass stages the binaries in the user's home over the user's own ssh and runs the pass.
 func (d Deps) userPass(ctx context.Context, s saved.Saved, bin string, doc steps.CardinalDoc) (steps.CardinalReport, error) {
-	if _, err := host.Must(ctx, d.Run, d.user(s, false, "mkdir -p ~/"+userStage)); err != nil {
+	// The first connection opens the master the rest share; a tailnet policy in check mode would
+	// otherwise hold it at a prompt BatchMode does not refuse.
+	reach, cancel := context.WithTimeout(ctx, reachLimit)
+	_, err := host.Must(reach, d.Run, d.user(s, false, "mkdir -p ~/"+userStage))
+	cancel()
+	if err != nil {
 		return steps.CardinalReport{}, err
 	}
 	opts := append(append([]string{}, saved.Pinned...), d.Mux...)

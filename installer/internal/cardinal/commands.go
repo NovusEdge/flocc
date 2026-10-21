@@ -125,7 +125,9 @@ func Main(ctx context.Context, d Deps, args []string) int {
 		err = d.remove(ctx, s, *purge)
 	}
 	if err != nil {
-		fmt.Fprintf(d.Err, "\nflocc cardinal %s: %v\n\nLog: %s\n", sub, err, logPath(d.Home, s.User))
+		// Errors carry output from cardinal's side (its shell startup files, its binaries, the hosts
+		// it is root on), so no escape sequence of theirs may reach this terminal.
+		fmt.Fprintf(d.Err, "\nflocc cardinal %s: %s\n\nLog: %s\n", sub, saved.SanitizeBlock(err.Error(), 40), logPath(d.Home, s.User))
 		return 1
 	}
 	return 0
@@ -213,6 +215,14 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, only []string, keyPath s
 		return err
 	}
 	defer os.RemoveAll(bin)
+	s.Hosts = nil
+	for _, h := range scope {
+		s.Hosts = append(s.Hosts, h.Host.Name)
+	}
+	// Saved before the root pass, so a run that stops after useradd adopts the user next time.
+	if err := s.Save(saved.Dir(d.Home)); err != nil {
+		return err
+	}
 	if why := d.rootOutcomes(ctx, s); why != "" {
 		fmt.Fprintf(d.Out, "\nRoot pass (%s): sudo asks for your password on %s once\n", why, s.Machine)
 		if err := d.rootPass(ctx, s, bin, key, "cardinal-root", adopt); err != nil {
@@ -224,14 +234,11 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, only []string, keyPath s
 	} else {
 		fmt.Fprintf(d.Out, "\nRoot pass: nothing to do\n")
 	}
-	s.Hosts = nil
-	for _, h := range scope {
-		s.Hosts = append(s.Hosts, h.Host.Name)
-	}
-	var failed []string
-	runHosts := func(oldKeys []string) []steps.CardinalHostFile {
+	// The user pass keeps exactly the host files it is sent, so it runs only once every host pass
+	// succeeded: a failed host's file would otherwise be deleted from cardinal.
+	runHosts := func(oldKeys []string) ([]steps.CardinalHostFile, error) {
 		var lines []steps.CardinalHostFile
-		failed = nil
+		var failed []string
 		for _, h := range scope {
 			doc := steps.HostDoc{Addr: h.Addr, Gateway: gateway, Key: s.Key, OldKeys: oldKeys, Install: s.User + "@" + saved.HostPart(s.Machine)}
 			r, err := d.hostPass(ctx, h.Host, bin, "cardinal-host", doc)
@@ -239,20 +246,25 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, only []string, keyPath s
 				err = d.refreshKnownHost(ctx, h.Host, r.HostKey)
 			}
 			if err != nil {
-				fmt.Fprintf(d.Out, "\nHost %s\n  ✗ %v\n", h.Host.Name, err)
+				fmt.Fprintf(d.Out, "\nHost %s\n  ✗ %s\n", h.Host.Name, saved.SanitizeBlock(err.Error(), 20))
 				failed = append(failed, h.Host.Name)
 				continue
 			}
 			d.printSteps("Host "+h.Host.Name, r)
 			lines = append(lines, steps.CardinalHostFile{Name: h.Host.Name, Addr: h.Addr, KnownHost: r.HostKey})
 		}
-		return lines
+		if len(failed) > 0 {
+			return nil, fmt.Errorf("%s failed, so the user pass did not run and cardinal keeps its host files; run setup again once fixed", strings.Join(failed, ", "))
+		}
+		return lines, nil
 	}
 	doc := steps.CardinalDoc{User: s.User, Machine: saved.HostPart(s.Machine), RenewHour: s.RenewHour}
 	if d.Tailnet != nil {
 		doc.Tailnet = d.Tailnet()
 	}
-	doc.Hosts = runHosts(nil)
+	if doc.Hosts, err = runHosts(nil); err != nil {
+		return err
+	}
 	r, err := d.userPass(ctx, s, bin, doc)
 	if err != nil {
 		return err
@@ -264,26 +276,20 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, only []string, keyPath s
 			fmt.Fprintln(d.Out, "\ncardinal's key changed on the machine; saving it and pushing it to the hosts again")
 		}
 		s.Key = r.Key
-		s.Removed = false
 		if err := s.Save(saved.Dir(d.Home)); err != nil {
 			return err
 		}
-		doc.Hosts = runHosts(old)
+		if doc.Hosts, err = runHosts(old); err != nil {
+			return err
+		}
 		if r, err = d.userPass(ctx, s, bin, doc); err != nil {
 			return err
 		}
 	}
 	d.printSteps("User pass", r)
-	s.Removed = false
-	if err := s.Save(saved.Dir(d.Home)); err != nil {
-		return err
-	}
 	fmt.Fprintf(d.Out, "\nlogin    %s\n", saved.Sanitize(r.Login))
 	if r.Login != "full" {
 		fmt.Fprintf(d.Out, "next     flocc cardinal login --user %s --email <pool account>\n", s.User)
-	}
-	if len(failed) > 0 {
-		return fmt.Errorf("%s failed; the other hosts are set up. Run setup again once fixed", strings.Join(failed, ", "))
 	}
 	return nil
 }
@@ -293,9 +299,13 @@ func (d Deps) login(ctx context.Context, s saved.Saved, email string) error {
 	if email != "" {
 		remote += " --email " + email
 	}
+	var r steps.CardinalReport
+	tap := reportTap(d.Out, &r)
 	c := d.user(s, true, remote)
-	c.Stdout = ship.WatchURLs(&markerFilter{w: d.Out}, d.Open, anthropicURL)
-	if err := d.Run.Interactive(ctx, c); err != nil {
+	c.Stdout = ship.WatchURLs(tap, d.Open, anthropicURL)
+	err := d.Run.Interactive(ctx, c)
+	tap.Flush()
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(d.Out, "\ncardinal is running as %s. Still yours to do, once:\n", s.User)
@@ -306,6 +316,9 @@ func (d Deps) login(ctx context.Context, s saved.Saved, email string) error {
 }
 
 func (d Deps) status(ctx context.Context, s saved.Saved) int {
+	// Full status health-checks every MCP server and host, so it gets longer than the outcome checks.
+	ctx, cancel := context.WithTimeout(ctx, 3*reachLimit)
+	defer cancel()
 	res, err := d.Run.Run(ctx, d.user(s, false, setupPath+" --phase cardinal-status"))
 	if err != nil || res.Code != 0 {
 		why := passOutput(res, 5)
@@ -316,8 +329,12 @@ func (d Deps) status(ctx context.Context, s saved.Saved) int {
 		return 1
 	}
 	var st steps.CardinalStatus
-	if err := json.Unmarshal([]byte(res.Stdout), &st); err != nil {
+	switch err := json.Unmarshal([]byte(res.Stdout), &st); {
+	case err != nil:
 		fmt.Fprintf(d.Out, "unreadable status from %s: %v\n", s.Dest(), err)
+		return 1
+	case st.Schema != steps.CardinalStatusSchema:
+		fmt.Fprintf(d.Out, "%s reports status schema %d; run flocc cardinal setup --user %s\n", s.Dest(), st.Schema, s.User)
 		return 1
 	}
 	out, code := RenderStatus(st)
@@ -345,7 +362,7 @@ const removeUnits = "systemctl --user disable --now cardinal.service cardinal-re
 
 func (d Deps) remove(ctx context.Context, s saved.Saved, purge bool) error {
 	if _, err := host.Must(ctx, d.Run, d.user(s, false, removeUnits)); err != nil {
-		fmt.Fprintf(d.Out, "  · units: %v\n", err)
+		fmt.Fprintf(d.Out, "  · units: %s\n", saved.SanitizeBlock(err.Error(), 10))
 	} else {
 		fmt.Fprintln(d.Out, "  ✓ units stopped and deleted; the home, login, key and ~/state.md stay")
 	}
@@ -365,7 +382,7 @@ func (d Deps) remove(ctx context.Context, s saved.Saved, purge bool) error {
 		}
 		r, err := d.hostPass(ctx, files[i], bin, "cardinal-host-remove", steps.HostDoc{Key: s.Key, Install: s.User + "@" + saved.HostPart(s.Machine)})
 		if err != nil {
-			fmt.Fprintf(d.Out, "  ✗ %s: %v\n", name, err)
+			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", name, saved.SanitizeBlock(err.Error(), 10))
 			failed = append(failed, name)
 			continue
 		}
@@ -373,12 +390,8 @@ func (d Deps) remove(ctx context.Context, s saved.Saved, purge bool) error {
 	}
 	dir := saved.Dir(d.Home)
 	if purge {
-		key, err := d.desktopKey("")
-		if err != nil {
-			return err
-		}
 		fmt.Fprintf(d.Out, "\nPurge: sudo asks for your password on %s once\n", s.Machine)
-		if err := d.rootPass(ctx, s, bin, key, "cardinal-purge", false); err != nil {
+		if err := d.rootPass(ctx, s, bin, "", "cardinal-purge", false); err != nil {
 			return err
 		}
 		if err := saved.Delete(dir, s.User); err != nil {

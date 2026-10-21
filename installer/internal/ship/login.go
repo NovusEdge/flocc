@@ -63,7 +63,7 @@ func (o LoginOptions) label() string { return cmp.Or(o.Name, o.Target) }
 
 // target is the name the owner typed, never dest.SSH, which holds the Daytona token.
 func login(ctx context.Context, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {
-	tap := &summaryTap{out: &urlWatch{out: out, open: open, seen: map[string]bool{}}}
+	tap := newSummaryTap(&urlWatch{out: out, open: open, seen: map[string]bool{}})
 	c := sshCmd(dest, true, loginRemote(addr))
 	c.Stdout = tap
 	err := scrubErr(r.Interactive(ctx, c), dest.Token)
