@@ -202,8 +202,9 @@ func TestUserPassReportsAndSanitizesFailures(t *testing.T) {
 	f.On(d.user(card, false, "mkdir -p ~/"+userStage).String(), 0, "")
 	opts := append(append([]string{}, saved.Pinned...), d.Mux...)
 	f.On(d.scp(opts, card.Dest()+":"+userStage+"/", filepath.Join(bin, "flocc"), filepath.Join(bin, "flocc-setup")).String(), 0, "")
-	run := d.user(card, false, "chmod 755 ~/"+userStage+"/flocc ~/"+userStage+"/flocc-setup && ~/"+userStage+"/flocc-setup --phase cardinal --answers -").String()
-	f.Responses[run] = host.Result{Code: 1, Stdout: "\x1b]52;c;evil\x07boom\n" + steps.CardinalReport{Error: "Units: \x1b[2Jbad"}.Line() + "\n"}
+	run := d.user(card, false, "chmod 755 ~/"+userStage+"/flocc ~/"+userStage+"/flocc-setup && ~/"+userStage+"/flocc-setup --phase cardinal --answers - --events").String()
+	f.OnInteractiveOut(run, "\x1b]52;c;evil\x07boom\n"+string(ui.Encode(ui.Event{Kind: ui.KData, Name: "cardinal", Text: steps.CardinalReport{Error: "Units: \x1b[2Jbad"}.JSON()}))).
+		OnInteractive(run, errors.New("exit status 1"))
 	_, err := d.userPass(context.Background(), card, bin, steps.CardinalDoc{User: "cardinal"})
 	if err == nil || strings.ContainsAny(err.Error(), "\x1b\x07") || !strings.Contains(err.Error(), "Units:") {
 		t.Fatalf("err = %q", err)
@@ -211,6 +212,47 @@ func TestUserPassReportsAndSanitizesFailures(t *testing.T) {
 	var doc steps.CardinalDoc
 	if json.Unmarshal([]byte(f.Stdins[run]), &doc) != nil || doc.User != "cardinal" {
 		t.Fatalf("stdin %q", f.Stdins[run])
+	}
+}
+
+func TestUserPassDrawsTheHostsEventsAndReturnsItsReport(t *testing.T) {
+	f := host.NewFake()
+	d, rec := testDeps(t, f)
+	bin := t.TempDir()
+	f.On(d.user(card, false, "mkdir -p ~/"+userStage).String(), 0, "")
+	opts := append(append([]string{}, saved.Pinned...), d.Mux...)
+	f.On(d.scp(opts, card.Dest()+":"+userStage+"/", filepath.Join(bin, "flocc"), filepath.Join(bin, "flocc-setup")).String(), 0, "")
+	run := d.user(card, false, "chmod 755 ~/"+userStage+"/flocc ~/"+userStage+"/flocc-setup && ~/"+userStage+"/flocc-setup --phase cardinal --answers - --events").String()
+	f.OnInteractiveOut(run, string(ui.Encode(ui.Event{Kind: ui.KStep, ID: "h1", Name: "Units", State: ui.Done, Detail: "\x1b[2Jactive"}))+
+		string(ui.Encode(ui.Event{Kind: ui.KData, Name: "cardinal", Text: steps.CardinalReport{Key: "ssh-ed25519 AAAA", Login: "full"}.JSON()})))
+	r, err := d.userPass(context.Background(), card, bin, steps.CardinalDoc{User: "cardinal"})
+	if err != nil || r.Key != "ssh-ed25519 AAAA" || r.Login != "full" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	rows := rec.Rows()
+	if len(rows) != 1 || rows[0].Name != "Units" || strings.Contains(rows[0].Detail, "\x1b") {
+		t.Fatalf("rows %+v", rows)
+	}
+}
+
+func TestHostPassDrawsTheHostsEventsAndFailsWithoutAReport(t *testing.T) {
+	f := host.NewFake()
+	d, rec := testDeps(t, f)
+	h := hosts.Host{Name: "flocc-nimble", SSH: "root@flocc-nimble"}
+	f.On(d.onHost(h, "true").String(), 0, "")
+	f.On(d.onHost(h, "mktemp -d /tmp/flocc-cardinal-host.XXXXXX").String(), 0, "/tmp/flocc-cardinal-host.Ab12Cd\n")
+	bin := t.TempDir()
+	f.On(d.scp(d.Mux, h.SSH+":/tmp/flocc-cardinal-host.Ab12Cd/", filepath.Join(bin, "flocc-setup")).String(), 0, "")
+	run := d.onHost(h, "chmod 755 /tmp/flocc-cardinal-host.Ab12Cd/flocc-setup && /tmp/flocc-cardinal-host.Ab12Cd/flocc-setup --phase cardinal-host --answers - --events; rc=$?; rm -rf /tmp/flocc-cardinal-host.Ab12Cd; exit $rc").String()
+	f.OnInteractiveOut(run, string(ui.Encode(ui.Event{Kind: ui.KStep, ID: "h1", Name: "sshd", State: ui.Running}))+"boom\n").
+		OnInteractive(run, errors.New("exit status 255"))
+	_, err := d.hostPass(context.Background(), h, bin, "cardinal-host", steps.HostDoc{})
+	if err == nil || !strings.Contains(err.Error(), "without a report") || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v", err)
+	}
+	rows := rec.Rows()
+	if len(rows) != 1 || rows[0].Name != "sshd" || rows[0].State != ui.Failed {
+		t.Fatalf("rows %+v", rows)
 	}
 }
 

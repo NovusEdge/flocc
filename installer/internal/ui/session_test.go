@@ -59,3 +59,17 @@ func TestTodosAndCode(t *testing.T) {
 		t.Errorf("todos %v", r.Todos)
 	}
 }
+
+func TestStepCallsAfterTheEndAreDropped(t *testing.T) {
+	rec := &Recorder{}
+	s := New(rec)
+	st := s.Step("Wait")
+	st.Done("ok")
+	n := len(rec.Events)
+	st.Detail("3s left")
+	st.Progress(1, 2)
+	st.Line("late")
+	if len(rec.Events) != n {
+		t.Errorf("events after the end: %+v", rec.Events[n:])
+	}
+}

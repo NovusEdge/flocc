@@ -100,9 +100,10 @@ func (e Exec) Interactive(ctx context.Context, c Cmd) error {
 	if e.Term != nil && (c.Attach || c.Stdin == nil || c.Stdout == nil) {
 		// Nil streams are filled with the terminal by tea.ExecProcess, which keeps the ones set.
 		cmd.Stdin, cmd.Stdout = c.Stdin, c.Stdout
+		// Never the argument vector: an ssh to a Daytona sandbox carries its token there.
 		why := c.Why
 		if why == "" {
-			why = c.String()
+			why = c.Name
 		}
 		return e.Term.Handoff(why, cmd)
 	}

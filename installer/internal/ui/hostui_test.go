@@ -33,7 +33,7 @@ func TestEventsWritesWireLinesOnly(t *testing.T) {
 	for _, row := range rec.Rows() {
 		got = append(got, row.Name+":"+string(row.State)+":"+row.Detail+row.Err)
 	}
-	want := []string{"A:done:fine", "B:skipped:to do", "B:done:made", "C:pending:later", "D:failed:boom"}
+	want := []string{"A:done:fine", "B:done:made", "C:pending:later", "D:failed:boom"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("rows %q, want %q", got, want)
 	}

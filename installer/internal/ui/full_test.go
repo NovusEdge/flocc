@@ -338,6 +338,10 @@ func TestFullPanicRestoresTerminalAndPrintsRecord(t *testing.T) {
 	r := newFull(&out, pr, "t", tea.WithWindowSize(100, 30))
 	r.Draw(Event{Kind: KStep, ID: "a", Name: "first", State: Done, Detail: "ok"})
 	r.Draw(Event{Kind: KTodo, Text: "do this"})
+	// Kill before Run has started races inside Bubble Tea; Draw used to wait for the loop.
+	for out.String() == "" {
+		time.Sleep(5 * time.Millisecond)
+	}
 	func() {
 		defer func() {
 			if recover() == nil {

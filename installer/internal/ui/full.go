@@ -535,10 +535,18 @@ func (b *bannerCmd) SetStderr(w io.Writer) {
 }
 
 func (b *bannerCmd) Run() error {
-	if b.why != "" && b.why != "-" && b.out != nil {
-		fmt.Fprintf(b.out, "── %s ──\n", b.why)
+	if banner := handoffBanner(b.why); banner != "" && b.out != nil {
+		fmt.Fprintln(b.out, banner)
 	}
 	return b.cmd.Run()
+}
+
+// handoffBanner is the line printed before a handoff; a why of "-" (forwarded commands) has none.
+func handoffBanner(why string) string {
+	if why == "" || why == "-" {
+		return ""
+	}
+	return "── " + why + " ──"
 }
 
 // recordText is what the normal screen keeps of a full-screen run: every ended step under its
@@ -565,6 +573,7 @@ func recordText(m fullModel, todos []string) string {
 // alternate screen is gone. mu orders Draw against that swap, so no event falls between the two.
 type full struct {
 	p        *tea.Program
+	q        *sendQueue
 	out      io.Writer
 	in       io.Reader
 	done     chan struct{} // closes after a hand-over, if any, is complete
@@ -589,6 +598,7 @@ func newFullWith(out io.Writer, in io.Reader, title string, inner func(io.Writer
 	m.title = title
 	opts = append([]tea.ProgramOption{tea.WithOutput(out), tea.WithInput(in), tea.WithoutSignalHandler()}, opts...)
 	r.p = tea.NewProgram(m, opts...)
+	r.q = newSendQueue(r.p, r.done)
 	go r.run()
 	return r
 }
@@ -654,7 +664,7 @@ func (r *full) Draw(e Event) {
 		r.inner.Draw(e)
 		return
 	}
-	r.p.Send(drawMsg{e})
+	r.q.Send(drawMsg{e})
 }
 
 func (r *full) Prompt(p PromptReq) (any, error) {
@@ -662,7 +672,7 @@ func (r *full) Prompt(p PromptReq) (any, error) {
 		return in.Prompt(p)
 	}
 	reply := make(chan promptReply, 1)
-	r.p.Send(promptMsg{req: p, reply: reply})
+	r.q.Send(promptMsg{req: p, reply: reply})
 	select {
 	case a := <-reply:
 		return a.v, a.err
@@ -679,7 +689,7 @@ func (r *full) Handoff(why string, c *exec.Cmd) error {
 		return in.Handoff(why, c)
 	}
 	reply := make(chan error, 1)
-	r.p.Send(handoffMsg{why: why, cmd: c, reply: reply})
+	r.q.Send(handoffMsg{why: why, cmd: c, reply: reply})
 	select {
 	case err := <-reply:
 		return err
@@ -697,7 +707,7 @@ func (r *full) Close(todos []string) int {
 	if in := r.handedOver(); in != nil {
 		return in.Close(todos)
 	}
-	r.p.Send(closeMsg{todos})
+	r.q.Send(closeMsg{todos})
 	<-r.done
 	if in := r.handedOver(); in != nil {
 		return in.Close(todos)

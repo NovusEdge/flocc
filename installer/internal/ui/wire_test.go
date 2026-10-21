@@ -138,3 +138,21 @@ func TestReplayKeepsDataOutOfTheDrawing(t *testing.T) {
 		}
 	}
 }
+
+func TestReplaySanitizesFarEndTextButNotData(t *testing.T) {
+	rec := &Recorder{}
+	r := Replay(New(rec), "", "")
+	r.Write(Encode(Event{Kind: KStep, ID: "h1", Name: "Pa\x1bck", State: Done, Detail: "d\x1b"}))
+	r.Write([]byte("stray\x1b[2J\n"))
+	r.Write(Encode(Event{Kind: KData, Name: "x", Text: "keep\x1b"}))
+	r.Close()
+	if row := rec.Rows()[0]; row.Name != "Pa ck" || row.Detail != "d " {
+		t.Errorf("%+v", row)
+	}
+	if last := rec.Events[len(rec.Events)-1]; last.Text != "stray [2J" {
+		t.Errorf("%+v", last)
+	}
+	if v, _ := r.Data("x"); v != "keep\x1b" {
+		t.Errorf("data %q", v)
+	}
+}

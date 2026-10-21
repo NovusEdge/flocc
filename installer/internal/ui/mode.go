@@ -1,6 +1,9 @@
 package ui
 
-import "io"
+import (
+	"context"
+	"io"
+)
 
 type Mode string
 
@@ -32,11 +35,12 @@ func ModeFor(flag Mode, getenv func(string) string, isTerminal bool, def Mode) M
 }
 
 // Open starts a session on out/in in mode m. title names the command in the full-screen header
-// and stop question (flocc setup, host create, ...); the others ignore it.
-func Open(m Mode, out io.Writer, in io.Reader, title ...string) Session {
+// and stop question (flocc setup, host create, ...); the others ignore it. ctx ends a plain
+// prompt that waits for input.
+func Open(ctx context.Context, m Mode, out io.Writer, in io.Reader, title ...string) Session {
 	switch m {
 	case ModePlain:
-		return New(NewPlain(out, in, false))
+		return New(NewPlainCtx(ctx, out, in, false))
 	case ModeFull:
 		return New(NewFull(out, in, append(title, "flocc")[0]))
 	}

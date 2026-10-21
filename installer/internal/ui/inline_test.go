@@ -151,3 +151,31 @@ func TestInlineProgramAnswersConfirm(t *testing.T) {
 		t.Errorf("scrollback missing rows: %q", out.String())
 	}
 }
+
+// tea.ExecProcess blocks the program loop, so a draw from the child's own stdout must not wait for it.
+func TestInlineDrawDuringAHandoffDoesNotBlock(t *testing.T) {
+	var out syncBuf
+	s := New(newInline(&out, strings.NewReader(""), tea.WithWindowSize(80, 24)))
+	st := s.Step("Replayed")
+	c := exec.Command("sh", "-c", "echo x; sleep 0.3")
+	c.Stdout = lineWriter(func(l string) { st.Line(l) })
+	done := make(chan error, 1)
+	go func() { done <- s.Handoff("-", c) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handoff hung on a draw from its own output")
+	}
+	st.Done("ok")
+	s.Close()
+}
+
+type lineWriter func(string)
+
+func (w lineWriter) Write(p []byte) (int, error) {
+	w(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}

@@ -29,13 +29,12 @@ func (e *Events) id() string {
 	return "h" + strconv.Itoa(e.next)
 }
 
+// Status sends only the steps already done; a pending one is drawn when it runs.
 func (e *Events) Status(steps []StepStatus) {
 	for _, st := range steps {
-		ev := Event{Kind: KStep, ID: e.id(), Name: st.Name, Detail: st.Detail, State: Done}
-		if !st.Done {
-			ev.State, ev.Detail = Skipped, "to do"
+		if st.Done {
+			e.send(Event{Kind: KStep, ID: e.id(), Name: st.Name, Detail: st.Detail, State: Done})
 		}
-		e.send(ev)
 	}
 }
 

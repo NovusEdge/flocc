@@ -1,11 +1,15 @@
 package ui
 
 import (
+	"context"
 	"errors"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"charm.land/huh/v2"
 )
 
 func TestPlainGolden(t *testing.T) {
@@ -107,14 +111,75 @@ func TestPlainTable(t *testing.T) {
 	}
 }
 
+// stdout may feed a pipe, so the banner goes to stderr.
 func TestPlainHandoff(t *testing.T) {
-	var out strings.Builder
-	s := New(NewPlain(&out, strings.NewReader(""), false))
-	if err := s.Handoff("claude login", exec.Command("true")); err != nil {
+	var out, errOut strings.Builder
+	p := NewPlain(&out, strings.NewReader(""), false).(*plain)
+	p.errOut = &errOut
+	if err := New(p).Handoff("claude login", exec.Command("true")); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "── claude login ──\n") {
+	if !strings.Contains(errOut.String(), "── claude login ──\n") || out.Len() != 0 {
+		t.Errorf("out = %q, err = %q", out.String(), errOut.String())
+	}
+}
+
+func TestPlainRowsEndedDuringAPromptWaitForTheAnswer(t *testing.T) {
+	var out syncBuf
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	s := New(NewPlain(&out, pr, false))
+	done := make(chan bool, 1)
+	go func() {
+		ok, _ := s.Confirm(Question{Title: "Adopt?"})
+		done <- ok
+	}()
+	for !strings.Contains(out.String(), "[y/N]: ") {
+		time.Sleep(5 * time.Millisecond)
+	}
+	s.Step("Late").Done("fine")
+	if strings.Contains(out.String(), "Late") {
+		t.Fatalf("a row landed in the prompt: %q", out.String())
+	}
+	pw.Write([]byte("y\n"))
+	if !<-done {
+		t.Fatal("answer lost")
+	}
+	if got := out.String(); !strings.Contains(got, "[y/N]: \n") || strings.Index(got, "Late") < strings.Index(got, "[y/N]: ") {
+		t.Errorf("out = %q", got)
+	}
+}
+
+func TestPlainPromptStopsWhenTheRunIsCancelled(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	s := New(NewPlainCtx(ctx, io.Discard, pr, false))
+	got := make(chan error, 1)
+	go func() { _, err := s.Ask(Question{Title: "Name"}); got <- err }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-got:
+		if !errors.Is(err, huh.ErrUserAborted) {
+			t.Errorf("err = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the prompt kept waiting for input")
+	}
+}
+
+func TestPlainHandoffWithoutReasonPrintsNoBanner(t *testing.T) {
+	var out strings.Builder
+	s := New(NewPlain(&out, strings.NewReader(""), false))
+	if err := s.Handoff("-", exec.Command("true")); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "──") {
 		t.Errorf("out = %q", out.String())
+	}
+	if handoffBanner("-") != "" || handoffBanner("") != "" || handoffBanner("x") != "── x ──" {
+		t.Error("handoffBanner")
 	}
 }
 

@@ -35,21 +35,17 @@ type UI interface {
 type Scripted struct {
 	A   *answers.Answers
 	Out io.Writer
-	// Color is set by the desktop's --color: the output reaches the desktop through a pipe, so
-	// only the desktop can tell whether its own terminal shows colour.
+	// Color colours the step lines and animates the live one.
 	Color bool
-	// Prog draws the live step line; made on first use from Out and Color, which also decide
-	// whether it animates: --color says the far end is a terminal.
-	Prog *Progress
-	// Cols is the desktop terminal's width, which the live line must fit; zero reads COLUMNS.
-	Cols int
+
+	prog *Progress // made on first use from Out and Color
 }
 
 func (s *Scripted) progress() *Progress {
-	if s.Prog == nil {
-		s.Prog = &Progress{Out: Out{W: s.Out, Color: s.Color}, Animate: s.Color, Cols: s.Cols}
+	if s.prog == nil {
+		s.prog = &Progress{Out: Out{W: s.Out, Color: s.Color}, Animate: s.Color}
 	}
-	return s.Prog
+	return s.prog
 }
 
 func (s *Scripted) Step(l Line, fn func() (Outcome, error)) error { return s.progress().Run(l, fn) }
