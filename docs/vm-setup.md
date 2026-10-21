@@ -446,6 +446,27 @@ The hosts share the owner's Claude login and so its 5h and weekly usage limits; 
 `five_hour_max_pct` and `weekly_max_pct` to the same account, so size the caps with that in mind.
 `flocc status -H all` shows all hosts together. Tailscale hostnames must differ between hosts.
 
+## Auto-mode blocks
+
+Host sessions run in auto mode. When its classifier blocks a command, the agent hears why and
+works around it or gives up; nothing waits for you. After three blocks in a row Claude Code shows
+a prompt, which denies itself after two minutes. Every block and prompt is logged per issue in
+`~/.local/state/flocc/<KEY>/permissions.jsonl`.
+
+`flocc -H <host> permissions report` counts them. Turn what you see into the host file's
+`[permissions]` table, then `flocc ship -H <host>`; sessions pick it up at their next launch.
+
+    [permissions]
+    environment = [
+      "Each session runs in a disposable VM. The worktree, ~/worktrees and /tmp are the agent's own.",
+      "Nothing on this VM is production. The agent's GitHub token is read-only.",
+    ]
+    allow = ["Bash(npx playwright install)", "Bash(uv sync --frozen)"]
+
+`environment` lines address whole classes of block and come first. `allow` rules are exact; a
+rule that wildcards an interpreter or shell (`Bash(python:*)`, `Bash(sh *)`, anything with `-c`)
+is refused when the config loads.
+
 ## Disk use
 
 A worktree with its venv can reach 1.4 GB, and uv's download cache (`~/.cache/uv`) grows with every
