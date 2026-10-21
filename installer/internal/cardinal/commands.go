@@ -249,6 +249,8 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, o SetupOptions) error {
 		s.Hosts = append(s.Hosts, h.Host.Name)
 	}
 	// Saved before the root pass, so a run that stops after useradd adopts the user next time.
+	// A setup is no longer a removed install; flocc setup reads this flag to decide whether to ask.
+	s.Removed = false
 	if err := s.Save(saved.Dir(d.Home)); err != nil {
 		return err
 	}

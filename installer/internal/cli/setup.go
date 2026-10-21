@@ -151,7 +151,17 @@ func (w *wizard) oldVersions(machines []string) map[string][]string {
 			w.row(rowPending, "old versions", k+": skipped, a host on it failed")
 			continue
 		}
-		found := w.ops.oldUsers(w.ctx, m)
+		// The probe is what answers a host-key question or a check-mode approval; the scan runs
+		// with BatchMode and cannot.
+		if ms := w.probe(m); ms.Err != nil {
+			w.row(rowFailed, "old versions", k+": could not look: "+ms.Err.Error())
+			continue
+		}
+		found, err := w.ops.oldUsers(w.ctx, m)
+		if err != nil {
+			w.row(rowFailed, "old versions", k+": could not look: "+err.Error())
+			continue
+		}
 		if len(found) == 0 {
 			w.row(rowDone, "old versions", "none on "+k)
 			continue
@@ -308,8 +318,16 @@ func (w *wizard) removed(m string, users []string, err error) {
 		return
 	}
 	k := saved.HostPart(m)
-	still := w.ops.oldUsers(w.ctx, m)
+	still, scanErr := w.ops.oldUsers(w.ctx, m)
 	for _, u := range users {
+		if scanErr != nil {
+			why := "could not check that it is gone: " + scanErr.Error()
+			if err != nil {
+				why = err.Error() + "; " + why
+			}
+			w.row(rowFailed, "old versions", u+" on "+k+": "+why)
+			continue
+		}
 		if !slices.ContainsFunc(still, func(o oldUser) bool { return o.Name == u }) {
 			w.row(rowDone, "old versions", "removed "+u+" on "+k+"; its home is archived under /root there. "+
 				"Revoke the old install's GitHub tokens and Linear key yourself")

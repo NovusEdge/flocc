@@ -69,7 +69,7 @@ func doneOps(l *opsLog) setupOps {
 			return hostState{Version: "0.8.0", Login: &full}
 		},
 		offline:  func(context.Context, string) bool { return false },
-		oldUsers: func(_ context.Context, m string) []oldUser { l.add("old %s", m); return nil },
+		oldUsers: func(_ context.Context, m string) ([]oldUser, error) { l.add("old %s", m); return nil, nil },
 		hasUser:  func(context.Context, string, string) bool { return false },
 		cardinal: func() (saved.Saved, bool, error) {
 			return saved.Saved{Machine: "zer0-day-nimble", User: "cardinal", RenewHour: 4}, true, nil
@@ -339,13 +339,13 @@ func TestTailnetOfflineFindsThePeerByName(t *testing.T) {
 // withOld gives zer0-day-nimble the linear-agents user until a removal runs.
 func withOld(l *opsLog, ops *setupOps) {
 	gone := false
-	ops.oldUsers = func(_ context.Context, m string) []oldUser {
+	ops.oldUsers = func(_ context.Context, m string) ([]oldUser, error) {
 		l.add("old %s", m)
 		if gone {
-			return nil
+			return nil, nil
 		}
 		return []oldUser{{Name: "linear-agents", Lingering: true, Since: "Tue 2026-10-20 01:41:28 EEST",
-			Procs: []string{"/usr/lib/systemd/systemd --user", "/usr/bin/tmux -L linear-agents -D", "claude --print \x1b[31mred"}}}
+			Procs: []string{"/usr/lib/systemd/systemd --user", "/usr/bin/tmux -L linear-agents -D", "claude --print \x1b[31mred"}}}, nil
 	}
 	setup, remove := ops.cardSetup, ops.removeOld
 	ops.cardSetup = func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error {
@@ -507,12 +507,80 @@ func TestFindOldReadsTheUserWithoutSudo(t *testing.T) {
 		On("loginctl show-user linear-agents -p Linger --value", 0, "yes\n").
 		On("loginctl show-user linear-agents -p Timestamp --value", 0, "Tue 2026-10-20 01:41:28 EEST\n").
 		On("ps -u linear-agents -o args=", 0, "/usr/lib/systemd/systemd --user\n/usr/bin/tmux -L linear-agents -D\n")
-	got := findOld(context.Background(), f, []string{"linear-agents", "nobody-else"})
-	if len(got) != 1 || !got[0].Lingering || got[0].Since == "" || len(got[0].Procs) != 2 {
+	got, err := findOld(context.Background(), f, []string{"linear-agents", "nobody-else"})
+	if err != nil || len(got) != 1 || !got[0].Lingering || got[0].Since == "" || len(got[0].Procs) != 2 {
 		t.Fatalf("%+v", got)
 	}
 	if slices.ContainsFunc(f.Calls, func(c string) bool { return strings.Contains(c, "sudo") }) {
 		t.Fatal("used sudo")
+	}
+}
+
+func TestFindOldFailsWhenSSHDoes(t *testing.T) {
+	f := host.NewFake().On("id -u linear-agents", 255, "Host key verification failed.\n")
+	if got, err := findOld(context.Background(), f, []string{"linear-agents"}); err == nil || got != nil {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestSetupDoesNotCallAnUnreachableMachineClean(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	ops.machine = func(context.Context, string) machineState { return machineState{Err: errors.New("host key unknown")} }
+	d, out, _ := setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, ops); code != 1 || l.has("old ") || strings.Contains(out.String(), "none on") {
+		t.Fatalf("exit %d calls %v out %q", code, l.calls, out)
+	}
+	l = opsLog{}
+	ops = doneOps(&l)
+	ops.oldUsers = func(context.Context, string) ([]oldUser, error) { return nil, errors.New("ssh failed") }
+	d, out, _ = setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, ops); code != 1 || strings.Contains(out.String(), "none on") || !strings.Contains(out.String(), "could not look") {
+		t.Fatalf("exit %d out %q", code, out)
+	}
+}
+
+func TestSetupDoesNotReportRemovedWhenTheRescanFails(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	withOld(&l, &ops)
+	scan := ops.oldUsers
+	scans := 0
+	ops.oldUsers = func(ctx context.Context, m string) ([]oldUser, error) {
+		if scans++; scans > 1 {
+			return nil, errors.New("ssh failed")
+		}
+		return scan(ctx, m)
+	}
+	ops.removeOld = func(context.Context, string, []string) error { return errors.New("sudo: bad password") }
+	d, out, _ := setupDeps(t, map[string]any{"Remove the linear-agents user": true})
+	if code := runSetup(context.Background(), d, ops); code != 1 || strings.Contains(out.String(), "removed linear-agents") ||
+		!strings.Contains(out.String(), "sudo: bad password") {
+		t.Fatalf("exit %d out %q", code, out)
+	}
+}
+
+func TestSetupAfterASetupOfARemovedCardinalChecksStatusWithoutAsking(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	removed := true
+	ops.cardinal = func() (saved.Saved, bool, error) {
+		return saved.Saved{Machine: "zer0-day-nimble", User: "cardinal", Removed: removed}, true, nil
+	}
+	setup := ops.cardSetup
+	ops.cardSetup = func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error {
+		removed = false // what Deps.setup saves
+		return setup(ctx, s, o)
+	}
+	d, _, _ := setupDeps(t, map[string]any{"Set up cardinal on zer0-day-nimble again": true})
+	runSetup(context.Background(), d, ops)
+	if !l.has("cardinal setup") {
+		t.Fatalf("first run: %v", l.calls)
+	}
+	d, out, p := setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, ops); code != 0 || !strings.Contains(out.String(), "status ok") ||
+		slices.ContainsFunc(p.asked, func(q string) bool { return strings.HasPrefix(q, "Set up cardinal") }) {
+		t.Fatalf("exit %d asked %v out %q", code, p.asked, out)
 	}
 }
 
@@ -559,7 +627,7 @@ func TestSetupOnAFinishedDesktopOnlyReads(t *testing.T) {
 		t.Fatalf("exit %d %q", code, out)
 	}
 	for _, c := range l.calls {
-		if !strings.HasPrefix(c, "keys ") && !strings.HasPrefix(c, "read ") && !strings.HasPrefix(c, "old ") && c != "cardinal status" {
+		if !strings.HasPrefix(c, "keys ") && !strings.HasPrefix(c, "read ") && !strings.HasPrefix(c, "old ") && !strings.HasPrefix(c, "machine ") && c != "cardinal status" {
 			t.Errorf("changed something: %q", c)
 		}
 	}

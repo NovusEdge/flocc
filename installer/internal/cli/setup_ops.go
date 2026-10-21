@@ -34,7 +34,7 @@ type setupOps struct {
 	ship       func(ctx context.Context, name string) error
 	readHost   func(ctx context.Context, h hosts.Host) hostState
 	offline    func(ctx context.Context, name string) bool
-	oldUsers   func(ctx context.Context, machine string) []oldUser
+	oldUsers   func(ctx context.Context, machine string) ([]oldUser, error)
 	hasUser    func(ctx context.Context, machine, user string) bool
 	cardinal   func() (saved.Saved, bool, error)
 	cardStatus func(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error)
@@ -69,7 +69,9 @@ func newSetupOps(d *deps) setupOps {
 		ship:       func(ctx context.Context, name string) error { return shipHost(ctx, d, name) },
 		readHost:   func(ctx context.Context, h hosts.Host) hostState { return readHost(ctx, d, h) },
 		offline:    func(ctx context.Context, name string) bool { return tailnetOffline(ctx, d.run, name) },
-		oldUsers:   func(ctx context.Context, m string) []oldUser { return findOld(ctx, owner(d, mux, m), steps.OldUsers) },
+		oldUsers: func(ctx context.Context, m string) ([]oldUser, error) {
+			return findOld(ctx, owner(d, mux, m), steps.OldUsers)
+		},
 		hasUser: func(ctx context.Context, m, user string) bool {
 			r, err := owner(d, mux, m).Run(ctx, host.Cmd{Name: "id", Args: []string{"-u", user}})
 			return err == nil && r.Code == 0
@@ -97,15 +99,22 @@ type oldUser struct {
 	Procs     []string // each process's command line, as that user wrote it
 }
 
-// findOld looks for each name on the machine m runs commands on.
-func findOld(ctx context.Context, m host.Runner, names []string) []oldUser {
+// findOld looks for each name on the machine m runs commands on. It fails when ssh does, which
+// would otherwise read as "no such user" and hide a still-running old install.
+func findOld(ctx context.Context, m host.Runner, names []string) ([]oldUser, error) {
 	out := func(name string, args ...string) (string, bool) {
 		r, err := m.Run(ctx, host.Cmd{Name: name, Args: args})
 		return strings.TrimSpace(r.Stdout), err == nil && r.Code == 0
 	}
 	var found []oldUser
 	for _, n := range names {
-		if _, ok := out("id", "-u", n); !ok {
+		r, err := m.Run(ctx, host.Cmd{Name: "id", Args: []string{"-u", n}})
+		switch {
+		case err != nil:
+			return nil, err
+		case r.Code == 255:
+			return nil, fmt.Errorf("ssh failed: %s", strings.TrimSpace(host.Tail(r.Out(), 1)))
+		case r.Code != 0:
 			continue
 		}
 		u := oldUser{Name: n}
@@ -117,7 +126,7 @@ func findOld(ctx context.Context, m host.Runner, names []string) []oldUser {
 		}
 		found = append(found, u)
 	}
-	return found
+	return found, nil
 }
 
 // hostState is what flocc setup reads from a host. Err is set when it could not read the host,
