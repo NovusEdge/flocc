@@ -245,7 +245,7 @@ func addDeps(t *testing.T, secrets string) (*deps, *fakeLinear, *hostScript) {
 	ntfy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(ntfy.Close)
 	d.ntfyBase, d.newTopic = ntfy.URL, func() string { return "flocc-t" }
-	d.open, d.qr = func(string) {}, func(string) {}
+	d.open = func(string) {}
 	return d, lin, p
 }
 

@@ -23,7 +23,6 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
-	"github.com/NovusEdge/flocc/installer/internal/qr"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
@@ -67,7 +66,6 @@ type deps struct {
 	store     func() keys.Store // opened on first use: host commands never wait on the keyring
 	prompt    prompter
 	open      func(url string)
-	qr        func(text string)
 	http      *http.Client
 	githubAPI string
 	linearAPI string
@@ -92,11 +90,6 @@ func Main(args []string) int {
 		fleet: func(ctx context.Context, s ui.Session, args []string) int { return ship.Fleet(ctx, s, os.Stdout, args) }}
 	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, os.Stderr) })
 	d.open = ship.OpenURL
-	d.qr = func(text string) {
-		if err := qr.Write(os.Stdout, text); err != nil {
-			fmt.Fprintln(os.Stderr, "no QR code:", err)
-		}
-	}
 	d.http = &http.Client{Timeout: 30 * time.Second}
 	d.githubAPI, d.linearAPI, d.ntfyBase = githubapi.DefaultBase, linearapi.DefaultURL, "https://ntfy.sh"
 	d.newTopic = answers.RandomTopic
