@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -87,6 +88,7 @@ type fakeLinear struct {
 	labels                                     []string
 	issues                                     map[string]string // key -> title
 	issueErr                                   string
+	states                                     map[string]string // key -> state type; unstarted when absent
 	labelCreates, issueCreates, finds, updates int
 }
 
@@ -100,7 +102,8 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req)
 	q, v := req.Query, req.Variables
 	issue := func(key string) map[string]any {
-		return map[string]any{"id": "id-" + key, "identifier": key, "title": f.issues[key], "state": map[string]any{"type": "unstarted"}}
+		state := cmp.Or(f.states[key], "unstarted")
+		return map[string]any{"id": "id-" + key, "identifier": key, "title": f.issues[key], "state": map[string]any{"type": state}}
 	}
 	var data any
 	switch {
@@ -254,6 +257,53 @@ func TestHostAddSharesTheDigestOfAHostOnTheSameTeam(t *testing.T) {
 	h := loadHost(t, d, "h1")
 	if h.DigestIssue != "NF-7" || h.SSH != "root@10.0.0.5" || lin.issueCreates != 0 || lin.finds != 0 {
 		t.Fatalf("%+v creates %d finds %d", h, lin.issueCreates, lin.finds)
+	}
+}
+
+func TestHostAddTakesTheDigestFromAHostFileWrittenByHand(t *testing.T) {
+	d, lin, _ := addDeps(t, allKeys)
+	lin.issues["NF-186"] = "digest"
+	dir := hosts.Dir(d.home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "ssh = 'root@flocc-nimble'\nteam_key = 'NF'\ndigest_issue = 'NF-186'\n\n[[repos]]\nname = 'a'\nurl = 'https://github.com/o/a'\nbase_branch = 'main'\ncheck = 'just check'\ndraft = false\n"
+	if err := os.WriteFile(filepath.Join(dir, "flocc-nimble.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := hostAdd(context.Background(), d, "flocc-trial", ""); err != nil {
+		t.Fatal(err)
+	}
+	if h := loadHost(t, d, "flocc-trial"); h.DigestIssue != "NF-186" || lin.issueCreates != 0 {
+		t.Fatalf("%+v creates %d", h, lin.issueCreates)
+	}
+}
+
+// A digest that is passed over must say why, or the owner finds a second one pinned in Linear
+// with no hint that the first was refused.
+func TestHostAddSaysWhyItPassedOverAnotherHostsDigest(t *testing.T) {
+	for _, c := range []struct{ name, state, want string }{
+		{"closed", "completed", "Not using flocc-nimble's digest NF-186: its state is completed."},
+		{"gone", "", "Not using flocc-nimble's digest NF-186: Linear has no such issue."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d, lin, _ := addDeps(t, allKeys)
+			if c.state != "" {
+				lin.issues["NF-186"] = "digest"
+				lin.states = map[string]string{"NF-186": c.state}
+			}
+			b := hosts.Host{Name: "flocc-nimble", SSH: "root@flocc-nimble", Answers: answers.Answers{TeamKey: "NF", DigestIssue: "NF-186"}}
+			if err := hosts.Save(hosts.Dir(d.home), b); err != nil {
+				t.Fatal(err)
+			}
+			if err := hostAdd(context.Background(), d, "flocc-trial", ""); err != nil {
+				t.Fatal(err)
+			}
+			out := d.out.(*bytes.Buffer).String()
+			if !strings.Contains(out, "  "+c.want+"\n") || !strings.Contains(out, ", the digest issue; pin it in Linear.\n") || lin.issueCreates != 1 {
+				t.Fatalf("%q", out)
+			}
+		})
 	}
 }
 

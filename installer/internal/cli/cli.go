@@ -21,6 +21,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
 	"github.com/NovusEdge/flocc/installer/internal/qr"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 const usage = `flocc runs Claude sessions on Linear issues. This is its desktop command.
@@ -65,6 +66,9 @@ type deps struct {
 	doShip   func(context.Context, ship.Options, io.Reader) (ship.Summary, error)
 	doLogin  func(context.Context, ship.LoginOptions) error
 }
+
+func (d *deps) o() ui.Out  { return ui.NewOut(d.out) }
+func (d *deps) oe() ui.Out { return ui.NewOut(d.err) }
 
 func Main(args []string) int {
 	home, _ := os.UserHomeDir()

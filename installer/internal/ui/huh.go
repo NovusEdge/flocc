@@ -35,24 +35,24 @@ func (*Huh) Status(steps []StepStatus) {
 }
 
 func (*Huh) Note(title, body string) {
-	huh.NewForm(huh.NewGroup(huh.NewNote().Title(title).Description(body))).Run()
+	Form(huh.NewGroup(huh.NewNote().Title(title).Description(body))).Run()
 }
 
 func (*Huh) Confirm(title string, def bool) (bool, error) {
 	v := def
-	err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(title).Value(&v))).Run()
+	err := Form(huh.NewGroup(huh.NewConfirm().Title(title).Value(&v))).Run()
 	return v, err
 }
 
 func (*Huh) Text(title, def string) (string, error) {
 	v := def
-	err := huh.NewForm(huh.NewGroup(huh.NewInput().Title(title).Value(&v))).Run()
+	err := Form(huh.NewGroup(huh.NewInput().Title(title).Value(&v))).Run()
 	return v, err
 }
 
 func (*Huh) Secret(_, title, help string) (string, error) {
 	var v string
-	err := huh.NewForm(huh.NewGroup(huh.NewInput().Title(title).Description(help).
+	err := Form(huh.NewGroup(huh.NewInput().Title(title).Description(help).
 		EchoMode(huh.EchoModePassword).Value(&v))).Run()
 	return v, err
 }
@@ -62,7 +62,7 @@ func (*Huh) PickRedo(done []string) ([]string, error) {
 		return nil, nil
 	}
 	var picked []string
-	err := huh.NewForm(huh.NewGroup(huh.NewMultiSelect[string]().
+	err := Form(huh.NewGroup(huh.NewMultiSelect[string]().
 		Title("Already done. Pick any to redo, or press enter to continue.").
 		Options(huh.NewOptions(done...)...).Value(&picked))).Run()
 	return picked, err
@@ -70,7 +70,7 @@ func (*Huh) PickRedo(done []string) ([]string, error) {
 
 func (*Huh) Spin(title string, fn func() error) error {
 	var err error
-	if serr := spinner.New().Title(title).Action(func() { err = fn() }).Run(); serr != nil {
+	if serr := spinner.New().WithTheme(spinner.ThemeFunc(SpinnerTheme)).Title(title).Action(func() { err = fn() }).Run(); serr != nil {
 		return serr
 	}
 	return err
@@ -78,7 +78,7 @@ func (*Huh) Spin(title string, fn func() error) error {
 
 func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error {
 	suggested := answers.RandomTopic()
-	if err := huh.NewForm(huh.NewGroup(
+	if err := Form(huh.NewGroup(
 		huh.NewInput().Title("Linear team key").Value(&a.TeamKey),
 		huh.NewInput().Title("Digest issue key").Description("The pinned issue tier 3 reports go to, such as NF-186.").Value(&a.DigestIssue),
 		// A placeholder, not a value: pasting an existing topic into a prefilled field splices the two.
@@ -114,7 +114,7 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 			opts[i] = huh.NewOption(r.Name, r.URL).Selected(slices.Contains(urls, r.URL))
 		}
 		for {
-			if err := huh.NewForm(huh.NewGroup(huh.NewMultiSelect[string]().
+			if err := Form(huh.NewGroup(huh.NewMultiSelect[string]().
 				Title("Repos agents may work on").Description("Untick to exclude.").
 				Validate(func(s []string) error {
 					if len(s) == 0 {
@@ -129,7 +129,7 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 				break
 			}
 			ok := false
-			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+			if err := Form(huh.NewGroup(huh.NewConfirm().
 				Title(fmt.Sprintf("%d repos selected; each is cloned now and checked on every run. Continue?", len(urls))).
 				Value(&ok))).Run(); err != nil {
 				return err
@@ -143,7 +143,7 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 		}
 		a.ExcludedRepos = answers.UpdateExcluded(a.ExcludedRepos, found, urls)
 		if len(urls) < len(found) {
-			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+			if err := Form(huh.NewGroup(huh.NewConfirm().
 				Title("Do other hosts handle the unticked repos?").
 				Description("If yes, issues for unmapped repos get no comment from this host.").
 				Value(&a.SharedTeam))).Run(); err != nil {
@@ -165,7 +165,7 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 			if len(found) > 0 {
 				title = "Add another repo by URL?"
 			}
-			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(title).Value(&more))).Run(); err != nil || !more {
+			if err := Form(huh.NewGroup(huh.NewConfirm().Title(title).Value(&more))).Run(); err != nil || !more {
 				return err
 			}
 			a.Repos = append(a.Repos, answers.Repo{BaseBranch: "main", Check: "just check", Draft: true})
@@ -184,7 +184,7 @@ const maxRepos = 30
 func editRepo(repos []answers.Repo, i int, defaults func(url string) (string, bool)) error {
 	r := &repos[i]
 	prevURL := r.URL
-	if err := huh.NewForm(huh.NewGroup(
+	if err := Form(huh.NewGroup(
 		huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
 		huh.NewInput().Title("GitHub URL").Description("https://github.com/<owner>/<repo>").Value(&r.URL).
 			Validate(func(s string) error {
@@ -211,12 +211,12 @@ func editRepo(repos []answers.Repo, i int, defaults func(url string) (string, bo
 		r.BaseBranch, r.Draft = defaults(r.URL)
 	}
 	ok := true
-	if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().
+	if err := Form(huh.NewGroup(huh.NewConfirm().
 		Title(fmt.Sprintf("Use name %s, base %s, check `%s`, draft PRs %s?", r.Name, r.BaseBranch, r.Check, yesNo(r.Draft))).
 		Description("The name must equal the repo's Linear label.").Value(&ok))).Run(); err != nil || ok {
 		return err
 	}
-	return huh.NewForm(huh.NewGroup(
+	return Form(huh.NewGroup(
 		huh.NewInput().Title("Name").Description("Exactly the Linear label that routes issues to it.").Value(&r.Name),
 		huh.NewInput().Title("Base branch").Value(&r.BaseBranch),
 		huh.NewInput().Title("Check command").Value(&r.Check),

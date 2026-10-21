@@ -18,6 +18,15 @@ func TestKeysRefusesAKeyOnTheCommandLine(t *testing.T) {
 	}
 }
 
+func TestReportIndentsEachFailAndPutsTheNextStepUnderIt(t *testing.T) {
+	d, _, errb := testDeps(t)
+	code := report(d, []string{"Linear key: Linear rejected the key; run flocc keys rotate linear", "ntfy topic: missing; run flocc keys"})
+	want := "  FAIL  Linear key: Linear rejected the key\n    run flocc keys rotate linear\n  FAIL  ntfy topic: missing\n    run flocc keys\n"
+	if code != 1 || errb.String() != want {
+		t.Fatalf("%d %q", code, errb.String())
+	}
+}
+
 func TestMappedJoinsTheHostsTeamsReposAndDigests(t *testing.T) {
 	r := func(u, base string) answers.Repo { return answers.Repo{URL: u, BaseBranch: base} }
 	m := mapped([]hosts.Host{

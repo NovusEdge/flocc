@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // SummaryMarker starts the one line that ends the service and login phases' output. The
@@ -170,11 +171,12 @@ func (s Summary) Print(w io.Writer) {
 	if s.Login == "" {
 		return
 	}
-	row := func(k, v string) { fmt.Fprintf(w, "  %-14s %s\n", k, v) }
+	o := ui.NewOut(w)
+	row := func(k, v string) { o.Line("%-14s %s", k, v) }
 	fmt.Fprintf(w, "%s\n", cmp.Or(s.Version, "flocc version unknown"))
 	login := s.Login
 	if s.LoginPending {
-		login += "; on the desktop run: flocc login -H " + cmp.Or(s.Target, "<host>")
+		login = o.Warn(login+"; on the desktop run: ") + o.Bold("flocc login -H "+cmp.Or(s.Target, "<host>"))
 	}
 	row("claude login", login)
 	for _, name := range slices.Sorted(maps.Keys(s.TokenExpiry)) {
@@ -183,7 +185,7 @@ func (s Summary) Print(w io.Writer) {
 		case exp.IsZero():
 			row(name, "never expires")
 		case days < 0:
-			row(name, "expired "+exp.Format("2006-01-02"))
+			row(name, o.Warn("expired "+exp.Format("2006-01-02")))
 		default:
 			row(name, fmt.Sprintf("expires %s (%s)", exp.Format("2006-01-02"), plural(days, "day")))
 		}
@@ -198,13 +200,14 @@ func (s Summary) Print(w io.Writer) {
 	row("timer", timer)
 	switch {
 	case s.SessionsErr != "":
-		row("sessions", "unknown: "+s.SessionsErr)
+		row("sessions", o.Warn("unknown: "+s.SessionsErr))
 	case len(s.Sessions) == 0:
 		row("sessions", "none")
 	default:
 		row("sessions", strings.Join(s.Sessions, ", "))
 	}
 	for _, f := range s.Failed {
-		fmt.Fprintf(w, "  %s\n", f)
+		what, next := ui.SplitNext(strings.TrimSpace(strings.TrimPrefix(f, "FAIL")))
+		o.FailLine(what, next)
 	}
 }

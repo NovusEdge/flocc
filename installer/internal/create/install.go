@@ -130,7 +130,8 @@ func snapshot(ctx context.Context, e *Env) error {
 	if err := do("rename", name, "installed-new", "installed"); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.Out, "✓ %-10s %s/installed; %s returns to it\n", "Snapshot", name, e.incusLine("snapshot restore "+name+" installed"))
+	o := e.o()
+	o.Line("%s %-10s %s/installed; %s returns to it", o.OK("✓"), "Snapshot", name, e.incusLine("snapshot restore "+name+" installed"))
 	return nil
 }
 

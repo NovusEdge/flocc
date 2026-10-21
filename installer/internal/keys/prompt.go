@@ -6,6 +6,8 @@ import (
 
 	"charm.land/huh/v2"
 	"golang.org/x/term"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // Huh asks on the terminal. A paste is read with echo off, so it never shows on screen or in the
@@ -32,7 +34,7 @@ func (h Huh) Secret(title, help string) (string, error) {
 		return "", errNoTerminal
 	}
 	var v string
-	err := huh.NewForm(huh.NewGroup(huh.NewInput().Title(title).Description(help).
+	err := ui.Form(huh.NewGroup(huh.NewInput().Title(title).Description(help).
 		EchoMode(huh.EchoModeNone).Value(&v))).Run()
 	return v, err
 }
@@ -42,6 +44,6 @@ func (h Huh) Confirm(title string, def bool) (bool, error) {
 		return false, errNoTerminal
 	}
 	v := def
-	err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(title).Value(&v))).Run()
+	err := ui.Form(huh.NewGroup(huh.NewConfirm().Title(title).Value(&v))).Run()
 	return v, err
 }

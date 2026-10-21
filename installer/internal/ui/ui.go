@@ -32,19 +32,27 @@ type UI interface {
 type Scripted struct {
 	A   *answers.Answers
 	Out io.Writer
+	// Color is set by the desktop's --color: the output reaches the desktop through a pipe, so
+	// only the desktop can tell whether its own terminal shows colour.
+	Color bool
 }
 
 func (s *Scripted) Status(steps []StepStatus) {
+	o := Out{W: s.Out, Color: s.Color}
 	for _, st := range steps {
 		mark := "·"
 		if st.Done {
-			mark = "✓"
+			mark = o.OK("✓")
 		}
-		fmt.Fprintf(s.Out, "%s %-14s %s\n", mark, st.Name, st.Detail)
+		o.Line("%s %-14s %s", mark, st.Name, st.Detail)
 	}
 }
 
-func (s *Scripted) Note(title, body string)              { fmt.Fprintf(s.Out, "\n%s\n%s\n", title, body) }
+func (s *Scripted) Note(title, body string) {
+	fmt.Fprintf(s.Out, "\n%s\n", title)
+	Out{W: s.Out, Color: s.Color}.Line("%s", body)
+}
+
 func (s *Scripted) Confirm(string, bool) (bool, error)   { return true, nil }
 func (s *Scripted) Text(_, def string) (string, error)   { return def, nil }
 func (s *Scripted) PickRedo([]string) ([]string, error)  { return nil, nil }

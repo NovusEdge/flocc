@@ -141,6 +141,8 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.Out, "\nTailscale key expiry: open https://login.tailscale.com/admin/machines, find %s and choose Disable key expiry. An untagged node's key otherwise expires after 180 days.\n\n", name)
+	fmt.Fprintln(e.Out)
+	e.o().WarnLine("Tailscale key expiry: open https://login.tailscale.com/admin/machines, find %s and choose Disable key expiry. An untagged node's key otherwise expires after 180 days.", name)
+	fmt.Fprintln(e.Out)
 	return nil
 }
