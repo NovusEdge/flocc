@@ -3,7 +3,9 @@ package cardinal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -14,11 +16,50 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-func testDeps(t *testing.T, f *host.Fake) (Deps, *strings.Builder) {
-	var out strings.Builder
-	return Deps{Out: &out, Err: &out, Home: t.TempDir(), Run: f, Open: func(string) {}}, &out
+func testDeps(t *testing.T, f *host.Fake) (Deps, *ui.Recorder) {
+	rec := &ui.Recorder{}
+	return Deps{UI: ui.New(rec), Home: t.TempDir(), Run: f, Open: func(string) {}}, rec
+}
+
+// rowText is every ended step as "name detail", for substring checks.
+func rowText(rec *ui.Recorder) string {
+	var b strings.Builder
+	for _, e := range rec.Rows() {
+		b.WriteString(e.Name + " " + e.Detail + e.Err + "\n")
+	}
+	return b.String()
+}
+
+// orderRenderer logs notes and handoffs in the order they happen, which a Recorder keeps apart.
+type orderRenderer struct {
+	ui.Recorder
+	order []string
+}
+
+func (o *orderRenderer) Draw(e ui.Event) {
+	if e.Kind == ui.KNote {
+		o.order = append(o.order, "note: "+e.Text)
+	}
+	o.Recorder.Draw(e)
+}
+
+func (o *orderRenderer) Handoff(why string, c *exec.Cmd) error {
+	o.order = append(o.order, "handoff: "+why)
+	return o.Recorder.Handoff(why, c)
+}
+
+// handoffRunner stands in for host.Exec with a Term: interactive commands go through the session.
+type handoffRunner struct {
+	*host.Fake
+	term host.Terminal
+}
+
+func (h handoffRunner) Interactive(ctx context.Context, c host.Cmd) error {
+	h.term.Handoff(c.Why, nil)
+	return h.Fake.Interactive(ctx, c)
 }
 
 var card = saved.Saved{Machine: "owner@zer0-day-nimble", User: "cardinal", RenewHour: 4}
@@ -173,17 +214,91 @@ func TestUserPassReportsAndSanitizesFailures(t *testing.T) {
 	}
 }
 
-func TestRenderStatusExitsOneOnFailures(t *testing.T) {
+func TestDrawStatusExitsOneOnFailures(t *testing.T) {
 	age := 60.0
 	ok := steps.CardinalStatus{Unit: "active", Login: "full", SessionAgeS: &age, LastTurnAgeS: &age}
-	if _, code := RenderStatus(ok); code != 0 {
-		t.Fatal("healthy status failed")
+	rec := &ui.Recorder{}
+	if code := DrawStatus(ui.New(rec), ok); code != 0 || len(rec.Rows()) != 0 {
+		t.Fatalf("healthy status: code %d rows %v", code, rec.Rows())
+	}
+	var table *ui.Table
+	for _, e := range rec.Events {
+		if e.Kind == ui.KTable {
+			table = e.Table
+		}
+	}
+	if table == nil || len(table.Headers) != 2 || table.Rows[0][0] != "unit" {
+		t.Fatalf("table %+v", table)
 	}
 	bad := ok
 	bad.Login, bad.Pane = "none", "\x1b[31mred\x1b[0m\ncode=SECRET"
-	out, code := RenderStatus(bad)
-	if code != 1 || !strings.Contains(out, "flocc cardinal login") || strings.Contains(out, "\x1b") {
-		t.Fatalf("code %d out %q", code, out)
+	rec = &ui.Recorder{}
+	code := DrawStatus(ui.New(rec), bad)
+	rows := rec.Rows()
+	if code != 1 || len(rows) != 1 || rows[0].State != ui.Failed || rows[0].Name != "login is none" || rows[0].Err != "flocc cardinal login" {
+		t.Fatalf("code %d rows %+v", code, rows)
+	}
+	for _, e := range rec.Events {
+		if strings.Contains(e.Text, "\x1b") {
+			t.Fatalf("escape in %+v", e)
+		}
+	}
+}
+
+func TestStatusDrawsAnUnreachableMachineAsAFailedStepAndATodo(t *testing.T) {
+	f := host.NewFake()
+	d, rec := testDeps(t, f)
+	f.On(d.user(card, false, setupPath+" --phase cardinal-status").String(), 255, "")
+	if code := d.status(context.Background(), card); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	rows := rec.Rows()
+	if len(rows) != 1 || rows[0].State != ui.Failed || !strings.Contains(rows[0].Err, "unreachable") {
+		t.Fatalf("rows %+v", rows)
+	}
+	d.UI.Close()
+	if !slices.Equal(rec.Todos, []string{"flocc cardinal setup --user cardinal"}) {
+		t.Fatalf("todos %v", rec.Todos)
+	}
+}
+
+func TestAttachWriteWarnsAboutCtrlDBeforeTheHandoff(t *testing.T) {
+	f := host.NewFake()
+	o := &orderRenderer{}
+	d, _ := testDeps(t, f)
+	d.UI = ui.New(o)
+	d.Run = handoffRunner{f, d.UI}
+	f.On(d.user(card, false, "tmux -L cardinal clear-history -t =cardinal").String(), 0, "")
+	if err := d.attach(context.Background(), card, true); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"note: " + detachWarning, "handoff: cardinal session on " + card.Dest()}
+	if !slices.Equal(o.order, want) {
+		t.Fatalf("order %q", o.order)
+	}
+	o.order = nil
+	if err := d.attach(context.Background(), card, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(o.order) != 1 || !strings.HasPrefix(o.order[0], "handoff") {
+		t.Fatalf("read-only attach: %q", o.order)
+	}
+}
+
+func TestRootPassHandsOffWithTheReason(t *testing.T) {
+	f := host.NewFake()
+	rec := &ui.Recorder{}
+	d, _ := testDeps(t, f)
+	d.UI = ui.New(rec)
+	d.Run = handoffRunner{f, d.UI}
+	d.TTY = true
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "flocc-setup"), []byte("x"), 0o755)
+	f.On(d.owner(card.Machine, false, "mktemp -d /tmp/flocc-cardinal.XXXXXX").String(), 0, "/tmp/flocc-cardinal.Ab12Cd\n")
+	f.On(d.scp(d.Mux, card.Machine+":/tmp/flocc-cardinal.Ab12Cd/", filepath.Join(bin, "flocc-setup")).String(), 0, "")
+	d.rootPass(context.Background(), card, bin, "", []rootCall{{Phase: "cardinal-purge", User: "cardinal"}})
+	if want := []string{"root pass: sudo on " + card.Machine + " asks for your password"}; !slices.Equal(rec.Handoffs, want) {
+		t.Fatalf("handoffs %q", rec.Handoffs)
 	}
 }
 
@@ -203,6 +318,26 @@ func TestMainRemoveMarksTheSavedFileRemoved(t *testing.T) {
 	got, err := saved.Load(saved.Dir(d.Home), "cardinal")
 	if err != nil || !got.Removed {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestMainErrorIsAFailedStepAndALogTodo(t *testing.T) {
+	f := host.NewFake()
+	d, rec := testDeps(t, f)
+	d.RepoRoot = func() (string, error) { return "", errors.New("not in a checkout \x1b[2J") }
+	card.Save(saved.Dir(d.Home))
+	f.On(d.user(card, false, removeUnits).String(), 0, "")
+	f.On(d.owner(card.Machine, false, "uname -m").String(), 0, "x86_64\n")
+	if code := Main(context.Background(), d, []string{"remove"}); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	d.UI.Close()
+	last := rec.Rows()[len(rec.Rows())-1]
+	if last.Name != "cardinal remove" || last.State != ui.Failed || !strings.Contains(last.Err, "not in a checkout") || strings.Contains(last.Err, "\x1b") {
+		t.Fatalf("rows %+v", rec.Rows())
+	}
+	if len(rec.Todos) != 1 || !strings.HasPrefix(rec.Todos[0], "Log: ") || !strings.HasSuffix(rec.Todos[0], "cardinal-cardinal.log") {
+		t.Fatalf("todos %v", rec.Todos)
 	}
 }
 
@@ -257,8 +392,14 @@ func TestRootPassRunsPurgeAndRootOnOneLineAndPrintsBothReports(t *testing.T) {
 	if len(interactive) != 1 || interactive[0] != "interactive: "+line {
 		t.Fatalf("calls %v", f.Calls)
 	}
-	if !strings.Contains(out.String(), "Removed linear-agents") || !strings.Contains(out.String(), "flocc-removed-linear-agents-x.tar.gz") || !strings.Contains(out.String(), "Root pass") {
-		t.Fatalf("out %q", out)
+	var groups []string
+	for _, e := range out.Events {
+		if e.Kind == ui.KGroup {
+			groups = append(groups, e.Name)
+		}
+	}
+	if !slices.Equal(groups, []string{"Removed linear-agents", "Root pass"}) || !strings.Contains(rowText(out), "flocc-removed-linear-agents-x.tar.gz") {
+		t.Fatalf("groups %q rows %q", groups, rowText(out))
 	}
 }
 
