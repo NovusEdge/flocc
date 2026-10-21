@@ -496,8 +496,9 @@ bridge gateway, and Claude and Linear over the internet.
 user and its home. A host whose sshd setup did not install keeps sshd running with its
 `cardinal.conf`.
 
-Not yet confirmed on a live run: that the `/loop` initial prompt arms the loop, that Tailscale SSH
-serves the `/etc/ssh` host keys once sshd is installed, that pinning `ipv4.address` on a running VM
+Tailscale SSH serves a host's `/etc/ssh` host key once sshd is installed (flocc-nimble,
+2026-10-21), which is why setup refreshes this desktop's `known_hosts` entry after installing it.
+Not yet confirmed on a live run: that the `/loop` initial prompt arms the loop, that pinning `ipv4.address` on a running VM
 keeps its lease, and that the egress block holds for connections to the machine's own tailnet
 address. The live checklist is in the design's Testing section.
 

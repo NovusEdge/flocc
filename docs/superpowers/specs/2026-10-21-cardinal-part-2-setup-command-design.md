@@ -601,8 +601,6 @@ flocc-nimble are not touched until the last step. Record the results in `docs/vm
   session is fresh then, and onboarding and trust are already set, so no dialog can take the keys.
 - That no turn of a check goes 5 minutes without writing its transcript. A longer tool call would
   let the renewal cut that check.
-- That Tailscale SSH serves `/etc/ssh` host keys once they exist. This is the likely cause of the
-  desktop's host-key failure on flocc-nimble. The Host pass's refresh covers both cases.
 - That setting `ipv4.address` on a running VM's `eth0` keeps the lease without a NIC restart.
 - Whether the Linear MCP can be authorised outside the TUI.
 - That connections from the machine reach the VM from the `incusbr0` gateway address, which `from=`
