@@ -308,12 +308,22 @@ def cmd_permission(args) -> int:
     # leaves the decision to Claude Code.
     try:
         payload = _hook_input(strict=True)
+        cfg = None
+        if payload.get("hook_event_name") in ("PermissionDenied", "PermissionRequest"):
+            # Without a config the block is still logged; only the judge is skipped.
+            try:
+                cfg = load(Path(args.config) if args.config else default_config_path())
+            except (OSError, ValueError, TypeError) as exc:
+                print(
+                    f"flocc permission: no judge, the config did not load: {exc}", file=sys.stderr
+                )
         out = permission.handle(
             payload,
             _state_dir(),
             os.environ.get("FLOCC_PHASE"),
             os.environ.get("FLOCC_RUN"),
             time.time(),
+            cfg=cfg,
         )
     except Exception as exc:  # noqa: BLE001 - see above
         print(f"flocc permission failed, so it made no decision: {exc}", file=sys.stderr)

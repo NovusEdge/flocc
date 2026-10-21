@@ -6,8 +6,10 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from flocc import judge as judge_mod
+from flocc.config import Config
 from flocc.gate import note_question
-from flocc.grants import for_phase, judge_grants
+from flocc.grants import add_judge, for_phase, judge_grants
 from flocc.sessions import session_name
 
 LOG = "permissions.jsonl"
@@ -98,8 +100,83 @@ def granted(grants_path: Path, phase: str, command: str) -> str | None:
     return None
 
 
+ASKED = "permission-asked"
+OWNER_ASKED = (
+    "flocc: the owner has been asked about this command. Carry on with other work, or end your"
+    " turn if you cannot."
+)
+_JUDGED_PHASES = ("test", "impl", "fix")
+_JUDGE_CALLS = ("judge", "timeout")
+
+
+def _judge_calls(state: Path, run: str | None) -> int:
+    path = state / LOG
+    if not path.exists():
+        return 0
+    n = 0
+    for raw in path.read_text().splitlines():
+        try:
+            e = json.loads(raw)
+        except ValueError:
+            continue
+        n += isinstance(e, dict) and e.get("run") == run and e.get("decided_by") in _JUDGE_CALLS
+    return n
+
+
+def _request(behavior: str, message: str | None = None) -> dict:
+    decision = {"behavior": behavior} | ({"message": message} if message else {})
+    return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
+
+
+def ask_owner(state: Path, line: dict, verdict: judge_mod.Verdict, now: float) -> None:
+    command = line["input"].get("command")
+    asked = {
+        "at": now,
+        "tool": line["tool"],
+        "command": command if isinstance(command, str) else json.dumps(line["input"]),
+        "reading": verdict.reading,
+        "reason": verdict.reason,
+    }
+    state.mkdir(parents=True, exist_ok=True)
+    # A fresh ask has not been escalated yet, whatever an earlier one was.
+    (state / f"{ASKED}-escalated").unlink(missing_ok=True)
+    tmp = state / f"{ASKED}.tmp"
+    tmp.write_text(json.dumps(asked))
+    os.replace(tmp, state / ASKED)
+
+
+def _act(
+    verdict: judge_mod.Verdict, event: str, line: dict, state: Path, now: float
+) -> dict | None:
+    line.update(
+        decision=verdict.decision,
+        reason=verdict.reason,
+        rule=verdict.rule,
+        decided_by="judge" if verdict.decision else "timeout",
+    )
+    command = line["input"].get("command")
+    if verdict.decision == "allow" and event == "PermissionDenied" and isinstance(command, str):
+        # The retry goes through the classifier again; the grant is what PreToolUse lets past it.
+        add_judge(state / "grants.json", command.strip(), verdict.rule)
+        return {"hookSpecificOutput": {"hookEventName": "PermissionDenied", "retry": True}}
+    if verdict.decision == "allow" and event == "PermissionRequest":
+        return _request("allow")
+    if verdict.decision == "owner":
+        ask_owner(state, line, verdict, now)
+        return _request("deny", OWNER_ASKED) if event == "PermissionRequest" else None
+    if verdict.decision == "deny" and event == "PermissionRequest":
+        return _request("deny", f"flocc judge: {verdict.reason}")
+    return None
+
+
 def handle(
-    payload: dict, state: Path, phase: str | None, run: str | None, now: float
+    payload: dict,
+    state: Path,
+    phase: str | None,
+    run: str | None,
+    now: float,
+    cfg: Config | None = None,
+    judge=None,
 ) -> dict | None:
     if payload.get("hook_event_name") == "PreToolUse":
         command = bash_command(payload)
@@ -122,8 +199,29 @@ def handle(
         # Nothing answers this dialog on a host; as an open question it reaches the owner. The
         # Stop hook clears `asking` when the turn ends.
         note_question(state, payload, now)
+        record(state, line)
+        return None
+    event = line["event"]
+    out = None
+    if (
+        cfg is not None
+        and cfg.judge_model
+        and phase in _JUDGED_PHASES
+        and (event == "PermissionRequest" or line["tool"] == "Bash")
+    ):
+        if _judge_calls(state, run) >= cfg.judge_max_per_run:
+            line["decided_by"] = "cap"
+        else:
+            action = {
+                k: line[k]
+                for k in ("host", "issue", "phase", "tool", "input", "cwd", "classifier_reason")
+            }
+            started = time.monotonic()
+            verdict = (judge or judge_mod.ask)(cfg, action)
+            line["latency_ms"] = int((time.monotonic() - started) * 1000)
+            out = _act(verdict, event, line, state, now)
     record(state, line)
-    return None
+    return out
 
 
 def load_entries(state_root: Path, since: float) -> list[dict]:

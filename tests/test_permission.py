@@ -1,12 +1,14 @@
 import io
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
 from flocc.cli import build_parser, main
-from flocc.grants import Grants, add_comment, add_judge
-from flocc.permission import LOG, granted, handle, load_entries, report
+from flocc.grants import Grants, add_comment, add_judge, judge_grants
+from flocc.judge import Verdict
+from flocc.permission import ASKED, LOG, OWNER_ASKED, granted, handle, load_entries, report
 
 DENIED = {
     "hook_event_name": "PermissionDenied",
@@ -179,3 +181,123 @@ def test_a_grant_never_overrides_flocc_s_own_denies(tmp_path, command):
     path = tmp_path / "grants.json"
     add_comment(path, Grants(commands=(command,)), "impl")
     assert granted(path, "impl", command) is None
+
+
+NPX = {
+    **DENIED,
+    "tool_input": {"command": "npx playwright install", "description": "Install browsers"},
+}
+PROMPT = {**NPX, "hook_event_name": "PermissionRequest"}
+
+
+class Judge:
+    def __init__(self, verdict):
+        self.verdict, self.actions = verdict, []
+
+    def __call__(self, cfg, action):
+        self.actions.append(action)
+        return self.verdict
+
+
+@pytest.fixture
+def on(tmp_cfg):
+    return replace(tmp_cfg, judge_model="sonnet", judge_max_per_run=2)
+
+
+def judged(payload, state, cfg, verdict, phase="impl", run="impl@1"):
+    j = Judge(verdict)
+    return handle(payload, state, phase, run, 5.0, cfg=cfg, judge=j), j
+
+
+def test_an_allowed_block_becomes_a_run_grant_and_a_retry(tmp_path, on):
+    state = tmp_path / "NF-1"
+    out, _ = judged(NPX, state, on, Verdict("allow", "pinned", "", "npx playwright"))
+    assert out == {"hookSpecificOutput": {"hookEventName": "PermissionDenied", "retry": True}}
+    assert judge_grants(state / "grants.json") == (("npx playwright install",), ("npx playwright",))
+    assert lines(state)[0]["decided_by"] == "judge" and lines(state)[0]["rule"] == "npx playwright"
+    retry = handle(pre("npx playwright install"), state, "impl", "impl@1", 6.0)
+    assert retry is not None
+    assert retry["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_an_allowed_prompt_is_allowed_at_once(tmp_path, on):
+    out, _ = judged(PROMPT, tmp_path / "NF-1", on, Verdict("allow", "ok"))
+    assert out is not None
+    assert out["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
+
+
+def test_an_owner_answer_asks_the_owner(tmp_path, on):
+    state = tmp_path / "NF-1"
+    (state).mkdir()
+    (state / f"{ASKED}-escalated").touch()
+    out, _ = judged(PROMPT, state, on, Verdict("owner", "new host", "fetches a script"))
+    assert out is not None
+    assert out["hookSpecificOutput"]["decision"] == {"behavior": "deny", "message": OWNER_ASKED}
+    asked = json.loads((state / ASKED).read_text())
+    assert asked == {
+        "at": 5.0,
+        "tool": "Bash",
+        "command": "npx playwright install",
+        "reading": "fetches a script",
+        "reason": "new host",
+    }
+    assert not (state / f"{ASKED}-escalated").exists()
+    out, _ = judged(NPX, tmp_path / "NF-2", on, Verdict("owner", "r", "x"))
+    assert out is None and (tmp_path / "NF-2" / ASKED).exists()
+
+
+def test_a_denied_prompt_carries_the_judges_reason_and_a_denied_block_stands(tmp_path, on):
+    out, _ = judged(PROMPT, tmp_path / "NF-1", on, Verdict("deny", "force push"))
+    assert out is not None
+    assert out["hookSpecificOutput"]["decision"] == {
+        "behavior": "deny",
+        "message": "flocc judge: force push",
+    }
+    assert judged(NPX, tmp_path / "NF-2", on, Verdict("deny", "x"))[0] is None
+
+
+def test_a_failed_judge_makes_no_decision_and_says_so_in_the_log(tmp_path, on):
+    out, _ = judged(PROMPT, tmp_path / "NF-1", on, Verdict(None, "took too long"))
+    assert out is None
+    line = lines(tmp_path / "NF-1")[0]
+    assert (line["decided_by"], line["reason"]) == ("timeout", "took too long")
+
+
+def test_the_judge_never_sees_the_agents_description(tmp_path, on):
+    _, j = judged(NPX, tmp_path / "NF-1", on, Verdict("deny", "x"))
+    (action,) = j.actions
+    assert "Install browsers" not in json.dumps(action)
+    assert action["input"] == {"command": "npx playwright install"}
+
+
+@pytest.mark.parametrize("phase, model", [("review", "sonnet"), ("impl", "")])
+def test_review_sessions_and_a_dark_judge_only_log(tmp_path, on, phase, model):
+    out, j = judged(
+        PROMPT, tmp_path / "NF-1", replace(on, judge_model=model), Verdict("allow", "x"), phase
+    )
+    assert out is None and j.actions == []
+    assert lines(tmp_path / "NF-1")[0]["decided_by"] == "none"
+
+
+def test_a_non_bash_block_is_only_logged_but_a_non_bash_prompt_is_judged(tmp_path, on):
+    fetch = {**DENIED, "tool_name": "WebFetch", "tool_input": {"url": "https://x"}}
+    assert judged(fetch, tmp_path / "NF-1", on, Verdict("allow", "x"))[1].actions == []
+    prompt = {**fetch, "hook_event_name": "PermissionRequest"}
+    assert len(judged(prompt, tmp_path / "NF-1", on, Verdict("allow", "x"))[1].actions) == 1
+
+
+def test_the_judge_is_capped_per_run(tmp_path, on):
+    state = tmp_path / "NF-1"
+    calls = [judged(PROMPT, state, on, Verdict(None, "t"))[1] for _ in range(3)]
+    assert [len(j.actions) for j in calls] == [1, 1, 0]
+    assert lines(state)[2]["decided_by"] == "cap"
+    assert len(judged(PROMPT, state, on, Verdict(None, "t"), run="fix@2")[1].actions) == 1
+
+
+def test_a_broken_config_still_logs_the_block(tmp_path, monkeypatch, capsys):
+    hook_env(monkeypatch, tmp_path / "NF-1")
+    monkeypatch.setenv("FLOCC_CONFIG", str(tmp_path / "missing.toml"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(PROMPT)))
+    assert main(["permission"]) == 0
+    assert lines(tmp_path / "NF-1")[0]["decided_by"] == "none"
+    assert "missing.toml" in capsys.readouterr().err
