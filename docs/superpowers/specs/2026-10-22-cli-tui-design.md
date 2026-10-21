@@ -33,7 +33,7 @@ full-screen.
 |---|---|
 | Model | Every command writes through one `ui.Session` of typed events. Three renderers draw it. |
 | Default | Full-screen on a terminal for `setup`, `host create`, `ship`, `login`, `cardinal setup`, `cardinal login`; bare `flocc` opens the dashboard full-screen. Commands that finish in a second or two (`keys check`, `cardinal restart`, one-shot `status`, `host run`) stay inline. |
-| Opt-out | `--inline` or `ui = "inline"` in the desktop config; `--plain`, a non-terminal, `NO_COLOR` or `TERM=dumb` gives plain. |
+| Opt-out | `--inline`, `--plain` or `--full`, else `FLOCC_UI=inline\|plain\|full` (the desktop has no config file); a non-terminal, `NO_COLOR` or `TERM=dumb` always gives plain. Commands that are one handoff (forwarded host commands, `host run`, `cardinal attach`) always run plain, so no Bubble Tea program sits around a child that owns the terminal. |
 | Wizard | Section rail left; current section's rows, live step and command tail right; overall bar at the bottom. |
 | Prompts | A centred modal over the dimmed screen in full-screen; in place in inline; numbered or typed in plain. |
 | Dashboard | Stacked: host strip, one issue table across hosts, the selected issue's recent activity. |
@@ -68,8 +68,10 @@ type Session interface {
 	Secret(q Question) (string, error)
 	Choose(q Question, options []string) (int, error)
 	Form(f *huh.Form) error                 // the repo picker and other multi-field forms
-	Handoff(why string, c host.Cmd) error   // the terminal goes to a child
+	Handoff(why string, c *exec.Cmd) error  // the terminal goes to a child
 	Table(t Table)                          // status, doctor and fleet tables
+	Plan(groups []string)                   // the sections to come, for the full-screen rail
+	LogPath(p string)                       // named in the record at the end
 	Close() int                             // prints the record; returns the exit code
 }
 
@@ -104,8 +106,15 @@ second one), huh's accessible mode in plain.
 ### Handoffs
 
 `host.Exec.Interactive` calls `Session.Handoff`, so nothing outside the session writes to the
-terminal. Bubble Tea modes run the child with `tea.ExecProcess`, which releases the terminal and
-restores it after. Plain runs it directly.
+terminal. It takes `*exec.Cmd` because `tea.ExecProcess` needs one and `host` cannot import `ui`;
+`host` declares a one-method `Terminal` interface the session satisfies. Bubble Tea modes run the
+child with `tea.ExecProcess`, which releases the terminal, fills only the child's unset streams,
+and restores the terminal after. Plain runs it directly.
+
+`Interactive` hands off when the child reads or draws on the terminal (its stdin or stdout is not
+given) or when `host.Cmd.Attach` is set, for a far end that draws on this terminal through a piped
+stdout (ship's host run until part 2). `host.Cmd.Why` is the banner text; `"-"` shows none, for
+forwarded commands.
 
 Before the child starts, the renderer prints one line on the normal screen naming what comes next:
 
@@ -248,9 +257,11 @@ flocc-event {"v":1,"type":"step","id":"s7","name":"Packages","state":"running","
 ```
 
 The event types are the session's: `group`, `step` (with `state` running, done, pending, skipped,
-failed), `line`, `note`, `todo`. `ship` decodes the lines and replays them into the desktop's
-session under a `Host <name>` group. This replaces the raw byte stream, `flocc-summary`,
-`flocc-cardinal`, and passing `FLOCC_COLOR` and `COLUMNS`: the host no longer draws. `ui.Scripted`
+failed), `line`, `note`, `todo`, and `data`, which carries machine data no renderer draws: the host
+summary and the cardinal report, as the JSON the `flocc-summary` and `flocc-cardinal` lines carry
+today. `ship` decodes the lines and replays them into the desktop's session under a `Host <name>`
+group. This replaces the raw byte stream, the two marker lines, and passing `FLOCC_COLOR` and
+`COLUMNS`: the host no longer draws. `ui.Scripted`
 answers from the answers file as now and writes events in place of lines.
 
 A line that is not an event (apt output, a sudo warning) becomes a `line` of the running step, so it
