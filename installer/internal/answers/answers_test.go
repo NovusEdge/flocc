@@ -170,3 +170,17 @@ func TestOverlayKeepsUnsetFields(t *testing.T) {
 		t.Fatalf("%+v", a)
 	}
 }
+
+func TestPermissionsTableParsesAndOverlays(t *testing.T) {
+	a, err := Parse([]byte("team_key = \"NF\"\n[permissions]\nallow = [\"Bash(uv sync --frozen)\"]\njudge_model = \"sonnet\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Permissions == nil || a.Permissions.Allow[0] != "Bash(uv sync --frozen)" || a.Permissions.JudgeModel != "sonnet" {
+		t.Fatalf("permissions = %+v", a.Permissions)
+	}
+	b := &Answers{}
+	if err := b.Overlay(a); err != nil || b.Permissions != a.Permissions {
+		t.Fatalf("overlay lost permissions: %+v, %v", b.Permissions, err)
+	}
+}
