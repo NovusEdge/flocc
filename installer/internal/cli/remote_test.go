@@ -14,6 +14,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // fakeSSH answers ssh by destination: Run returns out[dest], and a destination it does not know
@@ -30,6 +31,7 @@ type fakeSSH struct {
 	stdins      []string
 	interactive []host.Cmd
 	order       []call
+	rec         *ui.Recorder // what d.ui saw
 }
 
 func (f *fakeSSH) Run(_ context.Context, c host.Cmd) (host.Result, error) {
@@ -135,10 +137,11 @@ func hostDeps(t *testing.T, names ...string) (*deps, *fakeSSH, *bytes.Buffer, *b
 			t.Fatal(err)
 		}
 	}
-	f := &fakeSSH{out: map[string]string{}}
+	f := &fakeSSH{out: map[string]string{}, rec: &ui.Recorder{}}
+	d.ui = ui.New(f.rec)
 	d.run = f
 	d.resolve = func(_ context.Context, target string) (ship.Dest, error) { return ship.Dest{SSH: target}, nil }
-	d.fleet = func([]string) int { t.Fatal("fleet view called"); return 0 }
+	d.fleet = func(context.Context, ui.Session, []string) int { t.Fatal("fleet view called"); return 0 }
 	return d, f, out, errb
 }
 
@@ -214,6 +217,16 @@ func TestAnIssueKeyPicksTheHostHoldingTheClaim(t *testing.T) {
 	}
 	if len(f.interactive) != 1 || f.interactive[0].Args[len(f.interactive[0].Args)-2] != "root@b" {
 		t.Fatalf("%v", f.interactive)
+	}
+	var found []string
+	for _, e := range f.rec.Rows() {
+		if e.Name == "Find NF-12" {
+			found = append(found, e.Detail)
+		}
+	}
+	slices.Sort(found)
+	if !slices.Equal(found, []string{"a: not here", "b: holds it"}) {
+		t.Fatalf("%q", found)
 	}
 }
 
@@ -305,7 +318,7 @@ func TestDashHAllLogsWithoutFollowRunsEverywhere(t *testing.T) {
 
 func TestDashHAllGivesEveryHostAConnectTimeout(t *testing.T) {
 	d, f, _, _ := hostDeps(t, "a", "b")
-	f.out["root@a"], f.out["root@b"] = "", ""
+	f.out["root@a"], f.out["root@b"] = doctorJSON, doctorJSON
 	run(context.Background(), d, []string{"-H", "all", "doctor"})
 	if len(f.captured()) != 2 {
 		t.Fatalf("%v", f.runs)
@@ -320,9 +333,9 @@ func TestDashHAllGivesEveryHostAConnectTimeout(t *testing.T) {
 // A Tailscale check-mode URL goes to ssh's stderr, which Capture keeps, so each host's
 // connection opens on the terminal first, one at a time, before the captures run in parallel.
 func TestDashHAllOpensEachConnectionOnTheTerminalBeforeAnyCapture(t *testing.T) {
-	d, f, out, _ := hostDeps(t, "a", "b", "c")
+	d, f, _, _ := hostDeps(t, "a", "b", "c")
 	d.tty = true
-	f.out["root@a"], f.out["root@c"] = "ok\n", "ok\n"
+	f.out["root@a"], f.out["root@c"] = doctorJSON, doctorJSON
 	f.masters = map[string]bool{"root@c": true}
 	if code := run(context.Background(), d, []string{"-H", "all", "doctor"}); code == 0 {
 		t.Fatal("exit 0 with b unreachable")
@@ -335,32 +348,116 @@ func TestDashHAllOpensEachConnectionOnTheTerminalBeforeAnyCapture(t *testing.T) 
 	if first < last {
 		t.Fatalf("a capture ran before b's warm-up: %v", f.order)
 	}
-	if len(f.captured()) != 2 || !strings.Contains(out.String(), "== b ==\ncould not reach b") {
-		t.Fatalf("%v\n%s", f.captured(), out)
+	var failed ui.Event
+	for _, e := range f.rec.Rows() {
+		if e.State == ui.Failed && e.Name == "b" {
+			failed = e
+		}
+	}
+	if len(f.captured()) != 2 || failed.Name != "b" || !strings.Contains(failed.Err, "could not reach b") {
+		t.Fatalf("%v\n%+v", f.captured(), f.rec.Rows())
 	}
 }
 
 func TestDashHAllStatusIsTheFleetView(t *testing.T) {
 	d, _, _, _ := hostDeps(t, "a")
 	var got []string
-	d.fleet = func(args []string) int { got = args; return 0 }
+	d.fleet = func(_ context.Context, s ui.Session, args []string) int { got = args; return 0 }
 	if code := run(context.Background(), d, []string{"status", "-H", "all", "--watch"}); code != 0 || strings.Join(got, " ") != "--watch" {
 		t.Fatalf("exit %d args %q", code, got)
 	}
 }
 
-func TestDashHAllDoctorReportsEveryHostAndTheUnreachableOne(t *testing.T) {
-	d, f, out, _ := hostDeps(t, "a", "b")
-	f.out["root@a"] = "ok    config: /x\n"
+// doctorJSON is flocc doctor --json from a host new enough to send it.
+const doctorJSON = `{"v":1,"checks":[{"name":"config","ok":true,"detail":"/x"},{"name":"linear","ok":false,"detail":"401"}]}`
+
+// groups is each group's title with the events after it, up to the next group.
+func groups(rec *ui.Recorder) map[string][]ui.Event {
+	out := map[string][]ui.Event{}
+	cur := ""
+	for _, e := range rec.Events {
+		switch {
+		case e.Kind == ui.KGroup:
+			cur = e.Name
+		case cur != "" && e.Kind == ui.KStep && e.State != ui.Running, cur != "" && e.Kind == ui.KNote:
+			out[cur] = append(out[cur], e)
+		}
+	}
+	return out
+}
+
+func TestDashHAllDoctorDrawsARowPerCheckForEveryHostAndFailsTheUnreachableOne(t *testing.T) {
+	d, f, _, _ := hostDeps(t, "a", "b")
+	f.out["root@a"] = doctorJSON
 	code := run(context.Background(), d, []string{"-H", "all", "doctor"})
-	o := out.String()
-	if code == 0 || !strings.Contains(o, "== a ==\nok    config: /x\n") || !strings.Contains(o, "== b ==") || !strings.Contains(o, "No route to host") {
-		t.Fatalf("exit %d\n%s", code, o)
+	if code == 0 {
+		t.Fatal("exit 0 with a failing check and an unreachable host")
+	}
+	a := groups(f.rec)["a"]
+	if len(a) != 2 || a[0].Name != "config" || a[0].State != ui.Done || a[0].Detail != "/x" ||
+		a[1].Name != "linear" || a[1].State != ui.Failed || a[1].Err != "401" {
+		t.Fatalf("%+v", a)
+	}
+	if _, ok := groups(f.rec)["b"]; ok {
+		t.Error("an unreachable host has no checks to draw")
+	}
+	var b ui.Event
+	for _, e := range f.rec.Rows() {
+		if e.Name == "b" {
+			b = e
+		}
+	}
+	if b.State != ui.Failed || !strings.Contains(b.Err, "No route to host") {
+		t.Fatalf("%+v", f.rec.Rows())
 	}
 	for _, c := range f.runs {
 		if strings.Contains(c.String(), " -t ") {
 			t.Errorf("-H all asked for a terminal: %s", c)
 		}
+	}
+	if !slices.ContainsFunc(f.captured(), func(c host.Cmd) bool {
+		return strings.Contains(c.String(), "doctor") && strings.Contains(c.String(), "--json")
+	}) {
+		t.Errorf("doctor --json never ran: %v", f.captured())
+	}
+}
+
+// A host without the report ("v" absent, or the flag refused) answers with text, which is drawn as
+// it came, with a to-do to ship it.
+func TestDashHAllDoctorFallsBackToTextForAnOlderHost(t *testing.T) {
+	d, f, _, _ := hostDeps(t, "a")
+	f.out["root@a"] = "ok    config: /x\n"
+	if code := run(context.Background(), d, []string{"-H", "all", "doctor"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	a := groups(f.rec)["a"]
+	if len(a) != 1 || a[0].Kind != ui.KNote || a[0].Text != "ok    config: /x" {
+		t.Fatalf("%+v", a)
+	}
+	if !slices.Equal(f.rec.Todos, []string{"flocc ship -H a to update it"}) {
+		t.Fatalf("%q", f.rec.Todos)
+	}
+}
+
+func TestDashHAllLogsAreNotesPerHostWithoutEscapeCodes(t *testing.T) {
+	d, f, _, _ := hostDeps(t, "a")
+	f.out["root@a"] = "line one\n\x1b[2Jline two\n"
+	if code := run(context.Background(), d, []string{"-H", "all", "logs"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	a := groups(f.rec)["a"]
+	if len(a) != 1 || a[0].Text != "line one\n [2Jline two" {
+		t.Fatalf("%+v", a)
+	}
+}
+
+func TestForwardedCommandsShowNoBanner(t *testing.T) {
+	d, f, _, _ := hostDeps(t, "a")
+	if code := run(context.Background(), d, []string{"-H", "a", "escalate"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if f.interactive[0].Why != "-" {
+		t.Fatalf("%+v", f.interactive[0])
 	}
 }
 

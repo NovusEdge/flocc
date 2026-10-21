@@ -7,7 +7,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
-// Summary is what the host's service and login phases end with; Print renders it.
+// Summary is what the host's service and login phases end with; Rows draws it.
 type Summary = steps.Summary
 
 // LineTap passes a stream through and takes out each line that starts with Marker and that Take

@@ -16,6 +16,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/qr"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 var emailRE = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$`)
@@ -24,7 +25,8 @@ var emailRE = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$`)
 // what the owner calls the host, for the login command the summary shows; empty means Target.
 type LoginOptions struct {
 	Target, Email, Name string
-	Out                 io.Writer // the host's output and the summary; nil is stdout
+	Out                 io.Writer // the host's output; nil is stdout
+	UI                  ui.Session
 }
 
 func ValidEmail(s string) bool { return emailRE.MatchString(s) }
@@ -56,21 +58,25 @@ func Login(ctx context.Context, o LoginOptions) error {
 	if out == nil {
 		out = os.Stdout
 	}
-	return login(ctx, r, o.label(), dest, o.Email, out, OpenURL)
+	return login(ctx, o.UI, r, o.label(), dest, o.Email, out, OpenURL)
 }
 
 func (o LoginOptions) label() string { return cmp.Or(o.Name, o.Target) }
 
 // target is the name the owner typed, never dest.SSH, which holds the Daytona token.
-func login(ctx context.Context, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {
+func login(ctx context.Context, s ui.Session, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {
 	tap := newSummaryTap(&urlWatch{out: out, open: open, seen: map[string]bool{}})
 	c := sshCmd(dest, true, loginRemote(addr))
 	c.Stdout = tap
+	c.Why = "claude login on " + target
 	err := scrubErr(r.Interactive(ctx, c), dest.Token)
 	tap.Flush()
-	if s, ok := tap.Summary(); ok {
-		s.Target = target
-		s.Print(out)
+	if sum, ok := tap.Summary(); ok {
+		sum.Target = target
+		ui.Rows(s, sum.Rows())
+		for _, t := range sum.Todos() {
+			s.Todo(t)
+		}
 	}
 	return err
 }

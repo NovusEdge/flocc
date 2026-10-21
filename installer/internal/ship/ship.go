@@ -48,9 +48,12 @@ type Options struct {
 	TTY bool
 	// Out receives the host's output, less the summary line; nil is stdout.
 	Out io.Writer
+	// UI shows the staging steps; the host's own run is a handoff on it.
+	UI ui.Session
 }
 
 type shipOpts struct {
+	UI ui.Session
 	// Target is the name the owner typed, for the login command the summary shows. Never
 	// Dest.SSH, which holds the Daytona token.
 	Target      string
@@ -128,8 +131,20 @@ func claudeConfigDir() string {
 	return filepath.Join(home, ".claude")
 }
 
+// stage runs f as one step named name: f's string is the Done detail, its error fails the step.
+func stage(s ui.Session, name string, f func(st *ui.Step) (string, error)) error {
+	st := s.Step(name)
+	detail, err := f(st)
+	if err != nil {
+		st.Fail(err)
+		return err
+	}
+	st.Done(detail)
+	return nil
+}
+
 // stageFiles writes the host binary for arch, the bundles, identity.json and plugins.json into dir.
-func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, configDir string, private func(string) (bool, error)) error {
+func stageFiles(ctx context.Context, s ui.Session, r host.Runner, root, dir, arch, configDir string, private func(string) (bool, error)) error {
 	id, err := identity.FromRepo(ctx, r, root)
 	if err != nil {
 		return err
@@ -138,40 +153,56 @@ func stageFiles(ctx context.Context, r host.Runner, root, dir, arch, configDir s
 		return err
 	}
 	// Built here, not read from build/, so a stale installer never ships next to a newer bundle.
-	if _, err := host.Must(ctx, r, host.Cmd{Name: "go", Dir: root,
-		Args: []string{"build", "-o", filepath.Join(dir, "flocc-setup"), "./installer/cmd/flocc-setup"},
-		Env:  []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + arch}}); err != nil {
-		return err
-	}
-	if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "flocc.bundle"), "HEAD"}}); err != nil {
-		return err
-	}
-	allow, err := readAllowlist(filepath.Join(root, "deploy", "agent-plugins.txt"))
+	err = stage(s, "Build flocc-setup", func(st *ui.Step) (string, error) {
+		st.Detail("go build linux/" + arch)
+		_, err := host.Must(ctx, r, host.Cmd{Name: "go", Dir: root,
+			Args: []string{"build", "-o", filepath.Join(dir, "flocc-setup"), "./installer/cmd/flocc-setup"},
+			Env:  []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + arch}})
+		return "linux/" + arch, err
+	})
 	if err != nil {
 		return err
 	}
-	plan, err := planPlugins(configDir, allow, private)
+	err = stage(s, "Bundle", func(st *ui.Step) (string, error) {
+		st.Detail("git bundle HEAD")
+		_, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "flocc.bundle"), "HEAD"}})
+		return "", err
+	})
 	if err != nil {
 		return err
 	}
-	for _, w := range plan.Warnings {
-		fmt.Fprintln(os.Stderr, "ship:", w)
-	}
-	for i, m := range plan.List.Marketplaces {
-		from, ok := plan.ArchiveFrom[m.Name]
-		if !ok {
-			continue
-		}
-		if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", from, "archive", "--format=tar", "-o", filepath.Join(dir, m.Archive), "HEAD"}}); err != nil {
-			return err
-		}
-		sha, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", from, "rev-parse", "HEAD"}})
+	return stage(s, "Plugins", func(st *ui.Step) (string, error) {
+		allow, err := readAllowlist(filepath.Join(root, "deploy", "agent-plugins.txt"))
 		if err != nil {
-			return err
+			return "", err
 		}
-		plan.List.Marketplaces[i].Commit = strings.TrimSpace(sha)
-	}
-	return plan.List.Write(filepath.Join(dir, "plugins.json"))
+		plan, err := planPlugins(configDir, allow, private)
+		if err != nil {
+			return "", err
+		}
+		for _, w := range plan.Warnings {
+			s.Note("ship", w)
+		}
+		n := 0
+		for i, m := range plan.List.Marketplaces {
+			from, ok := plan.ArchiveFrom[m.Name]
+			if !ok {
+				continue
+			}
+			st.Detail("git archive " + m.Name)
+			st.Progress(n, len(plan.ArchiveFrom))
+			n++
+			if _, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", from, "archive", "--format=tar", "-o", filepath.Join(dir, m.Archive), "HEAD"}}); err != nil {
+				return "", err
+			}
+			sha, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", from, "rev-parse", "HEAD"}})
+			if err != nil {
+				return "", err
+			}
+			plan.List.Marketplaces[i].Commit = strings.TrimSpace(sha)
+		}
+		return fmt.Sprintf("%d plugins", len(plan.List.Plugins)), plan.List.Write(filepath.Join(dir, "plugins.json"))
+	})
 }
 
 // Ship stages the installer on the host named by o.Target and runs it, with the answers document
@@ -211,7 +242,7 @@ func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
 	if o.Out == nil {
 		o.Out = os.Stdout
 	}
-	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, TTY: o.TTY, Answers: doc, Out: o.Out, Color: ui.ColorFor(o.Out), Cols: ui.Width(o.Out)})
+	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, TTY: o.TTY, Answers: doc, Out: o.Out, UI: o.UI, Color: ui.ColorFor(o.Out), Cols: ui.Width(o.Out)})
 }
 
 // lineTracker remembers whether the last byte it passed on ended a line.
@@ -247,42 +278,58 @@ func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts
 }
 
 func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts, tap io.Writer) error {
-	if err := Connect(ctx, r, dest, o.Target, o.TTY); err != nil {
-		return err
-	}
-	unameM, err := host.Must(ctx, r, sshCmd(dest, false, "uname -m"))
-	if err != nil {
-		return err
-	}
-	arch, err := ArchFor(unameM)
-	if err != nil {
-		return err
-	}
-	if !o.Interactive {
-		if err := checkSudo(ctx, r, dest); err != nil {
-			return err
+	var arch string
+	err := stage(o.UI, "Connect", func(st *ui.Step) (string, error) {
+		st.Detail("ssh")
+		if err := Connect(ctx, r, dest, o.Target, o.TTY); err != nil {
+			return "", err
 		}
+		st.Detail("uname -m")
+		unameM, err := host.Must(ctx, r, sshCmd(dest, false, "uname -m"))
+		if err != nil {
+			return "", err
+		}
+		if arch, err = ArchFor(unameM); err != nil {
+			return "", err
+		}
+		if !o.Interactive {
+			st.Detail("sudo -n true")
+			if err := checkSudo(ctx, r, dest); err != nil {
+				return "", err
+			}
+		}
+		return "linux/" + arch, nil
+	})
+	if err != nil {
+		return err
 	}
 	dir, err := os.MkdirTemp("", "flocc-ship-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	if err := stageFiles(ctx, r, root, dir, arch, claudeConfigDir(), ghPrivate); err != nil {
-		return err
-	}
-	// A finished run leaves the stage root:flocc 750, so only sudo can clear it.
-	if o.Interactive {
-		err = r.Interactive(ctx, sshCmd(dest, true, resetStage))
-	} else {
-		_, err = host.Must(ctx, r, sshNoTTY(dest, resetStageNoPrompt))
-	}
-	if err != nil {
+	if err := stageFiles(ctx, o.UI, r, root, dir, arch, claudeConfigDir(), ghPrivate); err != nil {
 		return err
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*"))
-	scp := append(append([]string{"-q"}, dest.Opts...), files...)
-	if _, err := host.Must(ctx, r, host.Cmd{Name: "scp", Args: append(scp, dest.SSH+":/tmp/flocc-setup/")}); err != nil {
+	err = stage(o.UI, "Copy", func(st *ui.Step) (string, error) {
+		// A finished run leaves the stage root:flocc 750, so only sudo can clear it.
+		st.Detail("reset /tmp/flocc-setup")
+		var err error
+		if o.Interactive {
+			err = r.Interactive(ctx, withWhy(sshCmd(dest, true, resetStage), "reset the stage on "+o.Target))
+		} else {
+			_, err = host.Must(ctx, r, sshNoTTY(dest, resetStageNoPrompt))
+		}
+		if err != nil {
+			return "", err
+		}
+		st.Detail(fmt.Sprintf("scp %d files", len(files)))
+		scp := append(append([]string{"-q"}, dest.Opts...), files...)
+		_, err = host.Must(ctx, r, host.Cmd{Name: "scp", Args: append(scp, dest.SSH+":/tmp/flocc-setup/")})
+		return fmt.Sprintf("%d files", len(files)), err
+	})
+	if err != nil {
 		return err
 	}
 	c := sshCmd(dest, true, remoteCmd(true))
@@ -291,6 +338,10 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOp
 		c.Stdin = bytes.NewReader(o.Answers)
 	}
 	c.Stdout = tap
+	// The host draws its own live line with \r and escape codes, which would write over the
+	// inline view; Attach hands it the terminal until it sends events.
+	c.Attach = true
+	c.Why = "host setup on " + o.Target
 	return r.Interactive(ctx, c)
 }
 

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // shipCall is what the fake Ship got: the answers document is read, as Ship reads it.
@@ -21,9 +21,11 @@ type shipCall struct {
 	noAnswers bool // the answers reader was nil
 }
 
-func shipDeps(t *testing.T, secrets string) (*deps, *fakeSSH, *[]shipCall) {
+func shipDeps(t *testing.T, secrets string) (*deps, *fakeSSH, *[]shipCall, *ui.Recorder) {
 	t.Helper()
 	d, f, _, _ := hostDeps(t, "a")
+	rec := &ui.Recorder{}
+	d.ui = ui.New(rec)
 	writeSecrets(t, d.home, secrets)
 	d.store = func() keys.Store { return keys.Open(d.home, io.Discard) }
 	d.http, d.githubAPI, d.open = http.DefaultClient, fakeGitHub(t).URL, func(string) {}
@@ -43,17 +45,17 @@ func shipDeps(t *testing.T, secrets string) (*deps, *fakeSSH, *[]shipCall) {
 		calls = append(calls, c)
 		return ship.Summary{Version: "flocc 0.5.0", Login: "none", LoginPending: true}, nil
 	}
-	return d, f, &calls
+	return d, f, &calls, rec
 }
 
-func TestShipSendsTheHostFileAndTheKeysOnStdinAndPrintsTheSummary(t *testing.T) {
-	d, _, calls := shipDeps(t, allKeys)
+func TestShipSendsTheHostFileAndTheKeysOnStdinAndDrawsTheSummary(t *testing.T) {
+	d, _, calls, rec := shipDeps(t, allKeys)
 	d.tty = true // so Ship opens the connection where a Tailscale approval URL shows
 	if code := run(context.Background(), d, []string{"ship", "-H", "a"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	c := (*calls)[0]
-	if c.o.Target != "root@a" || c.o.Interactive || !c.o.TTY || c.o.Out != d.out || c.noAnswers {
+	if c.o.Target != "root@a" || c.o.Interactive || !c.o.TTY || c.o.Out != d.out || c.o.UI != d.ui || c.noAnswers {
 		t.Fatalf("%+v", c)
 	}
 	a, err := answers.Parse(c.doc)
@@ -62,14 +64,18 @@ func TestShipSendsTheHostFileAndTheKeysOnStdinAndPrintsTheSummary(t *testing.T) 
 		t.Fatalf("%+v %v", a, err)
 	}
 	// The summary names the host, not its ssh destination, in the command it asks for.
-	if out := d.out.(*bytes.Buffer).String(); !strings.Contains(out, "flocc 0.5.0") || !strings.Contains(out, "flocc login -H a") ||
+	var out string
+	for _, e := range rec.Rows() {
+		out += e.Name + ": " + e.Detail + "\n"
+	}
+	if !strings.Contains(out, "version: flocc 0.5.0") || !strings.Contains(out, "flocc login -H a") ||
 		strings.Contains(out, "root@a") || strings.Contains(out, "<host>") {
 		t.Fatal(out)
 	}
 }
 
 func TestShipAsksForAMissingKeyThenShips(t *testing.T) {
-	d, _, calls := shipDeps(t, strings.Replace(allKeys, "publish_token = 'github_pat_publish'\n", "", 1))
+	d, _, calls, _ := shipDeps(t, strings.Replace(allKeys, "publish_token = 'github_pat_publish'\n", "", 1))
 	d.prompt = &hostScript{secrets: []string{"github_pat_publish"}}
 	if err := shipHost(context.Background(), d, "a"); err != nil {
 		t.Fatal(err)
@@ -81,7 +87,7 @@ func TestShipAsksForAMissingKeyThenShips(t *testing.T) {
 }
 
 func TestShipStopsBeforeShippingWhenAKeyIsNotGivenOrTheHostHasNoAnswers(t *testing.T) {
-	d, _, calls := shipDeps(t, strings.Replace(allKeys, "publish_token = 'github_pat_publish'\n", "", 1))
+	d, _, calls, _ := shipDeps(t, strings.Replace(allKeys, "publish_token = 'github_pat_publish'\n", "", 1))
 	if err := shipHost(context.Background(), d, "a"); err == nil || !strings.Contains(err.Error(), "empty paste") {
 		t.Fatal(err)
 	}
@@ -97,7 +103,7 @@ func TestShipStopsBeforeShippingWhenAKeyIsNotGivenOrTheHostHasNoAnswers(t *testi
 }
 
 func TestInteractiveShipSendsNoAnswersAndCopiesTheHostsBack(t *testing.T) {
-	d, f, calls := shipDeps(t, allKeys)
+	d, f, calls, _ := shipDeps(t, allKeys)
 	f.out["root@a"] = "team_key = \"NF\"\ndigest_issue = \"NF-9\"\n\n[[repos]]\nname = \"a\"\nurl = \"https://github.com/o/a\"\nbase_branch = \"main\"\ncheck = \"just check\"\n"
 	if code := run(context.Background(), d, []string{"ship", "-H", "a", "--interactive"}); code != 0 {
 		t.Fatalf("exit %d", code)
@@ -111,14 +117,14 @@ func TestInteractiveShipSendsNoAnswersAndCopiesTheHostsBack(t *testing.T) {
 }
 
 func TestLoginRunsOnTheChosenHost(t *testing.T) {
-	d, _, _ := shipDeps(t, allKeys)
+	d, _, _, _ := shipDeps(t, allKeys)
 	var got ship.LoginOptions
 	d.doLogin = func(_ context.Context, o ship.LoginOptions) error {
 		got = o
 		return nil
 	}
 	if code := run(context.Background(), d, []string{"login", "-H", "a", "--email", "o@example.test"}); code != 0 ||
-		got.Target != "root@a" || got.Name != "a" || got.Email != "o@example.test" || got.Out != d.out {
+		got.Target != "root@a" || got.Name != "a" || got.Email != "o@example.test" || got.Out != d.out || got.UI != d.ui {
 		t.Fatalf("exit %d %+v", code, got)
 	}
 	if code := run(context.Background(), d, []string{"login", "-H", "a", "--email", "a@b;id"}); code != 2 {

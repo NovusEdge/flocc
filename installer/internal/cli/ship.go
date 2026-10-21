@@ -13,6 +13,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 func shipCmd(ctx context.Context, d *deps, name string, args []string) int {
@@ -53,10 +54,13 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 		}
 		in = bytes.NewReader(doc)
 	}
-	s, err := d.doShip(ctx, ship.Options{Target: h.Target(), Interactive: interactive, TTY: d.tty, Out: d.out}, in)
+	s, err := d.doShip(ctx, ship.Options{Target: h.Target(), Interactive: interactive, TTY: d.tty, Out: d.out, UI: d.ui}, in)
 	// The host cannot know the name the desktop calls it, which the remedy lines use.
 	s.Target = h.Name
-	s.Print(d.out)
+	ui.Rows(d.ui, s.Rows())
+	for _, t := range s.Todos() {
+		d.ui.Todo(t)
+	}
 	if err != nil {
 		return err
 	}
@@ -120,5 +124,5 @@ func loginWith(ctx context.Context, d *deps, name, email string) error {
 	if err != nil {
 		return err
 	}
-	return d.doLogin(ctx, ship.LoginOptions{Target: h.Target(), Name: h.Name, Email: email, Out: d.out})
+	return d.doLogin(ctx, ship.LoginOptions{Target: h.Target(), Name: h.Name, Email: email, Out: d.out, UI: d.ui})
 }
