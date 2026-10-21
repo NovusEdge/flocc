@@ -50,6 +50,15 @@ func TestAtLeast(t *testing.T) {
 	}
 }
 
+func TestVersionTakesTheFirstTriple(t *testing.T) {
+	if v, ok := Version("flocc 0.8.0"); !ok || v != [3]int{0, 8, 0} {
+		t.Fatalf("%v %v", v, ok)
+	}
+	if _, ok := Version("flocc dev"); ok {
+		t.Fatal("parsed a version from none")
+	}
+}
+
 func TestMustReturnsCmdErrorWithTail(t *testing.T) {
 	f := NewFake().On("git fetch", 1, "")
 	f.Responses["git fetch"] = Result{Stderr: "fatal: nope\n", Code: 1}

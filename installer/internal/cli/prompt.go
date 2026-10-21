@@ -19,6 +19,10 @@ type prompter interface {
 	Repos(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error
 	Team(teams []linearapi.Team) (linearapi.Team, error)
 	Note(title, body string)
+	// Ask reads one line with echo on; "" when it is left empty.
+	Ask(title, help string) (string, error)
+	// Choose returns the index of the option picked.
+	Choose(title string, options []string) (int, error)
 }
 
 type huhPrompt struct{ keys.Huh }
@@ -43,6 +47,28 @@ func (p huhPrompt) Team(teams []linearapi.Team) (linearapi.Team, error) {
 	var i int
 	err := ui.Form(huh.NewGroup(huh.NewSelect[int]().Title("Linear team for this host").Options(opts...).Value(&i))).Run()
 	return teams[i], err
+}
+
+func (p huhPrompt) Ask(title, help string) (string, error) {
+	if !p.IsTerminal() {
+		return "", errNoTerminal
+	}
+	var v string
+	err := ui.Form(huh.NewGroup(huh.NewInput().Title(title).Description(help).Value(&v))).Run()
+	return v, err
+}
+
+func (p huhPrompt) Choose(title string, options []string) (int, error) {
+	if !p.IsTerminal() {
+		return 0, errNoTerminal
+	}
+	opts := make([]huh.Option[int], len(options))
+	for i, o := range options {
+		opts[i] = huh.NewOption(o, i)
+	}
+	var i int
+	err := ui.Form(huh.NewGroup(huh.NewSelect[int]().Title(title).Options(opts...).Value(&i))).Run()
+	return i, err
 }
 
 func (p huhPrompt) Note(title, body string) {

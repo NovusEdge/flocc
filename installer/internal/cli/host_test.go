@@ -40,6 +40,18 @@ type hostScript struct {
 
 func (s *hostScript) Note(title, _ string) { s.notes = append(s.notes, title) }
 
+func (s *hostScript) Ask(title, _ string) (string, error) {
+	s.t.Helper()
+	s.t.Fatalf("unscripted question: %q", title)
+	return "", nil
+}
+
+func (s *hostScript) Choose(title string, _ []string) (int, error) {
+	s.t.Helper()
+	s.t.Fatalf("unscripted choice: %q", title)
+	return 0, nil
+}
+
 func (s *hostScript) Confirm(title string, _ bool) (bool, error) {
 	if len(s.confirms) == 0 {
 		s.t.Helper()

@@ -27,6 +27,7 @@ import (
 const usage = `flocc runs Claude sessions on Linear issues. This is its desktop command.
 
 Desktop commands:
+  flocc setup                        everything below in order: keys, a host, old versions, cardinal, logins
   flocc keys                         make, check and store the Linear key, GitHub tokens and ntfy topic
   flocc keys check                   check every stored key again
   flocc keys rotate github|linear    replace keys and push them to every host
@@ -113,6 +114,8 @@ func run(ctx context.Context, d *deps, args []string) int {
 	case "help", "-h", "--help":
 		fmt.Fprint(d.out, usage)
 		return 0
+	case "setup":
+		return setupCmd(ctx, d, rest[1:])
 	case "ship":
 		return shipCmd(ctx, d, name, rest[1:])
 	case "login":
