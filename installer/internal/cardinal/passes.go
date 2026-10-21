@@ -334,10 +334,30 @@ func (d Deps) rootOutcomes(ctx context.Context, s saved.Saved) string {
 	return ""
 }
 
-// rootPass runs the one sudo of a setup or purge: a stage only the owner's mktemp could have made,
-// one ssh -t, one password prompt. The stage goes after a success and stays, with its log, after
-// a failure.
-func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey, phase string, adopt bool) error {
+// rootCall is one sudo of a root pass: a machine phase run for one user.
+type rootCall struct {
+	Phase, User string
+	Adopt       bool
+}
+
+// rootCalls are a setup's sudo calls: the agreed removals of old users, then cardinal's own root
+// work when an outcome is missing (why is rootOutcomes'). None means no ssh -t and no password.
+func rootCalls(user, why string, o SetupOptions) []rootCall {
+	var calls []rootCall
+	for _, u := range o.Remove {
+		calls = append(calls, rootCall{Phase: "cardinal-purge", User: u})
+	}
+	if why != "" {
+		calls = append(calls, rootCall{Phase: "cardinal-root", User: user, Adopt: o.Adopt})
+	}
+	return calls
+}
+
+// rootPass runs a setup's or purge's sudo calls from a stage only the owner's mktemp could have
+// made, on one line in one ssh -t: sudo's ticket for that terminal covers every call after the
+// first, so the owner types one password. A failed call stops the ones after it. The stage goes
+// after a success and stays, with its log, after a failure.
+func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey string, calls []rootCall) error {
 	if !d.TTY {
 		return errors.New("the machine's sudo asks for a password; run this in a terminal")
 	}
@@ -360,33 +380,43 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey, phas
 	if _, err := host.Must(ctx, d.Run, d.scp(d.Mux, s.Machine+":"+dir+"/", files...)); err != nil {
 		return err
 	}
-	remote := "chmod 755 " + dir + "/flocc-setup && sudo " + dir + "/flocc-setup --phase " + phase + " --user " + s.User
-	if adopt {
-		remote += " --adopt"
+	remote := "chmod 755 " + dir + "/flocc-setup"
+	for _, c := range calls {
+		remote += " && sudo " + dir + "/flocc-setup --phase " + c.Phase + " --user " + c.User
+		if c.Adopt {
+			remote += " --adopt"
+		}
 	}
 	remote += " && rm -rf " + dir
-	var r steps.CardinalReport
-	tap := reportTap(d.Out, &r)
+	var reports []steps.CardinalReport
+	tap := reportTap(d.Out, &reports)
 	c := d.owner(s.Machine, true, remote)
 	c.Stdout = tap
 	err = d.Run.Interactive(ctx, c)
 	tap.Flush()
+	// Each call prints one report, in order, so the i-th report is the i-th call's.
+	for i, r := range reports {
+		title := "Root pass"
+		if i < len(calls) && calls[i].Phase == "cardinal-purge" {
+			title = "Removed " + calls[i].User
+		}
+		if len(r.Steps) > 0 || len(r.Notes) > 0 {
+			d.printSteps(title, r)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("the root pass failed; its log is %s/setup.log on %s: %w", dir, s.Machine, err)
-	}
-	if len(r.Steps) > 0 {
-		d.printSteps("Root pass", r)
 	}
 	return nil
 }
 
-// reportTap passes a pass's output through as it comes, prompts included, and keeps its
-// flocc-cardinal line in r for printSteps.
-func reportTap(out io.Writer, r *steps.CardinalReport) *ship.LineTap {
+// reportTap passes a pass's output through as it comes, prompts included, and keeps each
+// flocc-cardinal line in rs for printSteps.
+func reportTap(out io.Writer, rs *[]steps.CardinalReport) *ship.LineTap {
 	return &ship.LineTap{Out: out, Marker: steps.CardinalMarker, Take: func(line string) bool {
 		got, ok := steps.ParseCardinalLine(line)
 		if ok {
-			*r = got
+			*rs = append(*rs, got)
 		}
 		return ok
 	}}

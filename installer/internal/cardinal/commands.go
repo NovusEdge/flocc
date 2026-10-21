@@ -91,11 +91,7 @@ func Main(ctx context.Context, d Deps, args []string) int {
 		return 2
 	}
 	if d.Run == nil {
-		if err := os.MkdirAll(filepath.Dir(logPath(d.Home, s.User)), 0o700); err != nil {
-			fmt.Fprintln(d.Err, "flocc cardinal:", err)
-			return 1
-		}
-		f, err := os.OpenFile(logPath(d.Home, s.User), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		f, err := openLog(d.Home, s.User)
 		if err != nil {
 			fmt.Fprintln(d.Err, "flocc cardinal:", err)
 			return 1
@@ -105,7 +101,7 @@ func Main(ctx context.Context, d Deps, args []string) int {
 	}
 	switch sub {
 	case "setup":
-		err = d.setup(ctx, s, only, *key, *adopt)
+		err = d.setup(ctx, s, SetupOptions{Only: only, Key: *key, Adopt: *adopt})
 	case "login":
 		if *email != "" && !ship.ValidEmail(*email) {
 			fmt.Fprintf(d.Err, "flocc cardinal: %q is not an email address\n", *email)
@@ -135,6 +131,30 @@ func Main(ctx context.Context, d Deps, args []string) int {
 
 func logPath(home, user string) string {
 	return filepath.Join(home, ".cache", "flocc", "cardinal-"+user+".log")
+}
+
+func openLog(home, user string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(logPath(home, user)), 0o700); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(logPath(home, user), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+}
+
+// logged runs f as Main runs a subcommand: with a runner that logs to the install's log unless d
+// has one, and with f's error sanitized and naming the log, since it carries cardinal's output.
+func (d Deps) logged(user string, f func(Deps) error) error {
+	if d.Run == nil {
+		lf, err := openLog(d.Home, user)
+		if err != nil {
+			return err
+		}
+		defer lf.Close()
+		d.Run = host.Exec{Log: lf}
+	}
+	if err := f(d); err != nil {
+		return fmt.Errorf("%s\nLog: %s", saved.SanitizeBlock(err.Error(), 40), logPath(d.Home, user))
+	}
+	return nil
 }
 
 // desktopKey is the --key file or the first default key, as one line with at most one comment word.
@@ -186,8 +206,17 @@ func (d Deps) machineBuild(ctx context.Context, s saved.Saved) (string, error) {
 	return d.build(ctx, arch)
 }
 
-func (d Deps) setup(ctx context.Context, s saved.Saved, only []string, keyPath string, adopt bool) error {
-	key, err := d.desktopKey(keyPath)
+// SetupOptions are flocc cardinal setup's flags, and the old users flocc setup agreed to remove,
+// which the root pass deletes before cardinal's own root work.
+type SetupOptions struct {
+	Only   []string
+	Key    string
+	Adopt  bool
+	Remove []string
+}
+
+func (d Deps) setup(ctx context.Context, s saved.Saved, o SetupOptions) error {
+	key, err := d.desktopKey(o.Key)
 	if err != nil {
 		return err
 	}
@@ -199,7 +228,7 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, only []string, keyPath s
 	if err != nil {
 		fmt.Fprintln(d.Err, "hosts:", err)
 	}
-	scope, skipped, gateway, err := d.incusPass(ctx, ce, only, files)
+	scope, skipped, gateway, err := d.incusPass(ctx, ce, o.Only, files)
 	if err != nil {
 		return err
 	}
@@ -223,13 +252,23 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, only []string, keyPath s
 	if err := s.Save(saved.Dir(d.Home)); err != nil {
 		return err
 	}
-	if why := d.rootOutcomes(ctx, s); why != "" {
-		fmt.Fprintf(d.Out, "\nRoot pass (%s): sudo asks for your password on %s once\n", why, s.Machine)
-		if err := d.rootPass(ctx, s, bin, key, "cardinal-root", adopt); err != nil {
+	why := d.rootOutcomes(ctx, s)
+	if calls := rootCalls(s.User, why, o); len(calls) > 0 {
+		reasons := []string{}
+		if len(o.Remove) > 0 {
+			reasons = append(reasons, "removing "+strings.Join(o.Remove, ", "))
+		}
+		if why != "" {
+			reasons = append(reasons, why)
+		}
+		fmt.Fprintf(d.Out, "\nRoot pass (%s): sudo asks for your password on %s once\n", strings.Join(reasons, "; "), s.Machine)
+		if err := d.rootPass(ctx, s, bin, key, calls); err != nil {
 			return err
 		}
-		if why := d.rootOutcomes(ctx, s); why != "" {
-			return fmt.Errorf("after the root pass: %s. ssh %s may be refused by the machine's sshd (AllowUsers) or the tailnet policy; setup does not change either", why, s.Dest())
+		if why != "" {
+			if why := d.rootOutcomes(ctx, s); why != "" {
+				return fmt.Errorf("after the root pass: %s. ssh %s may be refused by the machine's sshd (AllowUsers) or the tailnet policy; setup does not change either", why, s.Dest())
+			}
 		}
 	} else {
 		fmt.Fprintf(d.Out, "\nRoot pass: nothing to do\n")
@@ -299,8 +338,8 @@ func (d Deps) login(ctx context.Context, s saved.Saved, email string) error {
 	if email != "" {
 		remote += " --email " + email
 	}
-	var r steps.CardinalReport
-	tap := reportTap(d.Out, &r)
+	var rs []steps.CardinalReport
+	tap := reportTap(d.Out, &rs)
 	c := d.user(s, true, remote)
 	c.Stdout = ship.WatchURLs(tap, d.Open, anthropicURL)
 	err := d.Run.Interactive(ctx, c)
@@ -315,31 +354,83 @@ func (d Deps) login(ctx context.Context, s saved.Saved, email string) error {
 	return nil
 }
 
-func (d Deps) status(ctx context.Context, s saved.Saved) int {
+// unreachable is a status that never ran; status() names setup as its remedy.
+type unreachable struct{ error }
+
+func (d Deps) readStatus(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error) {
 	// Full status health-checks every MCP server and host, so it gets longer than the outcome checks.
 	ctx, cancel := context.WithTimeout(ctx, 3*reachLimit)
 	defer cancel()
+	var st steps.CardinalStatus
 	res, err := d.Run.Run(ctx, d.user(s, false, setupPath+" --phase cardinal-status"))
 	if err != nil || res.Code != 0 {
 		why := passOutput(res, 5)
 		if err != nil {
 			why = err.Error()
 		}
-		fmt.Fprintf(d.Out, "%s unreachable: %s\n  remedy: flocc cardinal setup --user %s\n", s.Dest(), why, s.User)
-		return 1
+		return st, unreachable{fmt.Errorf("%s unreachable: %s", s.Dest(), why)}
 	}
-	var st steps.CardinalStatus
-	switch err := json.Unmarshal([]byte(res.Stdout), &st); {
-	case err != nil:
-		fmt.Fprintf(d.Out, "unreadable status from %s: %v\n", s.Dest(), err)
-		return 1
-	case st.Schema != steps.CardinalStatusSchema:
-		fmt.Fprintf(d.Out, "%s reports status schema %d; run flocc cardinal setup --user %s\n", s.Dest(), st.Schema, s.User)
+	if err := json.Unmarshal([]byte(res.Stdout), &st); err != nil {
+		return st, fmt.Errorf("unreadable status from %s: %v", s.Dest(), err)
+	}
+	if st.Schema != steps.CardinalStatusSchema {
+		return st, fmt.Errorf("%s reports status schema %d; run flocc cardinal setup --user %s", s.Dest(), st.Schema, s.User)
+	}
+	return st, nil
+}
+
+func (d Deps) status(ctx context.Context, s saved.Saved) int {
+	st, err := d.readStatus(ctx, s)
+	if err != nil {
+		fmt.Fprintln(d.Out, err)
+		var u unreachable
+		if errors.As(err, &u) {
+			fmt.Fprintf(d.Out, "  remedy: flocc cardinal setup --user %s\n", s.User)
+		}
 		return 1
 	}
 	out, code := RenderStatus(st)
 	fmt.Fprint(d.Out, out)
 	return code
+}
+
+// Setup, Status, Login and RemoveOld are flocc setup's way in: Main's subcommands without its
+// flag parsing.
+func (d Deps) Setup(ctx context.Context, s saved.Saved, o SetupOptions) error {
+	return d.logged(s.User, func(d Deps) error { return d.setup(ctx, s, o) })
+}
+
+func (d Deps) Status(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error) {
+	var st steps.CardinalStatus
+	err := d.logged(s.User, func(d Deps) error {
+		var err error
+		st, err = d.readStatus(ctx, s)
+		return err
+	})
+	return st, err
+}
+
+func (d Deps) Login(ctx context.Context, s saved.Saved, email string) error {
+	return d.logged(s.User, func(d Deps) error { return d.login(ctx, s, email) })
+}
+
+// RemoveOld runs only the purge of old users on machine, for a machine whose cardinal is healthy,
+// declined or elsewhere. It needs no incus, so a machine without it can still be cleaned.
+func (d Deps) RemoveOld(ctx context.Context, machine string, users []string) error {
+	s := saved.Saved{Machine: machine, User: saved.DefaultUser}
+	return d.logged(s.User, func(d Deps) error {
+		if err := ship.Connect(ctx, d.Run, ship.Dest{SSH: machine, Opts: d.Mux}, machine, d.TTY); err != nil {
+			return err
+		}
+		bin, err := d.machineBuild(ctx, s)
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(bin)
+		fmt.Fprintf(d.Out, "\nRoot pass (removing %s): sudo asks for your password on %s once\n", strings.Join(users, ", "), machine)
+		calls := rootCalls(s.User, "", SetupOptions{Remove: users})
+		return d.rootPass(ctx, s, bin, "", calls)
+	})
 }
 
 func (d Deps) attach(ctx context.Context, s saved.Saved, write bool) error {
@@ -391,7 +482,7 @@ func (d Deps) remove(ctx context.Context, s saved.Saved, purge bool) error {
 	dir := saved.Dir(d.Home)
 	if purge {
 		fmt.Fprintf(d.Out, "\nPurge: sudo asks for your password on %s once\n", s.Machine)
-		if err := d.rootPass(ctx, s, bin, "", "cardinal-purge", false); err != nil {
+		if err := d.rootPass(ctx, s, bin, "", []rootCall{{Phase: "cardinal-purge", User: s.User}}); err != nil {
 			return err
 		}
 		if err := saved.Delete(dir, s.User); err != nil {

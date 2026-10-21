@@ -116,7 +116,7 @@ func TestRootPassIsSkippedWhenItsOutcomesHold(t *testing.T) {
 
 func TestRootPassRefusesWithoutATerminal(t *testing.T) {
 	d, _ := testDeps(t, host.NewFake())
-	err := d.rootPass(context.Background(), card, t.TempDir(), "ssh-ed25519 AAAA k", "cardinal-root", false)
+	err := d.rootPass(context.Background(), card, t.TempDir(), "ssh-ed25519 AAAA k", []rootCall{{Phase: "cardinal-root", User: "cardinal", Adopt: false}})
 	if err == nil || !strings.Contains(err.Error(), "run this in a terminal") {
 		t.Fatalf("err = %v", err)
 	}
@@ -130,7 +130,7 @@ func TestRootPassRunsOneSudoFromTheMktempStage(t *testing.T) {
 	os.WriteFile(filepath.Join(bin, "flocc-setup"), []byte("x"), 0o755)
 	f.On(d.owner(card.Machine, false, "mktemp -d /tmp/flocc-cardinal.XXXXXX").String(), 0, "/tmp/flocc-cardinal.Ab12Cd\n")
 	f.On(d.scp(d.Mux, card.Machine+":/tmp/flocc-cardinal.Ab12Cd/", filepath.Join(bin, "flocc-setup"), filepath.Join(bin, "desktop.pub")).String(), 0, "")
-	if err := d.rootPass(context.Background(), card, bin, "ssh-ed25519 AAAA k", "cardinal-root", true); err != nil {
+	if err := d.rootPass(context.Background(), card, bin, "ssh-ed25519 AAAA k", []rootCall{{Phase: "cardinal-root", User: "cardinal", Adopt: true}}); err != nil {
 		t.Fatalf("%v; %v", err, f.Calls)
 	}
 	want := "interactive: " + d.owner(card.Machine, true, "chmod 755 /tmp/flocc-cardinal.Ab12Cd/flocc-setup && sudo /tmp/flocc-cardinal.Ab12Cd/flocc-setup --phase cardinal-root --user cardinal --adopt && rm -rf /tmp/flocc-cardinal.Ab12Cd").String()
@@ -138,7 +138,7 @@ func TestRootPassRunsOneSudoFromTheMktempStage(t *testing.T) {
 		t.Fatalf("calls %v", f.Calls)
 	}
 	f.On(d.owner(card.Machine, false, "mktemp -d /tmp/flocc-cardinal.XXXXXX").String(), 0, "/tmp/flocc-setup\n")
-	if err := d.rootPass(context.Background(), card, bin, "ssh-ed25519 AAAA k", "cardinal-root", true); err == nil {
+	if err := d.rootPass(context.Background(), card, bin, "ssh-ed25519 AAAA k", []rootCall{{Phase: "cardinal-root", User: "cardinal", Adopt: true}}); err == nil {
 		t.Fatal("accepted a stage mktemp did not name")
 	}
 }
@@ -206,14 +206,93 @@ func TestMainRemoveMarksTheSavedFileRemoved(t *testing.T) {
 	}
 }
 
-// prefixFake answers go build calls, whose output paths are temp directories.
+// prefixFake answers go build and scp calls, whose paths are temp directories; they are still
+// recorded.
 type prefixFake struct{ *host.Fake }
 
 func (p prefixFake) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
-	if c.Name == "go" {
+	if c.Name == "go" || c.Name == "scp" {
+		p.Fake.Run(ctx, c)
 		return host.Result{}, nil
 	}
 	return p.Fake.Run(ctx, c)
+}
+
+func TestRootCallsRunRemovalsFirstAndOnlyWhatHasWork(t *testing.T) {
+	rm := SetupOptions{Remove: []string{"linear-agents"}, Adopt: true}
+	for _, c := range []struct {
+		why  string
+		o    SetupOptions
+		want []rootCall
+	}{
+		{"", SetupOptions{}, nil},
+		{"", rm, []rootCall{{Phase: "cardinal-purge", User: "linear-agents"}}},
+		{"lingering off", SetupOptions{Adopt: true}, []rootCall{{Phase: "cardinal-root", User: "cardinal", Adopt: true}}},
+		{"lingering off", rm, []rootCall{{Phase: "cardinal-purge", User: "linear-agents"}, {Phase: "cardinal-root", User: "cardinal", Adopt: true}}},
+	} {
+		if got := rootCalls("cardinal", c.why, c.o); !slices.Equal(got, c.want) {
+			t.Errorf("why %q remove %v: %+v", c.why, c.o.Remove, got)
+		}
+	}
+}
+
+func TestRootPassRunsPurgeAndRootOnOneLineAndPrintsBothReports(t *testing.T) {
+	f := host.NewFake()
+	d, out := testDeps(t, f)
+	d.TTY = true
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "flocc-setup"), []byte("x"), 0o755)
+	f.On(d.owner(card.Machine, false, "mktemp -d /tmp/flocc-cardinal.XXXXXX").String(), 0, "/tmp/flocc-cardinal.Ab12Cd\n")
+	f.On(d.scp(d.Mux, card.Machine+":/tmp/flocc-cardinal.Ab12Cd/", filepath.Join(bin, "flocc-setup"), filepath.Join(bin, "desktop.pub")).String(), 0, "")
+	st := "/tmp/flocc-cardinal.Ab12Cd/flocc-setup"
+	line := d.owner(card.Machine, true, "chmod 755 "+st+" && sudo "+st+" --phase cardinal-purge --user linear-agents && sudo "+st+" --phase cardinal-root --user cardinal --adopt && rm -rf /tmp/flocc-cardinal.Ab12Cd").String()
+	purged := steps.CardinalReport{Steps: []steps.ReportStep{{Name: "Archive", Detail: "/root/flocc-removed-linear-agents-x.tar.gz", Done: true}}}
+	root := steps.CardinalReport{Steps: []steps.ReportStep{{Name: "User", Detail: "exists", Done: true}}}
+	f.OnInteractiveOut(line, purged.Line()+"\n"+root.Line()+"\n")
+	calls := []rootCall{{Phase: "cardinal-purge", User: "linear-agents"}, {Phase: "cardinal-root", User: "cardinal", Adopt: true}}
+	if err := d.rootPass(context.Background(), card, bin, "ssh-ed25519 AAAA k", calls); err != nil {
+		t.Fatalf("%v; %v", err, f.Calls)
+	}
+	interactive := slices.DeleteFunc(slices.Clone(f.Calls), func(c string) bool { return !strings.HasPrefix(c, "interactive: ") })
+	if len(interactive) != 1 || interactive[0] != "interactive: "+line {
+		t.Fatalf("calls %v", f.Calls)
+	}
+	if !strings.Contains(out.String(), "Removed linear-agents") || !strings.Contains(out.String(), "flocc-removed-linear-agents-x.tar.gz") || !strings.Contains(out.String(), "Root pass") {
+		t.Fatalf("out %q", out)
+	}
+}
+
+func TestRemoveOldRunsOnlyThePurgeWithoutTheDesktopKey(t *testing.T) {
+	f := host.NewFake()
+	d, _ := testDeps(t, f)
+	d.TTY, d.RepoRoot = true, func() (string, error) { return "/repo", nil }
+	m := card.Machine
+	f.On("ssh -O check "+m, 0, "")
+	f.On(d.owner(m, false, "uname -m").String(), 0, "x86_64\n")
+	f.On(d.owner(m, false, "mktemp -d /tmp/flocc-cardinal.XXXXXX").String(), 0, "/tmp/flocc-cardinal.Ab12Cd\n")
+	d.Run = prefixFake{f}
+	if err := d.RemoveOld(context.Background(), m, []string{"linear-agents"}); err != nil {
+		t.Fatalf("%v; %v", err, f.Calls)
+	}
+	st := "/tmp/flocc-cardinal.Ab12Cd/flocc-setup"
+	want := "interactive: " + d.owner(m, true, "chmod 755 "+st+" && sudo "+st+" --phase cardinal-purge --user linear-agents && rm -rf /tmp/flocc-cardinal.Ab12Cd").String()
+	if !f.Ran(want) || slices.ContainsFunc(f.Calls, func(c string) bool { return strings.Contains(c, "desktop.pub") }) {
+		t.Fatalf("calls %v", f.Calls)
+	}
+}
+
+func TestStatusReturnsTheParsedReport(t *testing.T) {
+	f := host.NewFake()
+	d, _ := testDeps(t, f)
+	f.On(d.user(card, false, setupPath+" --phase cardinal-status").String(), 0, `{"schema":1,"user":"cardinal","unit":"active","login":"none"}`)
+	st, err := d.Status(context.Background(), card)
+	if err != nil || st.Unit != "active" || st.Login != "none" {
+		t.Fatalf("%+v %v", st, err)
+	}
+	f.On(d.user(card, false, setupPath+" --phase cardinal-status").String(), 255, "")
+	if _, err := d.Status(context.Background(), card); err == nil || !strings.Contains(err.Error(), "unreachable") {
+		t.Fatalf("err %v", err)
+	}
 }
 
 func TestMainRefusesABadUserAndUnknownSubcommand(t *testing.T) {
