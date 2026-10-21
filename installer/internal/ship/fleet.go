@@ -38,9 +38,8 @@ const (
 	usdPerDiskHour = 0.000108
 	freeDiskGiB    = 5
 
-	staleTick   = 10 * time.Minute
-	lowDisk     = 0.15
-	minInterval = 5 * time.Second
+	staleTick = 10 * time.Minute
+	lowDisk   = 0.15
 	// The shell convention for a process ended by SIGINT.
 	exitInterrupted = 130
 	// An SSH token lives 60 minutes; reusing one for less leaves room for a slow ssh.
@@ -619,32 +618,6 @@ var footnotes = []string{
 	"Stopped and archived sandboxes show - (their rate is not confirmed).",
 }
 
-// render draws the fleet as text for --watch, which clears the screen and redraws.
-func render(rows []Row, cards []CardinalRow, notes []string) string {
-	tables, failures := fleetTables(rows, cards)
-	var b strings.Builder
-	for i, t := range tables {
-		lt := newTable(t.Headers...)
-		for _, r := range t.Rows {
-			lt.Row(r...)
-		}
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(lt.String() + "\n")
-	}
-	for _, f := range failures {
-		b.WriteString(cell(f, bad) + "\n")
-	}
-	for _, n := range notes {
-		b.WriteString(cell(n, dim) + "\n")
-	}
-	for _, line := range footnotes {
-		b.WriteString(cell(line, dim) + "\n")
-	}
-	return b.String()
-}
-
 // unstyled drops the lipgloss styling of a cell.
 func unstyled(s string) string {
 	var b bytes.Buffer
@@ -698,23 +671,14 @@ func Statuses(ctx context.Context, s ui.Session, r host.Runner, hs []hosts.Host,
 	})
 }
 
-// Fleet draws the fleet once on s, or with --watch redraws it on out every interval. The watch
-// loop owns the terminal, so run it without a live session view.
-func Fleet(ctx context.Context, s ui.Session, out io.Writer, args []string) int {
+// Fleet draws the fleet once on s.
+func Fleet(ctx context.Context, s ui.Session, args []string) int {
 	fs := flag.NewFlagSet("flocc status -H all", flag.ContinueOnError)
-	watch := fs.Bool("watch", false, "redraw until interrupted")
-	interval := fs.Duration("interval", 30*time.Second, "time between redraws with --watch")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if *watch && *interval < minInterval {
-		fmt.Fprintf(os.Stderr, "fleet: --interval must be at least %s; each redraw calls the Daytona API and every host\n", minInterval)
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
 		return 2
 	}
 	home, _ := os.UserHomeDir()
-	daytonaConfig := filepath.Join(home, ".config/daytona/config.json")
-	hostsDir := hosts.Dir(home)
-	return runFleet(ctx, s, out, *watch, *interval, daytonaConfig, hostsDir, saved.Dir(home))
+	return runFleet(ctx, s, filepath.Join(home, ".config/daytona/config.json"), hosts.Dir(home), saved.Dir(home))
 }
 
 // Source is the fleet as the desktop sees it: the hosts it knows and a cache of the ssh
@@ -768,41 +732,26 @@ func (s *Source) Cardinals(ctx context.Context) ([]CardinalRow, []string) {
 	return collectCardinals(ctx, host.Exec{}, s.cache.sshOpts, list), notes
 }
 
-// runFleet draws the fleet until ctx ends, or once.
-func runFleet(ctx context.Context, s ui.Session, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir, cardinalDir string) int {
+// runFleet draws the fleet once.
+func runFleet(ctx context.Context, s ui.Session, daytonaConfig, hostsDir, cardinalDir string) int {
 	src := newSource(daytonaConfig, hostsDir, cardinalDir)
-	var track *tracker
-	if !watch {
-		track = hostSteps(s)
+	found, notes := src.Discover(ctx)
+	cardList, cardNotes := discoverCardinals(cardinalDir)
+	notes = append(notes, cardNotes...)
+	var cards []CardinalRow
+	done := make(chan struct{})
+	go func() {
+		cards = collectCardinals(ctx, host.Exec{}, src.cache.sshOpts, cardList)
+		close(done)
+	}()
+	rows := collect(ctx, host.Exec{}, src.cache, found, hostSteps(s))
+	<-done
+	if ctx.Err() != nil {
+		return exitInterrupted
 	}
-	for {
-		found, notes := src.Discover(ctx)
-		cardList, cardNotes := discoverCardinals(cardinalDir)
-		notes = append(notes, cardNotes...)
-		var cards []CardinalRow
-		done := make(chan struct{})
-		go func() {
-			cards = collectCardinals(ctx, host.Exec{}, src.cache.sshOpts, cardList)
-			close(done)
-		}()
-		rows := collect(ctx, host.Exec{}, src.cache, found, track)
-		<-done
-		if ctx.Err() != nil {
-			return exitInterrupted
-		}
-		if len(found) == 0 {
-			notes = append(notes, "no hosts: log in with daytona login, or run flocc host add <name>")
-		}
-		if !watch {
-			draw(s, rows, cards, notes)
-			return 0
-		}
-		fmt.Fprint(out, "\x1b[H\x1b[2J")
-		lipgloss.Fprint(out, render(rows, cards, notes))
-		select {
-		case <-ctx.Done():
-			return exitInterrupted
-		case <-time.After(interval):
-		}
+	if len(found) == 0 {
+		notes = append(notes, "no hosts: log in with daytona login, or run flocc host add <name>")
 	}
+	draw(s, rows, cards, notes)
+	return 0
 }

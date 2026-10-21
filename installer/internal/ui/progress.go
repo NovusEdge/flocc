@@ -59,12 +59,6 @@ type liveLine struct {
 	frame int
 }
 
-// NewProgress animates when w is a terminal, NO_COLOR is unset and TERM is not dumb.
-func NewProgress(w io.Writer) *Progress {
-	o := NewOut(w)
-	return &Progress{Out: o, Animate: o.Color}
-}
-
 func (p *Progress) now() time.Time {
 	if p.Now != nil {
 		return p.Now()

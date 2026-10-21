@@ -51,13 +51,19 @@ func splitHost(args []string) (name string, rest []string, err error) {
 	return name, rest, nil
 }
 
-// listHosts is every host file that loads; each one that does not is printed as a note, so one
-// bad file hides no other host.
+// listHosts is every host file that loads; each one that does not is shown as a note, once per
+// run, so one bad file hides no other host.
 func listHosts(d *deps) []hosts.Host {
 	all, err := hosts.List(hosts.Dir(d.home))
 	if err != nil {
-		for _, line := range strings.Split(err.Error(), "\n") {
-			fmt.Fprintln(d.err, "hosts: "+line)
+		switch {
+		case d.ui == nil:
+			for _, line := range strings.Split(err.Error(), "\n") {
+				fmt.Fprintln(d.err, "hosts: "+line)
+			}
+		case d.hostsNote != err.Error():
+			d.hostsNote = err.Error()
+			d.ui.Note("hosts", d.hostsNote)
 		}
 	}
 	return all
@@ -169,7 +175,7 @@ func onHost(ctx context.Context, d *deps, name string, args []string) int {
 	if err == nil {
 		err = ship.OnHostWhy(ctx, d.run, dest, ship.FloccLine(args), d.tty, "-")
 	}
-	return ship.ExitCode(err, "flocc")
+	return ship.ExitCode(err, "flocc", d.showErr)
 }
 
 // follows reports whether logs flags ask to follow. The host parser is argparse, which accepts

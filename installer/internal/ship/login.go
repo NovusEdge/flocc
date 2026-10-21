@@ -50,7 +50,7 @@ func Login(ctx context.Context, o LoginOptions) error {
 	if o.Email != "" && !ValidEmail(o.Email) {
 		return usageError(fmt.Sprintf("%q is not an email address", o.Email))
 	}
-	r, dest, err := connect(ctx, o.Target)
+	r, dest, err := connect(ctx, o.Target, o.UI)
 	if err != nil {
 		return err
 	}
@@ -137,14 +137,14 @@ func OpenURL(u string) {
 }
 
 // ExitCode passes on the remote command's exit status; ssh killed by a signal reports -1. A
-// usageError exits 2.
-func ExitCode(err error, what string) int {
+// usageError exits 2. Any other error is handed to show, which draws it on the session.
+func ExitCode(err error, what string, show func(what string, err error)) int {
 	if err == nil {
 		return 0
 	}
 	var usage usageError
 	if errors.As(err, &usage) {
-		fmt.Fprintln(os.Stderr, what+":", usage)
+		show(what, usage)
 		return 2
 	}
 	var exit *exec.ExitError
@@ -154,7 +154,7 @@ func ExitCode(err error, what string) int {
 		}
 		return 255
 	}
-	fmt.Fprintln(os.Stderr, what+":", err)
+	show(what, err)
 	return 1
 }
 

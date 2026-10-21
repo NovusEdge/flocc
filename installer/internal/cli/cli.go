@@ -50,18 +50,19 @@ Host commands run on the host as the service user:
 `
 
 type deps struct {
-	out, err io.Writer
-	in       io.Reader
-	ui       ui.Session // opened by run when nil; tests set a recorder
-	mode     ui.Mode
-	home     string
-	getenv   func(string) string
-	run      host.Runner
-	tty      bool        // stdin is a terminal, so ssh gets -t
-	outTTY   func() bool // stdout is a terminal; nil asks d.out
-	dash     func(context.Context) int
-	resolve  func(context.Context, string) (ship.Dest, error)
-	fleet    func(ctx context.Context, s ui.Session, args []string) int
+	out, err  io.Writer
+	in        io.Reader
+	ui        ui.Session // opened by run when nil; tests set a recorder
+	hostsNote string     // the last unreadable-host-files note shown
+	mode      ui.Mode
+	home      string
+	getenv    func(string) string
+	run       host.Runner
+	tty       bool        // stdin is a terminal, so ssh gets -t
+	outTTY    func() bool // stdout is a terminal; nil asks d.out
+	dash      func(context.Context) int
+	resolve   func(context.Context, string) (ship.Dest, error)
+	fleet     func(ctx context.Context, s ui.Session, args []string) int
 
 	store     func() keys.Store // opened on first use: host commands never wait on the keyring
 	prompt    prompter
@@ -77,9 +78,6 @@ type deps struct {
 	doLogin  func(context.Context, ship.LoginOptions) error
 }
 
-func (d *deps) o() ui.Out  { return ui.NewOut(d.out) }
-func (d *deps) oe() ui.Out { return ui.NewOut(d.err) }
-
 func Main(args []string) int {
 	home, _ := os.UserHomeDir()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -87,8 +85,8 @@ func Main(args []string) int {
 	st, _ := os.Stdin.Stat()
 	d := &deps{out: os.Stdout, in: os.Stdin, err: os.Stderr, home: home, getenv: os.Getenv,
 		run: host.Exec{}, tty: st != nil && st.Mode()&os.ModeCharDevice != 0, resolve: ship.Resolve,
-		fleet: func(ctx context.Context, s ui.Session, args []string) int { return ship.Fleet(ctx, s, os.Stdout, args) }}
-	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, os.Stderr) })
+		fleet: func(ctx context.Context, s ui.Session, args []string) int { return ship.Fleet(ctx, s, args) }}
+	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, notes{d}) })
 	d.open = ship.OpenURL
 	d.http = &http.Client{Timeout: 30 * time.Second}
 	d.githubAPI, d.linearAPI, d.ntfyBase = githubapi.DefaultBase, linearapi.DefaultURL, "https://ntfy.sh"
@@ -148,6 +146,40 @@ func bare(ctx context.Context, d *deps) int {
 	}
 	fmt.Fprint(d.err, usage)
 	return 2
+}
+
+// notes is where the key store reports a keyring wait or a file mode it fixed: a note on the
+// session, or stderr before one is open.
+type notes struct{ d *deps }
+
+func (n notes) Write(p []byte) (int, error) {
+	if n.d.ui == nil {
+		return os.Stderr.Write(p)
+	}
+	n.d.ui.Note("keys", strings.TrimSpace(string(p)))
+	return len(p), nil
+}
+
+// showErr draws an error that ended a command as a failed step, unless a failed row already says it.
+func (d *deps) showErr(what string, err error) {
+	if !d.ui.Failed() {
+		d.ui.Step(what).Fail(err)
+	}
+}
+
+// withoutWatch drops --watch and --interval from a status command that prints once.
+func withoutWatch(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--watch", strings.HasPrefix(a, "--interval="):
+		case a == "--interval":
+			i++
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // fullScreen is a command that works for a while and asks questions along the way.
@@ -213,7 +245,7 @@ func run(ctx context.Context, d *deps, args []string) (code int) {
 			return d.dash(ctx)
 		}
 		// Off a terminal the redraw loop has nothing to redraw: print the table once.
-		name, rest = "all", slices.DeleteFunc(slices.Clone(rest), func(a string) bool { return a == "--watch" })
+		name, rest = "all", withoutWatch(rest)
 	}
 	openSession(ctx, d, name, rest)
 	defer func() {

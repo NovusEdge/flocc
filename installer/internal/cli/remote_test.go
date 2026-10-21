@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -470,5 +472,26 @@ func TestHostRunPassesARawCommand(t *testing.T) {
 	words := shWords(t, f.interactive[0].Args[len(f.interactive[0].Args)-1])
 	if script := words[len(words)-1]; script != "cd && tmux -L flocc ls" {
 		t.Fatalf("%q", script)
+	}
+}
+
+func TestAnUnreadableHostFileIsOneNoteNotAWriteToStderr(t *testing.T) {
+	d, f, _, errb := hostDeps(t, "a")
+	if err := os.WriteFile(filepath.Join(hosts.Dir(d.home), "bad.toml"), []byte("not = [toml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listHosts(d)
+	listHosts(d)
+	if errb.Len() != 0 {
+		t.Errorf("stderr %q", errb)
+	}
+	var n int
+	for _, e := range f.rec.Events {
+		if e.Kind == ui.KNote && e.Name == "hosts" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d notes", n)
 	}
 }

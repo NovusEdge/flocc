@@ -26,7 +26,7 @@ func shipCmd(ctx context.Context, d *deps, name string, args []string) int {
 		fmt.Fprintln(d.err, "usage: flocc ship -H <name> [--interactive]")
 		return 2
 	}
-	return ship.ExitCode(shipWith(ctx, d, name, *interactive), "ship")
+	return ship.ExitCode(shipWith(ctx, d, name, *interactive), "ship", d.showErr)
 }
 
 // shipHost ships without a terminal on the host; Part 3's host create calls it. A run whose only
@@ -133,7 +133,7 @@ func loginCmd(ctx context.Context, d *deps, name string, args []string) int {
 		fmt.Fprintf(d.err, "flocc login: %q is not an email address\n", *email)
 		return 2
 	}
-	return ship.ExitCode(loginWith(ctx, d, name, *email), "login")
+	return ship.ExitCode(loginWith(ctx, d, name, *email), "login", d.showErr)
 }
 
 // loginHost is flocc login -H <name> with no --email; Part 3's host create calls it.

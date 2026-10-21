@@ -92,14 +92,15 @@ func sshNoTTY(d Dest, remote string) host.Cmd {
 	return c
 }
 
-// connect resolves target to an ssh destination and a runner whose log hides its token and
-// secrets.
-func connect(ctx context.Context, target string, secrets ...string) (host.Runner, Dest, error) {
+// connect resolves target to an ssh destination and a runner whose attached commands go through
+// term, the session that owns the terminal. It keeps no command log: a log on stderr would draw
+// under the session.
+func connect(ctx context.Context, target string, term host.Terminal) (host.Runner, Dest, error) {
 	dest, err := Resolve(ctx, target)
 	if err != nil {
 		return nil, Dest{}, err
 	}
-	return host.Exec{Log: host.Redact(os.Stderr, append(secrets, dest.Token)...)}, dest, nil
+	return host.Exec{Term: term}, dest, nil
 }
 
 func repoRoot(ctx context.Context, r host.Runner) (string, error) {
@@ -211,28 +212,24 @@ func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
 		return Summary{}, badTarget(o.Target)
 	}
 	var doc []byte
-	var secrets []string
 	if answers != nil {
 		if o.Interactive {
 			return Summary{}, usageError("--interactive asks for every answer on the host; drop the answers")
 		}
 		var err error
-		var a *answersPkg.Answers
 		if doc, err = io.ReadAll(answers); err == nil {
 			// Here, so a typo fails before anything reaches the host.
-			a, err = answersPkg.Parse(doc)
+			_, err = answersPkg.Parse(doc)
 		}
 		if err != nil {
 			return Summary{}, err
 		}
-		// No command line carries them, but the log must not either.
-		secrets = a.Secrets.Values()
 	}
-	r, dest, err := connect(ctx, o.Target, secrets...)
+	r, dest, err := connect(ctx, o.Target, o.UI)
 	if err != nil {
 		return Summary{}, err
 	}
-	root, err := repoRoot(ctx, host.Exec{Log: os.Stderr})
+	root, err := repoRoot(ctx, host.Exec{})
 	if err != nil {
 		return Summary{}, err
 	}

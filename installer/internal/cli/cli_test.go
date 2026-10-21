@@ -73,7 +73,7 @@ func TestStatusWatchOpensTheDashboardOnATerminalAndPrintsOnceOtherwise(t *testin
 	d.outTTY = func() bool { return false }
 	var got []string
 	d.fleet = func(_ context.Context, _ ui.Session, args []string) int { got = args; return 0 }
-	if code := run(context.Background(), d, []string{"status", "-H", "all", "--watch", "--interval", "9s"}); code != 0 || *opened != 0 || strings.Join(got, " ") != "--interval 9s" {
+	if code := run(context.Background(), d, []string{"status", "-H", "all", "--watch", "--interval", "9s"}); code != 0 || *opened != 0 || len(got) != 0 {
 		t.Fatalf("piped: exit %d, opened %d, fleet args %q", code, *opened, got)
 	}
 }

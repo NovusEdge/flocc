@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -416,14 +415,6 @@ func TestLoginAndTokenCellsFlagWhatWillStopSessions(t *testing.T) {
 	}
 }
 
-func TestFleetRejectsATightWatchInterval(t *testing.T) {
-	for _, iv := range []string{"0s", "-1s", "1s"} {
-		if code := Fleet(context.Background(), quietUI(), io.Discard, []string{"--watch", "--interval", iv}); code != 2 {
-			t.Errorf("%s: %d", iv, code)
-		}
-	}
-}
-
 // destCache hands an ssh host its destination without minting one, so the sharing must come
 // from the cache itself.
 func TestStatusesSharesConnectionsForSSHHosts(t *testing.T) {
@@ -529,4 +520,30 @@ func TestCollectOpensAStepPerHostAndEndsEachWithItsRow(t *testing.T) {
 		got["off"].State != ui.Skipped || got["off"].Detail != "stopped" {
 		t.Fatalf("%+v", got)
 	}
+}
+
+// render is the fleet tables as one string.
+func render(rows []Row, cards []CardinalRow, notes []string) string {
+	tables, failures := fleetTables(rows, cards)
+	var b strings.Builder
+	for i, t := range tables {
+		lt := newTable(t.Headers...)
+		for _, r := range t.Rows {
+			lt.Row(r...)
+		}
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(lt.String() + "\n")
+	}
+	for _, f := range failures {
+		b.WriteString(cell(f, bad) + "\n")
+	}
+	for _, n := range notes {
+		b.WriteString(cell(n, dim) + "\n")
+	}
+	for _, line := range footnotes {
+		b.WriteString(cell(line, dim) + "\n")
+	}
+	return b.String()
 }

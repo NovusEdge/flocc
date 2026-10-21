@@ -79,7 +79,7 @@ func hostRun(ctx context.Context, d *deps, name string, args []string) int {
 	if err == nil {
 		err = ship.OnHost(ctx, d.run, dest, args, d.tty)
 	}
-	return ship.ExitCode(err, "flocc")
+	return ship.ExitCode(err, "flocc", d.showErr)
 }
 
 // reachFlags takes --ssh and --daytona wherever they sit: the host name comes first, and the
