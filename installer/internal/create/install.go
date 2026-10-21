@@ -25,7 +25,7 @@ type Installer interface {
 	// HostKnown reports whether name has a host file, and fails when that file reaches the host
 	// some other way than ssh: skipping host add would then ship to that host, not the VM.
 	HostKnown(name, ssh string) (bool, error)
-	AddHost(ctx context.Context, name, ssh string) error
+	AddHost(ctx context.Context, name, ssh, machine string) error
 	Ship(ctx context.Context, name string) error
 	Login(ctx context.Context, name string) error
 }
@@ -54,7 +54,7 @@ func Create(ctx context.Context, e *Env, inst Installer, steps []Step) error {
 		return err
 	}
 	if !known {
-		if err := inst.AddHost(ctx, name, ssh); err != nil {
+		if err := inst.AddHost(ctx, name, ssh, e.Spec.Machine); err != nil {
 			return fmt.Errorf("host add: %w", err)
 		}
 	}
@@ -180,10 +180,27 @@ func Main(args []string, inst Installer) int {
 		fmt.Fprintln(os.Stderr, "flocc host create:", err)
 		return 1
 	}
+	st, _ := os.Stdin.Stat()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	logPath, err := Run(ctx, spec, inst, os.Stdout, st != nil && st.Mode()&os.ModeCharDevice != 0)
+	if err != nil {
+		if logPath == "" {
+			fmt.Fprintln(os.Stderr, "flocc host create:", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "\nflocc host create: %s\n\nFull log: %s\nRun the same command again to continue.\n", err, logPath)
+		return 1
+	}
+	return 0
+}
+
+// Run makes the host once its arguments and the installer are checked, logging to
+// ~/.cache/flocc/create-<name>.log, whose path it returns for the error message.
+func Run(ctx context.Context, spec Spec, inst Installer, out io.Writer, tty bool) (string, error) {
 	logPath, logf, err := openLog(spec.Name)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "flocc host create:", err)
-		return 1
+		return "", err
 	}
 	defer logf.Close()
 	log := NewRedactLog(logf)
@@ -191,21 +208,28 @@ func Main(args []string, inst Installer) int {
 	// Captured commands buffer stderr, so one that stops at a password or host-key prompt would
 	// hang with nothing shown; BatchMode makes it fail instead.
 	opts := append([]string{"-o", "BatchMode=yes"}, ControlOpts()...)
-	st, _ := os.Stdin.Stat()
 	e := &Env{M: Remote{R: run, Target: spec.Machine, Opts: opts}, Local: run,
-		UI: ui.NewHuh(), Out: os.Stdout, Log: log, Spec: spec, Sleep: time.Sleep,
-		TTY: st != nil && st.Mode()&os.ModeCharDevice != 0}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+		UI: ui.NewHuh(), Out: out, Log: log, Spec: spec, Sleep: time.Sleep, TTY: tty}
 	err = e.connect(ctx)
 	if err == nil {
 		err = Create(ctx, e, inst, Steps())
 	}
+	return logPath, err
+}
+
+// Logged names each host a create run has logged for. A run that stopped before host add left
+// its log and no host file, which flocc setup offers to continue.
+func Logged() []string {
+	dir, err := os.UserCacheDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nflocc host create: %s\n\nFull log: %s\nRun the same command again to continue.\n", err, logPath)
-		return 1
+		return nil
 	}
-	return 0
+	paths, _ := filepath.Glob(filepath.Join(dir, "flocc", "create-*.log"))
+	var names []string
+	for _, p := range paths {
+		names = append(names, strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "create-"), ".log"))
+	}
+	return names
 }
 
 func openLog(name string) (string, *os.File, error) {

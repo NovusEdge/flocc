@@ -27,8 +27,8 @@ func (h hostInstaller) HostKnown(name, ssh string) (bool, error) {
 	return true, nil
 }
 
-func (h hostInstaller) AddHost(ctx context.Context, name, ssh string) error {
-	return hostAdd(ctx, h.d, name, ssh, "")
+func (h hostInstaller) AddHost(ctx context.Context, name, ssh, machine string) error {
+	return hostAdd(ctx, h.d, name, ssh, machine)
 }
 
 func (h hostInstaller) Ship(ctx context.Context, name string) error { return shipHost(ctx, h.d, name) }

@@ -16,6 +16,18 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
+func TestPreconditionsReportSudoAndIncusApart(t *testing.T) {
+	f := host.NewFake().On("sudo -n true", 1, "").On("id -nG", 0, "owner incus-admin\n").On("incus query /1.0", 0, "{}")
+	sudo, incus := Preconditions(context.Background(), f, "zer0-day-nimble")
+	if sudo || incus != nil {
+		t.Fatalf("sudo %v incus %v", sudo, incus)
+	}
+	f = host.NewFake().On("sudo -n true", 1, "").On("id -nG", 0, "owner\n")
+	if _, incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus == nil || !strings.Contains(incus.Error(), "incus-admin") {
+		t.Fatalf("incus %v", incus)
+	}
+}
+
 type fakeUI struct {
 	key   string
 	asked int

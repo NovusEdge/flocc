@@ -131,6 +131,15 @@ func (e *Env) Probe(ctx context.Context) error {
 	return nil
 }
 
+// Preconditions reports what the machine allows before anything changes there: whether sudo
+// works without a password, which create's firewall and Docker steps need even to check, and
+// whether incus runs as an administrator (nil), else the fix. m runs commands on the machine.
+func Preconditions(ctx context.Context, m host.Runner, machine string) (sudo bool, incus error) {
+	e := &Env{M: m, Spec: Spec{Machine: machine}}
+	incus = e.Probe(ctx)
+	return e.sudo, incus
+}
+
 // regroup says how a new group reaches create's commands: the shared master logged in before the
 // usermod and serves every command until ControlPersist after its last use.
 func regroup(machine string, opts []string) string {
