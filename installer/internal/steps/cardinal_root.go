@@ -351,25 +351,32 @@ func CardinalRootSteps(user string, adopt bool) []Step {
 	return []Step{CardinalTools{}, &CardinalUser{User: user, Adopt: adopt}, DesktopKey{User: user}, Egress{User: user}}
 }
 
-// purgeWait bounds the wait for the user's processes to end; userdel refuses while any is left,
-// and tmux's pane scopes outlive the session.
+// purgeWait bounds the wait for the user's processes to end.
 const purgeWait = 10 * time.Second
+
+// stopUser ends every process of user; userdel refuses while any is left, and tmux's pane scopes
+// outlive the session.
+func stopUser(ctx context.Context, e *Env, user string) error {
+	e.Ok(ctx, "loginctl", "disable-linger", user)
+	e.Ok(ctx, "loginctl", "terminate-user", user)
+	for waited := time.Duration(0); ; waited += 500 * time.Millisecond {
+		e.Ok(ctx, "pkill", "-KILL", "-u", user)
+		if !e.Ok(ctx, "pgrep", "-u", user) {
+			return nil
+		}
+		if waited >= purgeWait {
+			return fmt.Errorf("%s still has processes after %s; stop them and run again", user, purgeWait)
+		}
+		e.Sleep(500 * time.Millisecond)
+	}
+}
 
 // CardinalPurge deletes the user and its home, then the egress block, which must hold until no
 // process of the user is left.
 func CardinalPurge(ctx context.Context, e *Env, user string) error {
 	if cardinalHome(ctx, e, user) != "" {
-		e.Ok(ctx, "loginctl", "disable-linger", user)
-		e.Ok(ctx, "loginctl", "terminate-user", user)
-		for waited := time.Duration(0); ; waited += 500 * time.Millisecond {
-			e.Ok(ctx, "pkill", "-KILL", "-u", user)
-			if !e.Ok(ctx, "pgrep", "-u", user) {
-				break
-			}
-			if waited >= purgeWait {
-				return fmt.Errorf("%s still has processes after %s; stop them and run remove --purge again", user, purgeWait)
-			}
-			e.Sleep(500 * time.Millisecond)
+		if err := stopUser(ctx, e, user); err != nil {
+			return err
 		}
 		if _, err := e.Must(ctx, "userdel", "-r", user); err != nil {
 			return err

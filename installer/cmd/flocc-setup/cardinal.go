@@ -88,9 +88,9 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(1, err)
 	}
 	stage := filepath.Dir(exe)
+	sudoUID := -1
 	if staged {
-		sudoUID, err := strconv.Atoi(os.Getenv("SUDO_UID"))
-		if err != nil {
+		if sudoUID, err = strconv.Atoi(os.Getenv("SUDO_UID")); err != nil {
 			return fail(2, errors.New("run the root pass through sudo; SUDO_UID names the stage's owner"))
 		}
 		if err := steps.CheckCardinalStage(stage, sudoUID, files...); err != nil {
@@ -142,7 +142,15 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		err := steps.RunAll(ctx, env, list)
 		return finish(steps.CardinalReport{Steps: steps.ReportSteps(ctx, env, list)}, err)
 	case "cardinal-purge":
-		return finish(steps.CardinalReport{}, steps.CardinalPurge(ctx, env, *user))
+		if slices.Contains(steps.OldUsers, *user) {
+			return finish(steps.RemoveOldUser(ctx, env, *user, sudoUID, time.Now()))
+		}
+		r := steps.CardinalReport{}
+		err := steps.CardinalPurge(ctx, env, *user)
+		if err == nil {
+			r.Steps = []steps.ReportStep{{Name: "User", Detail: *user + " and its home deleted", Done: true}}
+		}
+		return finish(r, err)
 	case "cardinal-host", "cardinal-host-remove":
 		var d steps.HostDoc
 		if err := wantStdin(); err != nil {
