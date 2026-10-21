@@ -465,7 +465,7 @@ a prompt, which denies itself after two minutes. Every block and prompt is logge
 
 `environment` lines address whole classes of block and come first. `allow` rules are exact; a
 rule that wildcards an interpreter or shell (`Bash(python:*)`, `Bash(sh *)`, anything with `-c`)
-is refused when the config loads.
+is dropped when the config loads, with a warning in `flocc logs`; the rest still apply.
 
 ## Disk use
 

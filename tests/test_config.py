@@ -173,9 +173,10 @@ def test_no_permissions_file_means_no_rules_and_no_judge():
         "Bash(PATH=/a:/b python *)",
     ],
 )
-def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule):
-    with pytest.raises(ValueError, match="interpreter"):
-        load(with_permissions(tmp_path, f'allow = ["{rule}"]\n'))
+def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule, capsys):
+    text = f'allow = ["{rule}", "Bash(uv sync --frozen)"]\n'
+    assert load(with_permissions(tmp_path, text)).permission_allow == ("Bash(uv sync --frozen)",)
+    assert "interpreter" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -203,9 +204,11 @@ def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule):
         "Bash(~/py *)",
     ],
 )
-def test_an_unresolvable_program_token_is_refused(tmp_path, rule):
-    with pytest.raises(ValueError, match="interpreter"):
-        load(with_permissions(tmp_path, f"allow = [{json.dumps(rule)}]\n"))
+def test_an_unresolvable_program_token_is_refused(tmp_path, rule, capsys):
+    assert (
+        load(with_permissions(tmp_path, f"allow = [{json.dumps(rule)}]\n")).permission_allow == ()
+    )
+    assert "interpreter" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

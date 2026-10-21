@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -209,9 +210,18 @@ def _permissions(path: Path) -> dict:
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise ValueError(f"{path}: {key} must be a list of strings")
         out[_PERMISSION_KEYS[key]] = tuple(value)
+    # Dropped, not fatal: a refused rule raising here would stop every tick on the host until the
+    # next ship.
+    kept = []
     for rule in out["permission_allow"]:
         if wildcards_an_interpreter(rule):
-            raise ValueError(f"{path}: allow rule {rule} wildcards an interpreter or shell")
+            print(
+                f"{path}: allow rule {rule} wildcards an interpreter or shell; dropped",
+                file=sys.stderr,
+            )
+        else:
+            kept.append(rule)
+    out["permission_allow"] = tuple(kept)
     if "judge_model" in table:
         out["judge_model"] = str(table["judge_model"])
     if "judge_max_per_run" in table:
