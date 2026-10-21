@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path, PurePosixPath
 
-from flocc import gate, ledger, usage
+from flocc import gate, ledger, permission, usage
 from flocc.config import TRAILER, default_config_path, load
 from flocc.escalation import Escalation, validate
 from flocc.grants import for_phase
@@ -302,6 +302,26 @@ def cmd_idle(args) -> int:
     return 0
 
 
+def cmd_permission(args) -> int:
+    # Exit 1 is non-blocking for every event this hook is registered on, and printing nothing
+    # leaves the decision to Claude Code.
+    try:
+        payload = _hook_input(strict=True)
+        out = permission.handle(
+            payload,
+            _state_dir(),
+            os.environ.get("FLOCC_PHASE"),
+            os.environ.get("FLOCC_RUN"),
+            time.time(),
+        )
+    except Exception as exc:  # noqa: BLE001 - see above
+        print(f"flocc permission failed, so it made no decision: {exc}", file=sys.stderr)
+        return 1
+    if out is not None:
+        print(json.dumps(out))
+    return 0
+
+
 def _session_bookkeeping(state: Path) -> None:
     state.mkdir(parents=True, exist_ok=True)
     payload = _hook_input()
@@ -535,6 +555,7 @@ COMMANDS = {
     "context": cmd_context,
     "gate": cmd_gate,
     "idle": cmd_idle,
+    "permission": cmd_permission,
     "session-start": cmd_session_start,
     "commit": cmd_commit,
     "done": cmd_done,
@@ -589,6 +610,7 @@ def build_parser() -> argparse.ArgumentParser:
     which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
     which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
     add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
+    add("permission", "Hook: log an auto-mode block or prompt")
     add("session-start", "Hook: record compaction and the scratchpad, print the context")
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")
     com.add_argument("-m", dest="message", required=True, help="commit message")
