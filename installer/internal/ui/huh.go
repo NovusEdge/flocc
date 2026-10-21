@@ -109,12 +109,12 @@ func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(u
 	if topic == "" {
 		a.NtfyTopic = suggested
 	}
-	return RepoForm(a, found, defaults)
+	return RepoForm(func(f *huh.Form) error { return f.Run() }, a, found, defaults)
 }
 
 // RepoForm ticks the repos agents may work on from found, then asks for more by URL. With
 // found empty it asks for every repo by URL.
-func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error {
+func RepoForm(run func(*huh.Form) error, a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error {
 	start := 0
 	if len(found) > 0 {
 		byURL := map[string]answers.Repo{}
@@ -125,7 +125,7 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 			opts[i] = huh.NewOption(r.Name, r.URL).Selected(slices.Contains(urls, r.URL))
 		}
 		for {
-			if err := Form(huh.NewGroup(huh.NewMultiSelect[string]().
+			if err := run(Form(huh.NewGroup(huh.NewMultiSelect[string]().
 				Title("Repos agents may work on").Description("Untick to exclude.").
 				Validate(func(s []string) error {
 					if len(s) == 0 {
@@ -133,16 +133,16 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 					}
 					return nil
 				}).
-				Options(opts...).Value(&urls))).Run(); err != nil {
+				Options(opts...).Value(&urls)))); err != nil {
 				return err
 			}
 			if len(urls) <= maxRepos {
 				break
 			}
 			ok := false
-			if err := Form(huh.NewGroup(huh.NewConfirm().
+			if err := run(Form(huh.NewGroup(huh.NewConfirm().
 				Title(fmt.Sprintf("%d repos selected; each is cloned now and checked on every run. Continue?", len(urls))).
-				Value(&ok))).Run(); err != nil {
+				Value(&ok)))); err != nil {
 				return err
 			}
 			if ok {
@@ -154,10 +154,10 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 		}
 		a.ExcludedRepos = answers.UpdateExcluded(a.ExcludedRepos, found, urls)
 		if len(urls) < len(found) {
-			if err := Form(huh.NewGroup(huh.NewConfirm().
+			if err := run(Form(huh.NewGroup(huh.NewConfirm().
 				Title("Do other hosts handle the unticked repos?").
 				Description("If yes, issues for unmapped repos get no comment from this host.").
-				Value(&a.SharedTeam))).Run(); err != nil {
+				Value(&a.SharedTeam)))); err != nil {
 				return err
 			}
 		} else {
@@ -176,12 +176,12 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 			if len(found) > 0 {
 				title = "Add another repo by URL?"
 			}
-			if err := Form(huh.NewGroup(huh.NewConfirm().Title(title).Value(&more))).Run(); err != nil || !more {
+			if err := run(Form(huh.NewGroup(huh.NewConfirm().Title(title).Value(&more)))); err != nil || !more {
 				return err
 			}
 			a.Repos = append(a.Repos, answers.Repo{BaseBranch: "main", Check: "just check", Draft: true})
 		}
-		if err := editRepo(a.Repos, i, defaults); err != nil {
+		if err := editRepo(run, a.Repos, i, defaults); err != nil {
 			return err
 		}
 		a.ExcludedRepos = answers.Include(a.ExcludedRepos, a.Repos[i].URL)
@@ -192,10 +192,10 @@ func RepoForm(a *answers.Answers, found []answers.Repo, defaults func(url string
 // ls-remoted by doctor on each run.
 const maxRepos = 30
 
-func editRepo(repos []answers.Repo, i int, defaults func(url string) (string, bool)) error {
+func editRepo(run func(*huh.Form) error, repos []answers.Repo, i int, defaults func(url string) (string, bool)) error {
 	r := &repos[i]
 	prevURL := r.URL
-	if err := Form(huh.NewGroup(
+	if err := run(Form(huh.NewGroup(
 		huh.NewNote().Title(heading.Render("Repo "+strconv.Itoa(i+1))),
 		huh.NewInput().Title("GitHub URL").Description("https://github.com/<owner>/<repo>").Value(&r.URL).
 			Validate(func(s string) error {
@@ -209,7 +209,7 @@ func editRepo(repos []answers.Repo, i int, defaults func(url string) (string, bo
 				}
 				return nil
 			}),
-	)).Run(); err != nil {
+	))); err != nil {
 		return err
 	}
 	// A saved name may be a Linear label that differs from the repo name, so keep it while the URL stands.
@@ -222,17 +222,17 @@ func editRepo(repos []answers.Repo, i int, defaults func(url string) (string, bo
 		r.BaseBranch, r.Draft = defaults(r.URL)
 	}
 	ok := true
-	if err := Form(huh.NewGroup(huh.NewConfirm().
+	if err := run(Form(huh.NewGroup(huh.NewConfirm().
 		Title(fmt.Sprintf("Use name %s, base %s, check `%s`, draft PRs %s?", r.Name, r.BaseBranch, r.Check, yesNo(r.Draft))).
-		Description("The name must equal the repo's Linear label.").Value(&ok))).Run(); err != nil || ok {
+		Description("The name must equal the repo's Linear label.").Value(&ok)))); err != nil || ok {
 		return err
 	}
-	return Form(huh.NewGroup(
+	return run(Form(huh.NewGroup(
 		huh.NewInput().Title("Name").Description("Exactly the Linear label that routes issues to it.").Value(&r.Name),
 		huh.NewInput().Title("Base branch").Value(&r.BaseBranch),
 		huh.NewInput().Title("Check command").Value(&r.Check),
 		huh.NewConfirm().Title("Open draft PRs?").Description("Private repos of a GitHub Free organization cannot have drafts.").Value(&r.Draft),
-	)).Run()
+	)))
 }
 
 func yesNo(b bool) string {

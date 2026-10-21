@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/host"
@@ -48,6 +50,9 @@ Host commands run on the host as the service user:
 
 type deps struct {
 	out, err io.Writer
+	in       io.Reader
+	ui       ui.Session // opened by run when nil; tests set a recorder
+	mode     ui.Mode
 	home     string
 	getenv   func(string) string
 	run      host.Runner
@@ -78,11 +83,10 @@ func Main(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	st, _ := os.Stdin.Stat()
-	d := &deps{out: os.Stdout, err: os.Stderr, home: home, getenv: os.Getenv,
+	d := &deps{out: os.Stdout, in: os.Stdin, err: os.Stderr, home: home, getenv: os.Getenv,
 		run: host.Exec{}, tty: st != nil && st.Mode()&os.ModeCharDevice != 0, resolve: ship.Resolve,
 		fleet: func(args []string) int { return ship.FleetMain(args, os.Stdout) }}
 	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, os.Stderr) })
-	d.prompt = huhPrompt{}
 	d.open = ship.OpenURL
 	d.qr = func(text string) {
 		if err := qr.Write(os.Stdout, text); err != nil {
@@ -97,10 +101,51 @@ func Main(args []string) int {
 		return strings.TrimSpace(string(out)), err
 	}
 	d.doShip, d.doLogin = ship.Ship, ship.Login
+	d.mode, args = ui.StripModeFlags(args)
 	return run(ctx, d, args)
 }
 
-func run(ctx context.Context, d *deps, args []string) int {
+// handoffOnly is a command whose whole job is one handoff to a child that owns the terminal, so
+// no Bubble Tea program may hold it, or answer its terminal queries, around the child.
+func handoffOnly(name string, rest []string) bool {
+	switch rest[0] {
+	case "help", "-h", "--help", "setup", "ship", "login", "keys":
+		return false
+	case "host":
+		return len(rest) > 1 && rest[1] == "run"
+	case "cardinal":
+		return len(rest) > 1 && rest[1] == "attach"
+	}
+	return name != "all"
+}
+
+// openSession gives d a ui session in the mode this command allows, unless a test set one.
+func openSession(d *deps, forcePlain bool) {
+	if d.ui == nil {
+		tty := false
+		if f, ok := d.out.(*os.File); ok {
+			tty = term.IsTerminal(int(f.Fd()))
+		}
+		m := ui.ModeFor(d.mode, d.getenv, tty, ui.ModeInline)
+		if forcePlain {
+			m = ui.ModePlain
+		}
+		in := d.in
+		if in == nil {
+			in = strings.NewReader("")
+		}
+		d.ui = ui.Open(m, d.out, in)
+	}
+	if d.prompt == nil {
+		d.prompt = sessionPrompt{ui.Prompts{S: d.ui}}
+	}
+	if e, ok := d.run.(host.Exec); ok {
+		e.Term = d.ui
+		d.run = e
+	}
+}
+
+func run(ctx context.Context, d *deps, args []string) (code int) {
 	name, rest, err := splitHost(args)
 	if err != nil {
 		fmt.Fprintln(d.err, "flocc:", err)
@@ -114,6 +159,14 @@ func run(ctx context.Context, d *deps, args []string) int {
 	case "help", "-h", "--help":
 		fmt.Fprint(d.out, usage)
 		return 0
+	}
+	openSession(d, handoffOnly(name, rest))
+	defer func() {
+		if c := d.ui.Close(); code == 0 {
+			code = c
+		}
+	}()
+	switch rest[0] {
 	case "setup":
 		return setupCmd(ctx, d, rest[1:])
 	case "ship":

@@ -137,9 +137,30 @@ func (p *plain) Prompt(r PromptReq) (any, error) {
 	case PChoose:
 		return p.choose(r.Q, r.Options)
 	case PForm:
-		return nil, r.Form.WithAccessible(true).WithInput(p.in).WithOutput(p.out).Run()
+		// huh answers with the defaults when input ends, with no error.
+		in := &eofReader{r: p.in}
+		if err := r.Form.WithAccessible(true).WithInput(in).WithOutput(p.out).Run(); err != nil {
+			return nil, err
+		}
+		if in.eof {
+			return nil, ErrNoTerminal
+		}
+		return nil, nil
 	}
 	return nil, fmt.Errorf("plain: unknown prompt kind %d", r.Kind)
+}
+
+type eofReader struct {
+	r   io.Reader
+	eof bool
+}
+
+func (e *eofReader) Read(b []byte) (int, error) {
+	n, err := e.r.Read(b)
+	if err == io.EOF {
+		e.eof = true
+	}
+	return n, err
 }
 
 func (p *plain) confirm(q Question) (bool, error) {
