@@ -26,7 +26,7 @@ func scriptedSecrets(e *Env, s *answers.Secrets) {
 
 func TestPackagesCheckNamesMissingTools(t *testing.T) {
 	f := host.NewFake()
-	for _, tool := range []string{"git", "tmux", "curl", "node", "make", "cc"} {
+	for _, tool := range []string{"git", "tmux", "curl", "node", "npm", "make", "cc"} {
 		f.On("sh -c command -v "+tool, 0, "/usr/bin/"+tool)
 	}
 	done, detail, _ := Packages{}.Check(context.Background(), testEnv(t, f))
@@ -37,7 +37,7 @@ func TestPackagesCheckNamesMissingTools(t *testing.T) {
 
 func TestPackagesApplyInstallsOnlyMissingTools(t *testing.T) {
 	f := host.NewFake().On("pacman -Syu --noconfirm --needed github-cli nodejs", 0, "")
-	for _, tool := range []string{"git", "tmux", "curl", "make", "cc"} {
+	for _, tool := range []string{"git", "tmux", "curl", "npm", "make", "cc"} {
 		f.On("sh -c command -v "+tool, 0, "/usr/bin/"+tool)
 	}
 	e := testEnv(t, f)
@@ -55,7 +55,7 @@ func TestPackagesApplyAddsGHRepoOnRHELOnly(t *testing.T) {
 		f := host.NewFake().
 			On("dnf install -y dnf-plugins-core", 0, "").
 			On("dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo", 0, "").
-			On("dnf install -y git tmux curl gh nodejs", 0, "").
+			On("dnf install -y git tmux curl gh nodejs npm", 0, "").
 			On("sh -c command -v make", 0, "/usr/bin/make").
 			On("sh -c command -v cc", 0, "/usr/bin/cc")
 		e := testEnv(t, f)
@@ -71,7 +71,7 @@ func TestPackagesApplyAddsGHRepoOnRHELOnly(t *testing.T) {
 
 func TestPackagesInstallsBuildToolsWhenMissing(t *testing.T) {
 	f := host.NewFake().On("pacman -Syu --noconfirm --needed make gcc", 0, "")
-	for _, tool := range []string{"git", "tmux", "curl", "gh", "node"} {
+	for _, tool := range []string{"git", "tmux", "curl", "gh", "node", "npm"} {
 		f.On("sh -c command -v "+tool, 0, "/usr/bin/"+tool)
 	}
 	e := testEnv(t, f)

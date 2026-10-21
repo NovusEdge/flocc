@@ -8,8 +8,9 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
-// make and cc: repos' ./setup builds native code (nimblefox compiles pgvector).
-var tools = []string{"git", "tmux", "curl", "gh", "node", "make", "cc"}
+// make and cc: repos' ./setup builds native code (nimblefox compiles pgvector). npm: the drygate
+// plugin installs jscpd with it, and Debian and Arch package it apart from nodejs.
+var tools = []string{"git", "tmux", "curl", "gh", "node", "npm", "make", "cc"}
 
 // pkgName maps a tool to its package; only missing tools are installed, since reinstalling
 // curl on RHEL 9 conflicts with its default curl-minimal.
