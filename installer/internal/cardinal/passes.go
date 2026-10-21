@@ -26,11 +26,12 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // Deps are the desktop's side effects, replaced in tests.
 type Deps struct {
-	Out, Err io.Writer
+	UI       ui.Session
 	Home     string
 	Run      host.Runner
 	TTY      bool
@@ -108,21 +109,24 @@ func passOutput(res host.Result, lines int) string {
 	return saved.SanitizeBlock(strings.TrimSpace(strings.Join(keep, "\n")), lines)
 }
 
-func (d Deps) printSteps(title string, r steps.CardinalReport) {
-	fmt.Fprintf(d.Out, "\n%s\n", title)
+// reportEvents are a pass's steps and notes as rows. Every string came from the far end, so each
+// is sanitized.
+func reportEvents(r steps.CardinalReport) []ui.Event {
+	var evs []ui.Event
 	for _, s := range r.Steps {
-		mark := "✓"
+		e := ui.Event{Name: saved.Sanitize(s.Name), Detail: saved.Sanitize(s.Detail), State: ui.Done}
 		switch {
 		case s.Pending:
-			mark = "…"
+			e.State = ui.Pending
 		case !s.Done:
-			mark = "✗"
+			e.State = ui.Failed
 		}
-		fmt.Fprintf(d.Out, "  %s %-16s %s\n", mark, saved.Sanitize(s.Name), saved.Sanitize(s.Detail))
+		evs = append(evs, e)
 	}
 	for _, n := range r.Notes {
-		fmt.Fprintf(d.Out, "  · %s\n", saved.Sanitize(n))
+		evs = append(evs, ui.Event{Name: "note", Detail: saved.Sanitize(n), State: ui.Skipped})
 	}
+	return evs
 }
 
 // build makes flocc and flocc-setup for the machine's architecture, from the checkout this runs in.
@@ -135,13 +139,17 @@ func (d Deps) build(ctx context.Context, arch string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	d.UI.Group("Build")
 	for _, b := range []string{"flocc", "flocc-setup"} {
+		st := d.UI.Step("Build " + b)
 		if _, err := host.Must(ctx, d.Run, host.Cmd{Name: "go", Dir: root,
 			Args: []string{"build", "-o", filepath.Join(dir, b), "./installer/cmd/" + b},
 			Env:  []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + arch}}); err != nil {
 			os.RemoveAll(dir)
+			st.Fail(err)
 			return "", err
 		}
+		st.Done("linux/" + arch)
 	}
 	return dir, nil
 }
@@ -288,7 +296,7 @@ func (d Deps) refreshKnownHost(ctx context.Context, h hosts.Host, hostKey string
 	}
 	check := sshArgs([]string{"-o", "ControlPath=none"}, false, h.SSH, "true")
 	if res, err := d.Run.Run(ctx, check); err == nil && res.Code == 0 {
-		fmt.Fprintf(d.Out, "  · %s's host key changed with the sshd install; this desktop's known_hosts now holds the new one\n", h.Name)
+		d.UI.Step("Host key").Skip(h.Name + "'s host key changed with the sshd install; this desktop's known_hosts now holds the new one")
 		return nil
 	}
 	host.Must(ctx, d.Run, host.Cmd{Name: "ssh-keygen", Args: []string{"-R", name}})
@@ -389,8 +397,9 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey strin
 	}
 	remote += " && rm -rf " + dir
 	var reports []steps.CardinalReport
-	tap := reportTap(d.Out, &reports)
+	tap := reportTap(os.Stdout, &reports)
 	c := d.owner(s.Machine, true, remote)
+	c.Why = "root pass: sudo on " + s.Machine + " asks for your password"
 	c.Stdout = tap
 	err = d.Run.Interactive(ctx, c)
 	tap.Flush()
@@ -405,7 +414,8 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey strin
 			}
 		}
 		if len(r.Steps) > 0 || len(r.Notes) > 0 {
-			d.printSteps(title, r)
+			d.UI.Group(title)
+			ui.Rows(d.UI, reportEvents(r))
 		}
 		if r.Error != "" {
 			why = saved.Sanitize(r.Error) + "; "
@@ -418,7 +428,7 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey strin
 }
 
 // reportTap passes a pass's output through as it comes, prompts included, and keeps each
-// flocc-cardinal line in rs for printSteps.
+// flocc-cardinal line in rs for reportEvents.
 func reportTap(out io.Writer, rs *[]steps.CardinalReport) *ship.LineTap {
 	return &ship.LineTap{Out: out, Marker: steps.CardinalMarker, Take: func(line string) bool {
 		got, ok := steps.ParseCardinalLine(line)
@@ -457,6 +467,17 @@ func (d Deps) userPass(ctx context.Context, s saved.Saved, bin string, doc steps
 	case r.Error != "":
 		return r, fmt.Errorf("user pass: %s\n%s", saved.Sanitize(r.Error), passOutput(res, 20))
 	}
+	return r, nil
+}
+
+func (d Deps) userStep(ctx context.Context, s saved.Saved, bin string, doc steps.CardinalDoc) (steps.CardinalReport, error) {
+	st := d.UI.Step("User pass")
+	r, err := d.userPass(ctx, s, bin, doc)
+	if err != nil {
+		st.Fail(err)
+		return r, err
+	}
+	st.Done(s.Dest())
 	return r, nil
 }
 
