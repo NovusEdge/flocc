@@ -1,9 +1,13 @@
 package ui
 
 import (
+	"io"
+	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -187,5 +191,165 @@ func TestFullPromptOpensForm(t *testing.T) {
 	m, _ = updateFull(m, promptMsg{req: PromptReq{Kind: PConfirm, Q: Question{Title: "Adopt?"}}, reply: reply})
 	if m.form == nil || !strings.Contains(plainView(m), "Adopt?") {
 		t.Errorf("form not shown:\n%s", plainView(m))
+	}
+}
+
+func TestBannerCmdPrintsWhyBeforeOutput(t *testing.T) {
+	var buf strings.Builder
+	c := &bannerCmd{cmd: exec.Command("sh", "-c", "echo hi"), why: "log in"}
+	c.SetStdout(&buf)
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := buf.String(), "── log in ──\nhi\n"; got != want {
+		t.Errorf("output %q, want %q", got, want)
+	}
+	buf.Reset()
+	c = &bannerCmd{cmd: exec.Command("sh", "-c", "echo hi"), why: "-"}
+	c.SetStdout(&buf)
+	c.Run()
+	if buf.String() != "hi\n" {
+		t.Errorf("why \"-\" printed a banner: %q", buf.String())
+	}
+}
+
+func TestFullHandoffUsesBanner(t *testing.T) {
+	m := sized(100, 30)
+	_, cmd := updateFull(m, handoffMsg{why: "log in", cmd: exec.Command("true"), reply: make(chan error, 1)})
+	if cmd == nil {
+		t.Fatal("no cmd for a handoff")
+	}
+}
+
+func TestRecordText(t *testing.T) {
+	m := feed(sized(100, 30),
+		Event{Kind: KGroup, Name: "Keys"},
+		Event{Kind: KStep, ID: "s1", Name: "ssh key", State: Running},
+		Event{Kind: KStep, ID: "s1", Name: "ssh key", State: Done, Detail: "ed25519"},
+		Event{Kind: KStep, ID: "s2", Name: "still going", State: Running},
+		Event{Kind: KGroup, Name: "Empty"},
+		Event{Kind: KGroup, Name: "Hosts"},
+		Event{Kind: KStep, ID: "s3", Name: "flocc-1", State: Failed, Err: "boom"},
+		Event{Kind: KLog, Text: "/tmp/run.log"},
+	)
+	got := ansiRE.ReplaceAllString(recordText(m, []string{"open port 22"}), "")
+	want := "\nKeys\n  ✓ ssh key" + strings.Repeat(" ", nameWidth-len("ssh key")) + " ed25519\n" +
+		"\nHosts\n  ✗ flocc-1" + strings.Repeat(" ", nameWidth-len("flocc-1")) + " boom\n" +
+		"\nStill yours to do\n  • open port 22\n\nLog: /tmp/run.log\n"
+	if got != want {
+		t.Errorf("record:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func waitDone(t *testing.T, r *full) {
+	t.Helper()
+	select {
+	case <-r.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("full renderer never ended")
+	}
+}
+
+func TestFullProgramWritesRecordOnClose(t *testing.T) {
+	var out syncBuf
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	s := New(newFull(&out, pr, "flocc setup", tea.WithWindowSize(100, 30)))
+	s.Group("Keys")
+	s.Step("ssh key").Done("ed25519")
+	s.Todo("open port 22")
+	s.LogPath("/tmp/run.log")
+	s.Close()
+	got := ansiRE.ReplaceAllString(out.String(), "")
+	i := strings.LastIndex(got, "Keys\n")
+	if i < 0 || !strings.Contains(got[i:], "✓ ssh key") || !strings.Contains(got[i:], "open port 22") || !strings.Contains(got[i:], "Log: /tmp/run.log") {
+		t.Errorf("record missing after the frame: %q", got)
+	}
+}
+
+func TestFullHandsOverToInlineBelowMinimum(t *testing.T) {
+	var out syncBuf
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	rec := &Recorder{}
+	r := newFullWith(&out, pr, "flocc setup", func(io.Writer, io.Reader) Renderer { return rec }, tea.WithWindowSize(70, 20))
+	waitDone(t, r)
+	// Draws after the swap go straight to the inline renderer.
+	r.Draw(Event{Kind: KStep, ID: "b", Name: "second", State: Done})
+	r.Close([]string{"todo"})
+	var names []string
+	for _, e := range rec.Rows() {
+		names = append(names, e.Name)
+	}
+	if !rec.Closed || len(rec.Todos) != 1 {
+		t.Errorf("inline renderer not closed with the to-dos: %+v", rec)
+	}
+	if want := []string{"second"}; !slices.Equal(names, want) {
+		t.Errorf("rows %v, want %v", names, want)
+	}
+}
+
+func TestFullHandOverReplaysEventsInOrder(t *testing.T) {
+	var out syncBuf
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	rec := &Recorder{}
+	// The size message arrives with the program's first events, so draw before it can quit.
+	r := newFullWith(&out, pr, "t", func(io.Writer, io.Reader) Renderer { return rec })
+	evs := []Event{
+		{Kind: KGroup, Name: "G"},
+		{Kind: KStep, ID: "a", Name: "first", State: Running},
+		{Kind: KStep, ID: "a", Name: "first", State: Done},
+		{Kind: KStep, ID: "b", Name: "live", State: Running},
+	}
+	for _, e := range evs {
+		r.Draw(e)
+	}
+	r.p.Send(tea.WindowSizeMsg{Width: 60, Height: 10})
+	waitDone(t, r)
+	r.Draw(Event{Kind: KStep, ID: "b", Name: "live", State: Done})
+	r.Close(nil)
+	if !slices.Equal(rec.Events[:len(evs)], evs) {
+		t.Errorf("replay %v, want %v", rec.Events, evs)
+	}
+	if last := rec.Events[len(rec.Events)-1]; last.ID != "b" || last.State != Done {
+		t.Errorf("later draw not forwarded: %v", last)
+	}
+}
+
+func TestFullPromptAfterHandOverGoesToInline(t *testing.T) {
+	var out syncBuf
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	rec := &Recorder{Answers: []any{true}}
+	r := newFullWith(&out, pr, "t", func(io.Writer, io.Reader) Renderer { return rec }, tea.WithWindowSize(60, 10))
+	waitDone(t, r)
+	v, err := r.Prompt(PromptReq{Kind: PConfirm, Q: Question{Title: "ok?"}})
+	if err != nil || v != true || len(rec.Asked) != 1 {
+		t.Errorf("Prompt = %v, %v; asked %d", v, err, len(rec.Asked))
+	}
+	r.Close(nil)
+}
+
+func TestFullPanicRestoresTerminalAndPrintsRecord(t *testing.T) {
+	var out syncBuf
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	r := newFull(&out, pr, "t", tea.WithWindowSize(100, 30))
+	r.Draw(Event{Kind: KStep, ID: "a", Name: "first", State: Done, Detail: "ok"})
+	r.Draw(Event{Kind: KTodo, Text: "do this"})
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("restoreOnPanic swallowed the panic")
+			}
+		}()
+		defer r.restoreOnPanic()
+		panic("boom")
+	}()
+	waitDone(t, r)
+	got := ansiRE.ReplaceAllString(out.String(), "")
+	if !strings.Contains(got, "✓ first") || !strings.Contains(got, "do this") {
+		t.Errorf("no record after the panic: %q", got)
 	}
 }

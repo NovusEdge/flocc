@@ -1,9 +1,24 @@
 package ui
 
 import (
+	"io"
 	"slices"
+	"strings"
 	"testing"
 )
+
+func TestOpenFullDrawsAndRecords(t *testing.T) {
+	var out syncBuf
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	s := Open(ModeFull, &out, pr, "flocc setup")
+	s.Group("Keys")
+	s.Step("ssh key").Done("ed25519")
+	s.Close()
+	if got := out.String(); !strings.Contains(got, "\x1b[?1049h") || !strings.Contains(got, "ed25519") {
+		t.Errorf("full mode output lacks the alt screen or the record: %q", got)
+	}
+}
 
 func TestModeFor(t *testing.T) {
 	cases := []struct {
