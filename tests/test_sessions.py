@@ -2,6 +2,7 @@ import json
 import shutil
 import subprocess
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -175,3 +176,20 @@ def test_installed_and_allowed_plugin_files(tmp_path):
     allow.write_text("# comment\na@m\n\n")
     assert allowed_plugins(allow) == ("a@m",)
     assert allowed_plugins(tmp_path / "none.txt") is None
+
+
+def test_the_hosts_rules_and_environment_reach_the_session():
+    cfg = replace(
+        CFG,
+        permission_allow=("Bash(uv sync --frozen)",),
+        permission_environment=("Nothing on this VM is production.",),
+    )
+    s = settings_of(claude_argv(cfg, "NF-1", IssueSettings(), "p", env={}, claude_exe="c", exe="x"))
+    assert s["permissions"]["allow"] == ["Bash(uv sync --frozen)"]
+    assert "Bash(claude:*)" in s["permissions"]["deny"]
+    assert s["autoMode"] == {"environment": ["$defaults", "Nothing on this VM is production."]}
+
+
+def test_no_rules_leave_auto_mode_and_allow_alone():
+    s = settings_of(argv_with())
+    assert "autoMode" not in s and "allow" not in s["permissions"]

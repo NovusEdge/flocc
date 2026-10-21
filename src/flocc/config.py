@@ -1,9 +1,47 @@
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+# Allow rules and the judge's prefixes may name these only exactly: a wildcard after one admits
+# any program.
+INTERPRETERS = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "fish",
+        "python",
+        "python3",
+        "node",
+        "deno",
+        "bun",
+        "perl",
+        "ruby",
+        "php",
+        "eval",
+        "exec",
+        "env",
+        "xargs",
+        "sudo",
+        "su",
+        "nohup",
+        "timeout",
+        "nice",
+        "watch",
+    }
+)
+_BASH_RULE = re.compile(r"Bash\((.*)\)")
+_PERMISSION_KEYS = {
+    "allow": "permission_allow",
+    "environment": "permission_environment",
+    "judge_model": "judge_model",
+    "judge_max_per_run": "judge_max_per_run",
+}
 
 _PATH_KEYS = (
     "state_root",
@@ -83,6 +121,12 @@ class Config:
     installed_plugins_file: Path = field(
         default_factory=lambda: Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     )
+    # From permissions.toml beside the config, written by flocc ship from the host file.
+    permission_allow: tuple[str, ...] = ()
+    permission_environment: tuple[str, ...] = ()
+    # Empty turns the permission judge off.
+    judge_model: str = ""
+    judge_max_per_run: int = 30
 
     def effort_for(self, phase: str) -> str:
         if phase == "test":
@@ -121,6 +165,43 @@ def _repo(config_path: Path, name: str, table: dict) -> RepoConfig:
     )
 
 
+def wildcards_an_interpreter(rule: str) -> bool:
+    m = _BASH_RULE.fullmatch(rule.strip())
+    if m is None:
+        return False
+    body = m.group(1)
+    first = body.split(":")[0].split(" ")[0]
+    return " -c" in f" {body}" or ("*" in body and first in INTERPRETERS)
+
+
+def _permissions(path: Path) -> dict:
+    # Its own file: the installer's Config step rewrites config.toml only when it fails to load.
+    try:
+        table = tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    unknown = sorted(set(table) - _PERMISSION_KEYS.keys())
+    if unknown:
+        raise ValueError(f"{path}: unknown key {unknown[0]}")
+    out: dict = {}
+    for key in ("allow", "environment"):
+        value = table.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(f"{path}: {key} must be a list of strings")
+        out[_PERMISSION_KEYS[key]] = tuple(value)
+    for rule in out["permission_allow"]:
+        if wildcards_an_interpreter(rule):
+            raise ValueError(f"{path}: allow rule {rule} wildcards an interpreter or shell")
+    if "judge_model" in table:
+        out["judge_model"] = str(table["judge_model"])
+    if "judge_max_per_run" in table:
+        n = table["judge_max_per_run"]
+        if not isinstance(n, int) or n < 1:
+            raise ValueError(f"{path}: judge_max_per_run {n!r} must be a whole number >= 1")
+        out["judge_max_per_run"] = n
+    return out
+
+
 def load(path: Path) -> Config:
     raw = tomllib.loads(path.read_text())
     repos = {name: _repo(path, name, r) for name, r in raw.pop("repos", {}).items()}
@@ -138,7 +219,7 @@ def load(path: Path) -> Config:
         if not isinstance(authors, list) or not all(isinstance(a, str) for a in authors):
             raise ValueError(f"{path}: steer_authors must be a list of id strings")
         raw["steer_authors"] = tuple(authors)
-    cfg = Config(repos=repos, **raw)
+    cfg = Config(repos=repos, **raw, **_permissions(path.with_name("permissions.toml")))
     # launch() passes a per-phase effort to --effort for every session, so a typo here would
     # crash the tick for all issues with an opaque CLI error; fail at load instead.
     for key in ("tester_effort", "impl_effort", "review_effort"):

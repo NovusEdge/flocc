@@ -120,3 +120,50 @@ def test_commit_trailer_is_on_unless_a_repo_overrides_it(tmp_path):
     p.write_text("commit_trailer = false\n" + EXAMPLE.read_text())
     global_off = load(p)
     assert not trailer_enabled(global_off, global_off.repos["backend"])
+
+
+def with_permissions(tmp_path, text):
+    config = tmp_path / "config.toml"
+    config.write_text(EXAMPLE.read_text())
+    (tmp_path / "permissions.toml").write_text(text)
+    return config
+
+
+def test_the_permissions_file_beside_the_config_is_loaded(tmp_path):
+    cfg = load(
+        with_permissions(
+            tmp_path,
+            'allow = ["Bash(npx playwright install)"]\n'
+            'environment = ["Nothing on this VM is production."]\n'
+            'judge_model = "sonnet"\n',
+        )
+    )
+    assert cfg.permission_allow == ("Bash(npx playwright install)",)
+    assert cfg.permission_environment == ("Nothing on this VM is production.",)
+    assert (cfg.judge_model, cfg.judge_max_per_run) == ("sonnet", 30)
+
+
+def test_no_permissions_file_means_no_rules_and_no_judge():
+    cfg = load(EXAMPLE)
+    assert (cfg.permission_allow, cfg.permission_environment, cfg.judge_model) == ((), (), "")
+
+
+@pytest.mark.parametrize(
+    "rule", ["Bash(python:*)", "Bash(sh *)", "Bash(bash -c ls)", "Bash(env:*)", "Bash(xargs *)"]
+)
+def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule):
+    with pytest.raises(ValueError, match="interpreter"):
+        load(with_permissions(tmp_path, f'allow = ["{rule}"]\n'))
+
+
+@pytest.mark.parametrize(
+    "text, word",
+    [
+        ("alow = []\n", "alow"),
+        ('environment = "x"\n', "environment"),
+        ("judge_max_per_run = 0\n", "judge_max_per_run"),
+    ],
+)
+def test_a_bad_permissions_file_fails_at_load(tmp_path, text, word):
+    with pytest.raises(ValueError, match=word):
+        load(with_permissions(tmp_path, text))
