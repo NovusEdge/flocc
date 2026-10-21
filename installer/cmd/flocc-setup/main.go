@@ -74,6 +74,10 @@ func handoffArgs(fromStdin bool) []string {
 	return args
 }
 
+// dataSink is what ui.Events offers: with it, results go out as KData events instead of the
+// marker lines a person running flocc-setup by hand reads.
+type dataSink interface{ Data(name, text string) }
+
 // colorArgs hands the colour request, and with it the desktop's width, to the service phase. Its
 // sudo -i drops the environment the root phase got them through.
 func colorArgs(color bool, cols int) []string {
@@ -184,6 +188,7 @@ func run(args []string) int {
 	// drops the environment.
 	color := fs.Bool("color", false, "colour the step lines of a run with --answers")
 	colsFlag := fs.Int("cols", 0, "with --color: the desktop terminal's width, for the live step line")
+	events := fs.Bool("events", false, "with --answers -: write flocc-event lines for the desktop to draw")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -192,6 +197,10 @@ func run(args []string) int {
 		return 2
 	}
 	fromStdin := *answersIn == "-"
+	if *events && !fromStdin {
+		fmt.Fprintln(os.Stderr, "flocc-setup: --events needs --answers -")
+		return 2
+	}
 	wantColor := *color || os.Getenv(ui.ColorEnv) == "1"
 	cols := columns(*colsFlag, os.Getenv)
 	var doc []byte
@@ -269,6 +278,9 @@ func run(args []string) int {
 	if fromStdin {
 		u = &ui.Scripted{A: a, Out: stdout, Color: wantColor, Cols: cols}
 	}
+	if *events {
+		u = &ui.Events{Scripted: ui.Scripted{A: a, Out: stdout}, W: stdout}
+	}
 	env.UI = u
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -298,6 +310,9 @@ func run(args []string) int {
 		}
 		args := handoffArgs(fromStdin)
 		args = append(args, colorArgs(wantColor, cols)...)
+		if *events {
+			args = append(args, "--events")
+		}
 		err = handoff(ctx, runner, stage, args, piped)
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
@@ -326,8 +341,12 @@ func finish(ctx context.Context, env *steps.Env, err error, summary bool, stdout
 		fmt.Fprintf(stderr, "\n%s\n", err)
 	}
 	s := steps.Summarize(ctx, env).Redact(env.KnownSecrets()...)
-	// A blank line first: the marker must start a line, and a prompt may have left a partial one.
-	fmt.Fprintf(stdout, "\n%s\n", s.Line())
+	if d, ok := env.UI.(dataSink); ok {
+		d.Data("summary", s.JSON())
+	} else {
+		// A blank line first: the marker must start a line, and a prompt may have left a partial one.
+		fmt.Fprintf(stdout, "\n%s\n", s.Line())
+	}
 	if s.Failing() {
 		return 1
 	}

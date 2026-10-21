@@ -67,6 +67,7 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	adopt := fs.Bool("adopt", false, "cardinal-root: take over an existing user")
 	answersIn := fs.String("answers", "", `"-" reads the pass's JSON document from stdin`)
 	email := fs.String("email", "", "cardinal-login: the claude.ai account")
+	events := fs.Bool("events", false, "write flocc-event lines for the desktop to draw")
 	quick := fs.Bool("quick", false, "cardinal-status: local state only")
 	minAge := fs.Duration("min-age", steps.RenewAge, "cardinal-renew: the session age that renews; for the live test")
 	if err := fs.Parse(args); err != nil {
@@ -116,6 +117,9 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if slices.Contains(cardinalUserPhases, *phase) {
 		env.Home, _ = os.UserHomeDir()
 	}
+	if *events {
+		env.UI = &ui.Events{Scripted: ui.Scripted{A: &answers.Answers{}, Out: stdout}, W: stdout}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	finish := func(r steps.CardinalReport, err error) int {
@@ -123,7 +127,11 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			r.Error = err.Error()
 			fmt.Fprintf(stderr, "\n%s\n\nFull log: %s\n", err, logPath)
 		}
-		fmt.Fprintf(stdout, "\n%s\n", r.Line())
+		if d, ok := env.UI.(dataSink); ok {
+			d.Data("cardinal", r.JSON())
+		} else {
+			fmt.Fprintf(stdout, "\n%s\n", r.Line())
+		}
 		if err != nil {
 			return 1
 		}

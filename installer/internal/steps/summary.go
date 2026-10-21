@@ -37,10 +37,12 @@ type Summary struct {
 // now is a variable so tests can fix the days left on a token.
 var now = time.Now
 
-func (s Summary) Line() string {
+func (s Summary) JSON() string {
 	b, _ := json.Marshal(s) // plain strings, bools and times cannot fail
-	return SummaryMarker + string(b)
+	return string(b)
 }
+
+func (s Summary) Line() string { return SummaryMarker + s.JSON() }
 
 func ParseSummaryLine(line string) (Summary, bool) {
 	var s Summary
