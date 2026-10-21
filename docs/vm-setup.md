@@ -469,7 +469,7 @@ is dropped when the config loads, with a warning in `flocc logs`; the rest still
 
 ### The permission judge
 
-Set `judge_model = "sonnet"` in the host file's `[permissions]` and ship. The judge's
+Set `judge_model = "opus"` in the host file's `[permissions]` and ship. The judge's
 instructions are `deploy/permission-policy.md`. It is a convenience, not a guard: sessions run as
 the same user that holds the publish token, and branch protection is what keeps `main` safe.
 
