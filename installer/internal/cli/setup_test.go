@@ -766,3 +766,13 @@ func TestSetupRefusesALoginAddressThatIsNotOne(t *testing.T) {
 		t.Fatalf("exit %d calls %v", code, l.calls)
 	}
 }
+
+func TestSetupDeclaresItsSectionsFirst(t *testing.T) {
+	var l opsLog
+	d, _, p := setupDeps(t, nil)
+	runSetup(context.Background(), d, doneOps(&l))
+	if len(p.Events) == 0 || p.Events[0].Kind != ui.KPlan ||
+		p.Events[0].Text != "Checkout\nKeys\nTailnet\nHosts\nOld versions\nCardinal\nLogins" {
+		t.Fatalf("first event %+v", p.Events[:min(1, len(p.Events))])
+	}
+}

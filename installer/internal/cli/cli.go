@@ -150,18 +150,40 @@ func bare(ctx context.Context, d *deps) int {
 	return 2
 }
 
+// fullScreen is a command that works for a while and asks questions along the way.
+func fullScreen(rest []string) bool {
+	switch rest[0] {
+	case "setup", "ship", "login":
+		return true
+	case "host":
+		return len(rest) > 1 && rest[1] == "create"
+	case "cardinal":
+		return len(rest) > 1 && (rest[1] == "setup" || rest[1] == "login")
+	}
+	return false
+}
+
+// sessionMode is the renderer a command gets: plain for a lone handoff, full-screen for the long
+// commands on a terminal at both ends, else inline.
+func sessionMode(d *deps, name string, rest []string) ui.Mode {
+	if handoffOnly(name, rest) {
+		return ui.ModePlain
+	}
+	def := ui.ModeInline
+	if fullScreen(rest) && d.tty {
+		def = ui.ModeFull
+	}
+	return ui.ModeFor(d.mode, d.getenv, d.outTerminal(), def)
+}
+
 // openSession gives d a ui session in the mode this command allows, unless a test set one.
-func openSession(d *deps, forcePlain bool) {
+func openSession(d *deps, name string, rest []string) {
 	if d.ui == nil {
-		m := ui.ModeFor(d.mode, d.getenv, d.outTerminal(), ui.ModeInline)
-		if forcePlain {
-			m = ui.ModePlain
-		}
 		in := d.in
 		if in == nil {
 			in = strings.NewReader("")
 		}
-		d.ui = ui.Open(m, d.out, in)
+		d.ui = ui.Open(sessionMode(d, name, rest), d.out, in, "flocc "+strings.Join(rest[:min(len(rest), 2)], " "))
 	}
 	if d.prompt == nil {
 		d.prompt = sessionPrompt{ui.Prompts{S: d.ui}}
@@ -193,7 +215,7 @@ func run(ctx context.Context, d *deps, args []string) (code int) {
 		// Off a terminal the redraw loop has nothing to redraw: print the table once.
 		name, rest = "all", slices.DeleteFunc(slices.Clone(rest), func(a string) bool { return a == "--watch" })
 	}
-	openSession(d, handoffOnly(name, rest))
+	openSession(d, name, rest)
 	defer func() {
 		if c := d.ui.Close(); code == 0 {
 			code = c
