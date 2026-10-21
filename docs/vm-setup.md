@@ -344,6 +344,26 @@ sudo firewall-cmd --permanent --delete-zone=flocc-incus
 sudo firewall-cmd --reload
 ```
 
+### Verified on zer0-day-nimble, 2026-10-21
+
+The laptop ran Docker 29 with its iptables backend under firewalld 2.5.2 (nftables), a kairos-demo
+stack and the host flocc-nimble. A trial host made there with `--cpus 2 --memory 4 --disk 20` and
+then deleted showed:
+
+- The VM reached HTTPS over v4 and resolved DNS. Every port the laptop listens on, other than DNS,
+  refused it. Docker containers' own addresses dropped every ping and port it tried.
+- After create's reload, Docker's bridges were back in zone `docker`, and `DOCKER-USER` held the
+  three rules for v4 and v6. Creating a Docker network left them alone.
+- The laptop's own broad settings then came off by hand: `FORWARD` to `DROP` for v4 and v6, and
+  `ip-forward-no-drop` out of `daemon.json` (kept as `daemon.json.pre-flocc`). Both VMs kept v4
+  egress, and the kairos-demo containers kept the internet and each other.
+- Not exercised: a container port published on `0.0.0.0` (kairos-demo binds `127.0.0.1`), and
+  v6 egress, which the laptop's uplink lacks.
+
+A host VM has no swap, so a test suite that grows past the VM's memory makes the guest thrash
+instead of the OOM killer stepping in: flocc-nimble stopped answering `incus exec` and Tailscale
+for over 30 minutes. Installing `earlyoom` in the guest has it kill the largest process first.
+
 ### The VM on the tailnet
 
 The VM joins the tailnet as you, untagged, with Tailscale SSH on. Under the default policy it can
