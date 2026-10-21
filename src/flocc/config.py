@@ -1,9 +1,50 @@
 import os
+import re
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+# Allow rules and the judge's prefixes may name these only exactly: a wildcard after one admits
+# any program.
+INTERPRETERS = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "fish",
+        "python",
+        "python3",
+        "node",
+        "deno",
+        "bun",
+        "perl",
+        "ruby",
+        "php",
+        "eval",
+        "exec",
+        "env",
+        "xargs",
+        "sudo",
+        "su",
+        "nohup",
+        "timeout",
+        "nice",
+        "watch",
+    }
+)
+_BASH_RULE = re.compile(r"Bash\((.*)\)")
+_ENV_ASSIGN = re.compile(r"[A-Za-z_]\w*=[\w.,:/@%+=-]*")
+_PROGRAM = re.compile(r"[A-Za-z0-9._/+-]+")
+_PERMISSION_KEYS = {
+    "allow": "permission_allow",
+    "environment": "permission_environment",
+    "judge_model": "judge_model",
+    "judge_max_per_run": "judge_max_per_run",
+}
 
 _PATH_KEYS = (
     "state_root",
@@ -83,6 +124,12 @@ class Config:
     installed_plugins_file: Path = field(
         default_factory=lambda: Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     )
+    # From permissions.toml beside the config, written by flocc ship from the host file.
+    permission_allow: tuple[str, ...] = ()
+    permission_environment: tuple[str, ...] = ()
+    # Empty turns the permission judge off.
+    judge_model: str = ""
+    judge_max_per_run: int = 30
 
     def effort_for(self, phase: str) -> str:
         if phase == "test":
@@ -121,6 +168,70 @@ def _repo(config_path: Path, name: str, table: dict) -> RepoConfig:
     )
 
 
+def wildcards_an_interpreter(rule: str) -> bool:
+    rule = rule.strip()
+    if rule == "Bash":
+        return True
+    m = _BASH_RULE.fullmatch(rule)
+    if m is None:
+        return False
+    body = m.group(1).strip()
+    if re.search(r"(?:^|\s)-c", body):
+        return True
+    # A VAR=value whose value holds a quote, escape or expansion can swallow spaces, so only a
+    # plain value is skipped; anything else stays as the program token and fails _PROGRAM.
+    tokens = body.split()
+    while tokens and _ENV_ASSIGN.fullmatch(tokens[0]):
+        tokens.pop(0)
+    # "cmd:*" is Claude Code's legacy prefix form. Claude Code matches "*" anywhere in a rule, so
+    # "py* *" reaches python, and $SHELL, {a,b} or a quoted name is a program this check cannot
+    # resolve; hence a whitelist.
+    program = tokens[0].split(":", 1)[0] if tokens else ""
+    if not _PROGRAM.fullmatch(program):
+        return True
+    program = program.rsplit("/", 1)[-1].lower()
+    return "*" in body and (
+        program in INTERPRETERS or program.rstrip("0123456789.-") in INTERPRETERS
+    )
+
+
+def _permissions(path: Path) -> dict:
+    # Its own file: the installer's Config step rewrites config.toml only when it fails to load.
+    try:
+        table = tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    unknown = sorted(set(table) - _PERMISSION_KEYS.keys())
+    if unknown:
+        raise ValueError(f"{path}: unknown key {unknown[0]}")
+    out: dict = {}
+    for key in ("allow", "environment"):
+        value = table.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(f"{path}: {key} must be a list of strings")
+        out[_PERMISSION_KEYS[key]] = tuple(value)
+    # Dropped, not fatal: a refused rule raising here would stop every tick on the host until the
+    # next ship.
+    kept = []
+    for rule in out["permission_allow"]:
+        if wildcards_an_interpreter(rule):
+            print(
+                f"{path}: allow rule {rule} wildcards an interpreter or shell; dropped",
+                file=sys.stderr,
+            )
+        else:
+            kept.append(rule)
+    out["permission_allow"] = tuple(kept)
+    if "judge_model" in table:
+        out["judge_model"] = str(table["judge_model"])
+    if "judge_max_per_run" in table:
+        n = table["judge_max_per_run"]
+        if not isinstance(n, int) or n < 1:
+            raise ValueError(f"{path}: judge_max_per_run {n!r} must be a whole number >= 1")
+        out["judge_max_per_run"] = n
+    return out
+
+
 def load(path: Path) -> Config:
     raw = tomllib.loads(path.read_text())
     repos = {name: _repo(path, name, r) for name, r in raw.pop("repos", {}).items()}
@@ -138,7 +249,7 @@ def load(path: Path) -> Config:
         if not isinstance(authors, list) or not all(isinstance(a, str) for a in authors):
             raise ValueError(f"{path}: steer_authors must be a list of id strings")
         raw["steer_authors"] = tuple(authors)
-    cfg = Config(repos=repos, **raw)
+    cfg = Config(repos=repos, **raw, **_permissions(path.with_name("permissions.toml")))
     # launch() passes a per-phase effort to --effort for every session, so a typo here would
     # crash the tick for all issues with an opaque CLI error; fail at load instead.
     for key in ("tester_effort", "impl_effort", "review_effort"):

@@ -117,6 +117,15 @@ func (s *Secrets) Values() []string {
 	return v
 }
 
+// Permissions is the host's [permissions] table. flocc reads it from permissions.toml beside
+// config.toml; the keys match its loader.
+type Permissions struct {
+	Allow          []string `toml:"allow,omitempty"`
+	Environment    []string `toml:"environment,omitempty"`
+	JudgeModel     string   `toml:"judge_model,omitempty"`
+	JudgeMaxPerRun int      `toml:"judge_max_per_run,omitempty"`
+}
+
 type Answers struct {
 	Hostname    string `toml:"hostname,omitempty"`
 	TeamKey     string `toml:"team_key,omitempty"`
@@ -128,7 +137,8 @@ type Answers struct {
 	// URL, so the repo comes back ticked.
 	ExcludedRepos []string `toml:"excluded_repos,omitempty"`
 	// Other hosts handle the repos left unmapped here; renders skip_unmapped.
-	SharedTeam bool `toml:"shared_team,omitempty"`
+	SharedTeam  bool         `toml:"shared_team,omitempty"`
+	Permissions *Permissions `toml:"permissions,omitempty"`
 	// Read only from an --answers file, for runs without a terminal; Save drops it.
 	Secrets *Secrets `toml:"secrets,omitempty"`
 }
@@ -244,6 +254,9 @@ func (a *Answers) Overlay(o *Answers) error {
 	}
 	if o.SharedTeam {
 		a.SharedTeam = true
+	}
+	if o.Permissions != nil {
+		a.Permissions = o.Permissions
 	}
 	if o.Secrets != nil {
 		a.Secrets = o.Secrets

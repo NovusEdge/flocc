@@ -29,6 +29,12 @@
         "hooks": [ { "type": "command", "command": "flocc gate --answered" } ]
       }
     ],
+    "PermissionDenied": [
+      { "hooks": [ { "type": "command", "command": "flocc permission", "timeout": 60 } ] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [ { "type": "command", "command": "flocc permission", "timeout": 60 } ] }
+    ],
     "Stop": [
       {
         "hooks": [

@@ -98,15 +98,21 @@ def claude_argv(
     deny = list(_DENY)
     if "general-purpose" not in grants.agents:
         deny.append(_GENERAL_DENY)
+    permissions: dict = {"deny": deny}
+    if cfg.permission_allow:
+        permissions["allow"] = list(cfg.permission_allow)
     session_settings: dict = {
         "statusLine": {"type": "command", "command": f"{exe} statusline"},
         "autoContinueAtUsageLimit": True,
         "attribution": False,
-        "permissions": {"deny": deny},
+        "permissions": permissions,
         "disableWorkflows": not grants.workflows,
     }
     if disabled_plugins:
         session_settings["enabledPlugins"] = {p: False for p in disabled_plugins}
+    if cfg.permission_environment:
+        # Without $defaults the host's lines would replace the classifier's built-in context.
+        session_settings["autoMode"] = {"environment": ["$defaults", *cfg.permission_environment]}
     # The pane would otherwise inherit the tmux server's environment, which is whatever the
     # process that started the server had.
     argv = [

@@ -4,6 +4,20 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## 0.7.0 (2026-10-21)
+
+Auto-mode blocks on host sessions are logged and can be tuned away.
+
+- Every block auto mode's classifier makes in a host session, and every permission prompt, is
+  logged to the issue's `permissions.jsonl`, with the agent's own description of the command kept
+  apart. `flocc permissions report` on the host, or `flocc -H <host> permissions report` on the
+  desktop, counts them by tool, command and classifier reason over the last week.
+- A host file's `[permissions]` table (`allow` rules and `environment` lines) is shipped to the
+  host's `permissions.toml` and merged into every session's settings at launch. Allow rules that
+  wildcard an interpreter or shell are refused.
+- The "Model switch" dialog a refusal opens is escalated like an open question, since nothing
+  answers it on a host.
+
 ## 0.6.0 (2026-10-21)
 
 `flocc host create`, and the end of the `just` host recipes.
