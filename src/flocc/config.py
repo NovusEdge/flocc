@@ -36,7 +36,8 @@ INTERPRETERS = frozenset(
     }
 )
 _BASH_RULE = re.compile(r"Bash\((.*)\)")
-_ENV_ASSIGN = re.compile(r"[A-Za-z_]\w*=")
+_ENV_ASSIGN = re.compile(r"[A-Za-z_]\w*=[\w.,:/@%+=-]*")
+_PROGRAM = re.compile(r"[A-Za-z0-9._/+-]+")
 _PERMISSION_KEYS = {
     "allow": "permission_allow",
     "environment": "permission_environment",
@@ -176,16 +177,18 @@ def wildcards_an_interpreter(rule: str) -> bool:
     body = m.group(1).strip()
     if re.search(r"(?:^|\s)-c", body):
         return True
-    # Claude Code splits a legacy "cmd:*" prefix on the colon; a leading VAR=val does not hide
-    # the program behind it.
-    tokens = [t for t in re.split(r"[\s:]+", body) if t]
-    while tokens and _ENV_ASSIGN.match(tokens[0]):
+    # A VAR=value whose value holds a quote, escape or expansion can swallow spaces, so only a
+    # plain value is skipped; anything else stays as the program token and fails _PROGRAM.
+    tokens = body.split()
+    while tokens and _ENV_ASSIGN.fullmatch(tokens[0]):
         tokens.pop(0)
-    # Claude Code matches "*" anywhere in a rule, so "py* *" reaches python; a quoted or escaped
-    # program name is not one this check can resolve.
-    if not tokens or re.search(r"""[*?\[\]"'`\\]""", tokens[0]):
+    # "cmd:*" is Claude Code's legacy prefix form. Claude Code matches "*" anywhere in a rule, so
+    # "py* *" reaches python, and $SHELL, {a,b} or a quoted name is a program this check cannot
+    # resolve; hence a whitelist.
+    program = tokens[0].split(":", 1)[0] if tokens else ""
+    if not _PROGRAM.fullmatch(program):
         return True
-    program = tokens[0].rsplit("/", 1)[-1].lower()
+    program = program.rsplit("/", 1)[-1].lower()
     return "*" in body and (
         program in INTERPRETERS or program.rstrip("0123456789.-") in INTERPRETERS
     )

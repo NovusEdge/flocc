@@ -170,6 +170,7 @@ def test_no_permissions_file_means_no_rules_and_no_judge():
         "Bash(python3.12 *)",
         "Bash(sh\\t*)",
         "Bash(Python:*)",
+        "Bash(PATH=/a:/b python *)",
     ],
 )
 def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule):
@@ -190,16 +191,35 @@ def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule):
         "Bash('python' *)",
         'Bash(FOO="a b" python *)',
         "Bash(pyth\\on *)",
+        "Bash(FOO=a\\ b python *)",
+        "Bash(FOO=$(echo a b) python *)",
+        "Bash(FOO=${X:-a b} python *)",
+        "Bash(FOO=`x` python *)",
+        "Bash($SHELL *)",
+        "Bash(${P} *)",
+        "Bash({python,x} *)",
+        "Bash((python) *)",
+        "Bash(!python *)",
+        "Bash(~/py *)",
     ],
 )
-def test_a_glob_or_quote_in_the_program_token_is_refused(tmp_path, rule):
+def test_an_unresolvable_program_token_is_refused(tmp_path, rule):
     with pytest.raises(ValueError, match="interpreter"):
         load(with_permissions(tmp_path, f"allow = [{json.dumps(rule)}]\n"))
 
 
 @pytest.mark.parametrize(
     "rule",
-    ["Bash(npx playwright install)", "Bash(uv run pytest *)", "Bash(git status:*)", "Read(*)"],
+    [
+        "Bash(npx playwright install)",
+        "Bash(uv run pytest *)",
+        "Bash(git status:*)",
+        "Read(*)",
+        "Bash(FOO=1 uv run pytest *)",
+        "Bash(PATH=/a:/b make *)",
+        "Bash(./scripts/check.sh *)",
+        "Bash(g++ *)",
+    ],
 )
 def test_an_ordinary_allow_rule_is_accepted(tmp_path, rule):
     cfg = load(with_permissions(tmp_path, f'allow = ["{rule}"]\n'))
