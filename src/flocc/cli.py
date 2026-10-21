@@ -457,9 +457,11 @@ def cmd_release(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from flocc.doctor import run_doctor
+    from flocc.doctor import doctor_json, run_doctor
 
     cfg, path = _config(args)
+    if args.json:
+        return doctor_json(cfg, path)
     print(f"ok    config: {path}")
     return run_doctor(cfg)
 
@@ -637,7 +639,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="approve the tester's files as they stand on the branch (keeps the worktree)",
     )
-    add("doctor", "Check config and host setup")
+    doctor = add("doctor", "Check config and host setup")
+    doctor.add_argument("--json", action="store_true", help="print the checks as JSON")
     status = add("status", "Show claims, last tick, usage and disk")
     status.add_argument("--json", action="store_true", help="print the raw report as JSON")
     logs = add("logs", "Print the service log: the journal on systemd hosts, run.log otherwise")
