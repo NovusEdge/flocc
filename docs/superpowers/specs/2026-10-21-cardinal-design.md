@@ -94,7 +94,8 @@ registered for `PermissionDenied` and `PermissionRequest`. In Step 0 it:
 1. Appends one line to the claim's `permissions.jsonl` (format under "Records").
 2. Returns no decision, so behaviour is unchanged.
 3. For the model-switch dialog only, writes the `asking` marker, so `_check_question`
-   (`supervisor.py`) escalates it like any open question.
+   (`supervisor.py`) escalates it like any open question. The `Stop` hook already clears
+   `asking`, so the marker goes when the turn ends.
 
 `flocc permissions report` on the host, and `flocc -H <host> permissions report` on the desktop,
 summarise the log by tool and command prefix, with counts and the classifier's reasons. The owner
@@ -106,18 +107,22 @@ turns the report into:
 - exact `permissions.allow` rules for what remains (`Bash(npx playwright install)`), which never
   wildcard an interpreter or shell (`sh`, `bash`, `python`, `node`, `eval`, `env`, `xargs`, `-c`).
 
-Both live in the host file and reach the host's `config.toml` under `[permissions]` through
-`flocc ship` or `flocc host add`. That needs a new `answers.Answers` field and a new `Config`
-field, because `RenderConfig` rebuilds `config.toml` from the example file. The service merges
-them into each session's `--settings` at launch. A running session does not reload its
-`--settings` file, so a change takes effect at the next launch.
+Both live in the host file's `[permissions]` table. `flocc ship` and `flocc host add` write
+them to the host's `~/.config/flocc/permissions.toml` through a new install step, which rewrites
+the file whenever it differs from the host file. They do not go into `config.toml`, because the
+Config step rewrites that file only when it fails to load, and would then overwrite any edits made
+on the host. The service merges them into each session's `--settings` at launch, keeping the
+classifier's defaults (`"$defaults"`). `--settings` is passed inline, so a change takes effect at
+the next launch.
 
 Step 0 ships alone and runs for a week. Its report decides how much Step 1 has to do.
 
 ## Step 1: a stateless judge in the hook
 
-For a block that no rule settles, the hook asks a judge. The judge is one `claude -p` call on the
-host's Claude login, with `--model` from `[permissions] judge_model` and a 45-second timeout. It
+For a Bash block, or any prompt, that no rule settles, the hook asks a judge. The judge is one
+`claude -p` call on the host's Claude login, with `--model` from `[permissions] judge_model` and a
+45-second timeout. An empty `judge_model`, the default, turns the judge off, so Step 1 ships
+dark and the owner turns it on per host. It
 has no queue, no memory and no session. Its input is the policy plus the action: host, issue,
 phase, tool, tool input with `description` removed, cwd, and the classifier's reason. It never
 sees the agent's prose. Anthropic's own classifier strips agent prose, which cut its false
@@ -129,7 +134,7 @@ may also name a rule: a command prefix for the rest of the run.
 | Event | `allow` | `owner` | `deny`, timeout or error |
 |---|---|---|---|
 | `PermissionDenied` (a block) | add a grant, return `retry: true` | ask the owner (below) | no decision; the block stands |
-| `PermissionRequest` (after three blocks, or an `ask` rule) | return allow | return deny, ask the owner | no decision |
+| `PermissionRequest` (after three blocks, or an `ask` rule) | return allow | return deny, ask the owner | deny with the judge's reason; on timeout or error, no decision |
 
 A retry goes through the classifier again, so a grant on its own does nothing. `flocc permission`
 is therefore also a `PreToolUse` hook. It returns `allow` when the call matches a grant, and no
