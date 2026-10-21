@@ -12,6 +12,7 @@ import (
 	"charm.land/huh/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/create"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 )
@@ -59,6 +60,12 @@ func doneOps(l *opsLog) setupOps {
 			return nil
 		},
 		ship: func(_ context.Context, name string) error { l.add("ship %s", name); return nil },
+		readHost: func(_ context.Context, h hosts.Host) hostState {
+			l.add("read %s", h.Name)
+			full := "full"
+			return hostState{Version: "0.8.0", Login: &full}
+		},
+		offline: func(context.Context, string) bool { return false },
 	}
 }
 
@@ -235,5 +242,74 @@ func TestSetupStopsAtACancelledPrompt(t *testing.T) {
 	p.errAt, p.err = "Which machine holds", huh.ErrUserAborted
 	if code := runSetup(context.Background(), d, ops); code != 1 || l.has(fmt.Sprintf("keys %v", []keys.Slot{keys.Publish, keys.Ntfy})) || !strings.Contains(out.String(), "Stopped") {
 		t.Fatalf("exit %d calls %v out %q", code, l.calls, out)
+	}
+}
+
+func TestSetupShipsAnOldOrFailingHostAndReportsTheRest(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	none := "none"
+	ops.hosts = func() []hosts.Host {
+		var list []hosts.Host
+		for _, n := range []string{"old", "broken", "nologin", "full-disk", "gone"} {
+			list = append(list, hosts.Host{Name: n, SSH: "root@" + n, Machine: hosts.MachineNone})
+		}
+		return list
+	}
+	reads := map[string][]hostState{
+		"old":       {{Version: "0.7.0"}, {Version: "0.8.0"}},
+		"broken":    {{Version: "0.8.0", Doctor: []string{"tmux: no server"}}, {Version: "0.8.0"}},
+		"nologin":   {{Version: "0.8.0", Login: &none}},
+		"full-disk": {{Version: "0.8.0", LowDisk: "disk: 1.0 GB free"}},
+		"gone":      {{Err: "ssh: connect timed out"}},
+	}
+	ops.readHost = func(_ context.Context, h hosts.Host) hostState {
+		l.add("read %s", h.Name)
+		st := reads[h.Name][0]
+		if len(reads[h.Name]) > 1 {
+			reads[h.Name] = reads[h.Name][1:]
+		}
+		return st
+	}
+	ops.offline = func(_ context.Context, name string) bool { return name == "gone" }
+	d, out, _ := setupDeps(t, nil)
+	code := runSetup(context.Background(), d, ops)
+	if code != 1 || !l.has("ship old") || !l.has("ship broken") || l.has("ship nologin") || l.has("ship full-disk") || l.has("ship gone") {
+		t.Fatalf("exit %d calls %v", code, l.calls)
+	}
+	for _, want := range []string{"admin/machines", "gone.toml", "disk: 1.0 GB free"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("no %q in %q", want, out)
+		}
+	}
+}
+
+func TestSetupFailsAHostStillFailingAfterShip(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	ops.readHost = func(_ context.Context, h hosts.Host) hostState {
+		l.add("read %s", h.Name)
+		return hostState{Version: "0.8.0", Doctor: []string{"repo flocc: cannot fetch"}}
+	}
+	d, out, _ := setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, ops); code != 1 || strings.Count(strings.Join(l.calls, "\n"), "ship flocc-nimble") != 1 || !strings.Contains(out.String(), "cannot fetch") {
+		t.Fatalf("exit %d calls %v out %q", code, l.calls, out)
+	}
+}
+
+func TestDoctorFailsLeavesTheLoginAndDiskOutOfShip(t *testing.T) {
+	out := "ok    git: /usr/bin/git\nFAIL  claude login: none; run flocc login\nFAIL  disk: 1.0 GB free under /w, below min_free_disk_gb 5\n" +
+		"FAIL  tmux: no server; systemctl --user start flocc-tmux.service\n15 checks, 3 failed\n"
+	fails, disk := doctorFails(out)
+	if !slices.Equal(fails, []string{"tmux: no server; systemctl --user start flocc-tmux.service"}) || !strings.HasPrefix(disk, "disk: 1.0 GB free") {
+		t.Fatalf("%q %q", fails, disk)
+	}
+}
+
+func TestTailnetOfflineFindsThePeerByName(t *testing.T) {
+	f := host.NewFake().On("tailscale status --json", 0,
+		`{"Peer":{"k1":{"HostName":"la-nimble","DNSName":"la-nimble.tail.ts.net.","Online":false},"k2":{"HostName":"flocc-nimble","DNSName":"flocc-nimble.tail.ts.net.","Online":true}}}`)
+	if !tailnetOffline(context.Background(), f, "la-nimble") || tailnetOffline(context.Background(), f, "flocc-nimble") || tailnetOffline(context.Background(), f, "nope") {
+		t.Fatal("wrong")
 	}
 }

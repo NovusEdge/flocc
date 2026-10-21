@@ -2,12 +2,15 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/NovusEdge/flocc/installer/internal/create"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
@@ -25,6 +28,8 @@ type setupOps struct {
 	create     func(ctx context.Context, spec create.Spec) error
 	add        func(ctx context.Context, name string, reach hosts.Host) error
 	ship       func(ctx context.Context, name string) error
+	readHost   func(ctx context.Context, h hosts.Host) hostState
+	offline    func(ctx context.Context, name string) bool
 }
 
 // machineState is what a machine allows. Err is set when ssh could not reach it.
@@ -49,7 +54,104 @@ func newSetupOps(d *deps) setupOps {
 		create:     func(ctx context.Context, s create.Spec) error { return runCreate(ctx, d, s) },
 		add:        func(ctx context.Context, name string, reach hosts.Host) error { return addHost(ctx, d, name, reach) },
 		ship:       func(ctx context.Context, name string) error { return shipHost(ctx, d, name) },
+		readHost:   func(ctx context.Context, h hosts.Host) hostState { return readHost(ctx, d, h) },
+		offline:    func(ctx context.Context, name string) bool { return tailnetOffline(ctx, d.run, name) },
 	}
+}
+
+// hostState is what flocc setup reads from a host. Err is set when it could not read the host,
+// which is reported and never acted on.
+type hostState struct {
+	Err     string
+	Version string   // flocc --version without "flocc "; "" when flocc is not installed there
+	Login   *string  // claude_login from status --json; nil when the host did not ask
+	Doctor  []string // failing doctor checks ship can repair
+	LowDisk string   // doctor's failing disk check
+}
+
+// readHost reads flocc --version, status --json and doctor on h as the service user.
+func readHost(ctx context.Context, d *deps, h hosts.Host) hostState {
+	if err := connectFirst(ctx, d, h); err != nil {
+		return hostState{Err: err.Error()}
+	}
+	dest, err := d.resolve(ctx, h.Target())
+	if err != nil {
+		return hostState{Err: err.Error()}
+	}
+	capture := func(args ...string) (host.Result, error) {
+		return ship.Capture(ctx, d.run, dest, ship.FloccLine(args), nil)
+	}
+	why := func(what string, res host.Result, err error) hostState {
+		if err != nil {
+			return hostState{Err: what + ": " + err.Error()}
+		}
+		return hostState{Err: fmt.Sprintf("%s: exit %d: %s", what, res.Code, strings.TrimSpace(host.Tail(res.Out(), 1)))}
+	}
+	res, err := capture("--version")
+	switch {
+	case err == nil && res.Code == 127:
+		return hostState{} // sh found no flocc: ship installs it
+	case err != nil || res.Code != 0:
+		return why("flocc --version", res, err)
+	}
+	st := hostState{Version: strings.TrimPrefix(strings.TrimSpace(res.Stdout), "flocc ")}
+	if res, err = capture("status", "--json"); err != nil || res.Code != 0 {
+		return why("flocc status", res, err)
+	}
+	var rep ship.Report
+	if err := json.Unmarshal([]byte(res.Stdout), &rep); err != nil {
+		return hostState{Err: "unreadable status: " + err.Error()}
+	}
+	st.Login = rep.ClaudeLogin
+	// doctor exits 1 when a check fails; anything higher is ssh or the host's shell.
+	if res, err = capture("doctor"); err != nil || res.Code > 1 {
+		return why("flocc doctor", res, err)
+	}
+	st.Doctor, st.LowDisk = doctorFails(res.Stdout)
+	return st
+}
+
+// doctorFails splits doctor's FAIL lines. The login is step 6's and low disk is the owner's to
+// free, so neither is a reason to ship.
+func doctorFails(out string) (fails []string, disk string) {
+	for _, l := range strings.Split(out, "\n") {
+		rest, ok := strings.CutPrefix(l, "FAIL  ")
+		if !ok {
+			continue
+		}
+		switch name, _, _ := strings.Cut(rest, ": "); name {
+		case "claude login":
+		case "disk":
+			disk = rest
+		default:
+			fails = append(fails, rest)
+		}
+	}
+	return fails, disk
+}
+
+// tailnetOffline reports whether this desktop's tailnet lists name as a peer that is offline.
+func tailnetOffline(ctx context.Context, r host.Runner, name string) bool {
+	out, err := host.Must(ctx, r, host.Cmd{Name: "tailscale", Args: []string{"status", "--json"}})
+	if err != nil {
+		return false
+	}
+	var st struct {
+		Peer map[string]struct {
+			HostName, DNSName string
+			Online            bool
+		}
+	}
+	if json.Unmarshal([]byte(out), &st) != nil {
+		return false
+	}
+	for _, p := range st.Peer {
+		label, _, _ := strings.Cut(p.DNSName, ".")
+		if strings.EqualFold(label, name) || strings.EqualFold(p.HostName, name) {
+			return !p.Online
+		}
+	}
+	return false
 }
 
 var pyVersion = regexp.MustCompile(`(?m)^version = "([^"]+)"`)

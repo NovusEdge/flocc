@@ -69,8 +69,80 @@ func (w *wizard) run() {
 	if w.stopped || len(list) == 0 {
 		return
 	}
+	w.checkHosts(list)
+	if w.stopped {
+		return
+	}
 	// The publish token's page lists the mapped repos, so it comes after the host.
 	w.fillKeys([]keys.Slot{keys.Publish, keys.Ntfy}, true)
+}
+
+type checkedHost struct {
+	h  hosts.Host
+	st hostState
+}
+
+// checkHosts reads every host, ships the ones ship can repair and marks each machine whose host
+// failed, which steps 4-6 then skip. It returns the hosts that did not fail.
+func (w *wizard) checkHosts(list []hosts.Host) []checkedHost {
+	var ok []checkedHost
+	for _, h := range list {
+		if w.stopped {
+			break
+		}
+		if st, good := w.checkHost(h); good {
+			ok = append(ok, checkedHost{h, st})
+		} else if m := machineOf(h); m != "" {
+			w.failed[saved.HostPart(m)] = true
+		}
+	}
+	return ok
+}
+
+func (w *wizard) checkHost(h hosts.Host) (hostState, bool) {
+	st := w.ops.readHost(w.ctx, h)
+	if st.Err != "" {
+		detail := "could not read it: " + st.Err
+		if h.SSH != "" && w.ops.offline(w.ctx, saved.HostPart(h.SSH)) {
+			detail += "\nits tailnet node is offline; if the host is gone, remove the node at https://login.tailscale.com/admin/machines and rm " + hostFile(w.d, h.Name)
+		}
+		w.row(rowFailed, h.Name, detail)
+		return st, false
+	}
+	if why := w.shipWhy(st); why != "" {
+		w.d.o().Line("%s: %s; shipping the checkout", h.Name, why)
+		if err := w.ops.ship(w.ctx, h.Name); err != nil {
+			w.fail(h.Name, fmt.Errorf("ship: %w", err))
+			return st, false
+		}
+		if st = w.ops.readHost(w.ctx, h); st.Err != "" {
+			w.row(rowFailed, h.Name, "after ship, could not read it: "+st.Err)
+			return st, false
+		}
+		if why := w.shipWhy(st); why != "" {
+			w.row(rowFailed, h.Name, "still, after ship: "+why)
+			return st, false
+		}
+	}
+	if st.LowDisk != "" {
+		w.row(rowPending, h.Name, st.LowDisk+"\nfree space there; flocc does not delete worktrees for you")
+		return st, true
+	}
+	w.row(rowDone, h.Name, "flocc "+st.Version+", doctor ok")
+	return st, true
+}
+
+// shipWhy is why ship should run on a host, "" when it need not.
+func (w *wizard) shipWhy(st hostState) string {
+	switch {
+	case st.Version == "":
+		return "flocc is not installed there"
+	case !host.AtLeast(st.Version, w.version):
+		return "flocc " + st.Version + " is older than the checkout"
+	case len(st.Doctor) > 0:
+		return "doctor fails " + strings.Join(st.Doctor, "; ")
+	}
+	return ""
 }
 
 func (w *wizard) row(state rowState, name, detail string) {
