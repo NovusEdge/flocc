@@ -51,12 +51,26 @@ func onFirewall(f *host.Fake, permanent bool, s fwState) {
 	f.On(q+"--zone=flocc-incus --list-ports", 0, j(s.Ports))
 	f.On(q+"--policy=flocc-incus-out --list-ingress-zones", 0, j(s.OutIn))
 	f.On(q+"--policy=flocc-incus-out --list-egress-zones", 0, j(s.OutEg))
-	f.On(q+"--policy=flocc-incus-out --get-target", 0, s.OutTarget+"\n")
+	f.On(q+"--info-policy=flocc-incus-out", 0, infoPolicy("flocc-incus-out", s.OutTarget, -1, s.OutIn, s.OutEg))
 	f.On(q+"--policy=flocc-no-docker --list-ingress-zones", 0, j(s.NoDockerIn))
 	f.On(q+"--policy=flocc-no-docker --list-egress-zones", 0, j(s.NoDockerEg))
-	f.On(q+"--policy=flocc-no-docker --get-target", 0, s.NoDockerTarget+"\n")
-	f.On(q+"--policy=flocc-no-docker --get-priority", 0, strconv.Itoa(s.NoDockerPriority)+"\n")
-	f.On(q+"--policy=docker-forwarding --get-priority", 0, strconv.Itoa(s.DockerFwdPriority)+"\n")
+	f.On(q+"--info-policy=flocc-no-docker", 0, infoPolicy("flocc-no-docker", s.NoDockerTarget, s.NoDockerPriority, s.NoDockerIn, s.NoDockerEg))
+	f.On(q+"--info-policy=docker-forwarding", 0, infoPolicy("docker-forwarding", "ACCEPT", s.DockerFwdPriority, []string{"ANY"}, []string{"docker"}))
+	// What firewall-cmd 2.5.2 on zer0-day-nimble answers without --permanent.
+	if !permanent {
+		for _, p := range []string{"flocc-incus-out", "flocc-no-docker", "docker-forwarding"} {
+			for _, get := range []string{"--get-target", "--get-priority"} {
+				f.On(q+"--policy="+p+" "+get, 2, "usage: 'firewall-cmd --help' for usage information or see firewall-cmd(1) man page\nOption can be used only with --permanent.\n")
+			}
+		}
+	}
+}
+
+// infoPolicy renders firewall-cmd --info-policy as firewall-cmd 2.5.2 prints it.
+func infoPolicy(name, target string, priority int, in, eg []string) string {
+	return name + " (active)\n  disable: no\n  priority: " + strconv.Itoa(priority) + "\n  target: " + target +
+		"\n  ingress-zones: " + strings.Join(in, " ") + "\n  egress-zones: " + strings.Join(eg, " ") +
+		"\n  services: \n  ports: \n  protocols: \n  masquerade: no\n  forward-ports: \n  source-ports: \n  icmp-blocks: \n  rich rules: \n"
 }
 
 // fwMachine is a machine with firewalld running and its default route on wlan0, in zone public.
