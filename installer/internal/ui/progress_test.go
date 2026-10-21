@@ -71,14 +71,14 @@ func TestPlainRunPadsTheCounterToTheWidthOfTheTotal(t *testing.T) {
 	}
 }
 
-func TestPlainRunThatFailsKeepsTheStartLineAndReturnsTheError(t *testing.T) {
+func TestPlainRunThatFailsReturnsTheErrorAfterACrossLine(t *testing.T) {
 	var b bytes.Buffer
 	p, _, _ := newTestProgress(&b, false, false)
 	boom := errors.New("boom")
 	if err := p.Run(packages, func() (Outcome, error) { return Outcome{}, boom }); err != boom {
 		t.Fatalf("err=%v", err)
 	}
-	if want := "  → 3/9 Packages       not installed\n"; b.String() != want {
+	if want := "  → 3/9 Packages       not installed\n  ✗ 3/9 Packages (0s)\n"; b.String() != want {
 		t.Fatalf("got %q, want %q", b.String(), want)
 	}
 }
@@ -147,15 +147,66 @@ func TestAnimatedResultLineHasTheColoursOfOut(t *testing.T) {
 	}
 }
 
-func TestAnimatedFailureClearsTheLineAndPrintsNothingElse(t *testing.T) {
+func TestAnimatedFailureReplacesTheLineWithARedCrossAndTheTimeItTook(t *testing.T) {
 	var b bytes.Buffer
-	p, _, _ := newTestProgress(&b, true, false)
+	p, clk, _ := newTestProgress(&b, true, true)
 	boom := errors.New("boom")
-	if err := p.Run(packages, func() (Outcome, error) { return Outcome{}, boom }); err != boom {
+	if err := p.Run(packages, func() (Outcome, error) { clk.Advance(12 * time.Second); return Outcome{}, boom }); err != boom {
 		t.Fatalf("err=%v", err)
 	}
-	if !strings.HasSuffix(b.String(), clear) || strings.Contains(b.String(), "\n") || strings.Contains(b.String(), "✓") {
+	if !strings.HasSuffix(b.String(), clear+"  \x1b[31m✗\x1b[0m 3/9 Packages (12s)\n") || strings.Contains(b.String(), "✓") {
 		t.Fatalf("%q", b.String())
+	}
+}
+
+func TestPlainFailureAddsTheCrossLineAfterTheStartLine(t *testing.T) {
+	var b bytes.Buffer
+	p, clk, _ := newTestProgress(&b, false, false)
+	boom := errors.New("boom")
+	p.Run(packages, func() (Outcome, error) { clk.Advance(75 * time.Second); return Outcome{}, boom })
+	if want := "  → 3/9 Packages       not installed\n  ✗ 3/9 Packages (1m15s)\n"; b.String() != want {
+		t.Fatalf("got %q, want %q", b.String(), want)
+	}
+}
+
+func TestLiveLineStaysTwoColumnsUnderTheTerminalWidth(t *testing.T) {
+	for _, cols := range []int{40, 50, 80} {
+		var b bytes.Buffer
+		p, _, _ := newTestProgress(&b, true, false)
+		p.Cols = cols
+		l := packages
+		l.Detail = strings.Repeat("x", 200)
+		p.Run(l, func() (Outcome, error) { return Outcome{}, errors.New("stop") })
+		first := strings.Split(strings.TrimPrefix(b.String(), clear), clear)[0]
+		if n := len([]rune(first)); n > cols-2 {
+			t.Errorf("cols=%d: line is %d columns, the cursor would sit in the last one: %q", cols, n, first)
+		}
+	}
+}
+
+func TestWidthComesFromTheColumnsVariableWhenOutIsNotATerminal(t *testing.T) {
+	t.Setenv("COLUMNS", "50")
+	var b bytes.Buffer
+	p, _, _ := newTestProgress(&b, true, false)
+	p.Cols = 0
+	l := packages
+	l.Detail = strings.Repeat("x", 200)
+	p.Run(l, func() (Outcome, error) { return Outcome{}, errors.New("stop") })
+	first := strings.Split(strings.TrimPrefix(b.String(), clear), clear)[0]
+	if n := len([]rune(first)); n > 48 || n < 40 {
+		t.Fatalf("%d columns for COLUMNS=50: %q", n, first)
+	}
+	t.Setenv("COLUMNS", "junk")
+	if got := p.cols(); got != 80 {
+		t.Fatalf("a bad COLUMNS should fall back to 80, got %d", got)
+	}
+}
+
+func TestScriptedPassesItsWidthOnToTheLiveLine(t *testing.T) {
+	var b bytes.Buffer
+	s := &Scripted{Out: &b, Color: true, Cols: 40}
+	if s.progress().Cols != 40 {
+		t.Fatal("Scripted.Cols is not used")
 	}
 }
 
@@ -231,8 +282,20 @@ func TestAnimatedDetailIsCutToFitTheTerminalWidth(t *testing.T) {
 	l.Detail = strings.Repeat("x", 200)
 	p.Run(l, func() (Outcome, error) { return Outcome{}, errors.New("stop") })
 	first := strings.Split(strings.TrimPrefix(b.String(), clear), clear)[0]
-	if n := len([]rune(first)); n >= 60 || !strings.Contains(first, "…") || !strings.HasSuffix(first, "   0:00") {
+	if n := len([]rune(first)); n > 58 || !strings.Contains(first, "…") || !strings.HasSuffix(first, "   0:00") {
 		t.Fatalf("%d runes: %q", n, first)
+	}
+}
+
+func TestDoneWithoutACounterKeepsTheCounterColumn(t *testing.T) {
+	var b bytes.Buffer
+	p, _, _ := newTestProgress(&b, false, false)
+	p.NameWidth = 10
+	p.Done(Line{N: 2, Total: 6, Name: "Docker", Detail: "ok"})
+	p.Done(Line{Total: 6, Name: "Snapshot", Detail: "flocc-a/installed"})
+	want := "  ✓ 2/6 Docker     ok\n  ✓     Snapshot   flocc-a/installed\n"
+	if b.String() != want {
+		t.Fatalf("got %q, want %q", b.String(), want)
 	}
 }
 

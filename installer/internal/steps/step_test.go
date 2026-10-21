@@ -155,13 +155,13 @@ func TestRunAllAnimatesOnlyWhereTheOutputIsATerminal(t *testing.T) {
 	}
 }
 
-func TestRunAllClearsTheLiveLineWhenAStepFails(t *testing.T) {
+func TestRunAllReplacesTheLiveLineWithACrossWhenAStepFails(t *testing.T) {
 	u, out := capture(true)
 	err := RunAll(context.Background(), newEnv(u), []Step{&fakeStep{name: "a", applyErr: errors.New("boom")}})
 	if err == nil || err.Error() != "a: boom" {
 		t.Fatalf("err=%v", err)
 	}
-	if !strings.HasSuffix(out.String(), "\r\x1b[K") || strings.Contains(out.String(), "✓ 1/1") {
+	if !strings.HasSuffix(out.String(), "\r\x1b[K  \x1b[31m✗\x1b[0m 1/1 a (0s)\n") || strings.Contains(out.String(), "✓ 1/1") {
 		t.Fatalf("%q", out.String())
 	}
 }

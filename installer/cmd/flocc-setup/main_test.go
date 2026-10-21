@@ -42,6 +42,38 @@ func TestHandoffArgs(t *testing.T) {
 	}
 }
 
+// The service phase starts through sudo -i, which drops the environment, so the request for
+// colour and the desktop's width cross that hop as flags of the same binary.
+func TestColorArgsCarryTheWidthOnlyWithColour(t *testing.T) {
+	for _, c := range []struct {
+		color bool
+		cols  int
+		want  []string
+	}{
+		{false, 0, nil},
+		{false, 97, nil},
+		{true, 0, []string{"--color"}},
+		{true, 97, []string{"--color", "--cols", "97"}},
+	} {
+		if got := colorArgs(c.color, c.cols); !slices.Equal(got, c.want) {
+			t.Errorf("colorArgs(%v, %d) = %v, want %v", c.color, c.cols, got, c.want)
+		}
+	}
+}
+
+func TestColumnsPrefersTheFlagThenTheEnvironment(t *testing.T) {
+	env := func(v string) func(string) string { return func(string) string { return v } }
+	for _, c := range []struct {
+		flag int
+		env  string
+		want int
+	}{{40, "97", 40}, {0, "97", 97}, {0, "", 0}, {0, "wide", 0}, {0, "-3", 0}} {
+		if got := columns(c.flag, env(c.env)); got != c.want {
+			t.Errorf("columns(%d, %q) = %d, want %d", c.flag, c.env, got, c.want)
+		}
+	}
+}
+
 func fillStage(t *testing.T, names ...string) string {
 	t.Helper()
 	stage := t.TempDir()

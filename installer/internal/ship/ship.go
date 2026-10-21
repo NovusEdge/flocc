@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	answersPkg "github.com/NovusEdge/flocc/installer/internal/answers"
@@ -59,6 +60,8 @@ type shipOpts struct {
 	Out         io.Writer
 	// Color asks the host for coloured step lines; Ship sets it from Out.
 	Color bool
+	// Cols is Out's width, sent with the colour request so the host can fit its live line.
+	Cols int
 }
 
 // usageError is a refusal of the arguments, which exits 2.
@@ -208,13 +211,36 @@ func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
 	if o.Out == nil {
 		o.Out = os.Stdout
 	}
-	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, TTY: o.TTY, Answers: doc, Out: o.Out, Color: ui.ColorFor(o.Out)})
+	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, TTY: o.TTY, Answers: doc, Out: o.Out, Color: ui.ColorFor(o.Out), Cols: ui.Width(o.Out)})
+}
+
+// lineTracker remembers whether the last byte it passed on ended a line.
+type lineTracker struct {
+	w       io.Writer
+	midLine bool
+}
+
+func (t *lineTracker) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		t.midLine = p[len(p)-1] != '\n'
+	}
+	return t.w.Write(p)
 }
 
 func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts) (Summary, error) {
-	tap := &summaryTap{out: o.Out}
+	out := &lineTracker{w: o.Out}
+	tap := &summaryTap{out: out}
 	err := scrubErr(shipTo(ctx, r, root, dest, o, tap), dest.Token)
 	tap.Flush()
+	// A dropped ssh or Ctrl-C can end the stream on a live line. The error is printed next and
+	// must not land on it: erase the frame, or end the partial line when nothing animates.
+	if out.midLine {
+		end := "\n"
+		if o.Color {
+			end = "\r\x1b[K"
+		}
+		io.WriteString(o.Out, end)
+	}
 	s, _ := tap.Summary()
 	s.Target = o.Target
 	return s, err
@@ -261,7 +287,7 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOp
 	}
 	c := sshCmd(dest, true, remoteCmd(true))
 	if !o.Interactive {
-		c = sshNoTTY(dest, remoteCmdWith(false, o.Color))
+		c = sshNoTTY(dest, remoteCmdWith(false, o.Color, o.Cols))
 		c.Stdin = bytes.NewReader(o.Answers)
 	}
 	c.Stdout = tap
@@ -287,20 +313,25 @@ func checkSudo(ctx context.Context, r host.Runner, dest Dest) error {
 	return fmt.Errorf("sudo asks for a password: give %s passwordless sudo, or use root", strings.TrimSpace(user))
 }
 
-func remoteCmd(interactive bool) string { return remoteCmdWith(interactive, false) }
+func remoteCmd(interactive bool) string { return remoteCmdWith(interactive, false, 0) }
 
 // remoteCmdWith asks for coloured step lines through the environment, set by env inside sudo
 // because sudo resets the caller's. ship stages a flocc-setup built from the checkout it runs in,
 // which may predate the colour request: an older binary ignores the variable, where it would
-// refuse an unknown flag and fail the whole ship.
-func remoteCmdWith(interactive, color bool) string {
+// refuse an unknown flag and fail the whole ship. The terminal's width goes along with colour,
+// the only case in which the host animates a line that must fit it.
+func remoteCmdWith(interactive, color bool, cols int) string {
 	// scp through the Daytona gateway drops the exec bit.
 	remote := "chmod 755 /tmp/flocc-setup/flocc-setup && "
 	if interactive {
 		return remote + "sudo /tmp/flocc-setup/flocc-setup"
 	}
 	if color {
-		return remote + "sudo -n env " + ui.ColorEnv + "=1 /tmp/flocc-setup/flocc-setup --answers -"
+		env := ui.ColorEnv + "=1"
+		if cols > 0 {
+			env += " " + ui.ColumnsEnv + "=" + strconv.Itoa(cols)
+		}
+		return remote + "sudo -n env " + env + " /tmp/flocc-setup/flocc-setup --answers -"
 	}
 	return remote + "sudo -n /tmp/flocc-setup/flocc-setup --answers -"
 }

@@ -80,16 +80,45 @@ func (p *Progress) ticker() (<-chan time.Time, func()) {
 	return t.C, t.Stop
 }
 
+// ColumnsEnv carries the desktop terminal's width to flocc-setup, whose stdout is a pipe.
+const ColumnsEnv = "COLUMNS"
+
+// Width is the width of w when it is a terminal, else 0.
+func Width(w io.Writer) int {
+	if f, ok := w.(*os.File); ok {
+		if c, _, err := term.GetSize(int(f.Fd())); err == nil && c > 0 {
+			return c
+		}
+	}
+	return 0
+}
+
+// cols is the width the live line must fit: set by the caller, the terminal's own, or the
+// desktop's as ColumnsEnv carried it across the pipe.
 func (p *Progress) cols() int {
 	if p.Cols > 0 {
 		return p.Cols
 	}
-	if f, ok := p.Out.W.(*os.File); ok {
-		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
-			return w
-		}
+	if w := Width(p.Out.W); w > 0 {
+		return w
+	}
+	if n, err := strconv.Atoi(os.Getenv(ColumnsEnv)); err == nil && n > 0 {
+		return n
 	}
 	return 80
+}
+
+// head is a line up to the name: the mark and the counter, blank for a line that belongs to no step.
+func (p *Progress) head(mark string, l Line) string {
+	if l.Total == 0 {
+		return indent + mark + " "
+	}
+	w := len(strconv.Itoa(l.Total))
+	counter := strings.Repeat(" ", 2*w+1)
+	if l.N > 0 {
+		counter = fmt.Sprintf("%*d/%d", w, l.N, l.Total)
+	}
+	return indent + mark + " " + counter + " "
 }
 
 // text is one line without its newline: the mark, the counter, the name padded to its column and
@@ -99,18 +128,18 @@ func (p *Progress) text(mark string, l Line, detail, suffix string) string {
 	if w == 0 {
 		w = 14
 	}
-	counter := fmt.Sprintf("%*d/%d", len(strconv.Itoa(l.Total)), l.N, l.Total)
-	s := fmt.Sprintf("%s%s %s %-*s %s%s", indent, mark, counter, w, l.Name, detail, suffix)
+	s := fmt.Sprintf("%s%-*s %s%s", p.head(mark, l), w, l.Name, detail, suffix)
 	return strings.TrimRight(s, " ")
 }
 
 // frame is the live line. The detail is cut so the whole line fits one terminal row: a wrapped
-// line would leave a copy of itself behind on every redraw.
+// line would leave a copy of itself behind on every redraw. It stays two columns short of the
+// width, so the cursor never rests in the last column, where terminals differ on wrapping.
 func (p *Progress) frame(v *liveLine) string {
 	glyph := spinRunes[v.frame%len(spinRunes)]
 	suffix := "   " + clockFmt(p.now().Sub(v.start))
 	fixed := utf8.RuneCountInString(p.text("x", v.l, "", suffix))
-	room := max(p.cols()-1-fixed, 10)
+	room := max(p.cols()-2-fixed, 1)
 	detail := v.l.Detail
 	if r := []rune(detail); len(r) > room {
 		detail = string(r[:room-1]) + "…"
@@ -128,8 +157,8 @@ func (p *Progress) Done(l Line) {
 	p.Quiet(func() { io.WriteString(p.Out.W, p.text(p.Out.OK("✓"), l, l.Detail, "")+"\n") })
 }
 
-// Run applies a step under a live line. An error clears the line and is returned as it is, for
-// the caller's own failure output; in plain mode the start line stays.
+// Run applies a step under a live line. An error ends it in a red "✗ 3/9 Name (12s)" line and is
+// returned as it is, for the caller's own failure output.
 func (p *Progress) Run(l Line, fn func() (Outcome, error)) error {
 	start := p.now()
 	var out Outcome
@@ -141,6 +170,9 @@ func (p *Progress) Run(l Line, fn func() (Outcome, error)) error {
 		out, err = fn()
 	}
 	if err != nil {
+		p.Quiet(func() {
+			io.WriteString(p.Out.W, p.head(p.Out.Fail("✗"), l)+l.Name+" ("+tookFmt(p.now().Sub(start))+")\n")
+		})
 		return err
 	}
 	mark := p.Out.OK("✓")

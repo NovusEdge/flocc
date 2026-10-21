@@ -1,6 +1,7 @@
 package ship
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -387,10 +388,10 @@ func TestRemoteCmd(t *testing.T) {
 // desktop: an unknown flag makes it exit 2, while an unknown environment variable is ignored.
 func TestColorIsRequestedThroughTheEnvironmentNotAFlag(t *testing.T) {
 	want := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo -n env FLOCC_COLOR=1 /tmp/flocc-setup/flocc-setup --answers -"
-	if got := remoteCmdWith(false, true); got != want || strings.Contains(got, "--color") {
+	if got := remoteCmdWith(false, true, 0); got != want || strings.Contains(got, "--color") {
 		t.Fatalf("%q", got)
 	}
-	if got := remoteCmdWith(true, true); got != remoteCmd(true) {
+	if got := remoteCmdWith(true, true, 120); got != remoteCmd(true) {
 		t.Fatalf("interactive runs take no request: %q", got)
 	}
 	f := okSudo("root@h")
@@ -399,6 +400,67 @@ func TestColorIsRequestedThroughTheEnvironmentNotAFlag(t *testing.T) {
 	}
 	if !f.Ran("interactive: ssh -T root@h " + want) {
 		t.Fatalf("calls %v", f.Calls)
+	}
+}
+
+// The host's stdout is a pipe, so only the desktop knows how wide its terminal is; a live line
+// wider than that wraps and leaves a row behind on every redraw. Like colour, the width goes in
+// the environment so that an older staged flocc-setup ignores it.
+func TestTheTerminalWidthTravelsWithTheColourRequestOnly(t *testing.T) {
+	want := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo -n env FLOCC_COLOR=1 COLUMNS=97 /tmp/flocc-setup/flocc-setup --answers -"
+	if got := remoteCmdWith(false, true, 97); got != want || strings.Contains(got, "--cols") {
+		t.Fatalf("%q", got)
+	}
+	if got := remoteCmdWith(false, false, 97); got != remoteCmd(false) {
+		t.Fatalf("no colour, no width: %q", got)
+	}
+}
+
+func TestShipSendsTheWidthItWasGiven(t *testing.T) {
+	f := okSudo("root@h")
+	o := shipOpts{Out: io.Discard, Color: true, Cols: 97}
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, o); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("interactive: ssh -T root@h " + remoteCmdWith(false, true, 97)) {
+		t.Fatalf("calls %v", f.Calls)
+	}
+}
+
+// A dropped ssh or Ctrl-C leaves the stream on a frame with no newline; the error is printed
+// next and must not land on it.
+func TestShipEndsAStreamThatStoppedMidLineBeforeTheErrorIsPrinted(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		color bool
+		tail  string
+	}{{"animating", true, "\r\x1b[K"}, {"plain", false, "\n"}} {
+		t.Run(c.name, func(t *testing.T) {
+			f := okSudo("root@h")
+			run := "ssh -T root@h " + remoteCmdWith(false, c.color, 0)
+			f.OnInteractiveOut(run, "  \x1b[33m⠙\x1b[0m 3/9 Packages   0:41").OnInteractive(run, errors.New("exit status 255"))
+			var out bytes.Buffer
+			_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: &out, Color: c.color})
+			if err == nil {
+				t.Fatal("want the ssh error")
+			}
+			if !strings.HasSuffix(out.String(), "0:41"+c.tail) {
+				t.Fatalf("%q", out.String())
+			}
+		})
+	}
+}
+
+func TestShipLeavesAStreamThatEndedOnANewlineAlone(t *testing.T) {
+	f := okSudo("root@h")
+	run := "ssh -T root@h " + remoteCmdWith(false, true, 0)
+	f.OnInteractiveOut(run, "  done\n")
+	var out bytes.Buffer
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: &out, Color: true}); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "  done\n" {
+		t.Fatalf("%q", out.String())
 	}
 }
 

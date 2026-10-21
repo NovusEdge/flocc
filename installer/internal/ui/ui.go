@@ -41,11 +41,13 @@ type Scripted struct {
 	// Prog draws the live step line; made on first use from Out and Color, which also decide
 	// whether it animates: --color says the far end is a terminal.
 	Prog *Progress
+	// Cols is the desktop terminal's width, which the live line must fit; zero reads COLUMNS.
+	Cols int
 }
 
 func (s *Scripted) progress() *Progress {
 	if s.Prog == nil {
-		s.Prog = &Progress{Out: Out{W: s.Out, Color: s.Color}, Animate: s.Color}
+		s.Prog = &Progress{Out: Out{W: s.Out, Color: s.Color}, Animate: s.Color, Cols: s.Cols}
 	}
 	return s.Prog
 }

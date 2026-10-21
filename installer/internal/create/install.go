@@ -130,8 +130,8 @@ func snapshot(ctx context.Context, e *Env) error {
 	if err := do("rename", name, "installed-new", "installed"); err != nil {
 		return err
 	}
-	o := e.o()
-	o.Line("%s %-10s %s/installed; %s returns to it", o.OK("✓"), "Snapshot", name, e.incusLine("snapshot restore "+name+" installed"))
+	e.progress().Done(ui.Line{Total: e.stepTotal, Name: "Snapshot",
+		Detail: name + "/installed; " + e.incusLine("snapshot restore "+name+" installed") + " returns to it"})
 	return nil
 }
 

@@ -74,6 +74,7 @@ type Env struct {
 	TTY   bool // stdin is a terminal, where ship.Connect can open the machine's master
 
 	prog      *ui.Progress
+	stepTotal int  // steps in the last RunSteps, which the Snapshot line aligns its counter column to
 	sudo      bool // sudo -n works on the machine
 	incusSudo bool // the account is not in incus-admin, so incus goes through sudo
 }
@@ -160,6 +161,7 @@ type Step interface {
 // each is reached. An applied step shows a live line unless it is Attached.
 func RunSteps(ctx context.Context, e *Env, steps []Step) error {
 	p := e.progress()
+	e.stepTotal = len(steps)
 	for i, s := range steps {
 		done, detail, err := s.Check(ctx, e)
 		if err != nil {
