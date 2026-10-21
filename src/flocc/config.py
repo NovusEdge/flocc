@@ -36,6 +36,7 @@ INTERPRETERS = frozenset(
     }
 )
 _BASH_RULE = re.compile(r"Bash\((.*)\)")
+_ENV_ASSIGN = re.compile(r"[A-Za-z_]\w*=")
 _PERMISSION_KEYS = {
     "allow": "permission_allow",
     "environment": "permission_environment",
@@ -166,12 +167,26 @@ def _repo(config_path: Path, name: str, table: dict) -> RepoConfig:
 
 
 def wildcards_an_interpreter(rule: str) -> bool:
-    m = _BASH_RULE.fullmatch(rule.strip())
+    rule = rule.strip()
+    if rule == "Bash":
+        return True
+    m = _BASH_RULE.fullmatch(rule)
     if m is None:
         return False
-    body = m.group(1)
-    first = body.split(":")[0].split(" ")[0]
-    return " -c" in f" {body}" or ("*" in body and first in INTERPRETERS)
+    body = m.group(1).strip()
+    if re.search(r"(?:^|\s)-c", body):
+        return True
+    # Claude Code splits a legacy "cmd:*" prefix on the colon; a leading VAR=val does not hide
+    # the program behind it.
+    tokens = [t for t in re.split(r"[\s:]+", body) if t]
+    while tokens and _ENV_ASSIGN.match(tokens[0]):
+        tokens.pop(0)
+    if not tokens or tokens[0].startswith("*"):
+        return True
+    program = tokens[0].rsplit("/", 1)[-1].lower()
+    return "*" in body and (
+        program in INTERPRETERS or program.rstrip("0123456789.-") in INTERPRETERS
+    )
 
 
 def _permissions(path: Path) -> dict:

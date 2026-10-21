@@ -149,11 +149,39 @@ def test_no_permissions_file_means_no_rules_and_no_judge():
 
 
 @pytest.mark.parametrize(
-    "rule", ["Bash(python:*)", "Bash(sh *)", "Bash(bash -c ls)", "Bash(env:*)", "Bash(xargs *)"]
+    "rule",
+    [
+        "Bash(python:*)",
+        "Bash(sh *)",
+        "Bash(bash -c ls)",
+        "Bash(env:*)",
+        "Bash(xargs *)",
+        "Bash",
+        "Bash()",
+        "Bash(*)",
+        "Bash(:*)",
+        "Bash(*:*)",
+        "Bash( python *)",
+        "Bash(/usr/bin/python3 *)",
+        "Bash(FOO=1 python *)",
+        "Bash(FOO=1 *)",
+        "Bash(python3.12 *)",
+        "Bash(sh\\t*)",
+        "Bash(Python:*)",
+    ],
 )
 def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule):
     with pytest.raises(ValueError, match="interpreter"):
         load(with_permissions(tmp_path, f'allow = ["{rule}"]\n'))
+
+
+@pytest.mark.parametrize(
+    "rule",
+    ["Bash(npx playwright install)", "Bash(uv run pytest *)", "Bash(git status:*)", "Read(*)"],
+)
+def test_an_ordinary_allow_rule_is_accepted(tmp_path, rule):
+    cfg = load(with_permissions(tmp_path, f'allow = ["{rule}"]\n'))
+    assert cfg.permission_allow == (rule,)
 
 
 @pytest.mark.parametrize(
