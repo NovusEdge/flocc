@@ -467,6 +467,40 @@ a prompt, which denies itself after two minutes. Every block and prompt is logge
 rule that wildcards an interpreter or shell (`Bash(python:*)`, `Bash(sh *)`, anything with `-c`)
 is dropped when the config loads, with a warning in `flocc logs`; the rest still apply.
 
+## cardinal
+
+cardinal is the owner's always-on assistant: a Claude session, as an unprivileged user on the
+machine that holds the Incus hosts, which checks the fleet and Linear every 20 minutes and talks to
+you through the Claude app. Its brief is `deploy/cardinal/CLAUDE.md`; the design is
+`docs/superpowers/specs/2026-10-21-cardinal-part-2-setup-command-design.md`. Run from the flocc
+checkout:
+
+    flocc cardinal setup zer0-day-nimble             # the first run on the hand setup needs --adopt
+    flocc cardinal login --email <pool account>      # a pool account, never your own
+    flocc cardinal attach --write                    # /mcp, linear, Authenticate, paste the localhost URL, Ctrl-b d
+    flocc cardinal status
+    flocc status -H all                              # the CARDINAL table
+
+`setup` is also the repair command. It asks for the machine's sudo password only when a root
+outcome is missing: the user, lingering, the desktop key or the tailnet block. It never restarts a
+running cardinal, so a changed brief or unit applies at the next daily renewal (a two-hour window
+from 04:00) or at `flocc cardinal restart`. `--user cardinal-test --only <vm>` gives a test install
+beside the live one.
+
+The root pass blocks the cardinal user from the tailnet (`flocc-cardinal-egress@<user>.service`,
+its own nftables table), because Tailscale authenticates the machine, not the user, and every node
+is the owner's. cardinal reaches its hosts as root over the Incus bridge, with a key limited to the
+bridge gateway, and Claude and Linear over the internet.
+
+`flocc cardinal remove` stops cardinal and takes its key off the hosts; `--purge` also deletes the
+user and its home. A host whose sshd setup did not install keeps sshd running with its
+`cardinal.conf`.
+
+Not yet confirmed on a live run: that the `/loop` initial prompt arms the loop, that Tailscale SSH
+serves the `/etc/ssh` host keys once sshd is installed, that pinning `ipv4.address` on a running VM
+keeps its lease, and that the egress block holds for connections to the machine's own tailnet
+address. The live checklist is in the design's Testing section.
+
 ## Disk use
 
 A worktree with its venv can reach 1.4 GB, and uv's download cache (`~/.cache/uv`) grows with every
