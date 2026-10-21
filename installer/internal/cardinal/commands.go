@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -192,7 +191,7 @@ func (d Deps) machineEnv(ctx context.Context, s saved.Saved) (*create.Env, error
 		return nil, err
 	}
 	opts := append([]string{"-o", "BatchMode=yes"}, d.Mux...)
-	ce := &create.Env{M: create.Remote{R: d.Run, Target: s.Machine, Opts: opts}, Local: d.Run, Out: io.Discard,
+	ce := &create.Env{M: create.Remote{R: d.Run, Target: s.Machine, Opts: opts}, Local: d.Run, UI: d.UI,
 		Spec: create.Spec{Machine: s.Machine}, TTY: d.TTY}
 	return ce, ce.Probe(ctx)
 }

@@ -201,7 +201,6 @@ func TestCreateStopsWhenTheMachineIsUnreachable(t *testing.T) {
 	}
 }
 
-
 func TestSnapshotSwapsTheNewOneInAfterItExists(t *testing.T) {
 	f := host.NewFake().On(snapQuery, 0, "{}").On(snapDelete, 0, "").On(snapCreate, 0, "").On(snapRename, 0, "")
 	e, _ := testEnv(f)

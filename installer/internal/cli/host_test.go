@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -295,7 +294,8 @@ func TestHostAddShowsEachCallAsAStepWithItsOwnOutcome(t *testing.T) {
 	for _, r := range p.rec.Rows() {
 		got = append(got, r.Name+"="+string(r.State))
 	}
-	want := []string{"Host file=done", "Keys=done", "Repos=done", "Linear team=done", "Issues=done", "Labels=done", "Save host=done", "Keys=done"}
+	want := []string{"Host file=done", "Keys=done", "Repos=done", "Linear team=done", "Issues=done", "Labels=done", "Save host=done",
+		"Check Linear API key=done", "Check GitHub agent token (read-only)=done", "Check GitHub publish token=done", "Check ntfy topic=done", "Keys=done"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("%q", got)
 	}
