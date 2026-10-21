@@ -257,6 +257,11 @@ func run(args []string) int {
 		fmt.Fprintln(stderr, "flocc-setup: answers:", err)
 		return 1
 	}
+	// Overlay keeps a saved table when the shipped one is absent; a ship is the whole host file,
+	// so a table removed there must go from the host too.
+	if fromStdin {
+		a.Permissions = in.Permissions
+	}
 	var u ui.UI = ui.NewHuh()
 	if fromStdin {
 		u = &ui.Scripted{A: a, Out: stdout, Color: wantColor, Cols: cols}
