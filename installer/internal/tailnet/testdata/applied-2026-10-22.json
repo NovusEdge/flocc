@@ -1,0 +1,17 @@
+{
+	"tagOwners": {"tag:flocc-host": ["autogroup:admin"]},
+	"hosts": {"laptop": "100.64.0.1", "desktop": "100.64.0.2"},
+	"grants": [
+		{"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]}
+	],
+	"ssh": [
+		{"action": "check", "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot", "root"]},
+		{"action": "accept", "src": ["autogroup:member"], "dst": ["tag:flocc-host"], "users": ["root", "autogroup:nonroot"]}
+	],
+	"tests": [
+		{"src": "tag:flocc-host", "deny": ["laptop:22", "laptop:443", "desktop:22", "desktop:443"]}
+	],
+	"sshTests": [
+		{"src": "owner@example.com", "dst": ["tag:flocc-host"], "accept": ["root"]}
+	]
+}

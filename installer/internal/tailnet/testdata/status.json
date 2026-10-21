@@ -1,0 +1,11 @@
+{
+	"Self": {"ID": "nSELF", "HostName": "desktop", "TailscaleIPs": ["100.64.0.2", "fd7a:115c::2"], "UserID": 11, "Tags": null},
+	"Peer": {
+		"nodekey:a": {"ID": "nLAP", "HostName": "laptop", "TailscaleIPs": ["fd7a:115c::1", "100.64.0.1"], "UserID": 11},
+		"nodekey:b": {"ID": "nFLOCC", "HostName": "flocc-nimble", "TailscaleIPs": ["100.64.0.7"], "UserID": 99, "Tags": ["tag:flocc-host"]}
+	},
+	"User": {
+		"11": {"ID": 11, "LoginName": "owner@example.com"},
+		"99": {"ID": 99, "LoginName": "tagged-devices"}
+	}
+}
