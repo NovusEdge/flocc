@@ -58,6 +58,11 @@ func (l *RedactLog) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
+// KeyMinter mints the one-off tagged auth key a host joins the tailnet with; *tailnet.Client is one.
+type KeyMinter interface {
+	TaggedKey(ctx context.Context, tag string, ttl time.Duration) (string, error)
+}
+
 type Env struct {
 	M     host.Runner // runs on the machine
 	Local host.Runner // runs on this desktop
@@ -66,6 +71,8 @@ type Env struct {
 	Spec  Spec
 	Sleep func(time.Duration)
 	TTY   bool // stdin is a terminal, where ship.Connect can open the machine's master
+	// Tailnet is nil without a stored OAuth client; the VM then logs in by QR code.
+	Tailnet KeyMinter
 
 	step      *ui.Step // the step RunSteps is applying, for the waits inside it
 	sudo      bool     // sudo -n works on the machine

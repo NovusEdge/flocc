@@ -217,6 +217,9 @@ func Run(ctx context.Context, spec Spec, inst Installer, s ui.Session, tty bool)
 	opts := append([]string{"-o", "BatchMode=yes"}, ControlOpts()...)
 	e := &Env{M: Remote{R: run, Target: spec.Machine, Opts: opts}, Local: run,
 		UI: s, Log: log, Spec: spec, Sleep: time.Sleep, TTY: tty}
+	if t, ok := inst.(interface{ Tailnet() KeyMinter }); ok {
+		e.Tailnet = t.Tailnet()
+	}
 	if err := e.connect(ctx); err != nil {
 		return failStep(s.Step("Connect"), err)
 	}

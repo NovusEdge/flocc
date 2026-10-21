@@ -109,7 +109,8 @@ func newSetupOps(d *deps) setupOps {
 	}
 }
 
-const tailscaleAPI = "https://api.tailscale.com"
+// tailscaleAPI is a var so tests can point the client at a local server.
+var tailscaleAPI = "https://api.tailscale.com"
 
 // tailnetClientOf is the stored OAuth client, or nil when none is stored or the keyring fails: both
 // leave the owner on the browser login.

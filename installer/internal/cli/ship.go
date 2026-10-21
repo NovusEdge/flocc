@@ -10,9 +10,11 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
@@ -48,7 +50,7 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 		if err := keys.Fill(ctx, keysEnv(d), mapped(listHosts(d)), keys.Slots); err != nil {
 			return err
 		}
-		doc, err := answersDoc(d.store(), h)
+		doc, err := answersDoc(d.store(), h, daytonaKey(ctx, d, h))
 		if err != nil {
 			return err
 		}
@@ -79,9 +81,28 @@ func needCheckout(d *deps) error {
 	return nil
 }
 
-// answersDoc is what ship sends on stdin: the host file's answers with the stored keys. Part
-// 2a's Ship redacts the document's secrets from its log.
-func answersDoc(st keys.Store, h hosts.Host) ([]byte, error) {
+// daytonaKey mints the tagged key a Daytona sandbox joins the tailnet with, as host create does for
+// a VM; it is "" for any other host and without a stored OAuth client. A sandbox that cannot get one
+// still ships, and joins by the login it always had.
+func daytonaKey(ctx context.Context, d *deps, h hosts.Host) string {
+	if h.Daytona == "" {
+		return ""
+	}
+	c := tailnetClientOf(d)
+	if c == nil {
+		return ""
+	}
+	key, err := c.TaggedKey(ctx, tailnet.Tag, create.KeyTTL)
+	if err != nil {
+		d.ui.Todo(h.Name + ": no tagged Tailscale key for the sandbox, so it joins by login: " + err.Error())
+		return ""
+	}
+	return key
+}
+
+// answersDoc is what ship sends on stdin: the host file's answers with the stored keys and, when
+// there is one, the one-off Tailscale key. Part 2a's Ship redacts the document's secrets from its log.
+func answersDoc(st keys.Store, h hosts.Host, tsKey string) ([]byte, error) {
 	v := map[keys.Slot]string{}
 	for _, s := range keys.Slots {
 		got, err := st.Get(s)
@@ -95,7 +116,7 @@ func answersDoc(st keys.Store, h hosts.Host) ([]byte, error) {
 	}
 	a := h.Answers
 	a.NtfyTopic = v[keys.Ntfy]
-	a.Secrets = &answers.Secrets{LinearKey: v[keys.Linear], AgentToken: v[keys.Agent], PublishToken: v[keys.Publish]}
+	a.Secrets = &answers.Secrets{LinearKey: v[keys.Linear], AgentToken: v[keys.Agent], PublishToken: v[keys.Publish], TailscaleAuthKey: tsKey}
 	return toml.Marshal(a)
 }
 

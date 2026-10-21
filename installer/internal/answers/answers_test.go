@@ -184,3 +184,21 @@ func TestPermissionsTableParsesAndOverlays(t *testing.T) {
 		t.Fatalf("overlay lost permissions: %+v, %v", b.Permissions, err)
 	}
 }
+
+func TestTailscaleAuthKeyIsASecretAndNeverSaved(t *testing.T) {
+	a := &Answers{Secrets: &Secrets{TailscaleAuthKey: "tskey-auth-k1-x"}}
+	if got := a.Secrets.Values(); !slices.Equal(got, []string{"tskey-auth-k1-x"}) {
+		t.Errorf("values %v", got)
+	}
+	path := filepath.Join(t.TempDir(), "answers.toml")
+	if err := a.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); strings.Contains(string(b), "tskey") {
+		t.Errorf("saved:\n%s", b)
+	}
+	back, err := Parse([]byte("[secrets]\ntailscale_auth_key = \"tskey-auth-k1-x\"\n"))
+	if err != nil || back.Secrets.TailscaleAuthKey != "tskey-auth-k1-x" {
+		t.Errorf("%v %+v", err, back.Secrets)
+	}
+}

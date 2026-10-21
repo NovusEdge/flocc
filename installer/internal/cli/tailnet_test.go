@@ -2,12 +2,16 @@ package cli
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -196,5 +200,73 @@ func TestSetupTailnetNamesAPolicyThatDoesNotDefineTheTag(t *testing.T) {
 	runSetup(context.Background(), d, tailnetOps(&l, api, false))
 	if r := rowOf(t, p, "tag flocc-nimble"); r.State != ui.Pending || !strings.Contains(r.Detail, "lacks "+tailnet.Tag) {
 		t.Errorf("%+v", r)
+	}
+}
+
+// tailscaleServer answers the token and key endpoints; keyStatus is the key endpoint's status.
+func tailscaleServer(t *testing.T, keyStatus int) {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/oauth/token":
+			w.Write([]byte(`{"access_token":"tok","expires_in":3600}`))
+		case "/api/v2/tailnet/-/keys":
+			w.WriteHeader(keyStatus)
+			w.Write([]byte(`{"key":"tskey-auth-k1-MINTED"}`))
+		}
+	}))
+	old := tailscaleAPI
+	tailscaleAPI = s.URL
+	t.Cleanup(func() { s.Close(); tailscaleAPI = old })
+}
+
+func daytonaHost() hosts.Host {
+	return hosts.Host{Name: "dt", Daytona: "sb", Answers: answers.Answers{TeamKey: "NF", DigestIssue: "NF-1",
+		Repos: []answers.Repo{{Name: "a", URL: "https://github.com/o/a", BaseBranch: "main", Check: "just check"}}}}
+}
+
+func TestShipGivesADaytonaSandboxAMintedKeyInItsAnswers(t *testing.T) {
+	tailscaleServer(t, 200)
+	d, _, calls, _ := shipDeps(t, allKeys+"tailscale_oauth = 'cid:sec'\n")
+	hosts.Save(hosts.Dir(d.home), daytonaHost())
+	if err := shipHost(context.Background(), d, "dt"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := answers.Parse((*calls)[0].doc)
+	if err != nil || a.Secrets.TailscaleAuthKey != "tskey-auth-k1-MINTED" {
+		t.Fatalf("%+v %v", a, err)
+	}
+}
+
+func TestShipMintsNoKeyForAnSSHHostOrWithoutAClient(t *testing.T) {
+	tailscaleServer(t, 200)
+	d, _, calls, _ := shipDeps(t, allKeys+"tailscale_oauth = 'cid:sec'\n")
+	if err := shipHost(context.Background(), d, "a"); err != nil {
+		t.Fatal(err)
+	}
+	hosts.Save(hosts.Dir(d.home), daytonaHost())
+	writeSecrets(t, d.home, allKeys)
+	if err := shipHost(context.Background(), d, "dt"); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range *calls {
+		if a, _ := answers.Parse(c.doc); a == nil || a.Secrets.TailscaleAuthKey != "" {
+			t.Errorf("call %d carried a key: %+v", i, a)
+		}
+	}
+}
+
+func TestShipStillShipsASandboxWhoseKeyCouldNotBeMinted(t *testing.T) {
+	tailscaleServer(t, 403)
+	d, _, calls, rec := shipDeps(t, allKeys+"tailscale_oauth = 'cid:sec'\n")
+	hosts.Save(hosts.Dir(d.home), daytonaHost())
+	if err := shipHost(context.Background(), d, "dt"); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := answers.Parse((*calls)[0].doc); a.Secrets.TailscaleAuthKey != "" {
+		t.Error("a key from a refused request")
+	}
+	if td := strings.Join(todos(&setupScript{Recorder: *rec}), "\n"); !strings.Contains(td, "joins by login") {
+		t.Errorf("todos %q", td)
 	}
 }

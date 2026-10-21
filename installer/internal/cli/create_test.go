@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
@@ -78,5 +80,22 @@ func TestHostInstallerIsReadyOnlyInsideTheCheckout(t *testing.T) {
 func TestUsageNamesHostCreate(t *testing.T) {
 	if !strings.Contains(usage, "flocc host create [--cpus N] [--memory GiB] [--disk GiB] <machine> <name>") {
 		t.Fatal(usage)
+	}
+}
+
+// The interface must be a plain nil without a client: a nil *tailnet.Client inside it would pass
+// create's nil check and then fail mid-run.
+func TestHostInstallerMintsKeysOnlyWithAStoredClient(t *testing.T) {
+	d, _, _ := testDeps(t)
+	path := filepath.Join(d.home, ".config", "flocc", "secrets.toml")
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	os.WriteFile(path, []byte("linear = \"x\"\n"), 0o600)
+	d.store = func() keys.Store { return keys.Open(d.home, io.Discard) }
+	if m := (hostInstaller{d: d}).Tailnet(); m != nil {
+		t.Fatalf("minter %v without a client", m)
+	}
+	os.WriteFile(path, []byte("tailscale_oauth = \"cid:secret\"\n"), 0o600)
+	if m := (hostInstaller{d: d}).Tailnet(); m == nil {
+		t.Fatal("no minter with a stored client")
 	}
 }
