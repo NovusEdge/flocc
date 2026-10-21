@@ -379,8 +379,17 @@ in the kept stage for the root pass, `~<user>/.cache/flocc-cardinal/setup.log` f
 and `~/.cache/flocc/cardinal-<user>.log` on the desktop for the Incus and host passes. A failed host
 does not stop the other hosts. The summary marks it, and setup exits non-zero.
 
-Nothing tells the owner when cardinal itself is down, beyond its session disappearing from the
-Claude app (Open questions).
+The rows come from `~/.local/lib/flocc-cardinal/flocc-setup --phase cardinal-status`, which prints
+them as JSON. `flocc cardinal status` renders that JSON and adds the journal and pane lines.
+
+**The desktop's `flocc status -H all` shows cardinal too**, so a dead cardinal shows where the owner
+already looks. `discover` also reads every `~/.config/flocc/cardinal/<user>.toml`, and `collect`
+fetches each one in parallel with the hosts: `ssh -T <user>@<machine>` running the
+`cardinal-status` phase, with `BatchMode=yes` and `ConnectTimeout=10` as `fetch` uses. `render`
+prints a CARDINAL table under the hosts table: user, machine, unit, session age, last turn, login,
+Linear, and hosts reached out of saved. A row that fails, by the same rules as the exit code, or
+that cannot be reached adds a line to the failure list naming `flocc cardinal status --user
+<user>`. No saved file, no table. The journal and pane lines stay in `flocc cardinal status`.
 
 ## Removing it
 
@@ -431,6 +440,8 @@ Unit tests, with `host.Fake` and a temporary `Env.Root`, as the existing step te
 - The status exit code for each failing row; no pane line holding `code=` is printed; the
   `systemctl status` fallback when the journal refuses.
 - `flocc cardinal -H x status` is refused.
+- The fleet view with a saved cardinal file: a CARDINAL table from a `cardinal-status` fixture, a
+  failure line for a failing row and for an unreachable machine, and no table without a saved file.
 
 Live run, on zer0-day-nimble with `--user cardinal-test` and a throwaway VM from `flocc host create
 zer0-day-nimble flocc-cardtest`, passing `--only flocc-cardtest` so that the live cardinal and
@@ -463,7 +474,8 @@ flocc-nimble are not touched until the last step. Record the results in `docs/vm
     (`from=`), and so is password login. cardinal-test's key never leaves the machine.
 11. A second install, `--user cardinal-test2 --only flocc-cardtest`, then `remove --purge` for it.
     cardinal-test still reaches the host, and ssh is still active.
-12. `status` shows every row. `attach` without `--write` ignores typing.
+12. `status` shows every row. `flocc status -H all` shows cardinal-test in its CARDINAL table, and,
+    with the unit stopped, in its failure list. `attach` without `--write` ignores typing.
 13. `remove`: units gone, key line, install record, drop-in and sysctl file gone, ssh stopped.
     `remove --purge`: the user is gone. Then destroy flocc-cardtest.
 14. `flocc cardinal setup zer0-day-nimble` over the live cardinal (Moving the hand setup over).
@@ -499,19 +511,13 @@ flocc-nimble are not touched until the last step. Record the results in `docs/vm
 - That connections from the machine reach the VM from the `incusbr0` gateway address, which `from=`
   relies on.
 
-## Open questions
+## Owner's choices
 
-The design above uses the first option in each.
+The owner settled these on 2026-10-21.
 
-1. **Renewal.** A fresh session daily, in a window from 04:00, which bounds context growth and
-   carries pending asks in `~/state.md`. The alternative is a weekly restart with `claude
-   --continue`, which keeps the owner's conversation thread at the cost of a growing, compacted
-   context.
-2. **cardinal's Linear identity.** The owner's own OAuth, as live, with no extra seat. The
-   alternative is a separate Linear member, so that cardinal's comments are told apart from the
-   owner's.
-3. **Who notices cardinal is down.** Nobody beyond the Claude app and `flocc cardinal status`; the
-   owner finds ntfy unhelpful. The alternative is a cardinal row in the desktop's `flocc status -H
-   all`.
-4. **Hosts in scope.** Only Incus VMs on cardinal's machine; flocc-nimble is the only host today.
-   The alternative is remote SSH hosts too, with a cardinal key on their sshd over the tailnet.
+| Question | Chosen | Not chosen |
+|---|---|---|
+| Renewal | A fresh session daily, in a window from 04:00; pending asks carry over in `~/state.md` | A weekly restart with `claude --continue`, which keeps the conversation but grows a compacted context |
+| cardinal's Linear identity | The owner's own OAuth, as live, with no extra seat | A separate Linear member, so cardinal's comments are told apart from the owner's |
+| Who notices cardinal is down | A CARDINAL table in the desktop's `flocc status -H all` (Status and failures), beside the Claude app and `flocc cardinal status` | Only the Claude app and `flocc cardinal status` |
+| Hosts in scope | Only Incus VMs on cardinal's machine; flocc-nimble is the only host today | Remote SSH hosts too, with a cardinal key on their sshd over the tailnet |
