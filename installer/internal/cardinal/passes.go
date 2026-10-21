@@ -395,17 +395,24 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey strin
 	err = d.Run.Interactive(ctx, c)
 	tap.Flush()
 	// Each call prints one report, in order, so the i-th report is the i-th call's.
+	var why string
 	for i, r := range reports {
 		title := "Root pass"
 		if i < len(calls) && calls[i].Phase == "cardinal-purge" {
 			title = "Removed " + calls[i].User
+			if r.Error != "" {
+				title = "Removing " + calls[i].User + " failed"
+			}
 		}
 		if len(r.Steps) > 0 || len(r.Notes) > 0 {
 			d.printSteps(title, r)
 		}
+		if r.Error != "" {
+			why = saved.Sanitize(r.Error) + "; "
+		}
 	}
 	if err != nil {
-		return fmt.Errorf("the root pass failed; its log is %s/setup.log on %s: %w", dir, s.Machine, err)
+		return fmt.Errorf("the root pass failed: %sits log is %s/setup.log on %s: %w", why, dir, s.Machine, err)
 	}
 	return nil
 }

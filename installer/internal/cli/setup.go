@@ -409,8 +409,13 @@ func (w *wizard) shipWhy(st hostState) string {
 	return ""
 }
 
+// row records a step's outcome. A Ctrl-C during an op cancels w.ctx, and the op's error need not
+// wrap context.Canceled, so the run stops at the first row after it.
 func (w *wizard) row(state rowState, name, detail string) {
 	w.rows = append(w.rows, setupRow{state, name, detail})
+	if w.ctx.Err() != nil {
+		w.stopped = true
+	}
 }
 
 // fail records err as name's failure. A cancelled prompt or an empty paste stops the whole run.
