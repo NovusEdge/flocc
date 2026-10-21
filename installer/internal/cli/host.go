@@ -171,7 +171,7 @@ func addHost(ctx context.Context, d *deps, name string, reach hosts.Host) error 
 	if err := hosts.Save(hosts.Dir(d.home), h); err != nil {
 		return err
 	}
-	fmt.Fprintf(d.out, "Saved %s.\n", hostFile(d, name))
+	d.o().Line("Saved %s.", hostFile(d, name))
 	// Asked for after the save, so the publish token's page lists the repos just mapped.
 	m := mapped(listHosts(d))
 	if err := keys.Fill(ctx, e, m, []keys.Slot{keys.Publish, keys.Ntfy}); err != nil {
@@ -241,29 +241,37 @@ func pickTeam(ctx context.Context, d *deps, lin *linearapi.Client, h *hosts.Host
 }
 
 // openIssue reports whether key is an open issue: false with no error when Linear has no such
-// issue or it is closed. Any other error comes back, so a blip at Linear never replaces a working
-// digest: an imported one is not titled "flocc digest", and falling through would make a second.
-func openIssue(ctx context.Context, lin *linearapi.Client, key string) (bool, error) {
+// issue or it is closed, and then why says which. Any other error comes back, so a blip at Linear
+// never replaces a working digest: an imported one is not titled "flocc digest", and falling
+// through would make a second.
+func openIssue(ctx context.Context, lin *linearapi.Client, key string) (ok bool, why string, err error) {
 	is, err := lin.Issue(ctx, key)
-	if errors.Is(err, linearapi.ErrNotFound) {
-		return false, nil
+	switch {
+	case errors.Is(err, linearapi.ErrNotFound):
+		return false, "Linear has no such issue", nil
+	case err != nil:
+		return false, "", err
+	case !is.Open():
+		return false, "its state is " + is.StateType, nil
 	}
-	return err == nil && is.Open(), err
+	return true, "", nil
 }
 
 // ensureDigest keeps an open digest issue, else takes the open one another host on the team
 // uses, else finds or creates the team's open "flocc digest".
 func ensureDigest(ctx context.Context, d *deps, lin *linearapi.Client, team linearapi.Team, h *hosts.Host) error {
 	if h.DigestIssue != "" {
-		if ok, err := openIssue(ctx, lin, h.DigestIssue); err != nil || ok {
+		ok, why, err := openIssue(ctx, lin, h.DigestIssue)
+		if err != nil || ok {
 			return err
 		}
+		d.o().WarnLine("Not keeping %s's digest %s: %s.", h.Name, h.DigestIssue, why)
 	}
 	for _, o := range listHosts(d) {
 		if o.Name == h.Name || o.TeamKey != team.Key || o.DigestIssue == "" || o.DigestIssue == h.DigestIssue {
 			continue
 		}
-		ok, err := openIssue(ctx, lin, o.DigestIssue)
+		ok, why, err := openIssue(ctx, lin, o.DigestIssue)
 		if err != nil {
 			return err
 		}
@@ -271,6 +279,7 @@ func ensureDigest(ctx context.Context, d *deps, lin *linearapi.Client, team line
 			h.DigestIssue = o.DigestIssue
 			return nil
 		}
+		d.o().WarnLine("Not using %s's digest %s: %s.", o.Name, o.DigestIssue, why)
 	}
 	is, ok, err := lin.FindOpenIssue(ctx, team.Key, digestTitle)
 	if err != nil {
@@ -280,7 +289,7 @@ func ensureDigest(ctx context.Context, d *deps, lin *linearapi.Client, team line
 		if is, err = lin.CreateIssue(ctx, team.ID, digestTitle, digestBody); err != nil {
 			return err
 		}
-		fmt.Fprintf(d.out, "Created %s, the digest issue; pin it in Linear.\n", is.Key)
+		d.o().WarnLine("Created %s, the digest issue; pin it in Linear.", is.Key)
 	}
 	h.DigestIssue = is.Key
 	return nil
@@ -299,7 +308,7 @@ func ensureLabels(ctx context.Context, d *deps, lin *linearapi.Client, team line
 		if err := lin.CreateLabel(ctx, team.ID, n); err != nil {
 			return err
 		}
-		fmt.Fprintf(d.out, "Created label %s in %s.\n", n, team.Key)
+		d.o().Line("Created label %s in %s.", n, team.Key)
 	}
 	return nil
 }
@@ -341,17 +350,17 @@ func importHost(ctx context.Context, d *deps, name string, reach hosts.Host) err
 		if err := st.Set(keys.Ntfy, a.NtfyTopic); err != nil {
 			return err
 		}
-		fmt.Fprintln(d.out, "Kept the host's ntfy topic as the desktop's.")
+		d.o().Line("Kept the host's ntfy topic as the desktop's.")
 	default:
 		// Ship sends the desktop's topic, so the phone following the host's would go quiet.
-		fmt.Fprintf(d.out, "The desktop's ntfy topic differs from %s's; the next ship moves %s to the desktop's (https://ntfy.sh/%s).\n", name, name, cur)
+		d.o().WarnLine("The desktop's ntfy topic differs from %s's; the next ship moves %s to the desktop's (https://ntfy.sh/%s).", name, name, cur)
 	}
 	h.Answers = *a
 	h.NtfyTopic, h.Secrets = "", nil
 	if err := hosts.Save(hosts.Dir(d.home), h); err != nil {
 		return err
 	}
-	fmt.Fprintf(d.out, "Imported %s's answers into %s.\n", name, hostFile(d, name))
+	d.o().Line("Imported %s's answers into %s.", name, hostFile(d, name))
 	return adoptKeys(ctx, d, h, dest)
 }
 

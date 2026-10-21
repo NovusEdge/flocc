@@ -261,8 +261,8 @@ const (
 var sevStyle = map[severity]lipgloss.Style{
 	plain: lipgloss.NewStyle(),
 	dim:   lipgloss.NewStyle().Faint(true),
-	warn:  lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-	bad:   lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+	warn:  lipgloss.NewStyle().Foreground(lipgloss.Yellow),
+	bad:   lipgloss.NewStyle().Foreground(lipgloss.Red),
 }
 
 func cell(text string, s severity) string { return sevStyle[s].Render(text) }

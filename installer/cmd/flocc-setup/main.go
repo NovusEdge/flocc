@@ -150,6 +150,7 @@ func run(args []string) int {
 	phase := fs.String("phase", "root", "root, service or login; the root phase hands off to the service phase itself")
 	answersIn := fs.String("answers", "", `"-" reads the answers document, secrets included, from stdin and runs without a terminal`)
 	email := fs.String("email", "", "login phase: the claude.ai account to sign in as")
+	color := fs.Bool("color", false, "colour the step lines of a run with --answers; the desktop passes it when its terminal shows colour")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -226,7 +227,7 @@ func run(args []string) int {
 	}
 	var u ui.UI = ui.NewHuh()
 	if fromStdin {
-		u = &ui.Scripted{A: a, Out: stdout}
+		u = &ui.Scripted{A: a, Out: stdout, Color: *color}
 	}
 	env.UI = u
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -255,7 +256,11 @@ func run(args []string) int {
 		if fromStdin {
 			piped = bytes.NewReader(doc)
 		}
-		err = handoff(ctx, runner, stage, handoffArgs(fromStdin), piped)
+		args := handoffArgs(fromStdin)
+		if *color {
+			args = append(args, "--color")
+		}
+		err = handoff(ctx, runner, stage, args, piped)
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return exit.ExitCode() // the service phase already reported its error

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 const (
@@ -160,7 +161,8 @@ func RunSteps(ctx context.Context, e *Env, steps []Step) error {
 			return fmt.Errorf("%s: %w", s.Name(), err)
 		}
 		if !done {
-			fmt.Fprintf(e.Out, "• %-10s %s\n", s.Name(), detail)
+			o := e.o()
+			o.Line("%s %-10s %s", o.Warn("•"), s.Name(), detail)
 			if err := s.Apply(ctx, e); err != nil {
 				return fmt.Errorf("%s: %w", s.Name(), err)
 			}
@@ -171,10 +173,13 @@ func RunSteps(ctx context.Context, e *Env, steps []Step) error {
 				return fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
 			}
 		}
-		fmt.Fprintf(e.Out, "✓ %-10s %s\n", s.Name(), detail)
+		o := e.o()
+		o.Line("%s %-10s %s", o.OK("✓"), s.Name(), detail)
 	}
 	return nil
 }
+
+func (e *Env) o() ui.Out { return ui.NewOut(e.Out) }
 
 type tsNode struct{ HostName, DNSName string }
 

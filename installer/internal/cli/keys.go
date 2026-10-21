@@ -13,6 +13,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 func keysEnv(d *deps) keys.Env {
@@ -47,7 +48,8 @@ func looksLikeKey(s string) bool {
 // report prints the problems keys.Check found and returns the exit status.
 func report(d *deps, problems []string) int {
 	for _, p := range problems {
-		fmt.Fprintln(d.err, "FAIL  "+p)
+		what, next := ui.SplitNext(p)
+		d.oe().FailLine(what, next)
 	}
 	if len(problems) > 0 {
 		return 1
@@ -111,7 +113,7 @@ func rotate(ctx context.Context, d *deps, which string) int {
 			return 1
 		}
 		if len(changed) == 0 {
-			fmt.Fprintln(d.out, "Nothing changed.")
+			d.o().Line("Nothing changed.")
 			return 0
 		}
 	}
@@ -126,15 +128,15 @@ func rotate(ctx context.Context, d *deps, which string) int {
 			continue
 		}
 		pushed++
-		fmt.Fprintf(d.out, "Pushed to %s.\n", h.Name)
+		d.o().Line("Pushed to %s.", h.Name)
 	}
 	if pushed > 0 && which == "github" {
-		fmt.Fprintln(d.out, "Do not revoke the old token until the sessions running now end: each read GH_TOKEN when it started.")
-		fmt.Fprintln(d.out, "flocc status -H all shows the new expiry after each host's next daily token check.")
+		d.o().WarnLine("Do not revoke the old token until the sessions running now end: each read GH_TOKEN when it started.")
+		d.o().Line("flocc status -H all shows the new expiry after each host's next daily token check.")
 	}
 	if len(failed) > 0 {
-		fmt.Fprintf(d.err, "Not pushed; once these are up, run flocc keys rotate %s again, paste nothing and answer yes to push the stored keys again, or run flocc ship -H <host>:\n  %s\n",
-			which, strings.Join(failed, "\n  "))
+		d.oe().FailLine("Not pushed:\n  "+strings.Join(failed, "\n  "),
+			fmt.Sprintf("once these are up, run flocc keys rotate %s again, paste nothing and answer yes to push the stored keys again, or run flocc ship -H <host>", which))
 		return 1
 	}
 	return code

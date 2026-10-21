@@ -17,6 +17,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/identity"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 func archFor(unameM string) (string, error) {
@@ -258,7 +259,11 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOp
 	}
 	c := sshCmd(dest, true, remoteCmd(true))
 	if !o.Interactive {
-		c = sshNoTTY(dest, remoteCmd(false))
+		remote := remoteCmd(false)
+		if ui.ColorFor(o.Out) {
+			remote += " --color"
+		}
+		c = sshNoTTY(dest, remote)
 		c.Stdin = bytes.NewReader(o.Answers)
 	}
 	c.Stdout = tap

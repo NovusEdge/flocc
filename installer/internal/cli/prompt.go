@@ -41,7 +41,7 @@ func (p huhPrompt) Team(teams []linearapi.Team) (linearapi.Team, error) {
 		opts[i] = huh.NewOption(t.Key+"  "+t.Name, i)
 	}
 	var i int
-	err := huh.NewForm(huh.NewGroup(huh.NewSelect[int]().Title("Linear team for this host").Options(opts...).Value(&i))).Run()
+	err := ui.Form(huh.NewGroup(huh.NewSelect[int]().Title("Linear team for this host").Options(opts...).Value(&i))).Run()
 	return teams[i], err
 }
 

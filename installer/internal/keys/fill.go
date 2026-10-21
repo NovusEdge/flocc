@@ -13,6 +13,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 type Prompt interface {
@@ -40,6 +41,8 @@ type Env struct {
 	GitHubAPI, LinearAPI, NtfyBase string
 	NewTopic                       func() string
 }
+
+func (e Env) out() ui.Out { return ui.NewOut(e.Out) }
 
 var ErrStopped = errors.New("stopped at an empty paste")
 
@@ -92,7 +95,7 @@ func store(e Env, s Slot, v, note string) error {
 	if err := e.Store.Set(s, v); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.Out, "Stored in %s: %s\n", e.Store.Where(), note)
+	e.out().Line("Stored in %s: %s", e.Store.Where(), note)
 	return nil
 }
 
@@ -100,7 +103,9 @@ func store(e Env, s Slot, v, note string) error {
 // paste.
 func askChecked(ctx context.Context, e Env, m Mapped, s Slot, help string) (v, note string, ok bool, err error) {
 	link, page := Page(s, m)
-	fmt.Fprintf(e.Out, "\n%s\n%s\n%s\n", s.Title(), page, link)
+	fmt.Fprintf(e.Out, "\n%s\n", s.Title())
+	e.out().Line("%s", page)
+	e.out().Line("%s", link)
 	e.Open(link)
 	raw := ""
 	for {
@@ -118,7 +123,7 @@ func askChecked(ctx context.Context, e Env, m Mapped, s Slot, help string) (v, n
 		}
 		var u unchecked
 		if errors.As(err, &u) {
-			fmt.Fprintf(e.Out, "Not stored: %v\n", err)
+			e.out().WarnLine("Not stored: %v", err)
 			again, err2 := e.Prompt.Confirm("Check the same paste again?", true)
 			if err2 != nil {
 				return "", "", false, err2
@@ -129,7 +134,7 @@ func askChecked(ctx context.Context, e Env, m Mapped, s Slot, help string) (v, n
 			continue
 		}
 		if err != nil {
-			fmt.Fprintf(e.Out, "Not stored: %v\n", err)
+			e.out().WarnLine("Not stored: %v", err)
 			raw = ""
 			continue
 		}
@@ -149,7 +154,7 @@ func Adopt(ctx context.Context, e Env, m Mapped, s Slot, raw, from string) error
 		}
 		var u unchecked
 		if errors.As(err, &u) {
-			fmt.Fprintf(e.Out, "%s from %s: %v\n", s.Title(), from, err)
+			e.out().WarnLine("%s from %s: %v", s.Title(), from, err)
 			again, err := e.Prompt.Confirm("Check it again?", true)
 			if err != nil {
 				return err
@@ -157,25 +162,25 @@ func Adopt(ctx context.Context, e Env, m Mapped, s Slot, raw, from string) error
 			if again {
 				continue
 			}
-			fmt.Fprintf(e.Out, "Did not take the %s from %s; flocc host import takes it once the check gets an answer.\n", s.Title(), from)
+			e.out().WarnLine("Did not take the %s from %s; flocc host import takes it once the check gets an answer.", s.Title(), from)
 			return nil
 		}
 		// Only the host has this value, so there is nothing to paste; editing the token keeps it.
 		var rp repoProblems
 		if errors.As(err, &rp) {
-			fmt.Fprintf(e.Out, "Did not take the %s from %s:\n%v\nOn github.com/settings/personal-access-tokens open %q, Edit, and fix "+
-				"the above under Repository access and Permissions (the token stays the same), then run flocc host import again.\n",
+			e.out().WarnLine("Did not take the %s from %s:\n%v\nOn github.com/settings/personal-access-tokens open %q, Edit, and fix "+
+				"the above under Repository access and Permissions (the token stays the same), then run flocc host import again.",
 				s.Title(), from, rp, tokenName[s])
 			return nil
 		}
 		if err != nil {
-			fmt.Fprintf(e.Out, "Did not take the %s from %s:\n%v\nflocc keys asks for a new one.\n", s.Title(), from, err)
+			e.out().WarnLine("Did not take the %s from %s:\n%v\nflocc keys asks for a new one.", s.Title(), from, err)
 			return nil
 		}
 		if err := e.Store.Set(s, v); err != nil {
 			return err
 		}
-		fmt.Fprintf(e.Out, "Took the %s from %s (%s).\n", s.Title(), from, note)
+		e.out().Line("Took the %s from %s (%s).", s.Title(), from, note)
 		return nil
 	}
 }
@@ -314,7 +319,8 @@ func Check(ctx context.Context, e Env, m Mapped) []string {
 			problems = append(problems, s.Title()+": "+RotateHint(err).Error())
 			continue
 		}
-		fmt.Fprintf(e.Out, "ok    %s: %s\n", s.Title(), note)
+		o := e.out()
+		o.Line("%s    %s: %s", o.OK("ok"), s.Title(), note)
 	}
 	if t, err := e.Store.Get(Ntfy); err != nil || t == "" {
 		problems = append(problems, "ntfy topic: missing; run flocc keys")
@@ -388,7 +394,8 @@ func fillNtfy(ctx context.Context, e Env) error {
 		return err
 	}
 	web := "https://ntfy.sh/" + topic
-	fmt.Fprintf(e.Out, "\nntfy topic\nScan this with the ntfy app on Android, or subscribe to %s in the app.\n", web)
+	fmt.Fprint(e.Out, "\nntfy topic\n")
+	e.out().Line("Scan this with the ntfy app on Android, or subscribe to %s in the app.", web)
 	e.QR("ntfy://ntfy.sh/" + topic + "?display=flocc")
 	for {
 		if err := push(ctx, e, topic); err != nil {
@@ -403,7 +410,7 @@ func fillNtfy(ctx context.Context, e Env) error {
 			return err
 		}
 		if !again {
-			fmt.Fprintf(e.Out, "Kept the topic; subscribe to %s before the first ship.\n", web)
+			e.out().WarnLine("Kept the topic; subscribe to %s before the first ship.", web)
 			return nil
 		}
 	}
