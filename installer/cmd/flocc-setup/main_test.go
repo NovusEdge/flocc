@@ -387,3 +387,44 @@ func TestCheckStage(t *testing.T) {
 		}
 	}
 }
+
+type fakeStep struct{ name string }
+
+func (f fakeStep) Name() string { return f.name }
+func (f fakeStep) Check(context.Context, *steps.Env) (bool, string, error) {
+	return false, "to do", nil
+}
+func (f fakeStep) Apply(context.Context, *steps.Env) error { return nil }
+
+func TestEventsRunDrawsTheStepsAndSendsTheSummaryAsData(t *testing.T) {
+	var out, errOut bytes.Buffer
+	env := finishEnv(t, loginFailLine)
+	env.UI = &ui.Events{Scripted: ui.Scripted{A: env.Answers, Out: &out}, W: &out}
+	if err := steps.RunAll(context.Background(), env, []steps.Step{fakeStep{"One"}, fakeStep{"Two"}}); err == nil {
+		t.Fatal("the fake step's check never passes; want the applied-but-still-failing error")
+	}
+	if code := finish(context.Background(), env, nil, true, &out, &errOut, "/tmp/setup.log"); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), steps.SummaryMarker) {
+		t.Fatalf("escape or marker line in %q", out.String())
+	}
+	rec := &ui.Recorder{}
+	r := ui.Replay(ui.New(rec), "", "")
+	r.Write(out.Bytes())
+	r.Close()
+	var names []string
+	for _, row := range rec.Rows() {
+		names = append(names, row.Name)
+	}
+	if !slices.Equal(names, []string{"One", "Two", "One"}) {
+		t.Errorf("rows %q", names)
+	}
+	data, ok := r.Data("summary")
+	if !ok {
+		t.Fatalf("no summary data in %q", out.String())
+	}
+	if s, ok := steps.ParseSummaryLine(steps.SummaryMarker + data); !ok || !s.LoginPending {
+		t.Errorf("summary %q", data)
+	}
+}

@@ -145,11 +145,11 @@ func (r *Replayer) step(e Event) {
 	}
 	switch e.State {
 	case Running:
-		switch {
-		case e.Total > 0:
-			st.Progress(e.N, e.Total)
-		case e.Detail != "":
+		if e.Detail != "" {
 			st.Detail(e.Detail)
+		}
+		if e.Total > 0 {
+			st.Progress(e.N, e.Total)
 		}
 		return
 	case Done:
