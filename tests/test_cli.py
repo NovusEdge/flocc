@@ -524,3 +524,11 @@ def test_attach_is_read_only_on_the_service_socket(host_cfg):
     with pytest.raises(Exec) as exc:
         main(["--config", str(host_cfg), "attach", "NF-12-review"])
     assert exc.value.args[0] == ["tmux", "-L", "flocc", "attach", "-r", "-t", "NF-12-review"]
+
+
+def test_context_lists_command_grants(tmp_path, monkeypatch, capsys):
+    gate_env(monkeypatch, tmp_path, "impl")
+    monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
+    set_block(tmp_path / "grants.json", Grants(commands=("make e2e",)))
+    assert main(["context"]) == 0
+    assert "command make e2e" in capsys.readouterr().out

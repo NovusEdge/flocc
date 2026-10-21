@@ -222,6 +222,7 @@ def cmd_context(args) -> int:
     items = [f"launches {g.launches}"] if g.launches is not None else []
     items += [f"agent {a}" for a in g.agents] + [f"workflow {w}" for w in g.workflows]
     items += [f"fix-rounds {g.fix_rounds}"] if g.fix_rounds is not None else []
+    items += [f"command {c}" for c in g.commands]
     print(f"## Grants\n\n{', '.join(items) or 'none'}.\n")
     handoff = state / "handoff.md"
     if handoff.exists():

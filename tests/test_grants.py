@@ -4,8 +4,10 @@ from flocc.grants import (
     GrantError,
     Grants,
     add_comment,
+    add_judge,
     allow_lines,
     for_phase,
+    judge_grants,
     merge,
     parse_allow,
     set_block,
@@ -68,3 +70,34 @@ def test_comment_launches_are_scoped_to_their_phase_and_beat_the_block(tmp_path)
     assert for_phase(p, "impl") == Grants(launches=16, fix_rounds=2)
     assert for_phase(p, "fix").launches == 3
     assert for_phase(p, "test").launches is None
+
+
+def test_a_command_grant_takes_the_rest_of_the_line_commas_included():
+    g = parse_allow("command npx playwright test --grep 'a, b'")
+    assert g == Grants(commands=("npx playwright test --grep 'a, b'",))
+
+
+def test_a_command_grant_needs_a_command():
+    with pytest.raises(GrantError, match="command"):
+        parse_allow("command   ")
+
+
+def test_command_grants_from_comments_apply_to_every_phase(tmp_path):
+    p = tmp_path / "grants.json"
+    add_comment(p, parse_allow("command make e2e"), "impl")
+    add_comment(p, parse_allow("command make lint"), "impl")
+    assert for_phase(p, "fix").commands == ("make e2e", "make lint")
+
+
+def test_judge_grants_are_kept_apart_and_deduplicated(tmp_path):
+    p = tmp_path / "grants.json"
+    add_judge(p, "npx playwright install", "npx playwright")
+    add_judge(p, "npx playwright install", None)
+    assert judge_grants(p) == (("npx playwright install",), ("npx playwright",))
+    assert for_phase(p, "impl").commands == ()
+
+
+def test_judge_grants_survive_a_corrupt_section(tmp_path):
+    p = tmp_path / "grants.json"
+    p.write_text('{"judge": ["not", "a", "table"]}')
+    assert judge_grants(p) == ((), ())
