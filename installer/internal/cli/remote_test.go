@@ -363,7 +363,7 @@ func TestDashHAllStatusIsTheFleetView(t *testing.T) {
 	d, _, _, _ := hostDeps(t, "a")
 	var got []string
 	d.fleet = func(_ context.Context, s ui.Session, args []string) int { got = args; return 0 }
-	if code := run(context.Background(), d, []string{"status", "-H", "all", "--watch"}); code != 0 || strings.Join(got, " ") != "--watch" {
+	if code := run(context.Background(), d, []string{"status", "-H", "all", "--watch"}); code != 0 || len(got) != 0 {
 		t.Fatalf("exit %d args %q", code, got)
 	}
 }

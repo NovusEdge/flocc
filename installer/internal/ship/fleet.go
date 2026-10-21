@@ -89,7 +89,17 @@ type Claim struct {
 	StartedAge float64  `json:"started_age_s"`
 	TmuxAlive  bool     `json:"tmux_alive"`
 	ContextPct *float64 `json:"context_pct"`
-	Activity   string   `json:"activity"`
+	// Absent from a host whose claim has no status file yet.
+	UpdatedAge  *float64       `json:"updated_age_s"`
+	Launches    int            `json:"launches"`
+	LaunchLimit int            `json:"launch_limit"`
+	Activity    []ActivityLine `json:"activity"`
+}
+
+// ActivityLine is one journal line that names the claim's issue; At is Unix seconds.
+type ActivityLine struct {
+	At   float64 `json:"at"`
+	Text string  `json:"text"`
 }
 
 // FleetHost is one row's identity. State is empty for an ssh destination, whose reachability is
@@ -707,32 +717,75 @@ func Fleet(ctx context.Context, s ui.Session, out io.Writer, args []string) int 
 	return runFleet(ctx, s, out, *watch, *interval, daytonaConfig, hostsDir, saved.Dir(home))
 }
 
-// runFleet draws the fleet until ctx ends, or once.
-func runFleet(ctx context.Context, s ui.Session, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir, cardinalDir string) int {
-	client := &http.Client{Timeout: 30 * time.Second}
-	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
+// Source is the fleet as the desktop sees it: the hosts it knows and a cache of the ssh
+// destinations it minted for them, kept between polls.
+type Source struct {
+	daytonaConfig, hostsDir, cardinalDir string
+	client                               *http.Client
+	cache                                *destCache
+}
+
+func newSource(daytonaConfig, hostsDir, cardinalDir string) *Source {
+	s := &Source{daytonaConfig: daytonaConfig, hostsDir: hostsDir, cardinalDir: cardinalDir,
+		client: &http.Client{Timeout: 30 * time.Second}}
+	s.cache = newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
 		auth, err := loadDaytona(daytonaConfig)
 		if err != nil {
 			return Dest{}, err
 		}
-		return auth.sshDest(ctx, client, h.ID, h.Name, realWaiter(io.Discard))
+		return auth.sshDest(ctx, s.client, h.ID, h.Name, realWaiter(io.Discard))
 	})
-	cache.sshOpts, _ = SSHMux()
+	s.cache.sshOpts, _ = SSHMux()
+	return s
+}
+
+// NewSource reads the same places `flocc status -H all` does.
+func NewSource() *Source {
+	home, _ := os.UserHomeDir()
+	return newSource(filepath.Join(home, ".config/daytona/config.json"), hosts.Dir(home), saved.Dir(home))
+}
+
+func (s *Source) Discover(ctx context.Context) ([]FleetHost, []string) {
+	return discover(ctx, s.daytonaConfig, s.hostsDir, s.client)
+}
+
+// Status is flocc status --json on one host. A host that is not started has neither a report nor
+// an error from fetch, so its state becomes the error.
+func (s *Source) Status(ctx context.Context, h FleetHost) (*Report, error) {
+	row := fetch(ctx, host.Exec{}, s.cache, h)
+	switch {
+	case row.Report != nil:
+		return row.Report, nil
+	case row.Err != "":
+		return nil, errors.New(row.Err)
+	}
+	return nil, errors.New(h.State)
+}
+
+// Cardinals runs the quick status of every saved install that is not removed.
+func (s *Source) Cardinals(ctx context.Context) ([]CardinalRow, []string) {
+	list, notes := discoverCardinals(s.cardinalDir)
+	return collectCardinals(ctx, host.Exec{}, s.cache.sshOpts, list), notes
+}
+
+// runFleet draws the fleet until ctx ends, or once.
+func runFleet(ctx context.Context, s ui.Session, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir, cardinalDir string) int {
+	src := newSource(daytonaConfig, hostsDir, cardinalDir)
 	var track *tracker
 	if !watch {
 		track = hostSteps(s)
 	}
 	for {
-		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
+		found, notes := src.Discover(ctx)
 		cardList, cardNotes := discoverCardinals(cardinalDir)
 		notes = append(notes, cardNotes...)
 		var cards []CardinalRow
 		done := make(chan struct{})
 		go func() {
-			cards = collectCardinals(ctx, host.Exec{}, cache.sshOpts, cardList)
+			cards = collectCardinals(ctx, host.Exec{}, src.cache.sshOpts, cardList)
 			close(done)
 		}()
-		rows := collect(ctx, host.Exec{}, cache, found, track)
+		rows := collect(ctx, host.Exec{}, src.cache, found, track)
 		<-done
 		if ctx.Err() != nil {
 			return exitInterrupted
