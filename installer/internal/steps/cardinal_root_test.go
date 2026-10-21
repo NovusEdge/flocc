@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -234,20 +235,11 @@ func TestCardinalPurgeWaitsForProcessesThenDeletes(t *testing.T) {
 	if err := CardinalPurge(context.Background(), e, "cardinal"); err != nil {
 		t.Fatal(err)
 	}
-	userdel := index(f.Calls, "userdel -r cardinal")
-	if userdel < 0 || userdel > index(f.Calls, "systemctl disable --now flocc-cardinal-egress@cardinal.service") || strings.Count(strings.Join(f.Calls, "\n"), "pgrep") != 2 {
+	userdel := slices.Index(f.Calls, "userdel -r cardinal")
+	if userdel < 0 || userdel > slices.Index(f.Calls, "systemctl disable --now flocc-cardinal-egress@cardinal.service") || strings.Count(strings.Join(f.Calls, "\n"), "pgrep") != 2 {
 		t.Fatalf("calls %v", f.Calls)
 	}
 	if _, err := os.Stat(e.Path(egressRulesPath("cardinal"))); !os.IsNotExist(err) {
 		t.Fatal("rules left behind")
 	}
-}
-
-func index(calls []string, c string) int {
-	for i, x := range calls {
-		if x == c {
-			return i
-		}
-	}
-	return -1
 }

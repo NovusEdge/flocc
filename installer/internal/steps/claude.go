@@ -128,20 +128,8 @@ func applyPushSettings(e *Env, want map[string]bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	// CreateTemp makes the file 0600, which also tightens a looser existing settings.json.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	// 600 also tightens a looser existing settings.json.
+	return writeAtomic(path, out, 0o600)
 }
 
 func missingPlugins(e *Env, l plugins.List) []string {

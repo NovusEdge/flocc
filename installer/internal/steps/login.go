@@ -145,25 +145,8 @@ func editClaudeJSON(path string, edit func(map[string]json.RawMessage) (bool, er
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	// Mode 600 from the start: the file holds the account's OAuth state. WriteFile would keep the
-	// mode of a leftover temp file.
-	tmp := path + ".flocc.tmp"
-	os.Remove(tmp)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(out); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	// 600: the file holds the account's OAuth state.
+	return writeAtomic(path, out, 0o600)
 }
 
 // checkStatus refuses a status the lock and the session list cannot be trusted from.

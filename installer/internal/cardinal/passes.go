@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -146,23 +147,13 @@ func (d Deps) build(ctx context.Context, arch string) (string, error) {
 	return dir, nil
 }
 
-func archFor(unameM string) (string, error) {
-	switch strings.TrimSpace(unameM) {
-	case "x86_64":
-		return "amd64", nil
-	case "aarch64", "arm64":
-		return "arm64", nil
-	}
-	return "", fmt.Errorf("unsupported architecture %q", strings.TrimSpace(unameM))
-}
-
 // inScope is one host cardinal will reach: its desktop host file and its bridge address.
 type inScope struct {
 	Host hosts.Host
 	Addr string
 }
 
-type incusList []struct {
+type incusInstance struct {
 	Name            string                       `json:"name"`
 	Devices         map[string]map[string]string `json:"devices"`
 	ExpandedDevices map[string]map[string]string `json:"expanded_devices"`
@@ -180,7 +171,7 @@ func (d Deps) incusPass(ctx context.Context, ce *create.Env, only []string, file
 	if err != nil {
 		return nil, nil, "", err
 	}
-	var list incusList
+	var list []incusInstance
 	if err := json.Unmarshal([]byte(out), &list); err != nil {
 		return nil, nil, "", fmt.Errorf("incus list: %w", err)
 	}
@@ -192,19 +183,14 @@ func (d Deps) incusPass(ctx context.Context, ce *create.Env, only []string, file
 	var scope []inScope
 	var skipped []string
 	for _, h := range files {
-		if len(only) > 0 && !contains(only, h.Name) {
+		if len(only) > 0 && !slices.Contains(only, h.Name) {
 			continue
 		}
 		if h.SSH == "" {
 			skipped = append(skipped, h.Name+": a Daytona host; cardinal reaches only Incus VMs on its machine")
 			continue
 		}
-		i := -1
-		for j := range list {
-			if list[j].Name == h.Name {
-				i = j
-			}
-		}
+		i := slices.IndexFunc(list, func(x incusInstance) bool { return x.Name == h.Name })
 		if i < 0 {
 			skipped = append(skipped, h.Name+": not an Incus instance on "+ce.Spec.Machine)
 			continue
@@ -233,29 +219,11 @@ func (d Deps) incusPass(ctx context.Context, ce *create.Env, only []string, file
 		scope = append(scope, inScope{Host: h, Addr: addr})
 	}
 	for _, o := range only {
-		if !containsFunc(files, func(h hosts.Host) bool { return h.Name == o }) {
+		if !slices.ContainsFunc(files, func(h hosts.Host) bool { return h.Name == o }) {
 			return nil, nil, "", fmt.Errorf("--only %s: no desktop host file of that name", o)
 		}
 	}
 	return scope, skipped, gateway, nil
-}
-
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
-}
-
-func containsFunc[T any](xs []T, f func(T) bool) bool {
-	for _, v := range xs {
-		if f(v) {
-			return true
-		}
-	}
-	return false
 }
 
 // hostPass stages flocc-setup on the host over the desktop's own route and runs phase as root.

@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,8 +26,8 @@ func TestCardinalLoginStopsLogsInConsentsAndStarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v; %v", err, f.Calls)
 	}
-	login := index(f.Calls, "interactive: /home/cardinal/.local/bin/claude auth login --claudeai --email pool@x.test")
-	if index(f.Calls, userctlPrefix+"stop cardinal.service") > login || login < 0 || index(f.Calls, userctlPrefix+"start cardinal.service") < login {
+	login := slices.Index(f.Calls, "interactive: /home/cardinal/.local/bin/claude auth login --claudeai --email pool@x.test")
+	if slices.Index(f.Calls, userctlPrefix+"stop cardinal.service") > login || login < 0 || slices.Index(f.Calls, userctlPrefix+"start cardinal.service") < login {
 		t.Fatalf("calls %v", f.Calls)
 	}
 	if consentDir != "/home/cardinal" {

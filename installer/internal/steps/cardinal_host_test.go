@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,7 +53,7 @@ func TestCardinalHostWritesTheDropInBeforeInstalling(t *testing.T) {
 	if !strings.Contains(string(conf), "ListenAddress 10.131.47.206\n") || !strings.Contains(string(conf), "PasswordAuthentication no") {
 		t.Fatalf("drop-in %q", conf)
 	}
-	if index(f.Calls, "sysctl -p "+sysctlFile) > index(f.Calls, "apt-get install -y openssh-server") {
+	if slices.Index(f.Calls, "sysctl -p "+sysctlFile) > slices.Index(f.Calls, "apt-get install -y openssh-server") {
 		t.Fatalf("calls %v", f.Calls)
 	}
 	if !r.Installed || r.HostKey != "10.131.47.206 ssh-ed25519 AAAAhostkey" {

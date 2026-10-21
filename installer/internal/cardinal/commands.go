@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
@@ -176,7 +177,7 @@ func (d Deps) machineBuild(ctx context.Context, s saved.Saved) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	arch, err := archFor(m)
+	arch, err := ship.ArchFor(m)
 	if err != nil {
 		return "", err
 	}
@@ -356,12 +357,7 @@ func (d Deps) remove(ctx context.Context, s saved.Saved, purge bool) error {
 	files, _ := hosts.List(hosts.Dir(d.Home))
 	var failed []string
 	for _, name := range s.Hosts {
-		i := -1
-		for j, h := range files {
-			if h.Name == name {
-				i = j
-			}
-		}
+		i := slices.IndexFunc(files, func(h hosts.Host) bool { return h.Name == name })
 		if i < 0 {
 			fmt.Fprintf(d.Out, "  ✗ %s: no desktop host file; its key line stays\n", name)
 			failed = append(failed, name)

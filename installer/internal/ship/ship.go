@@ -21,7 +21,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-func archFor(unameM string) (string, error) {
+func ArchFor(unameM string) (string, error) {
 	switch strings.TrimSpace(unameM) {
 	case "x86_64":
 		return "amd64", nil
@@ -254,7 +254,7 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOp
 	if err != nil {
 		return err
 	}
-	arch, err := archFor(unameM)
+	arch, err := ArchFor(unameM)
 	if err != nil {
 		return err
 	}

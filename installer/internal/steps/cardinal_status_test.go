@@ -29,10 +29,8 @@ func TestShouldRenew(t *testing.T) {
 	}
 }
 
-func f64(v float64) *float64 { return &v }
-
 func TestCardinalStatusFailures(t *testing.T) {
-	ok := CardinalStatus{Unit: "active", Login: "full", SessionAgeS: f64(3600), LastTurnAgeS: f64(60), Hosts: map[string]bool{"flocc-nimble": true}}
+	ok := CardinalStatus{Unit: "active", Login: "full", SessionAgeS: new(3600.0), LastTurnAgeS: new(60.0), Hosts: map[string]bool{"flocc-nimble": true}}
 	if f := ok.Failures(); len(f) != 0 {
 		t.Fatalf("healthy status fails: %v", f)
 	}
@@ -42,9 +40,9 @@ func TestCardinalStatusFailures(t *testing.T) {
 	}{
 		"unit":        {func(s *CardinalStatus) { s.Unit = "failed" }, "cardinal.service is failed: flocc cardinal restart"},
 		"login":       {func(s *CardinalStatus) { s.Login = "none" }, "login is none: flocc cardinal login"},
-		"stale turn":  {func(s *CardinalStatus) { s.LastTurnAgeS = f64(46 * 60) }, "no turn for 46m0s"},
+		"stale turn":  {func(s *CardinalStatus) { s.LastTurnAgeS = new(46 * 60.0) }, "no turn for 46m0s"},
 		"no turn":     {func(s *CardinalStatus) { s.LastTurnAgeS = nil }, "no turn since the session started"},
-		"old session": {func(s *CardinalStatus) { s.SessionAgeS = f64(6.5 * 86400) }, "6d old"},
+		"old session": {func(s *CardinalStatus) { s.SessionAgeS = new(6.5 * 86400) }, "6d old"},
 		"host":        {func(s *CardinalStatus) { s.Hosts["flocc-nimble"] = false }, "flocc-nimble unreachable: flocc cardinal setup"},
 	} {
 		s := ok

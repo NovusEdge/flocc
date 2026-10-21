@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -182,7 +183,7 @@ func TestUnitsStartAfterResetFailedOnceTheLoginIsFull(t *testing.T) {
 	if err := (Units{User: "cardinal", RenewHour: 4}).Apply(context.Background(), e); err != nil {
 		t.Fatalf("%v; %v", err, f.Calls)
 	}
-	reset, start := index(f.Calls, userctlPrefix+"reset-failed cardinal.service"), index(f.Calls, userctlPrefix+"start cardinal.service")
+	reset, start := slices.Index(f.Calls, userctlPrefix+"reset-failed cardinal.service"), slices.Index(f.Calls, userctlPrefix+"start cardinal.service")
 	if reset < 0 || start < reset {
 		t.Fatalf("calls %v", f.Calls)
 	}
@@ -219,7 +220,7 @@ func TestUnitsStopTheHandSetup(t *testing.T) {
 	if err := (Units{User: "cardinal", RenewHour: 4, Notes: &notes}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran(userctlPrefix+"stop "+handUnit) || !f.Ran("tmux kill-session -t =cardinal") || index(f.Calls, "tmux kill-session -t =cardinal") > index(f.Calls, userctlPrefix+"start cardinal.service") {
+	if !f.Ran(userctlPrefix+"stop "+handUnit) || !f.Ran("tmux kill-session -t =cardinal") || slices.Index(f.Calls, "tmux kill-session -t =cardinal") > slices.Index(f.Calls, userctlPrefix+"start cardinal.service") {
 		t.Fatalf("calls %v", f.Calls)
 	}
 	if len(notes) != 1 || !strings.Contains(notes[0], "hand setup") {

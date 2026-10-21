@@ -280,7 +280,7 @@ func cardinalFake(t *testing.T, stdout string, code int) (*host.Fake, saved.Save
 }
 
 func TestFleetShowsCardinalAndListsAFailingOne(t *testing.T) {
-	ok, _ := json.Marshal(steps.CardinalStatus{Schema: 1, Unit: "active", Login: "full", SessionAgeS: f64(7200), LastTurnAgeS: f64(300)})
+	ok, _ := json.Marshal(steps.CardinalStatus{Schema: 1, Unit: "active", Login: "full", SessionAgeS: new(7200.0), LastTurnAgeS: new(300.0)})
 	failing, _ := json.Marshal(steps.CardinalStatus{Schema: 1, Unit: "failed", Login: "full"})
 	for name, c := range map[string]struct {
 		stdout   string
@@ -323,8 +323,6 @@ func TestDiscoverCardinalsSkipsRemovedInstalls(t *testing.T) {
 		t.Fatalf("%+v %v", list, notes)
 	}
 }
-
-func f64(v float64) *float64 { return &v }
 
 // hangingRunner blocks the "slow" host until its context ends and answers the others at once.
 type hangingRunner struct{}
@@ -438,7 +436,7 @@ func TestStatusesSharesConnectionsForSSHHosts(t *testing.T) {
 
 func TestAge(t *testing.T) {
 	for in, want := range map[float64]string{5: "5s", 119: "1m", 3700: "1h", 200000: "2d"} {
-		if got := age(in); got != want {
+		if got := Age(in); got != want {
 			t.Errorf("%v: %s want %s", in, got, want)
 		}
 	}

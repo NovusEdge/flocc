@@ -4,27 +4,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
-
-func ageText(s *float64) string {
-	if s == nil {
-		return "-"
-	}
-	d := time.Duration(*s * float64(time.Second))
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	}
-	return fmt.Sprintf("%dd", int(d.Hours()/24))
-}
 
 // RenderStatus prints a full cardinal-status report and returns the exit code. Every string came
 // from cardinal's binary, so each is sanitized.
@@ -32,13 +16,17 @@ func RenderStatus(s steps.CardinalStatus) (string, int) {
 	var b strings.Builder
 	row := func(k, v string) { fmt.Fprintf(&b, "%-12s %s\n", k, saved.Sanitize(v)) }
 	row("unit", fmt.Sprintf("%s, %d restarts", s.Unit, s.Restarts))
-	row("session", ageText(s.SessionAgeS)+" old")
+	if s.SessionAgeS != nil {
+		row("session", ship.Age(*s.SessionAgeS)+" old")
+	}
 	row("tmux", fmt.Sprintf("session %v, claude %v", s.Tmux, s.Claude))
 	row("login", s.Login)
 	if s.Linear != "" {
 		row("linear", s.Linear)
 	}
-	row("last turn", ageText(s.LastTurnAgeS)+" ago")
+	if s.LastTurnAgeS != nil {
+		row("last turn", ship.Age(*s.LastTurnAgeS)+" ago")
+	}
 	if s.NextRenew != "" {
 		row("next renew", s.NextRenew)
 	}

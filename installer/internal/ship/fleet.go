@@ -324,10 +324,10 @@ func cardinalTable(rows []CardinalRow) (string, []string) {
 		}
 		session, turn := cell("-", dim), cell("-", dim)
 		if st.SessionAgeS != nil {
-			session = age(*st.SessionAgeS)
+			session = Age(*st.SessionAgeS)
 		}
 		if st.LastTurnAgeS != nil {
-			turn = age(*st.LastTurnAgeS) + " ago"
+			turn = Age(*st.LastTurnAgeS) + " ago"
 		}
 		t.Row(user, machine, unit, session, turn, login)
 		if f := st.Failures(); len(f) > 0 {
@@ -370,7 +370,7 @@ var sevStyle = map[severity]lipgloss.Style{
 
 func cell(text string, s severity) string { return sevStyle[s].Render(text) }
 
-func age(s float64) string {
+func Age(s float64) string {
 	d := time.Duration(s * float64(time.Second))
 	switch {
 	case d < time.Minute:
@@ -399,15 +399,15 @@ func tickCell(rep *Report) string {
 	stale := time.Duration(*t.AgeS*float64(time.Second)) > staleTick
 	switch {
 	case t.Exit == nil && stale:
-		return cell(fmt.Sprintf("%s ago, still running", age(*t.AgeS)), warn)
+		return cell(fmt.Sprintf("%s ago, still running", Age(*t.AgeS)), warn)
 	case t.Exit == nil:
-		return fmt.Sprintf("%s ago, running", age(*t.AgeS))
+		return fmt.Sprintf("%s ago, running", Age(*t.AgeS))
 	case *t.Exit != "0":
-		return cell(fmt.Sprintf("%s ago, exit %s", age(*t.AgeS), *t.Exit), bad)
+		return cell(fmt.Sprintf("%s ago, exit %s", Age(*t.AgeS), *t.Exit), bad)
 	case stale:
-		return cell(fmt.Sprintf("%s ago, ok", age(*t.AgeS)), warn)
+		return cell(fmt.Sprintf("%s ago, ok", Age(*t.AgeS)), warn)
 	}
-	return fmt.Sprintf("%s ago, ok", age(*t.AgeS))
+	return fmt.Sprintf("%s ago, ok", Age(*t.AgeS))
 }
 
 func diskCell(rep *Report) string {
@@ -544,7 +544,7 @@ func render(rows []Row, cards []CardinalRow, notes []string) string {
 			default:
 				tmux = cell("no", bad)
 			}
-			claims.Row(name, c.Issue, c.Phase, c.State, age(c.StartedAge), ctxPct, tmux)
+			claims.Row(name, c.Issue, c.Phase, c.State, Age(c.StartedAge), ctxPct, tmux)
 		}
 	}
 	var b strings.Builder

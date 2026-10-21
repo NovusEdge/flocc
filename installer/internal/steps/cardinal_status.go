@@ -50,10 +50,6 @@ type CardinalStatus struct {
 	Pane          string          `json:"pane,omitempty"`    // full status only
 }
 
-func secs(d time.Duration) *float64 { s := d.Seconds(); return &s }
-
-func dur(s *float64) time.Duration { return time.Duration(*s * float64(time.Second)) }
-
 // Failures are the rows that make status exit non-zero, each with the command that fixes it.
 func (s CardinalStatus) Failures() []string {
 	var out []string
@@ -63,14 +59,15 @@ func (s CardinalStatus) Failures() []string {
 	if s.Login != "full" {
 		out = append(out, fmt.Sprintf("login is %s: flocc cardinal login", s.Login))
 	}
+	turn, session := s.LastTurnAgeS, s.SessionAgeS
 	switch {
-	case s.LastTurnAgeS != nil && dur(s.LastTurnAgeS) > staleTurn:
-		out = append(out, fmt.Sprintf("no turn for %s: flocc cardinal restart", dur(s.LastTurnAgeS).Round(time.Minute)))
-	case s.LastTurnAgeS == nil && s.SessionAgeS != nil && dur(s.SessionAgeS) > staleTurn:
+	case turn != nil && *turn > staleTurn.Seconds():
+		out = append(out, fmt.Sprintf("no turn for %s: flocc cardinal restart", (time.Duration(*turn)*time.Second).Round(time.Minute)))
+	case turn == nil && session != nil && *session > staleTurn.Seconds():
 		out = append(out, "no turn since the session started: flocc cardinal restart")
 	}
-	if s.SessionAgeS != nil && dur(s.SessionAgeS) > oldSession {
-		out = append(out, fmt.Sprintf("the session is %dd old and its loop expires at 7: flocc cardinal restart", int(dur(s.SessionAgeS).Hours()/24)))
+	if session != nil && *session > oldSession.Seconds() {
+		out = append(out, fmt.Sprintf("the session is %dd old and its loop expires at 7: flocc cardinal restart", int(*session/86400)))
 	}
 	for h, ok := range s.Hosts {
 		if !ok {
@@ -153,10 +150,10 @@ func CollectCardinalStatus(ctx context.Context, e *Env, user string, quick bool,
 	}
 	s.Restarts, _ = strconv.Atoi(userShow(ctx, e, "cardinal.service", "NRestarts"))
 	if age, ok := sessionAge(ctx, e, now); ok && s.Unit == "active" {
-		s.SessionAgeS = secs(age)
+		s.SessionAgeS = new(age.Seconds())
 	}
 	if t, ok := lastTurn(e); ok {
-		s.LastTurnAgeS = secs(now.Sub(t))
+		s.LastTurnAgeS = new(now.Sub(t).Seconds())
 	}
 	s.Tmux = e.Ok(ctx, "tmux", "-L", user, "has-session", "-t", "="+user)
 	s.Claude = strings.Contains(e.Output(ctx, "tmux", "-L", user, "list-panes", "-t", "="+user, "-F", "#{pane_current_command}"), "claude")
