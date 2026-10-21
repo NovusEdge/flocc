@@ -1,6 +1,8 @@
 import json
 import os
 import socket
+import time
+from collections import Counter
 from pathlib import Path
 
 from flocc.gate import note_question
@@ -69,3 +71,46 @@ def handle(
         note_question(state, payload, now)
     record(state, line)
     return None
+
+
+def load_entries(state_root: Path, since: float) -> list[dict]:
+    out = []
+    for path in sorted(state_root.glob(f"*/{LOG}")):
+        for raw in path.read_text().splitlines():
+            try:
+                e = json.loads(raw)
+            except ValueError:  # a hook killed mid-write leaves a torn line
+                continue
+            if isinstance(e, dict) and isinstance(e.get("at"), int | float) and e["at"] >= since:
+                out.append(e)
+    return out
+
+
+def _prefix(e: dict) -> str:
+    args = e.get("input") if isinstance(e.get("input"), dict) else {}
+    if e.get("tool") != "Bash":
+        return "-"
+    return " ".join(str(args.get("command", "")).split()[:2]) or "-"
+
+
+def report(entries: list[dict], since: float) -> str:
+    if not entries:
+        return f"No blocks or prompts since {time.strftime('%Y-%m-%d', time.gmtime(since))}."
+    keys = [
+        (
+            str(e.get("event") or "-"),
+            str(e.get("tool") or "-"),
+            _prefix(e),
+            str(e.get("classifier_reason") or "-"),
+            str(e.get("decided_by") or "none"),
+        )
+        for e in entries
+    ]
+    examples: dict[tuple, str] = {}
+    for key, e in zip(keys, entries, strict=True):
+        args = e.get("input") if isinstance(e.get("input"), dict) else {}
+        examples.setdefault(key, str(args.get("command") or json.dumps(args)))
+    rows = ["count  event  tool  prefix  reason  decided  example"]
+    for key, n in sorted(Counter(keys).items(), key=lambda kv: (-kv[1], kv[0])):
+        rows.append(f"{n:>5}  {'  '.join(key)}  e.g. {examples[key]}")
+    return "\n".join(rows)

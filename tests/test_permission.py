@@ -2,8 +2,8 @@ import io
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from flocc.cli import main
-from flocc.permission import LOG, handle
+from flocc.cli import build_parser, main
+from flocc.permission import LOG, handle, load_entries, report
 
 DENIED = {
     "hook_event_name": "PermissionDenied",
@@ -96,3 +96,34 @@ def test_the_permission_command_never_blocks(tmp_path, monkeypatch, capsys):
     assert main(["permission"]) == 1
     captured = capsys.readouterr()
     assert captured.out == "" and "made no decision" in captured.err
+
+
+def blocked(root, key, command, at=100.0):
+    payload = {**DENIED, "tool_input": {"command": command}}
+    handle(payload, root / key, "impl", "impl@1", at)
+
+
+def test_report_groups_by_event_tool_prefix_reason_and_decider(tmp_path):
+    blocked(tmp_path, "NF-1", "npx playwright install")
+    blocked(tmp_path, "NF-2", "npx playwright install --with-deps")
+    blocked(tmp_path, "NF-2", "git push origin --delete b")
+    (tmp_path / "NF-3").mkdir()
+    (tmp_path / "NF-3" / LOG).write_text('{torn\n["not", "an", "object"]\n')
+    rows = report(load_entries(tmp_path, since=0.0), since=0.0).splitlines()
+    assert rows[0].split() == ["count", "event", "tool", "prefix", "reason", "decided", "example"]
+    assert rows[1] == (
+        "    2  PermissionDenied  Bash  npx playwright  [Git Destructive]  none"
+        "  e.g. npx playwright install"
+    )
+    assert rows[2].startswith("    1  PermissionDenied  Bash  git push")
+
+
+def test_report_leaves_out_entries_before_since(tmp_path):
+    blocked(tmp_path, "NF-1", "npx playwright install", at=10.0)
+    assert load_entries(tmp_path, since=50.0) == []
+    assert report([], since=0.0).startswith("No blocks or prompts since 1970-01-01")
+
+
+def test_permissions_report_parses_days():
+    args = build_parser().parse_args(["permissions", "report", "--days", "3"])
+    assert (args.command, args.action, args.days) == ("permissions", "report", 3)

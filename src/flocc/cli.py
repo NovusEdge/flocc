@@ -520,6 +520,13 @@ def cmd_logs(args) -> int:
     os.execvp(argv[0], argv)
 
 
+def cmd_permissions(args) -> int:
+    cfg, _ = _config(args)
+    since = time.time() - args.days * 86400
+    print(permission.report(permission.load_entries(cfg.state_root, since), since))
+    return 0
+
+
 def cmd_attach(args) -> int:
     from flocc.sessions import SOCKET
 
@@ -567,6 +574,7 @@ COMMANDS = {
     "doctor": cmd_doctor,
     "status": cmd_status,
     "logs": cmd_logs,
+    "permissions": cmd_permissions,
     "attach": cmd_attach,
 }
 
@@ -635,6 +643,9 @@ def build_parser() -> argparse.ArgumentParser:
     logs = add("logs", "Print the service log: the journal on systemd hosts, run.log otherwise")
     logs.add_argument("-n", dest="lines", type=int, default=100, help="lines to print")
     logs.add_argument("-f", "--follow", action="store_true", help="keep printing new lines")
+    perms = add("permissions", "Summarise the auto-mode blocks and prompts sessions met")
+    perms.add_argument("action", choices=["report"], help="what to show")
+    perms.add_argument("--days", type=int, default=7, help="how many days back")
     attach = add("attach", "Attach read-only to an agent's tmux session")
     attach.add_argument("session", help="session name, e.g. NF-12 or NF-12-review")
     return parser
