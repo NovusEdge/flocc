@@ -348,8 +348,7 @@ func checkTailscale(ctx context.Context, e Env, v string) (string, error) {
 	}
 	c := &tailnet.Client{HTTP: e.HTTP, Base: base, ID: id, Secret: secret}
 	if _, err := c.Token(ctx); err != nil {
-		// tailnet reports a refusal only as text: "tailscale token: HTTP 401: ...".
-		if strings.Contains(err.Error(), "token: HTTP 4") {
+		if errors.Is(err, tailnet.ErrRefused) {
 			return "", ErrTailscaleRefused
 		}
 		return "", unchecked{fmt.Errorf("could not check Tailscale: %w", err)}

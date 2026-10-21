@@ -24,7 +24,7 @@ func TestCheckOverTheFixtures(t *testing.T) {
 		want    []string // substrings, one per missing item
 	}{
 		{"empty", []string{"tagOwners", "ssh", "test"}},
-		{"default", []string{"tagOwners", "ssh", "test"}},
+		{"default", []string{"tagOwners", "from *", "ssh", "test"}},
 		{"applied-2026-10-22", nil},
 		{"custom", []string{"tagOwners", "ssh", "test"}},
 	} {
@@ -93,7 +93,7 @@ var owners = []Device{
 	{ID: "nFLOCC", Name: "flocc-nimble", IP: "100.64.0.7", Tags: []string{Tag}},
 }
 
-func TestMergeIntoTheDefaultPassesCheckAndKeepsTheGrant(t *testing.T) {
+func TestMergeIntoTheDefaultPassesCheckAndNarrowsTheGrant(t *testing.T) {
 	in := fixture(t, "default")
 	out, added, err := Merge(in, "owner@example.com", owners)
 	if err != nil {
@@ -109,13 +109,14 @@ func TestMergeIntoTheDefaultPassesCheckAndKeepsTheGrant(t *testing.T) {
 	if err := json.Unmarshal(out, &doc); err != nil {
 		t.Fatalf("not plain JSON: %v", err)
 	}
-	var grants, orig []json.RawMessage
+	var grants []struct{ Src, Dst, IP []string }
 	json.Unmarshal(doc["grants"], &grants)
-	var src map[string]json.RawMessage
-	json.Unmarshal(in, &src)
-	json.Unmarshal(src["grants"], &orig)
-	if len(grants) != 1 || compact(t, grants[0]) != compact(t, orig[0]) {
+	if len(grants) != 1 || !slices.Equal(grants[0].Src, []string{"autogroup:member"}) ||
+		!slices.Equal(grants[0].Dst, []string{"*"}) || !slices.Equal(grants[0].IP, []string{"*"}) {
 		t.Errorf("grants = %s", doc["grants"])
+	}
+	if !slices.ContainsFunc(added, func(m string) bool { return strings.Contains(m, "from *") }) {
+		t.Errorf("added = %q, want the narrowing named", []string(added))
 	}
 	if !bytes.Contains(out, []byte("\n\t")) {
 		t.Errorf("not indented with tabs:\n%s", out)
@@ -219,5 +220,23 @@ func TestDevicesSplitsTaggedFromOwnerDevices(t *testing.T) {
 			got[i].Owner != want[i].Owner || !slices.Equal(got[i].Tags, want[i].Tags) {
 			t.Errorf("devices[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestCheckFlagsAWildcardSourceInAclsToo(t *testing.T) {
+	got, err := Check([]byte(`{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}`))
+	if err != nil || !slices.ContainsFunc(got, func(m string) bool { return strings.Contains(m, "from *") }) {
+		t.Errorf("missing = %q, err = %v", []string(got), err)
+	}
+}
+
+func TestMergeKeepsTheOtherSourcesWhenNarrowingTheWildcard(t *testing.T) {
+	in := `{"acls":[{"action":"accept","src":["group:a","*"],"dst":["*:*"]}]}`
+	out, _, err := Merge([]byte(in), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(compact(t, out), `"src":["group:a","autogroup:member"]`) {
+		t.Errorf("src not narrowed in place:\n%s", out)
 	}
 }

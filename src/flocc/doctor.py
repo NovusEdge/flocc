@@ -272,9 +272,15 @@ def run_doctor(cfg: Config) -> int:
 
 def doctor_json(cfg: Config, config_path: Path) -> int:
     results = collect_results(cfg)
-    # A warning does not fail the doctor run, so it is not ok=false here either.
+    # A warning does not fail the doctor run, so it stays ok=true for readers that predate "warn".
     checks = [{"name": "config", "ok": True, "detail": str(config_path)}] + [
-        {"name": r.name, "ok": r.status != "fail", "detail": r.detail} for r in results
+        {
+            "name": r.name,
+            "ok": r.status != "fail",
+            **({"warn": True} if r.status == "warn" else {}),
+            "detail": r.detail,
+        }
+        for r in results
     ]
     print(json.dumps({"v": 1, "checks": checks}))
     return 1 if any(r.status == "fail" for r in results) else 0

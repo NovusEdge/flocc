@@ -28,6 +28,9 @@ type Client struct {
 
 var ErrTagNotPermitted = errors.New("the tailnet policy does not let this client use the tag")
 
+// ErrRefused marks a 4xx reply: the client or its scopes are wrong, not Tailscale being down.
+var ErrRefused = errors.New("refused")
+
 // The margin keeps a token from expiring between the cache check and the request using it.
 const tokenMargin = time.Minute
 
@@ -68,7 +71,11 @@ func (c *Client) statusErr(what string, status int, body []byte, tag string) err
 	if tag != "" && status >= 400 && status < 500 && strings.Contains(text, tag) {
 		return ErrTagNotPermitted
 	}
-	return fmt.Errorf("tailscale %s: HTTP %d: %s", what, status, c.scrub(text))
+	err := fmt.Errorf("tailscale %s: HTTP %d: %s", what, status, c.scrub(text))
+	if status >= 400 && status < 500 {
+		return fmt.Errorf("%w (%w)", err, ErrRefused)
+	}
+	return err
 }
 
 func (c *Client) Token(ctx context.Context) (string, error) {
