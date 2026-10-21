@@ -83,6 +83,11 @@ func doneOps(l *opsLog) setupOps {
 			return nil
 		},
 		removeOld: func(_ context.Context, m string, users []string) error { l.add("remove %s %v", m, users); return nil },
+		login:     func(_ context.Context, name, email string) error { l.add("login %s %s", name, email); return nil },
+		cardLogin: func(_ context.Context, _ saved.Saved, email string) error {
+			l.add("cardinal login %s", email)
+			return nil
+		},
 	}
 }
 
@@ -508,5 +513,93 @@ func TestFindOldReadsTheUserWithoutSudo(t *testing.T) {
 	}
 	if slices.ContainsFunc(f.Calls, func(c string) bool { return strings.Contains(c, "sudo") }) {
 		t.Fatal("used sudo")
+	}
+}
+
+func TestSetupOnAFreshDesktopRunsEveryStepInOrder(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	made := false
+	ops.hosts = func() []hosts.Host {
+		if made {
+			return []hosts.Host{nimble}
+		}
+		return nil
+	}
+	ops.create = func(_ context.Context, s create.Spec) error {
+		l.add("create %s %s", s.Machine, s.Name)
+		made = true
+		return nil
+	}
+	ops.cardinal = func() (saved.Saved, bool, error) { return saved.Saved{}, false, nil }
+	ops.cardStatus = func(context.Context, saved.Saved) (steps.CardinalStatus, error) {
+		l.add("cardinal status")
+		return steps.CardinalStatus{Unit: "active", Login: "none"}, nil
+	}
+	d, _, _ := setupDeps(t, map[string]any{"No hosts yet": 0, "Host name": "flocc-nimble", "Machine to make": "zer0-day-nimble",
+		"claude.ai pool account for cardinal": "pool@example.com"})
+	if code := runSetup(context.Background(), d, ops); code != 0 {
+		t.Fatalf("exit %d; calls %v", code, l.calls)
+	}
+	inOrder(t, l.calls,
+		fmt.Sprintf("keys %v", []keys.Slot{keys.Linear, keys.Agent}),
+		"create zer0-day-nimble flocc-nimble",
+		"read flocc-nimble",
+		fmt.Sprintf("keys %v", []keys.Slot{keys.Publish, keys.Ntfy}),
+		"old zer0-day-nimble",
+		"cardinal setup zer0-day-nimble adopt=false remove=[]",
+		"cardinal status",
+		"cardinal login pool@example.com")
+}
+
+func TestSetupOnAFinishedDesktopOnlyReads(t *testing.T) {
+	var l opsLog
+	d, out, p := setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, doneOps(&l)); code != 0 {
+		t.Fatalf("exit %d %q", code, out)
+	}
+	for _, c := range l.calls {
+		if !strings.HasPrefix(c, "keys ") && !strings.HasPrefix(c, "read ") && !strings.HasPrefix(c, "old ") && c != "cardinal status" {
+			t.Errorf("changed something: %q", c)
+		}
+	}
+	if len(p.asked) > 0 {
+		t.Errorf("asked %v", p.asked)
+	}
+}
+
+func TestSetupLogsInWhatIsNotFullAndOnlyReportsUnknown(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	none, unknown := "none", "unknown"
+	ops.hosts = func() []hosts.Host {
+		return []hosts.Host{nimble, {Name: "b", SSH: "root@b", Machine: "zer0-day-nimble"}, {Name: "c", SSH: "root@c", Machine: "zer0-day-nimble"}}
+	}
+	ops.readHost = func(_ context.Context, h hosts.Host) hostState {
+		switch h.Name {
+		case "b":
+			return hostState{Version: "0.8.0", Login: &none}
+		case "c":
+			return hostState{Version: "0.8.0", Login: &unknown}
+		}
+		return hostState{Version: "0.8.0"}
+	}
+	d, _, _ := setupDeps(t, map[string]any{"claude.ai pool account for b": "pool@example.com"})
+	if code := runSetup(context.Background(), d, ops); code != 0 {
+		t.Fatalf("exit %d calls %v", code, l.calls)
+	}
+	if !l.has("login b pool@example.com") || l.has("login c") || l.has("login flocc-nimble") || l.has("cardinal login") {
+		t.Fatalf("calls %v", l.calls)
+	}
+}
+
+func TestSetupRefusesALoginAddressThatIsNotOne(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	none := "none"
+	ops.readHost = func(context.Context, hosts.Host) hostState { return hostState{Version: "0.8.0", Login: &none} }
+	d, _, _ := setupDeps(t, map[string]any{"claude.ai pool account for flocc-nimble": "me; rm -rf ~"})
+	if code := runSetup(context.Background(), d, ops); code != 1 || l.has("login ") {
+		t.Fatalf("exit %d calls %v", code, l.calls)
 	}
 }

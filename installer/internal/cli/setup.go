@@ -15,6 +15,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
@@ -72,7 +73,7 @@ func (w *wizard) run() {
 	if w.stopped || len(list) == 0 {
 		return
 	}
-	w.checkHosts(list)
+	checked := w.checkHosts(list)
 	if w.stopped {
 		return
 	}
@@ -85,11 +86,59 @@ func (w *wizard) run() {
 	if w.stopped {
 		return
 	}
-	w.cardinal(machines, remove)
+	cs := w.cardinal(machines, remove)
 	if w.stopped {
 		return
 	}
 	w.removeRest(machines, remove)
+	w.logins(checked, cs)
+}
+
+// logins signs in each host and cardinal whose login is not full. unknown is a host that could not
+// read its login, which is no evidence of a lapse, so it is only shown.
+func (w *wizard) logins(checked []checkedHost, cs *saved.Saved) {
+	for _, c := range checked {
+		if w.stopped {
+			return
+		}
+		if m := machineOf(c.h); m != "" && w.failed[saved.HostPart(m)] {
+			continue
+		}
+		name := c.h.Name
+		w.login(name, c.st.Login, func(email string) error { return w.ops.login(w.ctx, name, email) })
+	}
+	if cs != nil && !w.stopped {
+		w.login("cardinal", &w.cardLogin, func(email string) error { return w.ops.cardLogin(w.ctx, *cs, email) })
+	}
+}
+
+func (w *wizard) login(name string, state *string, do func(email string) error) {
+	switch {
+	case state == nil:
+		w.row(rowSkipped, "login", name+": the host does not report its login")
+		return
+	case *state == "full":
+		w.row(rowDone, "login", name+": full")
+		return
+	case *state == "unknown":
+		w.row(rowSkipped, "login", name+": unknown, it could not read its login; not acted on")
+		return
+	}
+	email, err := w.d.prompt.Ask("claude.ai pool account for "+name+" (login is "+saved.Sanitize(*state)+")", "empty lets the sign-in page choose")
+	if err != nil {
+		w.fail("login", err)
+		return
+	}
+	// The address goes into a remote command line.
+	if email = strings.TrimSpace(email); email != "" && !ship.ValidEmail(email) {
+		w.row(rowPending, "login", fmt.Sprintf("%s: %q is not an email address", name, email))
+		return
+	}
+	if err := do(email); err != nil {
+		w.row(rowFailed, "login", name+": "+err.Error())
+		return
+	}
+	w.row(rowDone, "login", name+": signed in")
 }
 
 // oldVersions shows each old user found on a machine and asks whether to remove it, default no.

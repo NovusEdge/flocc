@@ -40,6 +40,8 @@ type setupOps struct {
 	cardStatus func(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error)
 	cardSetup  func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error
 	removeOld  func(ctx context.Context, machine string, users []string) error
+	login      func(ctx context.Context, name, email string) error
+	cardLogin  func(ctx context.Context, s saved.Saved, email string) error
 }
 
 // machineState is what a machine allows. Err is set when ssh could not reach it.
@@ -82,6 +84,8 @@ func newSetupOps(d *deps) setupOps {
 		cardStatus: cd.Status,
 		cardSetup:  cd.Setup,
 		removeOld:  cd.RemoveOld,
+		login:      func(ctx context.Context, name, email string) error { return loginWith(ctx, d, name, email) },
+		cardLogin:  cd.Login,
 	}
 }
 
