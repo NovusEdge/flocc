@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -93,6 +94,108 @@ func TestRunAllRecordsPendingStepsAndGoesOn(t *testing.T) {
 	e := newEnv(scripted())
 	if err := RunAll(context.Background(), e, []Step{a, b}); err != nil || b.applied != 1 || !slices.Equal(e.Pending, []string{"a"}) {
 		t.Fatalf("err=%v b.applied=%d pending=%v", err, b.applied, e.Pending)
+	}
+}
+
+func capture(color bool) (*ui.Scripted, *bytes.Buffer) {
+	var b bytes.Buffer
+	return &ui.Scripted{A: &answers.Answers{}, Out: &b, Color: color}, &b
+}
+
+func TestRunAllNumbersOnlyTheStepsThatRun(t *testing.T) {
+	a, b, c := &fakeStep{name: "a", done: true}, &fakeStep{name: "b"}, &fakeStep{name: "c"}
+	u, out := capture(false)
+	if err := RunAll(context.Background(), newEnv(u), []Step{a, b, c}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"→ 1/2 b ", "✓ 1/2 b ", "→ 2/2 c ", "✓ 2/2 c "} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "/3") || strings.Contains(got, "→ 1/2 a") {
+		t.Errorf("a done step was counted:\n%s", got)
+	}
+}
+
+func TestRunAllCountsARedoneStep(t *testing.T) {
+	a, b := &fakeStep{name: "a", done: true}, &fakeStep{name: "b", done: true}
+	s, out := capture(false)
+	u := redoUI{Scripted: s, redo: []string{"b"}}
+	if err := RunAll(context.Background(), newEnv(u), []Step{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "→ 1/1 b ") {
+		t.Fatalf("%s", out.String())
+	}
+}
+
+func TestRunAllShowsTheNewCheckDetailAndNoEscapesWithoutATerminal(t *testing.T) {
+	b := &fakeStep{name: "b"}
+	u, out := capture(false)
+	if err := RunAll(context.Background(), newEnv(u), []Step{b}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(out.String(), "\r\x1b") {
+		t.Fatalf("%q", out.String())
+	}
+	if !strings.Contains(out.String(), "  ✓ 1/1 b              detail b (0s)\n") {
+		t.Fatalf("%q", out.String())
+	}
+}
+
+func TestRunAllAnimatesOnlyWhereTheOutputIsATerminal(t *testing.T) {
+	u, out := capture(true)
+	if err := RunAll(context.Background(), newEnv(u), []Step{&fakeStep{name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "\r\x1b[K") || !strings.HasSuffix(out.String(), "\x1b[32m✓\x1b[0m 1/1 b              detail b (0s)\n") {
+		t.Fatalf("%q", out.String())
+	}
+}
+
+func TestRunAllReplacesTheLiveLineWithACrossWhenAStepFails(t *testing.T) {
+	u, out := capture(true)
+	err := RunAll(context.Background(), newEnv(u), []Step{&fakeStep{name: "a", applyErr: errors.New("boom")}})
+	if err == nil || err.Error() != "a: boom" {
+		t.Fatalf("err=%v", err)
+	}
+	if !strings.HasSuffix(out.String(), "\r\x1b[K  \x1b[31m✗\x1b[0m 1/1 a (0s)\n") || strings.Contains(out.String(), "✓ 1/1") {
+		t.Fatalf("%q", out.String())
+	}
+}
+
+type notingStep struct{ fakeStep }
+
+func (s *notingStep) Apply(ctx context.Context, e *Env) error {
+	e.UI.Note("flocc doctor", "FAIL nothing")
+	return s.fakeStep.Apply(ctx, e)
+}
+
+func TestRunAllNoteDuringAnAnimatedStepDoesNotShareALineWithTheFrame(t *testing.T) {
+	u, out := capture(true)
+	if err := RunAll(context.Background(), newEnv(u), []Step{&notingStep{fakeStep{name: "b"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, seg := range strings.Split(out.String(), "\r\x1b[K") {
+		if strings.Contains(seg, "flocc doctor") && (strings.Contains(seg, "1/1") || strings.Contains(seg, "0:00")) {
+			t.Fatalf("a note shares a line with a frame: %q", seg)
+		}
+	}
+	if !strings.Contains(out.String(), "\r\x1b[K\nflocc doctor\n  FAIL nothing\n\r\x1b[K") {
+		t.Fatalf("%q", out.String())
+	}
+}
+
+func TestRunAllShowsAPendingStepWithADotAndGoesOn(t *testing.T) {
+	a := &fakeStep{name: "a", applyErr: ErrPending}
+	u, out := capture(false)
+	if err := RunAll(context.Background(), newEnv(u), []Step{a}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "  • 1/1 a              detail a (0s)\n") {
+		t.Fatalf("%q", out.String())
 	}
 }
 

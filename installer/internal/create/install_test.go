@@ -162,6 +162,22 @@ func TestCreateStopsWhenTheMachineIsUnreachable(t *testing.T) {
 	}
 }
 
+func TestSnapshotLineLinesUpWithTheNumberedStepLines(t *testing.T) {
+	f := createMachine()
+	e, out := createEnv(f)
+	steps := []Step{&fakeStep{name: "Docker", done: true}, &fakeStep{name: "Egress", done: true}}
+	if err := Create(context.Background(), e, &fakeInst{}, steps); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if len(lines) < 3 || !strings.HasPrefix(lines[0], "  ✓ 1/2 Docker ") || !strings.HasPrefix(lines[2], "  ✓     Snapshot ") {
+		t.Fatalf("%q", out.String())
+	}
+	if strings.Index(lines[0], "detail") != strings.Index(lines[2], "flocc-a/installed") {
+		t.Fatalf("the detail columns differ:\n%s", out.String())
+	}
+}
+
 func TestSnapshotSwapsTheNewOneInAfterItExists(t *testing.T) {
 	f := host.NewFake().On(snapQuery, 0, "{}").On(snapDelete, 0, "").On(snapCreate, 0, "").On(snapRename, 0, "")
 	e, _ := testEnv(f)

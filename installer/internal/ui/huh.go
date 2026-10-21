@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 
@@ -13,7 +14,17 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/answers"
 )
 
-type Huh struct{}
+type Huh struct{ prog *Progress }
+
+// Step prints plain start and done lines and never a live one: any step may open a form or a
+// spinner of its own, or hand the terminal to an attached command, and each of them redraws the
+// screen under a live line.
+func (h *Huh) Step(l Line, fn func() (Outcome, error)) error {
+	if h.prog == nil {
+		h.prog = &Progress{Out: NewOut(os.Stdout)}
+	}
+	return h.prog.Run(l, fn)
+}
 
 func NewHuh() *Huh { return &Huh{} }
 

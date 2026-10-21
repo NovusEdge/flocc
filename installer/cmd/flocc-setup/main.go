@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,6 +72,31 @@ func handoffArgs(fromStdin bool) []string {
 		args = append(args, "--answers", "-")
 	}
 	return args
+}
+
+// colorArgs hands the colour request, and with it the desktop's width, to the service phase. Its
+// sudo -i drops the environment the root phase got them through.
+func colorArgs(color bool, cols int) []string {
+	if !color {
+		return nil
+	}
+	args := []string{"--color"}
+	if cols > 0 {
+		args = append(args, "--cols", strconv.Itoa(cols))
+	}
+	return args
+}
+
+// columns is the width the desktop reported: the flag in the service phase, COLUMNS in the root
+// phase; zero when neither names a usable one.
+func columns(flagValue int, getenv func(string) string) int {
+	if flagValue > 0 {
+		return flagValue
+	}
+	if n, err := strconv.Atoi(getenv(ui.ColumnsEnv)); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 // rootStage is where flocc ship stages the files. The root phase chowns the stage, so it must
@@ -154,6 +180,7 @@ func run(args []string) int {
 	// the flag only carries the request from the root phase to the service phase, whose sudo -i
 	// drops the environment.
 	color := fs.Bool("color", false, "colour the step lines of a run with --answers")
+	colsFlag := fs.Int("cols", 0, "with --color: the desktop terminal's width, for the live step line")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -163,6 +190,7 @@ func run(args []string) int {
 	}
 	fromStdin := *answersIn == "-"
 	wantColor := *color || os.Getenv(ui.ColorEnv) == "1"
+	cols := columns(*colsFlag, os.Getenv)
 	var doc []byte
 	in := &answers.Answers{}
 	if fromStdin {
@@ -231,7 +259,7 @@ func run(args []string) int {
 	}
 	var u ui.UI = ui.NewHuh()
 	if fromStdin {
-		u = &ui.Scripted{A: a, Out: stdout, Color: wantColor}
+		u = &ui.Scripted{A: a, Out: stdout, Color: wantColor, Cols: cols}
 	}
 	env.UI = u
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -261,9 +289,7 @@ func run(args []string) int {
 			piped = bytes.NewReader(doc)
 		}
 		args := handoffArgs(fromStdin)
-		if wantColor {
-			args = append(args, "--color")
-		}
+		args = append(args, colorArgs(wantColor, cols)...)
 		err = handoff(ctx, runner, stage, args, piped)
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
