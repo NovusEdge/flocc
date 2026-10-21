@@ -33,6 +33,17 @@ func TestLoginRunsTheLoginPhaseOnATerminalOpensTheURLAndPrintsTheSummary(t *test
 	}
 }
 
+func TestWatchURLsOpensOnlyWhatAllowAccepts(t *testing.T) {
+	var out strings.Builder
+	var opened []string
+	allow := func(u string) bool { return strings.HasPrefix(u, "https://claude.ai/") }
+	w := WatchURLs(&out, func(u string) { opened = append(opened, u) }, allow)
+	w.Write([]byte("https://evil.example/oauth/x\n" + signIn + "\n"))
+	if !slices.Equal(opened, []string{signIn}) || !strings.Contains(out.String(), "evil.example") {
+		t.Fatalf("opened %v out %q", opened, out.String())
+	}
+}
+
 func TestURLWatchJoinsChunksAndOpensEachURLOnce(t *testing.T) {
 	var out strings.Builder
 	var opened []string

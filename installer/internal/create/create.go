@@ -95,6 +95,9 @@ func (e *Env) incus(args ...string) host.Cmd {
 	return cmd("incus", args...)
 }
 
+// Incus is incus on the machine as Probe found it runs: directly, or through sudo -n.
+func (e *Env) Incus(args ...string) host.Cmd { return e.incus(args...) }
+
 func (e *Env) ok(ctx context.Context, c host.Cmd) bool {
 	r, err := e.M.Run(ctx, c)
 	return err == nil && r.Code == 0

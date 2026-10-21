@@ -44,7 +44,6 @@ type CardinalStatus struct {
 	Linear        string          `json:"linear,omitempty"`
 	Hosts         map[string]bool `json:"hosts,omitempty"`
 	NextRenew     string          `json:"next_renew,omitempty"`
-	Flocc         string          `json:"flocc,omitempty"`
 	ClaudeVersion string          `json:"claude_version,omitempty"`
 	Quick         bool            `json:"quick"`
 	Journal       string          `json:"journal,omitempty"` // full status of a unit that is not active
@@ -162,7 +161,6 @@ func CollectCardinalStatus(ctx context.Context, e *Env, user string, quick bool,
 	s.Tmux = e.Ok(ctx, "tmux", "-L", user, "has-session", "-t", "="+user)
 	s.Claude = strings.Contains(e.Output(ctx, "tmux", "-L", user, "list-panes", "-t", "="+user, "-F", "#{pane_current_command}"), "claude")
 	s.NextRenew = userShow(ctx, e, "cardinal-renew.timer", "NextElapseUSecRealtime")
-	s.Flocc = e.Output(ctx, e.Real(cardinalFlocc), "--version")
 	_, s.ClaudeVersion = claudeVersion(ctx, e)
 	if quick {
 		return s
