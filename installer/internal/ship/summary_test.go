@@ -11,7 +11,7 @@ func TestSummaryTapTakesOutTheSummaryLineSplitAnywhere(t *testing.T) {
 	want := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
 	input := "setup output\r\nflocc: ok\r\n\r\n" + want.Line() + "\r\nPaste code here > "
 	var out strings.Builder
-	tap := &summaryTap{out: &out}
+	tap := newSummaryTap(&out)
 	for i := 0; i < len(input); i++ {
 		tap.Write([]byte{input[i]})
 	}
@@ -26,7 +26,7 @@ func TestSummaryTapTakesOutTheSummaryLineSplitAnywhere(t *testing.T) {
 
 func TestSummaryTapPassesAPromptAtOnce(t *testing.T) {
 	var out strings.Builder
-	tap := &summaryTap{out: &out}
+	tap := newSummaryTap(&out)
 	tap.Write([]byte("Paste code here > "))
 	if out.String() != "Paste code here > " {
 		t.Fatalf("the prompt was held back: %q", out.String())
@@ -36,7 +36,7 @@ func TestSummaryTapPassesAPromptAtOnce(t *testing.T) {
 func TestSummaryTapKeepsALineThatOnlyLooksLikeTheMarker(t *testing.T) {
 	in := steps.SummaryMarker + "{not json\nflocc-sum is not it either\n"
 	var out strings.Builder
-	tap := &summaryTap{out: &out}
+	tap := newSummaryTap(&out)
 	tap.Write([]byte(in))
 	tap.Flush()
 	if out.String() != in {
@@ -49,7 +49,7 @@ func TestSummaryTapKeepsALineThatOnlyLooksLikeTheMarker(t *testing.T) {
 
 func TestSummaryTapFlushesAHeldPartialLine(t *testing.T) {
 	var out strings.Builder
-	tap := &summaryTap{out: &out}
+	tap := newSummaryTap(&out)
 	tap.Write([]byte("flocc-sum"))
 	if out.Len() != 0 {
 		t.Fatalf("held bytes should wait for the rest of the marker: %q", out.String())

@@ -61,6 +61,7 @@ Pro does not [S1][S2]. Current limit numbers were not found; `/usage` shows mine
 The design is in `docs/superpowers/specs/2026-10-09-linear-agents-design.md`, the build plan in
 `docs/superpowers/plans/2026-10-09-linear-agents.md`, and host setup in `docs/vm-setup.md`. The
 rename to flocc and the work after it are in `docs/superpowers/specs/2026-10-20-flocc-design.md`.
+`flocc setup` runs the steps below in order and can be run again to repair what is missing.
 On the desktop, `flocc keys`, `flocc host add`, `flocc ship` and `flocc login` set a host up, and
 `flocc host create` makes one as an Incus VM on a machine you reach over SSH, then runs the last
 three for it; `docs/vm-setup.md` explains them. The sections below are the original research.

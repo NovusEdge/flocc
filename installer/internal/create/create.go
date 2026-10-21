@@ -95,6 +95,9 @@ func (e *Env) incus(args ...string) host.Cmd {
 	return cmd("incus", args...)
 }
 
+// Incus is incus on the machine as Probe found it runs: directly, or through sudo -n.
+func (e *Env) Incus(args ...string) host.Cmd { return e.incus(args...) }
+
 func (e *Env) ok(ctx context.Context, c host.Cmd) bool {
 	r, err := e.M.Run(ctx, c)
 	return err == nil && r.Code == 0
@@ -126,6 +129,15 @@ func (e *Env) Probe(ctx context.Context) error {
 		return fmt.Errorf("cannot run incus as an administrator on %s: give your account passwordless sudo there, or add it to the incus-admin group with sudo usermod -aG incus-admin \"$USER\" (the restricted incus group is not enough), %s", e.Spec.Machine, regroup(e.Spec.Machine, ControlOpts()))
 	}
 	return nil
+}
+
+// Preconditions reports what the machine allows before anything changes there: whether sudo
+// works without a password, which create's firewall and Docker steps need even to check, and
+// whether incus runs as an administrator (nil), else the fix. m runs commands on the machine.
+func Preconditions(ctx context.Context, m host.Runner, machine string) (sudo bool, incus error) {
+	e := &Env{M: m, Spec: Spec{Machine: machine}}
+	incus = e.Probe(ctx)
+	return e.sudo, incus
 }
 
 // regroup says how a new group reaches create's commands: the shared master logged in before the

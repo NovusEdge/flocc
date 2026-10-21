@@ -162,7 +162,7 @@ func TestMergePushSettings(t *testing.T) {
 		"wrong":    `{"inputNeededNotifEnabled":false,"agentPushNotifEnabled":true,"theme":"dark","hooks":{"a":[1]}}`,
 		"preserve": `{"theme":"dark","hooks":{"a":[1]}}`,
 	} {
-		out, err := mergePushSettings([]byte(in))
+		out, err := mergePushSettings([]byte(in), pushSettings)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

@@ -92,6 +92,36 @@ a git bundle, since the repo is private and the host has no credential for it. A
 running keeps the plugin, hooks and settings it was launched with; the upgrade reaches it at its
 next launch or handoff.
 
+## flocc setup
+
+`flocc setup` walks the whole setup in order: keys, host create or add, keys again, old versions,
+cardinal and logins. Each step checks first, so a rerun shows what is done and repairs the rest. It
+asks as it goes and needs a terminal; without one it exits 2.
+
+```bash
+flocc setup        # inside the flocc checkout
+```
+
+| Step | Checks | Does |
+|---|---|---|
+| checkout | the current directory is the flocc checkout | stops if not |
+| keys | the Linear key and agent token | asks for what is missing |
+| host | host files | with none, creates or adds a host, and a stopped create's log offers to continue. For each host it runs `flocc --version`, `status --json` and `doctor`. A host older than the checkout, or failing a doctor check other than login and disk, is shipped. Low disk and unreachable hosts are reported |
+| keys | the publish token and ntfy topic | asks for what is missing, then checks them |
+| old versions | `id`, `loginctl` and `ps` without sudo | shows each old user, default no. A yes removes it in the root pass after its own checks, with its home archived to `/root/flocc-removed-<user>-<date-time>.tar.gz` |
+| cardinal | one machine: the saved one, else the first host's | status ok: nothing. Failing: setup. A `cardinal` user without a saved file: asks to adopt, default no. No cardinal: asks, default yes |
+| logins | each host's and cardinal's login | `full` is done, `unknown` is shown. Anything else runs `flocc login` or `flocc cardinal login` with the pool account you give |
+
+Host create needs passwordless sudo on the machine. A machine whose sudo asks for a password can
+still hold cardinal and run the cleanup: the removal and cardinal's root work share one `ssh -t`, so
+sudo asks once.
+
+Which machine a host is on is `machine` in its host file. Setup asks once for a host that lacks it.
+`none` is allowed for a host that is on no machine of yours, and `daytona` is refused.
+
+Exit codes: 0 when every step is done or skipped by you, 1 when any is incomplete or failed, 2
+without a terminal.
+
 ## The desktop command
 
 Everything on the desktop goes through `flocc`, built from this repo:
@@ -466,6 +496,41 @@ a prompt, which denies itself after two minutes. Every block and prompt is logge
 `environment` lines address whole classes of block and come first. `allow` rules are exact; a
 rule that wildcards an interpreter or shell (`Bash(python:*)`, `Bash(sh *)`, anything with `-c`)
 is dropped when the config loads, with a warning in `flocc logs`; the rest still apply.
+
+## cardinal
+
+cardinal is the owner's always-on assistant: a Claude session, as an unprivileged user on the
+machine that holds the Incus hosts, which checks the fleet and Linear every 20 minutes and talks to
+you through the Claude app. Its brief is `deploy/cardinal/CLAUDE.md`; the design is
+`docs/superpowers/specs/2026-10-21-cardinal-part-2-setup-command-design.md`. Run from the flocc
+checkout:
+
+    flocc cardinal setup zer0-day-nimble             # or flocc setup, which asks to adopt the hand setup
+    flocc cardinal login --email <pool account>      # a pool account, never your own
+    flocc cardinal attach --write                    # /mcp, linear, Authenticate, paste the localhost URL, Ctrl-b d
+    flocc cardinal status
+    flocc status -H all                              # the CARDINAL table
+
+`setup` is also the repair command. It asks for the machine's sudo password only when a root
+outcome is missing: the user, lingering, the desktop key or the tailnet block. It never restarts a
+running cardinal, so a changed brief or unit applies at the next daily renewal (a two-hour window
+from 04:00) or at `flocc cardinal restart`. `--user cardinal-test --only <vm>` gives a test install
+beside the live one.
+
+The root pass blocks the cardinal user from the tailnet (`flocc-cardinal-egress@<user>.service`,
+its own nftables table), because Tailscale authenticates the machine, not the user, and every node
+is the owner's. cardinal reaches its hosts as root over the Incus bridge, with a key limited to the
+bridge gateway, and Claude and Linear over the internet.
+
+`flocc cardinal remove` stops cardinal and takes its key off the hosts; `--purge` also deletes the
+user and its home. A host whose sshd setup did not install keeps sshd running with its
+`cardinal.conf`.
+
+Tailscale SSH serves a host's `/etc/ssh` host key once sshd is installed (flocc-nimble,
+2026-10-21), which is why setup refreshes this desktop's `known_hosts` entry after installing it.
+Not yet confirmed on a live run: that the `/loop` initial prompt arms the loop, that pinning `ipv4.address` on a running VM
+keeps its lease, and that the egress block holds for connections to the machine's own tailnet
+address. The live checklist is in the design's Testing section.
 
 ## Disk use
 

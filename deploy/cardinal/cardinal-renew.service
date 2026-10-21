@@ -1,0 +1,6 @@
+[Unit]
+Description=Renew cardinal's session before its /loop expires
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/lib/flocc-cardinal/flocc-setup --phase cardinal-renew

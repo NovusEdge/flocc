@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -32,8 +33,8 @@ func (f *fakeInst) HostKnown(name, ssh string) (bool, error) {
 	return f.known, f.knownErr
 }
 
-func (f *fakeInst) AddHost(_ context.Context, name, ssh string) error {
-	f.calls = append(f.calls, "add "+name+" "+ssh)
+func (f *fakeInst) AddHost(_ context.Context, name, ssh, machine string) error {
+	f.calls = append(f.calls, "add "+name+" "+ssh+" "+machine)
 	return nil
 }
 
@@ -79,7 +80,7 @@ func TestCreateRunsStepsThenTheVerbsThenSnapshots(t *testing.T) {
 	if f.Calls[0] != "interactive: true" || step.applied != 1 {
 		t.Fatalf("%v applied=%d", f.Calls, step.applied)
 	}
-	if want := []string{"known flocc-a root@flocc-a", "add flocc-a root@flocc-a", "ship flocc-a", "login flocc-a"}; !slices.Equal(inst.calls, want) {
+	if want := []string{"known flocc-a root@flocc-a", "add flocc-a root@flocc-a laptop", "ship flocc-a", "login flocc-a"}; !slices.Equal(inst.calls, want) {
 		t.Fatalf("%q", inst.calls)
 	}
 	if !f.Ran(snapCreate) || !f.Ran(snapRename) || f.Ran(snapDelete) {
@@ -87,6 +88,18 @@ func TestCreateRunsStepsThenTheVerbsThenSnapshots(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "incus snapshot restore flocc-a installed") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestLoggedNamesEachCreateLog(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	os.MkdirAll(filepath.Join(dir, "flocc"), 0o700)
+	for _, n := range []string{"create-a.log", "create-flocc-nimble.log", "cardinal-cardinal.log"} {
+		os.WriteFile(filepath.Join(dir, "flocc", n), nil, 0o600)
+	}
+	if got := Logged(); !slices.Equal(got, []string{"a", "flocc-nimble"}) {
+		t.Fatalf("%v", got)
 	}
 }
 

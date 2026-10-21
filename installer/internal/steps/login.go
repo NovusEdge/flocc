@@ -89,10 +89,38 @@ func requireFullLogin(ctx context.Context, e *Env) error {
 // trustWorktrees marks ~/worktrees trusted the way sessions.trust_folders does for a session's own
 // paths. Sessions trust only their worktree and repo, so on a fresh host remote-control would sit
 // at the folder-trust dialog in ~/worktrees. The caller holds the tick lock with no session
-// running, so nothing rewrites ~/.claude.json from memory meanwhile. Values stay raw JSON: the
-// file also holds the account's state, which a float64 round trip could alter.
+// running, so nothing rewrites ~/.claude.json from memory meanwhile.
 func trustWorktrees(e *Env) error {
-	path, dir := e.HomePath(".claude.json"), e.Real(worktreesRel)
+	dir := e.Real(worktreesRel)
+	return editClaudeJSON(e.HomePath(".claude.json"), func(file map[string]json.RawMessage) (bool, error) {
+		return trustFolder(file, dir)
+	})
+}
+
+// trustFolder marks dir trusted in ~/.claude.json's top-level map and reports whether it changed.
+func trustFolder(file map[string]json.RawMessage, dir string) (bool, error) {
+	projects := map[string]map[string]json.RawMessage{}
+	if raw, ok := file["projects"]; ok {
+		if err := json.Unmarshal(raw, &projects); err != nil {
+			return false, fmt.Errorf("projects: %w", err)
+		}
+	}
+	if string(projects[dir]["hasTrustDialogAccepted"]) == "true" {
+		return false, nil
+	}
+	if projects[dir] == nil {
+		projects[dir] = map[string]json.RawMessage{}
+	}
+	projects[dir]["hasTrustDialogAccepted"] = json.RawMessage("true")
+	var err error
+	file["projects"], err = json.Marshal(projects)
+	return true, err
+}
+
+// editClaudeJSON applies edit to ~/.claude.json and writes it back only when edit changed it.
+// Values stay raw JSON: the file also holds the account's state, which a float64 round trip could
+// alter.
+func editClaudeJSON(path string, edit func(map[string]json.RawMessage) (bool, error)) error {
 	file := map[string]json.RawMessage{}
 	switch b, err := os.ReadFile(path); {
 	case errors.Is(err, fs.ErrNotExist):
@@ -103,46 +131,22 @@ func trustWorktrees(e *Env) error {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 	}
-	projects := map[string]map[string]json.RawMessage{}
-	if raw, ok := file["projects"]; ok {
-		if err := json.Unmarshal(raw, &projects); err != nil {
-			return fmt.Errorf("%s: projects: %w", path, err)
-		}
+	if file == nil { // the file held a literal null
+		file = map[string]json.RawMessage{}
 	}
-	if string(projects[dir]["hasTrustDialogAccepted"]) == "true" {
+	changed, err := edit(file)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if !changed {
 		return nil
-	}
-	if projects[dir] == nil {
-		projects[dir] = map[string]json.RawMessage{}
-	}
-	projects[dir]["hasTrustDialogAccepted"] = json.RawMessage("true")
-	var err error
-	if file["projects"], err = json.Marshal(projects); err != nil {
-		return err
 	}
 	out, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	// Mode 600 from the start: the file holds the account's OAuth state. WriteFile would keep the
-	// mode of a leftover temp file.
-	tmp := path + ".flocc.tmp"
-	os.Remove(tmp)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(out); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	// 600: the file holds the account's OAuth state.
+	return writeAtomic(path, out, 0o600)
 }
 
 // checkStatus refuses a status the lock and the session list cannot be trusted from.

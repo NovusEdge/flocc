@@ -324,11 +324,11 @@ func TestResolveTargetDaytonaRefusedLoginWhilePolling(t *testing.T) {
 
 func TestArchFor(t *testing.T) {
 	for in, want := range map[string]string{"x86_64\n": "amd64", "aarch64": "arm64"} {
-		if got, err := archFor(in); err != nil || got != want {
+		if got, err := ArchFor(in); err != nil || got != want {
 			t.Errorf("%q: %q %v", in, got, err)
 		}
 	}
-	if _, err := archFor("riscv64"); err == nil {
+	if _, err := ArchFor("riscv64"); err == nil {
 		t.Error("riscv64: want error")
 	}
 }

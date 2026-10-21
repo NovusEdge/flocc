@@ -102,11 +102,19 @@ pass therefore installs a per-uid egress block on the machine. It writes
 - `meta skuid <uid>` to any other address in `100.64.0.0/10` or `fd7a:115c:a1e0::/48` is dropped.
 
 A system unit, `flocc-cardinal-egress@<user>.service`, loads that file with `nft -f` (oneshot,
-`RemainAfterExit`). It runs `Before=user@<uid>.service` and is wanted by `multi-user.target`, so the
-block is in place before cardinal's user manager starts at boot. `ExecStop` deletes the table. The
+`RemainAfterExit`). It runs `Before=systemd-user-sessions.service`, which every `user@<uid>.service`
+follows, and is wanted by `multi-user.target`, so the block is in place before cardinal's user
+manager starts at boot. `ExecStop` deletes the table. The
 table is its own, so Docker's and Incus's tables are left alone, and `nftables.service` (disabled
 on this machine) is not used. cardinal's hosts are on the Incus bridge, and Claude and Linear are
 on the internet, so the block costs cardinal nothing it needs.
+
+**The block does not cover cardinal's hosts.** cardinal is root on each host, and each host is a
+tailnet node of the owner's running Tailscale SSH. So cardinal can reach the owner's other
+machines through a host (`ssh root@<addr>`, then `ssh` onward from there), and the machine's block
+cannot see that. The host agents on those VMs already have the same reach (question q7). Closing it
+needs the tailnet policy: tag the hosts and deny tagged nodes access to the owner's own devices.
+That is the owner's change, outside this command.
 
 **Which route reaches the machine.** The desktop's `ssh zer0-day-nimble` resolves through MagicDNS,
 and the laptop runs Tailscale SSH. So for `<user>@<machine>` the tailnet policy decides, not
@@ -593,8 +601,6 @@ flocc-nimble are not touched until the last step. Record the results in `docs/vm
   session is fresh then, and onboarding and trust are already set, so no dialog can take the keys.
 - That no turn of a check goes 5 minutes without writing its transcript. A longer tool call would
   let the renewal cut that check.
-- That Tailscale SSH serves `/etc/ssh` host keys once they exist. This is the likely cause of the
-  desktop's host-key failure on flocc-nimble. The Host pass's refresh covers both cases.
 - That setting `ipv4.address` on a running VM's `eth0` keeps the lease without a NIC restart.
 - Whether the Linear MCP can be authorised outside the TUI.
 - That connections from the machine reach the VM from the `incusbr0` gateway address, which `from=`

@@ -63,7 +63,7 @@ func (o LoginOptions) label() string { return cmp.Or(o.Name, o.Target) }
 
 // target is the name the owner typed, never dest.SSH, which holds the Daytona token.
 func login(ctx context.Context, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {
-	tap := &summaryTap{out: &urlWatch{out: out, open: open, seen: map[string]bool{}}}
+	tap := newSummaryTap(&urlWatch{out: out, open: open, seen: map[string]bool{}})
 	c := sshCmd(dest, true, loginRemote(addr))
 	c.Stdout = tap
 	err := scrubErr(r.Interactive(ctx, c), dest.Token)
@@ -80,12 +80,20 @@ var (
 	ansi     = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
 )
 
-// urlWatch passes the host's output through and opens each OAuth URL in it once.
+// urlWatch passes the host's output through and opens each OAuth URL in it once. allow, when set,
+// must accept a URL before it opens; the rest are only printed.
 type urlWatch struct {
-	out  io.Writer
-	open func(string)
-	line []byte
-	seen map[string]bool
+	out   io.Writer
+	open  func(string)
+	allow func(string) bool
+	line  []byte
+	seen  map[string]bool
+}
+
+// WatchURLs is urlWatch for output the desktop does not trust, such as cardinal's: only URLs
+// allow accepts are opened.
+func WatchURLs(out io.Writer, open func(string), allow func(string) bool) io.Writer {
+	return &urlWatch{out: out, open: open, allow: allow, seen: map[string]bool{}}
 }
 
 func (u *urlWatch) Write(p []byte) (int, error) {
@@ -97,7 +105,7 @@ func (u *urlWatch) Write(p []byte) (int, error) {
 			break
 		}
 		for _, m := range oauthURL.FindAllString(ansi.ReplaceAllString(string(u.line[:i]), ""), -1) {
-			if !u.seen[m] {
+			if !u.seen[m] && (u.allow == nil || u.allow(m)) {
 				u.seen[m] = true
 				u.open(m)
 			}

@@ -20,8 +20,13 @@ type Host struct {
 	Name    string `toml:"-"`
 	SSH     string `toml:"ssh,omitempty"`
 	Daytona string `toml:"daytona,omitempty"`
+	// Machine is the owner's ssh destination on the machine holding the host, for flocc setup's
+	// old-version cleanup and cardinal; MachineNone when the host is on none of the owner's.
+	Machine string `toml:"machine,omitempty"`
 	answers.Answers
 }
+
+const MachineNone = "none"
 
 func (h Host) Target() string {
 	if h.Daytona != "" {
@@ -57,6 +62,10 @@ func check(h Host) error {
 		return fmt.Errorf("%s.toml: set exactly one of ssh and daytona", h.Name)
 	case !ValidTarget(h.Target()):
 		return fmt.Errorf("%s.toml: %q is not an ssh destination or daytona sandbox", h.Name, h.Target())
+	case h.Machine != "" && h.Daytona != "":
+		return fmt.Errorf("%s.toml: machine is for an ssh host; a Daytona sandbox is on none of your machines", h.Name)
+	case h.Machine != "" && h.Machine != MachineNone && !ValidTarget(h.Machine):
+		return fmt.Errorf("%s.toml: machine %q is not an ssh destination", h.Name, h.Machine)
 	}
 	return nil
 }

@@ -17,6 +17,8 @@ import (
 // The gate hook's onFailure setting needs this version.
 var minClaude = [3]int{2, 1, 295}
 
+var needsClaude = fmt.Sprintf("needs %d.%d.%d", minClaude[0], minClaude[1], minClaude[2])
+
 const settingsRel = ".claude/settings.json"
 
 // pushSettings are the /config toggles "Push when actions required" and "Push when Claude decides".
@@ -76,7 +78,7 @@ func (ClaudeLogin) Apply(ctx context.Context, e *Env) error {
 
 // mergePushSettings returns existing settings JSON (empty means none) with the push keys set
 // and every other key kept.
-func mergePushSettings(existing []byte) ([]byte, error) {
+func mergePushSettings(existing []byte, want map[string]bool) ([]byte, error) {
 	m := map[string]json.RawMessage{}
 	if len(bytes.TrimSpace(existing)) > 0 {
 		if err := json.Unmarshal(existing, &m); err != nil {
@@ -86,7 +88,7 @@ func mergePushSettings(existing []byte) ([]byte, error) {
 	if m == nil { // the file held a literal null
 		m = map[string]json.RawMessage{}
 	}
-	for k, v := range pushSettings {
+	for k, v := range want {
 		b, _ := json.Marshal(v)
 		m[k] = b
 	}
@@ -98,13 +100,13 @@ func mergePushSettings(existing []byte) ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-func pushSettingsApplied(e *Env) bool {
+func pushSettingsApplied(e *Env, want map[string]bool) bool {
 	b, _ := os.ReadFile(e.HomePath(settingsRel))
 	var m map[string]any
 	if json.Unmarshal(b, &m) != nil {
 		return false
 	}
-	for k, v := range pushSettings {
+	for k, v := range want {
 		if m[k] != v {
 			return false
 		}
@@ -112,8 +114,8 @@ func pushSettingsApplied(e *Env) bool {
 	return true
 }
 
-func applyPushSettings(e *Env) error {
-	if pushSettingsApplied(e) {
+func applyPushSettings(e *Env, want map[string]bool) error {
+	if pushSettingsApplied(e, want) {
 		return nil
 	}
 	path := e.HomePath(settingsRel)
@@ -121,27 +123,15 @@ func applyPushSettings(e *Env) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	out, err := mergePushSettings(b)
+	out, err := mergePushSettings(b, want)
 	if err != nil {
 		return fmt.Errorf("%s: %w", e.Real(settingsRel), err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	// CreateTemp makes the file 0600, which also tightens a looser existing settings.json.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	// 600 also tightens a looser existing settings.json.
+	return writeAtomic(path, out, 0o600)
 }
 
 func missingPlugins(e *Env, l plugins.List) []string {
@@ -192,9 +182,9 @@ func (Claude) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return false, "", err
 	}
 	if ok, v := claudeVersion(ctx, e); !ok {
-		return false, "claude " + v + "; needs 2.1.295", nil
+		return false, "claude " + v + "; " + needsClaude, nil
 	}
-	if !pushSettingsApplied(e) {
+	if !pushSettingsApplied(e, pushSettings) {
 		return false, "push settings not applied", nil
 	}
 	if m := missingPlugins(e, l); len(m) > 0 {
@@ -225,7 +215,7 @@ func (Claude) Apply(ctx context.Context, e *Env) error {
 			return err
 		}
 	}
-	if err := applyPushSettings(e); err != nil {
+	if err := applyPushSettings(e, pushSettings); err != nil {
 		return err
 	}
 	known := knownMarketplaces(e)

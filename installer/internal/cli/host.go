@@ -110,9 +110,9 @@ func hostFile(d *deps, name string) string {
 	return filepath.Join(hosts.Dir(d.home), name+".toml")
 }
 
-// hostAdd is flocc host add <name> [--ssh DEST]; Part 3's host create calls it.
-func hostAdd(ctx context.Context, d *deps, name, sshDest string) error {
-	return addHost(ctx, d, name, hosts.Host{SSH: sshDest})
+// hostAdd is flocc host add <name> [--ssh DEST]; host create calls it with its machine.
+func hostAdd(ctx context.Context, d *deps, name, sshDest, machine string) error {
+	return addHost(ctx, d, name, hosts.Host{SSH: sshDest, Machine: machine})
 }
 
 // loadOrNew is the host's file, or a new host reached as root@<name>; reach overrides either.
@@ -123,6 +123,9 @@ func loadOrNew(d *deps, name string, reach hosts.Host) (hosts.Host, error) {
 	}
 	if reach.SSH != "" || reach.Daytona != "" {
 		h.SSH, h.Daytona = reach.SSH, reach.Daytona
+	}
+	if reach.Machine != "" {
+		h.Machine = reach.Machine
 	}
 	return h, err
 }
