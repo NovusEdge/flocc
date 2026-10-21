@@ -2,16 +2,18 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
-	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // readOnly are the host commands -H all may run: they change nothing on any host.
@@ -116,7 +118,7 @@ func pickHost(ctx context.Context, d *deps, name string, args []string) (hosts.H
 		}
 		reached = append(reached, h)
 	}
-	for j, row := range ship.Statuses(ctx, d.run, reached) {
+	for j, row := range ship.Statuses(ctx, d.ui, d.run, reached, key) {
 		if row.Report == nil {
 			why := reached[j].Name
 			if row.Err != "" {
@@ -165,7 +167,7 @@ func onHost(ctx context.Context, d *deps, name string, args []string) int {
 	}
 	dest, err := d.resolve(ctx, h.Target())
 	if err == nil {
-		err = ship.OnHost(ctx, d.run, dest, ship.FloccLine(args), d.tty)
+		err = ship.OnHostWhy(ctx, d.run, dest, ship.FloccLine(args), d.tty, "-")
 	}
 	return ship.ExitCode(err, "flocc")
 }
@@ -200,26 +202,30 @@ func onAll(ctx context.Context, d *deps, args []string) int {
 		fmt.Fprintln(d.err, "flocc: logs -f follows one host; name it with -H")
 		return 2
 	case args[0] == "status":
-		return d.fleet(args[1:])
+		return d.fleet(ctx, d.ui, args[1:])
 	}
 	all := listHosts(d)
 	if len(all) == 0 {
 		fmt.Fprintln(d.err, "flocc: no hosts yet; flocc host add <name>")
 		return 2
 	}
-	results := make([]host.Result, len(all))
+	outs := make([]hostOut, len(all))
 	dests := make([]*ship.Dest, len(all))
+	steps := make([]*ui.Step, len(all))
 	// One at a time: two hosts' approval prompts on one terminal would interleave.
 	for i, h := range all {
+		steps[i] = d.ui.Step(h.Name)
+		steps[i].Detail("connect")
 		dest, err := d.resolve(ctx, h.Target())
 		if err == nil {
-			// Connect goes host by host and the results print together after wg.Wait, so one
+			// Connect goes host by host and the output draws together after wg.Wait, so one
 			// blackholed host must time out fast.
 			dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
 			err = ship.Connect(ctx, d.run, dest, h.Name, d.tty)
 		}
 		if err != nil {
-			results[i] = host.Result{Stderr: err.Error(), Code: 255}
+			outs[i].code = 1
+			steps[i].Fail(err)
 			continue
 		}
 		dests[i] = &dest
@@ -232,25 +238,111 @@ func onAll(ctx context.Context, d *deps, args []string) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res, err := ship.Capture(ctx, d.run, *dest, ship.FloccLine(args), nil)
-			if err != nil {
-				res = host.Result{Stderr: err.Error(), Code: 255}
+			steps[i].Detail(args[0])
+			if args[0] == "doctor" {
+				outs[i] = doctorOf(ctx, d, all[i], *dest, steps[i])
+			} else {
+				outs[i] = logsOf(ctx, d, *dest, args, steps[i])
 			}
-			results[i] = res
 		}()
 	}
 	wg.Wait()
 	code := 0
 	for i, h := range all {
-		out := results[i].Out()
-		if out != "" && !strings.HasSuffix(out, "\n") {
-			out += "\n"
+		o := outs[i]
+		code = max(code, o.code)
+		if dests[i] == nil {
+			continue
 		}
-		fmt.Fprintf(d.out, "== %s ==\n%s", h.Name, out)
-		if results[i].Code != 0 {
-			fmt.Fprintf(d.out, "(exit %d)\n", results[i].Code)
-			code = 1
+		d.ui.Group(h.Name)
+		ui.Rows(d.ui, o.rows)
+		if o.text != "" {
+			d.ui.Note(h.Name, o.text)
+		}
+		if o.todo != "" {
+			d.ui.Todo(o.todo)
 		}
 	}
 	return code
+}
+
+// hostOut is what one host contributed to -H all: check rows, or its text as it printed it, and a
+// to-do when its flocc is too old to report checks.
+type hostOut struct {
+	rows []ui.Event
+	text string
+	todo string
+	code int
+}
+
+// doctorReport is flocc doctor --json; v is 0 or missing from a host that predates it.
+type doctorReport struct {
+	V      int `json:"v"`
+	Checks []struct {
+		Name   string `json:"name"`
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+	} `json:"checks"`
+}
+
+func doctorOf(ctx context.Context, d *deps, h hosts.Host, dest ship.Dest, st *ui.Step) hostOut {
+	res, err := ship.Capture(ctx, d.run, dest, ship.FloccLine([]string{"doctor", "--json"}), nil)
+	if err != nil {
+		st.Fail(err)
+		return hostOut{code: 1}
+	}
+	var rep doctorReport
+	if json.Unmarshal([]byte(res.Stdout), &rep) != nil || rep.V == 0 {
+		// An older flocc refuses the flag or ignores it; either way its text report is the answer.
+		return doctorText(ctx, d, h, dest, st)
+	}
+	o := hostOut{}
+	failed := 0
+	for _, c := range rep.Checks {
+		e := ui.Event{Kind: ui.KStep, Name: sanitize(c.Name), State: ui.Done, Detail: sanitize(c.Detail)}
+		if !c.OK {
+			e.State, e.Err = ui.Failed, e.Detail
+			failed++
+		}
+		o.rows = append(o.rows, e)
+	}
+	if failed > 0 || res.Code != 0 {
+		o.code = 1
+	}
+	st.Done(fmt.Sprintf("%d checks, %d failed", len(rep.Checks), failed))
+	return o
+}
+
+// doctorText is the fallback for a host without doctor --json.
+func doctorText(ctx context.Context, d *deps, h hosts.Host, dest ship.Dest, st *ui.Step) hostOut {
+	o := logsOf(ctx, d, dest, []string{"doctor"}, st)
+	o.todo = "flocc ship -H " + h.Name + " to update it"
+	return o
+}
+
+func logsOf(ctx context.Context, d *deps, dest ship.Dest, args []string, st *ui.Step) hostOut {
+	res, err := ship.Capture(ctx, d.run, dest, ship.FloccLine(args), nil)
+	if err != nil {
+		st.Fail(err)
+		return hostOut{code: 1}
+	}
+	o := hostOut{text: sanitize(strings.TrimRight(res.Out(), "\n"))}
+	if res.Code != 0 {
+		o.code = 1
+		st.Fail(fmt.Errorf("exit %d", res.Code))
+	} else {
+		st.Done("")
+	}
+	return o
+}
+
+// sanitize drops the control characters of text from a host, so none of its escape sequences reach
+// the terminal; newlines and tabs stay, and unlike saved.Sanitize nothing is cut short.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
 }

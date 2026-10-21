@@ -1,6 +1,7 @@
 package ship
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,8 +11,8 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // Daytona list prices (daytona.io/pricing); the figure shown is an estimate, not what the account
@@ -55,6 +57,7 @@ func estimateHourly(cpu, memGiB, diskGiB int) float64 {
 
 // Report is the JSON of flocc status --json.
 type Report struct {
+	V        int    `json:"v"` // 0 from a host that predates the versioned report
 	Host     string `json:"host"`
 	Mode     string `json:"mode"`
 	LastTick *struct {
@@ -86,6 +89,7 @@ type Claim struct {
 	StartedAge float64  `json:"started_age_s"`
 	TmuxAlive  bool     `json:"tmux_alive"`
 	ContextPct *float64 `json:"context_pct"`
+	Activity   string   `json:"activity"`
 }
 
 // FleetHost is one row's identity. State is empty for an ssh destination, whose reachability is
@@ -298,16 +302,17 @@ func discoverCardinals(dir string) (list []saved.Saved, notes []string) {
 	return list, notes
 }
 
-// cardinalTable renders the CARDINAL rows and adds a failure line for each install that fails.
-func cardinalTable(rows []CardinalRow) (string, []string) {
-	t := newTable("CARDINAL", "MACHINE", "UNIT", "SESSION", "LAST TURN", "LOGIN")
+// cardinalTable lists the CARDINAL rows and adds a failure line for each install that fails.
+func cardinalTable(rows []CardinalRow) (ui.Table, []string) {
+	t := ui.Table{Headers: []string{"CARDINAL", "MACHINE", "UNIT", "SESSION", "LAST TURN", "LOGIN"}}
+	add := func(cells ...string) { t.Rows = append(t.Rows, cells) }
 	var failures []string
 	for _, r := range rows {
 		user, machine := r.Saved.User, saved.HostPart(r.Saved.Machine)
 		remedy := "flocc cardinal status --user " + user
 		if r.Status == nil {
 			d := cell("-", dim)
-			t.Row(user, machine, cell("unreachable", bad), d, d, d)
+			add(user, machine, cell("unreachable", bad), d, d, d)
 			failures = append(failures, fmt.Sprintf("cardinal %s: %s; %s", user, saved.Sanitize(r.Err), remedy))
 			continue
 		}
@@ -327,27 +332,65 @@ func cardinalTable(rows []CardinalRow) (string, []string) {
 		if st.LastTurnAgeS != nil {
 			turn = Age(*st.LastTurnAgeS) + " ago"
 		}
-		t.Row(user, machine, unit, session, turn, login)
+		add(user, machine, unit, session, turn, login)
 		if f := st.Failures(); len(f) > 0 {
 			failures = append(failures, fmt.Sprintf("cardinal %s: %s; %s", user, saved.Sanitize(f[0]), remedy))
 		}
 	}
-	return t.String(), failures
+	return t, failures
+}
+
+// tracker draws a step per host while collect fetches it: begin opens it, end closes it with the
+// row. Nil means no steps.
+type tracker struct {
+	begin func(FleetHost) *ui.Step
+	end   func(*ui.Step, Row)
 }
 
 // collect queries every host in parallel; one slow or dead host delays only its own row.
-func collect(ctx context.Context, r host.Runner, c *destCache, hosts []FleetHost) []Row {
+func collect(ctx context.Context, r host.Runner, c *destCache, hosts []FleetHost, t *tracker) []Row {
 	rows := make([]Row, len(hosts))
 	var wg sync.WaitGroup
 	for i, h := range hosts {
+		var st *ui.Step
+		if t != nil {
+			st = t.begin(h)
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			rows[i] = fetch(ctx, r, c, h)
+			if t != nil {
+				t.end(st, rows[i])
+			}
 		}()
 	}
 	wg.Wait()
 	return rows
+}
+
+// hostSteps is one step per host named for it, ended Done when its report came, Skipped when it
+// did not: an unreachable host is a row of the table, not a failed run.
+func hostSteps(s ui.Session) *tracker {
+	return &tracker{
+		begin: func(h FleetHost) *ui.Step {
+			st := s.Step(h.Name)
+			st.Detail("status --json")
+			return st
+		},
+		end: func(st *ui.Step, r Row) {
+			switch {
+			case r.Report != nil && r.Report.V == 0:
+				st.Done("behind")
+			case r.Report != nil:
+				st.Done("up")
+			case r.Err != "":
+				st.Skip("unreachable: " + saved.Sanitize(r.Err))
+			default:
+				st.Skip(r.State)
+			}
+		},
+	}
 }
 
 type severity int
@@ -486,13 +529,13 @@ func newTable(headers ...string) *table.Table {
 		})
 }
 
-// render draws the host table, the claims table and one line per host that could not be read.
-// Ages come from the hosts themselves, so the view needs no clock of its own.
-func render(rows []Row, cards []CardinalRow, notes []string) string {
-	hosts := newTable("HOST", "STATE", "MODE", "LAST TICK", "SESSIONS", "5H", "WEEK", "DISK FREE", "LOGIN", "TOKENS", "EST $/H")
-	claims := newTable("HOST", "ISSUE", "PHASE", "STATE", "AGE", "CONTEXT", "TMUX")
-	var failures []string
-	nClaims := 0
+// fleetTables builds the host table, the claims table (when anything is claimed) and the cardinal
+// table (when any install is saved), with one line for each thing that is wrong. Cells carry
+// lipgloss styling for render; Fleet strips it. Ages come from the hosts themselves, so the view
+// needs no clock of its own.
+func fleetTables(rows []Row, cards []CardinalRow) (tables []ui.Table, failures []string) {
+	hosts := ui.Table{Title: "Hosts", Headers: []string{"HOST", "STATE", "MODE", "LAST TICK", "SESSIONS", "5H", "WEEK", "DISK FREE", "LOGIN", "TOKENS", "EST $/H"}}
+	claims := ui.Table{Title: "Claims", Headers: []string{"HOST", "ISSUE", "PHASE", "STATE", "AGE", "CONTEXT", "TMUX"}}
 	for _, r := range rows {
 		name := r.Name
 		if r.Report == nil {
@@ -500,16 +543,19 @@ func render(rows []Row, cards []CardinalRow, notes []string) string {
 			sev := dim
 			if state == "" || state == "started" {
 				state, sev = "unreachable", bad
-				failures = append(failures, fmt.Sprintf("%s: %s", name, r.Err))
+				failures = append(failures, fmt.Sprintf("%s: %s", name, saved.Sanitize(r.Err)))
 			}
 			d := cell("-", dim)
-			hosts.Row(name, cell(state, sev), d, d, d, d, d, d, d, d, costCell(r.FleetHost))
+			hosts.Rows = append(hosts.Rows, []string{name, cell(state, sev), d, d, d, d, d, d, d, d, costCell(r.FleetHost)})
 			continue
 		}
 		rep := r.Report
 		state := r.State
 		if state == "" {
 			state = "up"
+		}
+		if rep.V == 0 {
+			state = cell("behind", warn)
 		}
 		running := 0
 		for _, c := range rep.Claims {
@@ -518,16 +564,15 @@ func render(rows []Row, cards []CardinalRow, notes []string) string {
 			}
 		}
 		if rep.LedgerError != "" {
-			failures = append(failures, fmt.Sprintf("%s: ledger unreadable: %s", name, rep.LedgerError))
+			failures = append(failures, fmt.Sprintf("%s: ledger unreadable: %s", name, saved.Sanitize(rep.LedgerError)))
 		}
 		five, week := cell("-", dim), cell("-", dim)
 		if rep.Usage != nil {
 			five = pctCell(rep.Usage.FiveHourPct, rep.FiveHourMaxPct)
 			week = pctCell(rep.Usage.WeeklyPct, rep.WeeklyMaxPct)
 		}
-		hosts.Row(name, state, rep.Mode, tickCell(rep), fmt.Sprintf("%d/%d", running, rep.SessionCap), five, week, diskCell(rep), loginCell(rep), tokensCell(rep), costCell(r.FleetHost))
+		hosts.Rows = append(hosts.Rows, []string{name, state, rep.Mode, tickCell(rep), fmt.Sprintf("%d/%d", running, rep.SessionCap), five, week, diskCell(rep), loginCell(rep), tokensCell(rep), costCell(r.FleetHost)})
 		for _, c := range rep.Claims {
-			nClaims++
 			ctxPct := cell("-", dim)
 			if c.ContextPct != nil {
 				ctxPct = fmt.Sprintf("%.0f%%", *c.ContextPct)
@@ -542,18 +587,41 @@ func render(rows []Row, cards []CardinalRow, notes []string) string {
 			default:
 				tmux = cell("no", bad)
 			}
-			claims.Row(name, c.Issue, c.Phase, c.State, Age(c.StartedAge), ctxPct, tmux)
+			claims.Rows = append(claims.Rows, []string{name, c.Issue, c.Phase, c.State, Age(c.StartedAge), ctxPct, tmux})
 		}
 	}
-	var b strings.Builder
-	b.WriteString(hosts.String() + "\n")
-	if nClaims > 0 {
-		b.WriteString("\n" + claims.String() + "\n")
+	tables = append(tables, hosts)
+	if len(claims.Rows) > 0 {
+		tables = append(tables, claims)
 	}
 	if len(cards) > 0 {
-		table, fails := cardinalTable(cards)
-		b.WriteString("\n" + table + "\n")
+		t, fails := cardinalTable(cards)
+		tables = append(tables, t)
 		failures = append(failures, fails...)
+	}
+	return tables, failures
+}
+
+// footnotes explain the cost column.
+var footnotes = []string{
+	"est $/h: an estimate at Daytona list prices, not a bill.",
+	"Started sandboxes only: vCPU, memory and disk beyond 5 GiB.",
+	"Stopped and archived sandboxes show - (their rate is not confirmed).",
+}
+
+// render draws the fleet as text for --watch, which clears the screen and redraws.
+func render(rows []Row, cards []CardinalRow, notes []string) string {
+	tables, failures := fleetTables(rows, cards)
+	var b strings.Builder
+	for i, t := range tables {
+		lt := newTable(t.Headers...)
+		for _, r := range t.Rows {
+			lt.Row(r...)
+		}
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(lt.String() + "\n")
 	}
 	for _, f := range failures {
 		b.WriteString(cell(f, bad) + "\n")
@@ -561,18 +629,39 @@ func render(rows []Row, cards []CardinalRow, notes []string) string {
 	for _, n := range notes {
 		b.WriteString(cell(n, dim) + "\n")
 	}
-	for _, line := range []string{
-		"est $/h: an estimate at Daytona list prices, not a bill.",
-		"Started sandboxes only: vCPU, memory and disk beyond 5 GiB.",
-		"Stopped and archived sandboxes show - (their rate is not confirmed).",
-	} {
+	for _, line := range footnotes {
 		b.WriteString(cell(line, dim) + "\n")
 	}
 	return b.String()
 }
 
-// Statuses runs flocc status --json on every host in parallel, as the fleet view does.
-func Statuses(ctx context.Context, r host.Runner, hs []hosts.Host) []Row {
+// unstyled drops the lipgloss styling of a cell.
+func unstyled(s string) string {
+	var b bytes.Buffer
+	lipgloss.Fprint(&b, s)
+	return b.String()
+}
+
+// draw puts the fleet on the session: the tables, then the problems and the notes.
+func draw(s ui.Session, rows []Row, cards []CardinalRow, notes []string) {
+	tables, failures := fleetTables(rows, cards)
+	for _, t := range tables {
+		for _, r := range t.Rows {
+			for j, c := range r {
+				r[j] = unstyled(c)
+			}
+		}
+		s.Table(t)
+	}
+	if len(failures) > 0 {
+		s.Note("Problems", strings.Join(failures, "\n"))
+	}
+	s.Note("Notes", strings.Join(append(slices.Clone(notes), footnotes...), "\n"))
+}
+
+// Statuses runs flocc status --json on every host in parallel, as the fleet view does, with a
+// "Find <issue>" step per host on s.
+func Statuses(ctx context.Context, s ui.Session, r host.Runner, hs []hosts.Host, issue string) []Row {
 	fhs := make([]FleetHost, len(hs))
 	for i, h := range hs {
 		fhs[i] = FleetHost{Name: h.Name, Target: h.Target(), Daytona: h.Daytona != ""}
@@ -580,11 +669,28 @@ func Statuses(ctx context.Context, r host.Runner, hs []hosts.Host) []Row {
 	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) { return Resolve(ctx, h.Target) })
 	// No sharing is still a working lookup, so a missing ~/.ssh does not stop it.
 	cache.sshOpts, _ = SSHMux()
-	return collect(ctx, r, cache, fhs)
+	return collect(ctx, r, cache, fhs, &tracker{
+		begin: func(h FleetHost) *ui.Step {
+			st := s.Step("Find " + issue)
+			st.Detail(h.Name)
+			return st
+		},
+		end: func(st *ui.Step, row Row) {
+			switch {
+			case row.Report == nil:
+				st.Skip(row.Name + ": unreachable")
+			case slices.ContainsFunc(row.Report.Claims, func(c Claim) bool { return c.Issue == issue }):
+				st.Done(row.Name + ": holds it")
+			default:
+				st.Done(row.Name + ": not here")
+			}
+		},
+	})
 }
 
-// FleetMain prints the fleet once, or redraws it every interval with --watch.
-func FleetMain(args []string, out io.Writer) int {
+// Fleet draws the fleet once on s, or with --watch redraws it on out every interval. The watch
+// loop owns the terminal, so run it without a live session view.
+func Fleet(ctx context.Context, s ui.Session, out io.Writer, args []string) int {
 	fs := flag.NewFlagSet("flocc status -H all", flag.ContinueOnError)
 	watch := fs.Bool("watch", false, "redraw until interrupted")
 	interval := fs.Duration("interval", 30*time.Second, "time between redraws with --watch")
@@ -598,13 +704,11 @@ func FleetMain(args []string, out io.Writer) int {
 	home, _ := os.UserHomeDir()
 	daytonaConfig := filepath.Join(home, ".config/daytona/config.json")
 	hostsDir := hosts.Dir(home)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir, saved.Dir(home))
+	return runFleet(ctx, s, out, *watch, *interval, daytonaConfig, hostsDir, saved.Dir(home))
 }
 
 // runFleet draws the fleet until ctx ends, or once.
-func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir, cardinalDir string) int {
+func runFleet(ctx context.Context, s ui.Session, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir, cardinalDir string) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
 		auth, err := loadDaytona(daytonaConfig)
@@ -614,6 +718,10 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 		return auth.sshDest(ctx, client, h.ID, h.Name, realWaiter(io.Discard))
 	})
 	cache.sshOpts, _ = SSHMux()
+	var track *tracker
+	if !watch {
+		track = hostSteps(s)
+	}
 	for {
 		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
 		cardList, cardNotes := discoverCardinals(cardinalDir)
@@ -624,21 +732,20 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 			cards = collectCardinals(ctx, host.Exec{}, cache.sshOpts, cardList)
 			close(done)
 		}()
-		rows := collect(ctx, host.Exec{}, cache, found)
+		rows := collect(ctx, host.Exec{}, cache, found, track)
 		<-done
 		if ctx.Err() != nil {
 			return exitInterrupted
 		}
-		if watch {
-			fmt.Fprint(out, "\x1b[H\x1b[2J")
-		}
 		if len(found) == 0 {
 			notes = append(notes, "no hosts: log in with daytona login, or run flocc host add <name>")
 		}
-		lipgloss.Fprint(out, render(rows, cards, notes))
 		if !watch {
+			draw(s, rows, cards, notes)
 			return 0
 		}
+		fmt.Fprint(out, "\x1b[H\x1b[2J")
+		lipgloss.Fprint(out, render(rows, cards, notes))
 		select {
 		case <-ctx.Done():
 			return exitInterrupted

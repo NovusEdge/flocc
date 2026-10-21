@@ -21,6 +21,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // lockedFake serializes the Fake, which collect drives from one goroutine per host.
@@ -150,7 +151,7 @@ func TestFleetFetchesInParallelAndNeverLeaksTheToken(t *testing.T) {
 		{Name: "down", Target: "down"},
 		{Name: "old", Target: "daytona:old", State: "stopped", CPU: 1, MemGiB: 2, Daytona: true},
 	}
-	rows := collect(context.Background(), f, cache, hosts)
+	rows := collect(context.Background(), f, cache, hosts, nil)
 	if rows[0].Report == nil || rows[0].Report.Claims[0].Issue != "NF-1" {
 		t.Fatalf("%+v", rows[0])
 	}
@@ -342,7 +343,7 @@ func TestOneSlowHostDoesNotDelayTheOthersPastTheTimeout(t *testing.T) {
 	t.Cleanup(func() { hostTimeout = old })
 	cache := newDestCache(nil)
 	start := time.Now()
-	rows := collect(context.Background(), hangingRunner{}, cache, []FleetHost{{Name: "slow", Target: "slow"}, {Name: "fast", Target: "fast"}})
+	rows := collect(context.Background(), hangingRunner{}, cache, []FleetHost{{Name: "slow", Target: "slow"}, {Name: "fast", Target: "fast"}}, nil)
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatal(took)
 	}
@@ -417,7 +418,7 @@ func TestLoginAndTokenCellsFlagWhatWillStopSessions(t *testing.T) {
 
 func TestFleetRejectsATightWatchInterval(t *testing.T) {
 	for _, iv := range []string{"0s", "-1s", "1s"} {
-		if code := FleetMain([]string{"--watch", "--interval", iv}, io.Discard); code != 2 {
+		if code := Fleet(context.Background(), quietUI(), io.Discard, []string{"--watch", "--interval", iv}); code != 2 {
 			t.Errorf("%s: %d", iv, code)
 		}
 	}
@@ -428,7 +429,7 @@ func TestFleetRejectsATightWatchInterval(t *testing.T) {
 func TestStatusesSharesConnectionsForSSHHosts(t *testing.T) {
 	shortHome(t)
 	f := host.NewFake()
-	Statuses(context.Background(), f, []hosts.Host{{Name: "a", SSH: "root@a"}})
+	Statuses(context.Background(), quietUI(), f, []hosts.Host{{Name: "a", SSH: "root@a"}}, "NF-1")
 	if len(f.Calls) != 1 || !strings.Contains(f.Calls[0], "ControlMaster=auto") || !strings.Contains(f.Calls[0], "BatchMode=yes") {
 		t.Fatalf("%v", f.Calls)
 	}
@@ -439,5 +440,93 @@ func TestAge(t *testing.T) {
 		if got := Age(in); got != want {
 			t.Errorf("%v: %s want %s", in, got, want)
 		}
+	}
+}
+
+func tableEvents(rec *ui.Recorder) []*ui.Table {
+	var out []*ui.Table
+	for _, e := range rec.Events {
+		if e.Kind == ui.KTable {
+			out = append(out, e.Table)
+		}
+	}
+	return out
+}
+
+func TestDrawPutsPlainTablesAndNotesOnTheSession(t *testing.T) {
+	var rep Report
+	if err := json.Unmarshal([]byte(statusJSON), &rep); err != nil {
+		t.Fatal(err)
+	}
+	rows := []Row{
+		{FleetHost: FleetHost{Name: "sb", State: "started", CPU: 2, MemGiB: 4, Daytona: true}, Report: &rep},
+		{FleetHost: FleetHost{Name: "down"}, Err: "exit 255: Connection refused"},
+	}
+	rec := &ui.Recorder{}
+	draw(ui.New(rec), rows, nil, []string{"daytona: no CLI config, skipped"})
+	tables := tableEvents(rec)
+	if len(tables) != 2 || tables[0].Headers[0] != "HOST" || tables[1].Headers[1] != "ISSUE" {
+		t.Fatalf("%+v", tables)
+	}
+	for _, tb := range tables {
+		for _, r := range tb.Rows {
+			for _, c := range r {
+				if strings.Contains(c, "\x1b") {
+					t.Fatalf("styling in a cell: %q", c)
+				}
+			}
+		}
+	}
+	if got := tables[0].Rows[0]; got[0] != "sb" || got[4] != "2/2" || got[10] != "~$0.166" {
+		t.Fatalf("%q", got)
+	}
+	var notes = map[string]string{}
+	for _, e := range rec.Events {
+		if e.Kind == ui.KNote {
+			notes[e.Name] = e.Text
+		}
+	}
+	if !strings.Contains(notes["Problems"], "down: exit 255: Connection refused") ||
+		!strings.Contains(notes["Notes"], "daytona: no CLI config, skipped") || !strings.Contains(notes["Notes"], "an estimate") {
+		t.Fatalf("%q", notes)
+	}
+}
+
+func TestAHostWithoutAVersionedReportIsMarkedBehind(t *testing.T) {
+	var old, current Report
+	json.Unmarshal([]byte(`{"mode":"live","session_cap":2}`), &old)
+	json.Unmarshal([]byte(`{"v":1,"mode":"live","session_cap":2,"claims":[{"issue":"NF-1","state":"running","phase":"impl","activity":"reading"}]}`), &current)
+	if current.Claims[0].Activity != "reading" {
+		t.Fatalf("%+v", current.Claims)
+	}
+	tables, _ := fleetTables([]Row{
+		{FleetHost: FleetHost{Name: "old"}, Report: &old},
+		{FleetHost: FleetHost{Name: "new"}, Report: &current},
+	}, nil)
+	if got := unstyled(tables[0].Rows[0][1]); got != "behind" {
+		t.Errorf("old host state %q", got)
+	}
+	if got := unstyled(tables[0].Rows[1][1]); got != "up" {
+		t.Errorf("current host state %q", got)
+	}
+}
+
+func TestCollectOpensAStepPerHostAndEndsEachWithItsRow(t *testing.T) {
+	f := &lockedFake{Fake: host.NewFake()}
+	cache := newDestCache(nil)
+	hs := []FleetHost{{Name: "a", Target: "root@a"}, {Name: "b", Target: "root@b"}, {Name: "off", State: "stopped"}}
+	remote := asServiceUser([]string{"flocc", "status", "--json"})
+	f.On("ssh -o BatchMode=yes -o ConnectTimeout=10 root@a "+remote, 0, `{"v":1,"mode":"live"}`)
+	f.Responses["ssh -o BatchMode=yes -o ConnectTimeout=10 root@b "+remote] = host.Result{Stderr: "refused", Code: 255}
+	rec := &ui.Recorder{}
+	collect(context.Background(), f, cache, hs, hostSteps(ui.New(rec)))
+	got := map[string]ui.Event{}
+	for _, e := range rec.Rows() {
+		got[e.Name] = e
+	}
+	if got["a"].State != ui.Done || got["a"].Detail != "up" ||
+		got["b"].State != ui.Skipped || !strings.HasPrefix(got["b"].Detail, "unreachable: ") ||
+		got["off"].State != ui.Skipped || got["off"].Detail != "stopped" {
+		t.Fatalf("%+v", got)
 	}
 }

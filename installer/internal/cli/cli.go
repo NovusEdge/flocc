@@ -58,7 +58,7 @@ type deps struct {
 	run      host.Runner
 	tty      bool // stdin is a terminal, so ssh gets -t
 	resolve  func(context.Context, string) (ship.Dest, error)
-	fleet    func(args []string) int
+	fleet    func(ctx context.Context, s ui.Session, args []string) int
 
 	store     func() keys.Store // opened on first use: host commands never wait on the keyring
 	prompt    prompter
@@ -85,7 +85,7 @@ func Main(args []string) int {
 	st, _ := os.Stdin.Stat()
 	d := &deps{out: os.Stdout, in: os.Stdin, err: os.Stderr, home: home, getenv: os.Getenv,
 		run: host.Exec{}, tty: st != nil && st.Mode()&os.ModeCharDevice != 0, resolve: ship.Resolve,
-		fleet: func(args []string) int { return ship.FleetMain(args, os.Stdout) }}
+		fleet: func(ctx context.Context, s ui.Session, args []string) int { return ship.Fleet(ctx, s, os.Stdout, args) }}
 	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, os.Stderr) })
 	d.open = ship.OpenURL
 	d.qr = func(text string) {
