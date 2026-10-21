@@ -74,15 +74,20 @@ func Create(ctx context.Context, e *Env, inst Installer, steps []Step) error {
 	return snapshot(ctx, e)
 }
 
-// phase runs one of the installer's verbs as a step. The verb may draw steps of its own; a failure
-// is named here once more so the run's last row says which verb stopped it.
+// phase runs one of the installer's verbs. The verbs draw their own steps, so a failure that
+// already failed a row is not drawn again; one that failed none (a bad host name, a missing key) is
+// drawn here, and always when an earlier row had already failed or ended pending.
 func (e *Env) phase(name, verb string, fn func() error) error {
-	st := e.UI.Step(name)
-	if err := fn(); err != nil {
-		return failStep(st, fmt.Errorf("%s: %w", verb, err))
+	already := e.UI.Failed()
+	err := fn()
+	if err == nil {
+		return nil
 	}
-	st.Done("")
-	return nil
+	err = fmt.Errorf("%s: %w", verb, err)
+	if already || !e.UI.Failed() {
+		e.UI.Step(name).Fail(err)
+	}
+	return err
 }
 
 // connect opens the machine's shared master on this terminal without BatchMode, so the owner can

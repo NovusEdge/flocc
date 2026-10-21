@@ -19,7 +19,9 @@ type fakeInst struct {
 	readyErr error
 	knownErr error
 	shipErr  error
-	calls    []string
+	// draws is the session a verb of the desktop draws its own failed step on, as ship does.
+	draws ui.Session
+	calls []string
 }
 
 func (f *fakeInst) Ready() error {
@@ -39,6 +41,9 @@ func (f *fakeInst) AddHost(_ context.Context, name, ssh, machine string) error {
 
 func (f *fakeInst) Ship(_ context.Context, name string) error {
 	f.calls = append(f.calls, "ship "+name)
+	if f.draws != nil && f.shipErr != nil {
+		f.draws.Step("Copy").Fail(f.shipErr)
+	}
 	return f.shipErr
 }
 
@@ -93,7 +98,7 @@ func TestCreateRunsStepsThenTheVerbsThenSnapshots(t *testing.T) {
 	if !f.Ran(snapCreate) || !f.Ran(snapRename) || f.Ran(snapDelete) {
 		t.Fatalf("%v", f.Calls)
 	}
-	want := []string{"Connect", "s", "Tailnet name", "Add host", "Ship", "Login", "Snapshot"}
+	want := []string{"Connect", "s", "Tailnet name", "Snapshot"}
 	if got := rowNames(u); !slices.Equal(got, want) {
 		t.Fatalf("rows %q", got)
 	}
@@ -180,6 +185,23 @@ func TestCreateStopsWhenShipFails(t *testing.T) {
 	}
 	if rows := u.Rows(); rows[len(rows)-1].Name != "Ship" || rows[len(rows)-1].Err != "ship: doctor reports 2 FAIL lines" {
 		t.Fatalf("%+v", rows)
+	}
+}
+
+func TestCreateDoesNotRepeatAFailureTheVerbAlreadyDrew(t *testing.T) {
+	e, u := createEnv(createMachine())
+	inst := &fakeInst{shipErr: errors.New("copy failed"), draws: e.UI}
+	if err := Create(context.Background(), e, inst, nil); err == nil {
+		t.Fatal("no error")
+	}
+	var failed []string
+	for _, r := range u.Rows() {
+		if r.State == ui.Failed {
+			failed = append(failed, r.Name)
+		}
+	}
+	if !slices.Equal(failed, []string{"Copy"}) {
+		t.Fatalf("failed rows %q", failed)
 	}
 }
 
