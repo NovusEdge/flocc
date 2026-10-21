@@ -36,6 +36,8 @@ Desktop commands:
   flocc host run -H <name> -- <command...>
   flocc ship -H <name> [--interactive]    run it inside the flocc checkout: it ships that commit
   flocc login -H <name> [--email ADDR]
+  flocc cardinal setup|login|status|attach|restart|remove [--user NAME] ...
+                                     the always-on assistant on a machine; flocc cardinal for details
 
 Host commands run on the host as the service user:
   flocc [-H <name>] <command> [args...]   e.g. flocc -H flocc-nimble doctor, flocc release NF-12
@@ -119,6 +121,13 @@ func run(ctx context.Context, d *deps, args []string) int {
 		return hostCmd(ctx, d, name, rest[1:])
 	case "keys":
 		return keysCmd(ctx, d, rest[1:])
+	case "cardinal":
+		// cardinal names its machine, not a host; a -H here would otherwise be dropped unseen.
+		if name != "" {
+			fmt.Fprintln(d.err, "flocc cardinal takes no -H; limit setup with --only <host>")
+			return 2
+		}
+		return d.cardinal(ctx, rest[1:])
 	}
 	if name == "all" {
 		return onAll(ctx, d, rest)

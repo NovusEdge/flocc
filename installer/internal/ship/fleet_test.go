@@ -17,8 +17,10 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 // lockedFake serializes the Fake, which collect drives from one goroutine per host.
@@ -226,7 +228,7 @@ func TestRenderShowsHostsClaimsFailuresAndNotes(t *testing.T) {
 		{FleetHost: FleetHost{Name: "down"}, Err: "exit 255: Connection refused"},
 		{FleetHost: FleetHost{Name: "old", State: "stopped", CPU: 1, MemGiB: 2, Daytona: true}},
 	}
-	out := plainText(render(rows, []string{"daytona: no CLI config, skipped"}))
+	out := plainText(render(rows, nil, []string{"daytona: no CLI config, skipped"}))
 	for _, want := range []string{
 		"LOGIN", "TOKENS", "2m ago, ok", "2/2", "20%", "55%", "10.0 GiB", "~$0.166",
 		"NF-1", "impl", "1h", "42%",
@@ -262,11 +264,67 @@ func TestTickCellFlagsAStuckTick(t *testing.T) {
 }
 
 func TestRenderOmitsTheClaimsTableWhenNothingRuns(t *testing.T) {
-	out := plainText(render([]Row{{FleetHost: FleetHost{Name: "x"}, Err: "boom"}}, nil))
-	if strings.Contains(out, "ISSUE") {
+	out := plainText(render([]Row{{FleetHost: FleetHost{Name: "x"}, Err: "boom"}}, nil, nil))
+	if strings.Contains(out, "ISSUE") || strings.Contains(out, "CARDINAL") {
 		t.Fatal(out)
 	}
 }
+
+func cardinalFake(t *testing.T, stdout string, code int) (*host.Fake, saved.Saved) {
+	t.Helper()
+	s := saved.Saved{Machine: "owner@zer0-day-nimble", User: "cardinal"}
+	args := append(append([]string{}, saved.Pinned...), "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+		"cardinal@zer0-day-nimble", "~/.local/lib/flocc-cardinal/flocc-setup --phase cardinal-status --quick")
+	f := host.NewFake().On(host.Cmd{Name: "ssh", Args: args}.String(), code, stdout)
+	return f, s
+}
+
+func TestFleetShowsCardinalAndListsAFailingOne(t *testing.T) {
+	ok, _ := json.Marshal(steps.CardinalStatus{Schema: 1, Unit: "active", Login: "full", SessionAgeS: f64(7200), LastTurnAgeS: f64(300)})
+	failing, _ := json.Marshal(steps.CardinalStatus{Schema: 1, Unit: "failed", Login: "full"})
+	for name, c := range map[string]struct {
+		stdout   string
+		code     int
+		wantFail string
+	}{
+		"healthy":        {string(ok), 0, ""},
+		"failing":        {string(failing), 0, "cardinal.service is failed"},
+		"unreachable":    {"", 255, "cardinal cardinal: exit 255"},
+		"unknown schema": {`{"schema":2}`, 0, "schema 2"},
+	} {
+		f, s := cardinalFake(t, c.stdout, c.code)
+		rows := collectCardinals(context.Background(), f, nil, []saved.Saved{s})
+		out := plainText(render(nil, rows, nil))
+		if !strings.Contains(out, "CARDINAL") || !strings.Contains(out, "zer0-day-nimble") {
+			t.Errorf("%s: no table:\n%s", name, out)
+		}
+		hasFail := strings.Contains(out, "flocc cardinal status --user cardinal")
+		if (c.wantFail != "") != hasFail || c.wantFail != "" && !strings.Contains(out, c.wantFail) {
+			t.Errorf("%s:\n%s", name, out)
+		}
+	}
+}
+
+func TestFleetSanitizesCardinalsOutput(t *testing.T) {
+	hostile, _ := json.Marshal(steps.CardinalStatus{Schema: 1, Unit: "\x1b]52;c;aGk=\x07active", Login: "\x1b[2Jfull"})
+	f, s := cardinalFake(t, string(hostile), 0)
+	out := render(nil, collectCardinals(context.Background(), f, nil, []saved.Saved{s}), nil)
+	if strings.Contains(out, "\x1b]52") || strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x07") {
+		t.Fatalf("raw escape in %q", out)
+	}
+}
+
+func TestDiscoverCardinalsSkipsRemovedInstalls(t *testing.T) {
+	dir := t.TempDir()
+	saved.Saved{Machine: "m", User: "cardinal"}.Save(dir)
+	saved.Saved{Machine: "m", User: "cardinal-test", Removed: true}.Save(dir)
+	list, notes := discoverCardinals(dir)
+	if len(list) != 1 || list[0].User != "cardinal" || len(notes) != 0 {
+		t.Fatalf("%+v %v", list, notes)
+	}
+}
+
+func f64(v float64) *float64 { return &v }
 
 // hangingRunner blocks the "slow" host until its context ends and answers the others at once.
 type hangingRunner struct{}

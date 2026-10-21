@@ -21,8 +21,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
 
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 // Daytona list prices (daytona.io/pricing); the figure shown is an estimate, not what the account
@@ -234,6 +236,107 @@ func firstLine(s string) string {
 	return line
 }
 
+// CardinalRow is one cardinal install in the fleet view; Status is nil when it could not be read.
+type CardinalRow struct {
+	Saved  saved.Saved
+	Status *steps.CardinalStatus
+	Err    string
+}
+
+const cardinalStatusSchema = 1
+
+// fetchCardinal runs the quick status as the cardinal user. Its binary is cardinal's to rewrite,
+// so the output is only parsed here and sanitized where render prints it.
+func fetchCardinal(ctx context.Context, r host.Runner, mux []string, s saved.Saved) CardinalRow {
+	row := CardinalRow{Saved: s}
+	ctx, cancel := context.WithTimeout(ctx, hostTimeout)
+	defer cancel()
+	args := append(append(append([]string{}, saved.Pinned...), mux...), "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+		s.Dest(), "~/.local/lib/flocc-cardinal/flocc-setup --phase cardinal-status --quick")
+	res, err := r.Run(ctx, host.Cmd{Name: "ssh", Args: args})
+	var st steps.CardinalStatus
+	switch {
+	case err != nil:
+		row.Err = firstLine(err.Error())
+	case res.Code != 0:
+		row.Err = fmt.Sprintf("exit %d: %s", res.Code, firstLine(host.Tail(res.Out(), 1)))
+	case json.Unmarshal([]byte(res.Stdout), &st) != nil:
+		row.Err = "unreadable status output"
+	case st.Schema != cardinalStatusSchema:
+		row.Err = fmt.Sprintf("status schema %d is not one this desktop reads; run flocc cardinal setup --user %s", st.Schema, s.User)
+	default:
+		row.Status = &st
+	}
+	return row
+}
+
+func collectCardinals(ctx context.Context, r host.Runner, mux []string, list []saved.Saved) []CardinalRow {
+	rows := make([]CardinalRow, len(list))
+	var wg sync.WaitGroup
+	for i, s := range list {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rows[i] = fetchCardinal(ctx, r, mux, s)
+		}()
+	}
+	wg.Wait()
+	return rows
+}
+
+// discoverCardinals is every saved install that remove has not taken down.
+func discoverCardinals(dir string) (list []saved.Saved, notes []string) {
+	all, err := saved.List(dir)
+	if err != nil {
+		for _, line := range strings.Split(err.Error(), "\n") {
+			notes = append(notes, "cardinal: "+line)
+		}
+	}
+	for _, s := range all {
+		if !s.Removed {
+			list = append(list, s)
+		}
+	}
+	return list, notes
+}
+
+// cardinalTable renders the CARDINAL rows and adds a failure line for each install that fails.
+func cardinalTable(rows []CardinalRow) (string, []string) {
+	t := newTable("CARDINAL", "MACHINE", "UNIT", "SESSION", "LAST TURN", "LOGIN")
+	var failures []string
+	for _, r := range rows {
+		user, machine := r.Saved.User, saved.HostPart(r.Saved.Machine)
+		remedy := "flocc cardinal status --user " + user
+		if r.Status == nil {
+			d := cell("-", dim)
+			t.Row(user, machine, cell("unreachable", bad), d, d, d)
+			failures = append(failures, fmt.Sprintf("cardinal %s: %s; %s", user, saved.Sanitize(r.Err), remedy))
+			continue
+		}
+		st := r.Status
+		unit := saved.Sanitize(st.Unit)
+		if st.Unit != "active" {
+			unit = cell(unit, bad)
+		}
+		login := saved.Sanitize(st.Login)
+		if st.Login != "full" {
+			login = cell(login, bad)
+		}
+		session, turn := cell("-", dim), cell("-", dim)
+		if st.SessionAgeS != nil {
+			session = age(*st.SessionAgeS)
+		}
+		if st.LastTurnAgeS != nil {
+			turn = age(*st.LastTurnAgeS) + " ago"
+		}
+		t.Row(user, machine, unit, session, turn, login)
+		if f := st.Failures(); len(f) > 0 {
+			failures = append(failures, fmt.Sprintf("cardinal %s: %s; %s", user, saved.Sanitize(f[0]), remedy))
+		}
+	}
+	return t.String(), failures
+}
+
 // collect queries every host in parallel; one slow or dead host delays only its own row.
 func collect(ctx context.Context, r host.Runner, c *destCache, hosts []FleetHost) []Row {
 	rows := make([]Row, len(hosts))
@@ -387,7 +490,7 @@ func newTable(headers ...string) *table.Table {
 
 // render draws the host table, the claims table and one line per host that could not be read.
 // Ages come from the hosts themselves, so the view needs no clock of its own.
-func render(rows []Row, notes []string) string {
+func render(rows []Row, cards []CardinalRow, notes []string) string {
 	hosts := newTable("HOST", "STATE", "MODE", "LAST TICK", "SESSIONS", "5H", "WEEK", "DISK FREE", "LOGIN", "TOKENS", "EST $/H")
 	claims := newTable("HOST", "ISSUE", "PHASE", "STATE", "AGE", "CONTEXT", "TMUX")
 	var failures []string
@@ -449,6 +552,11 @@ func render(rows []Row, notes []string) string {
 	if nClaims > 0 {
 		b.WriteString("\n" + claims.String() + "\n")
 	}
+	if len(cards) > 0 {
+		table, fails := cardinalTable(cards)
+		b.WriteString("\n" + table + "\n")
+		failures = append(failures, fails...)
+	}
 	for _, f := range failures {
 		b.WriteString(cell(f, bad) + "\n")
 	}
@@ -494,11 +602,11 @@ func FleetMain(args []string, out io.Writer) int {
 	hostsDir := hosts.Dir(home)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir)
+	return runFleet(ctx, out, *watch, *interval, daytonaConfig, hostsDir, saved.Dir(home))
 }
 
 // runFleet draws the fleet until ctx ends, or once.
-func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir string) int {
+func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Duration, daytonaConfig, hostsDir, cardinalDir string) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	cache := newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
 		auth, err := loadDaytona(daytonaConfig)
@@ -510,7 +618,16 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 	cache.sshOpts, _ = SSHMux()
 	for {
 		found, notes := discover(ctx, daytonaConfig, hostsDir, client)
+		cardList, cardNotes := discoverCardinals(cardinalDir)
+		notes = append(notes, cardNotes...)
+		var cards []CardinalRow
+		done := make(chan struct{})
+		go func() {
+			cards = collectCardinals(ctx, host.Exec{}, cache.sshOpts, cardList)
+			close(done)
+		}()
 		rows := collect(ctx, host.Exec{}, cache, found)
+		<-done
 		if ctx.Err() != nil {
 			return exitInterrupted
 		}
@@ -520,7 +637,7 @@ func runFleet(ctx context.Context, out io.Writer, watch bool, interval time.Dura
 		if len(found) == 0 {
 			notes = append(notes, "no hosts: log in with daytona login, or run flocc host add <name>")
 		}
-		lipgloss.Fprint(out, render(rows, notes))
+		lipgloss.Fprint(out, render(rows, cards, notes))
 		if !watch {
 			return 0
 		}

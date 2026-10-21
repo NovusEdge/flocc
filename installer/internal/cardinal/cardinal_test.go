@@ -198,11 +198,11 @@ func TestMainRefusesABadUserAndUnknownSubcommand(t *testing.T) {
 
 func TestAnthropicURL(t *testing.T) {
 	for u, want := range map[string]bool{
-		"https://claude.ai/oauth/authorize?x": true,
-		"https://claude.com/cai/oauth":        true,
+		"https://claude.ai/oauth/authorize?x":  true,
+		"https://claude.com/cai/oauth":         true,
 		"https://claude.ai.evil.example/oauth": false,
-		"http://claude.ai/oauth":              false,
-		"https://evil.example/oauth":          false,
+		"http://claude.ai/oauth":               false,
+		"https://evil.example/oauth":           false,
 	} {
 		if anthropicURL(u) != want {
 			t.Errorf("%s: %v", u, !want)

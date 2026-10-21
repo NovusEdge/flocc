@@ -89,6 +89,19 @@ func Main(ctx context.Context, d Deps, args []string) int {
 		fmt.Fprintf(d.Err, "flocc cardinal: give the machine's ssh destination: flocc cardinal setup %s\n", "<machine>")
 		return 2
 	}
+	if d.Run == nil {
+		if err := os.MkdirAll(filepath.Dir(logPath(d.Home, s.User)), 0o700); err != nil {
+			fmt.Fprintln(d.Err, "flocc cardinal:", err)
+			return 1
+		}
+		f, err := os.OpenFile(logPath(d.Home, s.User), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			fmt.Fprintln(d.Err, "flocc cardinal:", err)
+			return 1
+		}
+		defer f.Close()
+		d.Run = host.Exec{Log: f}
+	}
 	switch sub {
 	case "setup":
 		err = d.setup(ctx, s, only, *key, *adopt)
