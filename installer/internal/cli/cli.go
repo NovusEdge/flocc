@@ -23,7 +23,6 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
-	"github.com/NovusEdge/flocc/installer/internal/qr"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
@@ -67,7 +66,6 @@ type deps struct {
 	store     func() keys.Store // opened on first use: host commands never wait on the keyring
 	prompt    prompter
 	open      func(url string)
-	qr        func(text string)
 	http      *http.Client
 	githubAPI string
 	linearAPI string
@@ -92,11 +90,6 @@ func Main(args []string) int {
 		fleet: func(ctx context.Context, s ui.Session, args []string) int { return ship.Fleet(ctx, s, os.Stdout, args) }}
 	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, os.Stderr) })
 	d.open = ship.OpenURL
-	d.qr = func(text string) {
-		if err := qr.Write(os.Stdout, text); err != nil {
-			fmt.Fprintln(os.Stderr, "no QR code:", err)
-		}
-	}
 	d.http = &http.Client{Timeout: 30 * time.Second}
 	d.githubAPI, d.linearAPI, d.ntfyBase = githubapi.DefaultBase, linearapi.DefaultURL, "https://ntfy.sh"
 	d.newTopic = answers.RandomTopic
@@ -157,18 +150,40 @@ func bare(ctx context.Context, d *deps) int {
 	return 2
 }
 
+// fullScreen is a command that works for a while and asks questions along the way.
+func fullScreen(rest []string) bool {
+	switch rest[0] {
+	case "setup", "ship", "login":
+		return true
+	case "host":
+		return len(rest) > 1 && rest[1] == "create"
+	case "cardinal":
+		return len(rest) > 1 && (rest[1] == "setup" || rest[1] == "login")
+	}
+	return false
+}
+
+// sessionMode is the renderer a command gets: plain for a lone handoff, full-screen for the long
+// commands on a terminal at both ends, else inline.
+func sessionMode(d *deps, name string, rest []string) ui.Mode {
+	if handoffOnly(name, rest) {
+		return ui.ModePlain
+	}
+	def := ui.ModeInline
+	if fullScreen(rest) && d.tty {
+		def = ui.ModeFull
+	}
+	return ui.ModeFor(d.mode, d.getenv, d.outTerminal(), def)
+}
+
 // openSession gives d a ui session in the mode this command allows, unless a test set one.
-func openSession(ctx context.Context, d *deps, forcePlain bool) {
+func openSession(ctx context.Context, d *deps, name string, rest []string) {
 	if d.ui == nil {
-		m := ui.ModeFor(d.mode, d.getenv, d.outTerminal(), ui.ModeInline)
-		if forcePlain {
-			m = ui.ModePlain
-		}
 		in := d.in
 		if in == nil {
 			in = strings.NewReader("")
 		}
-		d.ui = ui.Open(ctx, m, d.out, in)
+		d.ui = ui.Open(ctx, sessionMode(d, name, rest), d.out, in, "flocc "+strings.Join(rest[:min(len(rest), 2)], " "))
 	}
 	if d.prompt == nil {
 		d.prompt = sessionPrompt{ui.Prompts{S: d.ui}}
@@ -200,7 +215,7 @@ func run(ctx context.Context, d *deps, args []string) (code int) {
 		// Off a terminal the redraw loop has nothing to redraw: print the table once.
 		name, rest = "all", slices.DeleteFunc(slices.Clone(rest), func(a string) bool { return a == "--watch" })
 	}
-	openSession(ctx, d, handoffOnly(name, rest))
+	openSession(ctx, d, name, rest)
 	defer func() {
 		if c := d.ui.Close(); code == 0 {
 			code = c

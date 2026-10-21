@@ -33,11 +33,16 @@ func (w *wizard) tailnet() {
 	w.d.ui.Group("Tailnet")
 	st := w.d.ui.Step("Client")
 	st.Detail("looking for the OAuth client")
-	if err := w.ops.fillKeys(w.ctx, []keys.Slot{keys.Tailscale}); err != nil {
-		w.failAt(st, "Client", err)
-		return
-	}
 	api, ok := w.ops.tailnetClient()
+	// Only the first setup asks: the client is optional, and a later run would otherwise ask again
+	// for as long as the owner declines it. flocc keys still offers it.
+	if !ok && len(w.ops.hosts()) == 0 {
+		if err := w.ops.fillKeys(w.ctx, []keys.Slot{keys.Tailscale}); err != nil {
+			w.failAt(st, "Client", err)
+			return
+		}
+		api, ok = w.ops.tailnetClient()
+	}
 	if ok {
 		w.end(st, rowDone, "Client", "stored")
 	} else {

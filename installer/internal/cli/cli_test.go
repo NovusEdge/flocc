@@ -86,3 +86,46 @@ func TestHelpGoesToStdout(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionModeDefaultsToFullScreenForLongCommands(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want ui.Mode
+	}{
+		{[]string{"setup"}, ui.ModeFull},
+		{[]string{"host", "create", "x", "--on", "m"}, ui.ModeFull},
+		{[]string{"ship"}, ui.ModeFull},
+		{[]string{"login"}, ui.ModeFull},
+		{[]string{"cardinal", "setup"}, ui.ModeFull},
+		{[]string{"cardinal", "login"}, ui.ModeFull},
+		{[]string{"keys"}, ui.ModeInline},
+		{[]string{"host", "add", "x"}, ui.ModeInline},
+		{[]string{"cardinal", "status"}, ui.ModeInline},
+		{[]string{"status"}, ui.ModePlain},
+		{[]string{"host", "run", "x"}, ui.ModePlain},
+		{[]string{"cardinal", "attach"}, ui.ModePlain},
+	} {
+		d, _, _ := testDeps(t)
+		d.tty, d.outTTY = true, func() bool { return true }
+		name, rest, _ := splitHost(c.args)
+		if got := sessionMode(d, name, rest); got != c.want {
+			t.Errorf("%v: %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
+func TestSessionModeKeepsFullScreenOffAPipeOrAFlag(t *testing.T) {
+	for name, set := range map[string]func(*deps){
+		"piped out": func(d *deps) { d.outTTY = func() bool { return false } },
+		"piped in":  func(d *deps) { d.tty = false },
+		"--plain":   func(d *deps) { d.mode = ui.ModePlain },
+		"--inline":  func(d *deps) { d.mode = ui.ModeInline },
+	} {
+		d, _, _ := testDeps(t)
+		d.tty, d.outTTY = true, func() bool { return true }
+		set(d)
+		if got := sessionMode(d, "", []string{"setup"}); got == ui.ModeFull {
+			t.Errorf("%s: full screen", name)
+		}
+	}
+}

@@ -56,6 +56,7 @@ func setupCmd(ctx context.Context, d *deps, args []string) int {
 
 func runSetup(ctx context.Context, d *deps, ops setupOps) int {
 	w := &wizard{ctx: ctx, d: d, ops: ops, failed: map[string]bool{}, probed: map[string]machineState{}}
+	d.ui.Plan([]string{"Checkout", "Keys", "Tailnet", "Hosts", "Old versions", "Cardinal", "Logins"})
 	w.run()
 	return w.summary()
 }

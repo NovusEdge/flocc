@@ -86,6 +86,19 @@ func TestSetupTailnetWithoutAClientIsSkippedWithItsPageAsATodo(t *testing.T) {
 	if l.has("policy") || l.has("settags") {
 		t.Errorf("calls %v", l.calls)
 	}
+	if l.has("keys [" + string(keys.Tailscale) + "]") {
+		t.Errorf("a later setup asked for the optional client again: %v", l.calls)
+	}
+}
+
+func TestSetupTailnetAsksForTheClientOnTheFirstSetup(t *testing.T) {
+	var l opsLog
+	d, _, _ := setupDeps(t, nil)
+	ops := tailnetOps(&l, nil, true)
+	ops.tailnetClient = func() (tailnetAPI, bool) { return nil, false }
+	ops.hosts = func() []hosts.Host { return nil }
+	w := &wizard{ctx: context.Background(), d: d, ops: ops, failed: map[string]bool{}, probed: map[string]machineState{}}
+	w.tailnet()
 	if !l.has("keys [" + string(keys.Tailscale) + "]") {
 		t.Errorf("the slot was not filled: %v", l.calls)
 	}

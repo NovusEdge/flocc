@@ -245,7 +245,7 @@ func addDeps(t *testing.T, secrets string) (*deps, *fakeLinear, *hostScript) {
 	ntfy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(ntfy.Close)
 	d.ntfyBase, d.newTopic = ntfy.URL, func() string { return "flocc-t" }
-	d.open, d.qr = func(string) {}, func(string) {}
+	d.open = func(string) {}
 	return d, lin, p
 }
 
@@ -475,11 +475,20 @@ func TestHostAddSendsAKeyGitHubOrLinearRejectsToRotate(t *testing.T) {
 	}
 }
 
-func TestHostAddSaysWhichKeyMissesTheNewRepo(t *testing.T) {
+func TestHostAddSaysWhichKeyMissesTheNewRepoOnce(t *testing.T) {
 	d, _, _ := addDeps(t, strings.Replace(allKeys, "github_pat_publish", "github_pat_weak", 1))
+	rec := &ui.Recorder{}
+	d.ui = ui.New(rec)
 	err := hostAdd(context.Background(), d, "h1", "", "")
-	if err == nil || !strings.Contains(err.Error(), "o/a: the token cannot push") || !strings.Contains(err.Error(), "the token stays the same") {
-		t.Fatal(err)
+	if err == nil || strings.Contains(err.Error(), "o/a:") {
+		t.Fatalf("the error repeats the check row: %v", err)
+	}
+	var shown int
+	for _, r := range rec.Rows() {
+		shown += strings.Count(r.Err+"\n"+r.Detail, "o/a: the token cannot push")
+	}
+	if text := sessionText(rec); shown != 1 || strings.Count(text, "the token stays the same") != 1 {
+		t.Fatalf("shown %d times:\n%s", shown, text)
 	}
 	loadHost(t, d, "h1") // saved even though a key does not cover it yet
 }
