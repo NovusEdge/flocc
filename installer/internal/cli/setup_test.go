@@ -11,10 +11,13 @@ import (
 
 	"charm.land/huh/v2"
 
+	"github.com/NovusEdge/flocc/installer/internal/cardinal"
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 type opsLog struct{ calls []string }
@@ -65,7 +68,21 @@ func doneOps(l *opsLog) setupOps {
 			full := "full"
 			return hostState{Version: "0.8.0", Login: &full}
 		},
-		offline: func(context.Context, string) bool { return false },
+		offline:  func(context.Context, string) bool { return false },
+		oldUsers: func(_ context.Context, m string) []oldUser { l.add("old %s", m); return nil },
+		hasUser:  func(context.Context, string, string) bool { return false },
+		cardinal: func() (saved.Saved, bool, error) {
+			return saved.Saved{Machine: "zer0-day-nimble", User: "cardinal", RenewHour: 4}, true, nil
+		},
+		cardStatus: func(context.Context, saved.Saved) (steps.CardinalStatus, error) {
+			l.add("cardinal status")
+			return steps.CardinalStatus{Unit: "active", Login: "full"}, nil
+		},
+		cardSetup: func(_ context.Context, s saved.Saved, o cardinal.SetupOptions) error {
+			l.add("cardinal setup %s adopt=%v remove=%v", s.Machine, o.Adopt, o.Remove)
+			return nil
+		},
+		removeOld: func(_ context.Context, m string, users []string) error { l.add("remove %s %v", m, users); return nil },
 	}
 }
 
@@ -311,5 +328,185 @@ func TestTailnetOfflineFindsThePeerByName(t *testing.T) {
 		`{"Peer":{"k1":{"HostName":"la-nimble","DNSName":"la-nimble.tail.ts.net.","Online":false},"k2":{"HostName":"flocc-nimble","DNSName":"flocc-nimble.tail.ts.net.","Online":true}}}`)
 	if !tailnetOffline(context.Background(), f, "la-nimble") || tailnetOffline(context.Background(), f, "flocc-nimble") || tailnetOffline(context.Background(), f, "nope") {
 		t.Fatal("wrong")
+	}
+}
+
+// withOld gives zer0-day-nimble the linear-agents user until a removal runs.
+func withOld(l *opsLog, ops *setupOps) {
+	gone := false
+	ops.oldUsers = func(_ context.Context, m string) []oldUser {
+		l.add("old %s", m)
+		if gone {
+			return nil
+		}
+		return []oldUser{{Name: "linear-agents", Lingering: true, Since: "Tue 2026-10-20 01:41:28 EEST",
+			Procs: []string{"/usr/lib/systemd/systemd --user", "/usr/bin/tmux -L linear-agents -D", "claude --print \x1b[31mred"}}}
+	}
+	setup, remove := ops.cardSetup, ops.removeOld
+	ops.cardSetup = func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error {
+		gone = gone || len(o.Remove) > 0
+		return setup(ctx, s, o)
+	}
+	ops.removeOld = func(ctx context.Context, m string, u []string) error {
+		gone = true
+		return remove(ctx, m, u)
+	}
+}
+
+func TestSetupShowsAnOldUserAndKeepsItByDefault(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	withOld(&l, &ops)
+	d, out, _ := setupDeps(t, nil)
+	runSetup(context.Background(), d, ops)
+	for _, want := range []string{"linear-agents user on zer0-day-nimble", "lingering", "tmux -L linear-agents", "may still be polling Linear"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("no %q in %q", want, out)
+		}
+	}
+	if strings.Contains(out.String(), "\x1b[31m") {
+		t.Error("printed the old user's escape sequence")
+	}
+	if l.has("remove") || l.has("cardinal setup") {
+		t.Fatalf("removed without a yes: %v", l.calls)
+	}
+}
+
+func TestSetupRemovesInCardinalsRootPassWhenSetupRuns(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	withOld(&l, &ops)
+	ops.cardStatus = func(context.Context, saved.Saved) (steps.CardinalStatus, error) {
+		l.add("cardinal status")
+		return steps.CardinalStatus{Unit: "failed", Login: "full"}, nil
+	}
+	d, _, _ := setupDeps(t, map[string]any{"Remove the linear-agents user": true})
+	runSetup(context.Background(), d, ops)
+	inOrder(t, l.calls, "cardinal setup zer0-day-nimble adopt=true remove=[linear-agents]", "old zer0-day-nimble")
+	if l.has("remove ") {
+		t.Fatalf("a second root pass: %v", l.calls)
+	}
+}
+
+func TestSetupRemovesAloneBesideAHealthyCardinal(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	withOld(&l, &ops)
+	d, out, _ := setupDeps(t, map[string]any{"Remove the linear-agents user": true})
+	if code := runSetup(context.Background(), d, ops); code != 0 {
+		t.Fatalf("exit %d %q", code, out)
+	}
+	if !l.has("remove zer0-day-nimble [linear-agents]") || l.has("cardinal setup") || !strings.Contains(out.String(), "Revoke") {
+		t.Fatalf("calls %v out %q", l.calls, out)
+	}
+}
+
+func TestSetupNoOldUserMeansNoRootWork(t *testing.T) {
+	var l opsLog
+	d, _, _ := setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, doneOps(&l)); code != 0 || l.has("remove") || l.has("cardinal setup") {
+		t.Fatalf("exit %d calls %v", code, l.calls)
+	}
+}
+
+func TestSetupCardinalWhenNoneIsSaved(t *testing.T) {
+	cases := []struct {
+		name    string
+		hasUser bool
+		answers map[string]any
+		want    string // "" when setup must not run
+		code    int
+	}{
+		{"set up by default", false, nil, "cardinal setup zer0-day-nimble adopt=false remove=[]", 0},
+		{"declined", false, map[string]any{"Set up cardinal": false}, "", 0},
+		{"adopt", true, map[string]any{"Adopt the existing cardinal user": true}, "cardinal setup zer0-day-nimble adopt=true remove=[]", 0},
+		{"adopt defaults to no", true, nil, "", 0},
+	}
+	for _, c := range cases {
+		var l opsLog
+		ops := doneOps(&l)
+		ops.cardinal = func() (saved.Saved, bool, error) { return saved.Saved{}, false, nil }
+		ops.hasUser = func(_ context.Context, m, u string) bool { return c.hasUser && u == "cardinal" }
+		d, _, _ := setupDeps(t, c.answers)
+		code := runSetup(context.Background(), d, ops)
+		if code != c.code || (c.want == "") == l.has("cardinal setup") || (c.want != "" && !l.has(c.want)) {
+			t.Errorf("%s: exit %d calls %v", c.name, code, l.calls)
+		}
+	}
+}
+
+func TestSetupDoesNotQuietlyRebuildARemovedCardinal(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	ops.cardinal = func() (saved.Saved, bool, error) {
+		return saved.Saved{Machine: "zer0-day-nimble", User: "cardinal", Removed: true}, true, nil
+	}
+	d, _, p := setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, ops); code != 0 || l.has("cardinal setup") ||
+		!slices.ContainsFunc(p.asked, func(q string) bool { return strings.HasPrefix(q, "Set up cardinal on zer0-day-nimble again") }) {
+		t.Fatalf("exit %d calls %v asked %v", code, l.calls, p.asked)
+	}
+}
+
+func TestSetupWithoutIncusFailsCardinalButStillRemoves(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	withOld(&l, &ops)
+	ops.cardStatus = func(context.Context, saved.Saved) (steps.CardinalStatus, error) {
+		return steps.CardinalStatus{}, errors.New("cardinal@zer0-day-nimble unreachable")
+	}
+	ops.machine = func(context.Context, string) machineState {
+		return machineState{Incus: errors.New("cannot run incus as an administrator; add it to the incus-admin group")}
+	}
+	d, out, _ := setupDeps(t, map[string]any{"Remove the linear-agents user": true})
+	if code := runSetup(context.Background(), d, ops); code != 1 || l.has("cardinal setup") || !l.has("remove zer0-day-nimble [linear-agents]") || !strings.Contains(out.String(), "incus-admin") {
+		t.Fatalf("exit %d calls %v out %q", code, l.calls, out)
+	}
+}
+
+func TestSetupTreatsOwnerAtMachineAndMachineAsOne(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	ops.hosts = func() []hosts.Host {
+		return []hosts.Host{nimble, {Name: "two", SSH: "root@two", Machine: "owner@zer0-day-nimble"}}
+	}
+	d, _, _ := setupDeps(t, nil)
+	runSetup(context.Background(), d, ops)
+	if strings.Count(strings.Join(l.calls, "\n"), "old ") != 1 {
+		t.Fatalf("calls %v", l.calls)
+	}
+}
+
+func TestSetupSkipsOldVersionsAndCardinalOnAMachineWhoseHostFailed(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	ops.hosts = func() []hosts.Host {
+		return []hosts.Host{nimble, {Name: "other", SSH: "root@other", Machine: "box"}}
+	}
+	ops.readHost = func(_ context.Context, h hosts.Host) hostState {
+		if h.Name == "flocc-nimble" {
+			return hostState{Err: "ssh: timed out"}
+		}
+		return hostState{Version: "0.8.0"}
+	}
+	d, _, _ := setupDeps(t, nil)
+	runSetup(context.Background(), d, ops)
+	if l.has("old zer0-day-nimble") || !l.has("old box") || l.has("cardinal status") {
+		t.Fatalf("calls %v", l.calls)
+	}
+}
+
+func TestFindOldReadsTheUserWithoutSudo(t *testing.T) {
+	f := host.NewFake().
+		On("id -u linear-agents", 0, "1001\n").
+		On("loginctl show-user linear-agents -p Linger --value", 0, "yes\n").
+		On("loginctl show-user linear-agents -p Timestamp --value", 0, "Tue 2026-10-20 01:41:28 EEST\n").
+		On("ps -u linear-agents -o args=", 0, "/usr/lib/systemd/systemd --user\n/usr/bin/tmux -L linear-agents -D\n")
+	got := findOld(context.Background(), f, []string{"linear-agents", "nobody-else"})
+	if len(got) != 1 || !got[0].Lingering || got[0].Since == "" || len(got[0].Procs) != 2 {
+		t.Fatalf("%+v", got)
+	}
+	if slices.ContainsFunc(f.Calls, func(c string) bool { return strings.Contains(c, "sudo") }) {
+		t.Fatal("used sudo")
 	}
 }

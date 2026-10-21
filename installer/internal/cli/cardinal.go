@@ -9,10 +9,14 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 )
 
-func (d *deps) cardinal(ctx context.Context, args []string) int {
+func (d *deps) cardinalDeps() cardinal.Deps {
 	mux, _ := ship.SSHMux()
-	return cardinal.Main(ctx, cardinal.Deps{Out: d.out, Err: d.err, Home: d.home, TTY: d.tty, Open: d.open,
-		RepoRoot: d.repoRoot, Tailnet: tailnetIPs, Mux: mux}, args)
+	return cardinal.Deps{Out: d.out, Err: d.err, Home: d.home, TTY: d.tty, Open: d.open,
+		RepoRoot: d.repoRoot, Tailnet: tailnetIPs, Mux: mux}
+}
+
+func (d *deps) cardinal(ctx context.Context, args []string) int {
+	return cardinal.Main(ctx, d.cardinalDeps(), args)
 }
 
 // tailnetIPs are this desktop's tailnet addresses, which cardinal's user pass must fail to reach.

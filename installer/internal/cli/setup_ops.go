@@ -3,17 +3,21 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/NovusEdge/flocc/installer/internal/cardinal"
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 // setupOps are the existing functions flocc setup calls, as fields so its tests can replace each.
@@ -30,6 +34,12 @@ type setupOps struct {
 	ship       func(ctx context.Context, name string) error
 	readHost   func(ctx context.Context, h hosts.Host) hostState
 	offline    func(ctx context.Context, name string) bool
+	oldUsers   func(ctx context.Context, machine string) []oldUser
+	hasUser    func(ctx context.Context, machine, user string) bool
+	cardinal   func() (saved.Saved, bool, error)
+	cardStatus func(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error)
+	cardSetup  func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error
+	removeOld  func(ctx context.Context, machine string, users []string) error
 }
 
 // machineState is what a machine allows. Err is set when ssh could not reach it.
@@ -41,6 +51,7 @@ type machineState struct {
 
 func newSetupOps(d *deps) setupOps {
 	mux, _ := ship.SSHMux()
+	cd := d.cardinalDeps()
 	return setupOps{
 		checkout: func() (string, string, error) { return checkoutVersion(d) },
 		fillKeys: func(ctx context.Context, s []keys.Slot) error {
@@ -56,7 +67,53 @@ func newSetupOps(d *deps) setupOps {
 		ship:       func(ctx context.Context, name string) error { return shipHost(ctx, d, name) },
 		readHost:   func(ctx context.Context, h hosts.Host) hostState { return readHost(ctx, d, h) },
 		offline:    func(ctx context.Context, name string) bool { return tailnetOffline(ctx, d.run, name) },
+		oldUsers:   func(ctx context.Context, m string) []oldUser { return findOld(ctx, owner(d, mux, m), steps.OldUsers) },
+		hasUser: func(ctx context.Context, m, user string) bool {
+			r, err := owner(d, mux, m).Run(ctx, host.Cmd{Name: "id", Args: []string{"-u", user}})
+			return err == nil && r.Code == 0
+		},
+		cardinal: func() (saved.Saved, bool, error) {
+			s, err := saved.Load(saved.Dir(d.home), saved.DefaultUser)
+			if errors.Is(err, os.ErrNotExist) {
+				return s, false, nil
+			}
+			return s, err == nil, err
+		},
+		cardStatus: cd.Status,
+		cardSetup:  cd.Setup,
+		removeOld:  cd.RemoveOld,
 	}
+}
+
+// oldUser is an earlier flocc's service user as the owner sees it without sudo.
+type oldUser struct {
+	Name      string
+	Lingering bool
+	Since     string   // when its user manager started
+	Procs     []string // each process's command line, as that user wrote it
+}
+
+// findOld looks for each name on the machine m runs commands on.
+func findOld(ctx context.Context, m host.Runner, names []string) []oldUser {
+	out := func(name string, args ...string) (string, bool) {
+		r, err := m.Run(ctx, host.Cmd{Name: name, Args: args})
+		return strings.TrimSpace(r.Stdout), err == nil && r.Code == 0
+	}
+	var found []oldUser
+	for _, n := range names {
+		if _, ok := out("id", "-u", n); !ok {
+			continue
+		}
+		u := oldUser{Name: n}
+		linger, _ := out("loginctl", "show-user", n, "-p", "Linger", "--value")
+		u.Lingering = linger == "yes"
+		u.Since, _ = out("loginctl", "show-user", n, "-p", "Timestamp", "--value")
+		if procs, _ := out("ps", "-u", n, "-o", "args="); procs != "" {
+			u.Procs = strings.Split(procs, "\n")
+		}
+		found = append(found, u)
+	}
+	return found
 }
 
 // hostState is what flocc setup reads from a host. Err is set when it could not read the host,

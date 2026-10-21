@@ -9,11 +9,13 @@ import (
 
 	"charm.land/huh/v2"
 
+	"github.com/NovusEdge/flocc/installer/internal/cardinal"
 	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 type rowState int
@@ -33,14 +35,15 @@ type setupRow struct {
 }
 
 type wizard struct {
-	ctx     context.Context
-	d       *deps
-	ops     setupOps
-	rows    []setupRow
-	version [3]int
-	stopped bool                    // a prompt was cancelled: nothing more is asked or run
-	failed  map[string]bool         // by saved.HostPart: machines whose host failed, which steps 4-6 skip
-	probed  map[string]machineState // by saved.HostPart
+	ctx       context.Context
+	d         *deps
+	ops       setupOps
+	rows      []setupRow
+	version   [3]int
+	stopped   bool                    // a prompt was cancelled: nothing more is asked or run
+	failed    map[string]bool         // by saved.HostPart: machines whose host failed, which steps 4-6 skip
+	probed    map[string]machineState // by saved.HostPart
+	cardLogin string                  // cardinal's login from its last status
 }
 
 func setupCmd(ctx context.Context, d *deps, args []string) int {
@@ -74,7 +77,201 @@ func (w *wizard) run() {
 		return
 	}
 	// The publish token's page lists the mapped repos, so it comes after the host.
-	w.fillKeys([]keys.Slot{keys.Publish, keys.Ntfy}, true)
+	if !w.fillKeys([]keys.Slot{keys.Publish, keys.Ntfy}, true) || w.stopped {
+		return
+	}
+	machines := machinesOf(list)
+	remove := w.oldVersions(machines)
+	if w.stopped {
+		return
+	}
+	w.cardinal(machines, remove)
+	if w.stopped {
+		return
+	}
+	w.removeRest(machines, remove)
+}
+
+// oldVersions shows each old user found on a machine and asks whether to remove it, default no.
+// The removals it returns run in the machine's root pass.
+func (w *wizard) oldVersions(machines []string) map[string][]string {
+	remove := map[string][]string{}
+	for _, m := range machines {
+		k := saved.HostPart(m)
+		if w.failed[k] {
+			w.row(rowPending, "old versions", k+": skipped, a host on it failed")
+			continue
+		}
+		found := w.ops.oldUsers(w.ctx, m)
+		if len(found) == 0 {
+			w.row(rowDone, "old versions", "none on "+k)
+			continue
+		}
+		for _, u := range found {
+			w.showOld(k, u)
+			yes, err := w.d.prompt.Confirm("Remove the "+u.Name+" user on "+k+"? Its home is archived first", false)
+			if err != nil {
+				w.fail("old versions", err)
+				return nil
+			}
+			if yes {
+				remove[k] = append(remove[k], u.Name)
+			} else {
+				w.row(rowSkipped, "old versions", u.Name+" on "+k+" kept")
+			}
+		}
+	}
+	return remove
+}
+
+// showOld prints what was found. The process lines are the old user's text, so they are sanitized.
+func (w *wizard) showOld(machine string, u oldUser) {
+	o := w.d.o()
+	facts := []string{fmt.Sprintf("%d processes", len(u.Procs))}
+	if u.Lingering {
+		facts = append(facts, "lingering")
+	}
+	if u.Since != "" {
+		facts = append(facts, "user manager since "+saved.Sanitize(u.Since))
+	}
+	o.Line("%s user on %s (%s), from an earlier flocc:", u.Name, machine, strings.Join(facts, ", "))
+	for _, p := range u.Procs {
+		o.Line("  %s", saved.Sanitize(p))
+	}
+	if slices.ContainsFunc(u.Procs, polls) {
+		o.WarnLine("It runs claude or a flocc tick, so the old install may still be polling Linear.")
+	}
+}
+
+// polls reports whether a process of an old install may still be taking Linear issues.
+func polls(args string) bool {
+	return strings.Contains(args, "claude") || strings.Contains(args, "linear-agents run") || strings.Contains(args, "flocc run")
+}
+
+// setupFailures are the status failures setup repairs; the login is step 6's.
+func setupFailures(st steps.CardinalStatus) []string {
+	st.Login = "full"
+	return st.Failures()
+}
+
+// cardinal sets up or repairs cardinal on its one machine: the saved install's, else the first
+// host's. A setup also runs that machine's agreed removals in its root pass, and takes them out of
+// remove. It returns the install to log in, or nil.
+func (w *wizard) cardinal(machines []string, remove map[string][]string) *saved.Saved {
+	cs, have, err := w.ops.cardinal()
+	if err != nil {
+		w.row(rowFailed, "cardinal", err.Error())
+		return nil
+	}
+	if !have {
+		if len(machines) == 0 {
+			w.row(rowSkipped, "cardinal", "no host is on a machine of yours")
+			return nil
+		}
+		cs = saved.Saved{Machine: machines[0], User: saved.DefaultUser, RenewHour: 4}
+	}
+	k := saved.HostPart(cs.Machine)
+	if w.failed[k] {
+		w.row(rowPending, "cardinal", "skipped: a host on "+k+" failed")
+		return nil
+	}
+	if have && !cs.Removed {
+		st, err := w.ops.cardStatus(w.ctx, cs)
+		if err == nil && len(setupFailures(st)) == 0 {
+			w.row(rowDone, "cardinal", "status ok on "+k)
+			w.cardLogin = st.Login
+			return &cs
+		}
+		return w.setupCardinal(cs, true, remove)
+	}
+	ms := w.probe(cs.Machine)
+	if ms.Err != nil {
+		w.row(rowFailed, "cardinal", ms.Err.Error())
+		return nil
+	}
+	var q string
+	var def, adopt bool
+	switch {
+	case have:
+		q, adopt = "Set up cardinal on "+k+" again? flocc cardinal remove took it down", true
+	case w.ops.hasUser(w.ctx, cs.Machine, cs.User):
+		q, adopt = "Adopt the existing "+cs.User+" user on "+k+"? No saved file names it, so it looks like a setup by hand", true
+	default:
+		q, def = "Set up cardinal on "+k+"?", true
+	}
+	yes, err := w.d.prompt.Confirm(q, def)
+	if err != nil {
+		w.fail("cardinal", err)
+		return nil
+	}
+	if !yes {
+		w.row(rowSkipped, "cardinal", "not set up on "+k+"; asked again next run")
+		return nil
+	}
+	return w.setupCardinal(cs, adopt, remove)
+}
+
+func (w *wizard) setupCardinal(cs saved.Saved, adopt bool, remove map[string][]string) *saved.Saved {
+	k := saved.HostPart(cs.Machine)
+	ms := w.probe(cs.Machine)
+	switch {
+	case ms.Err != nil:
+		w.row(rowFailed, "cardinal", ms.Err.Error())
+		return nil
+	case ms.Incus != nil:
+		w.row(rowFailed, "cardinal", ms.Incus.Error())
+		return nil
+	}
+	rm := remove[k]
+	delete(remove, k)
+	err := w.ops.cardSetup(w.ctx, cs, cardinal.SetupOptions{Adopt: adopt, Remove: rm})
+	w.removed(cs.Machine, rm, err)
+	if err != nil {
+		w.fail("cardinal", fmt.Errorf("setup: %w", err))
+		return nil
+	}
+	st, err := w.ops.cardStatus(w.ctx, cs)
+	switch {
+	case err != nil:
+		w.row(rowFailed, "cardinal", "after setup: "+err.Error())
+		return nil
+	case len(setupFailures(st)) > 0:
+		w.row(rowPending, "cardinal", strings.Join(setupFailures(st), "\n"))
+	default:
+		w.row(rowDone, "cardinal", "set up on "+k)
+	}
+	w.cardLogin = st.Login
+	return &cs
+}
+
+// removeRest runs the removals no cardinal setup took, one purge-only root pass per machine.
+func (w *wizard) removeRest(machines []string, remove map[string][]string) {
+	for _, m := range machines {
+		if users := remove[saved.HostPart(m)]; len(users) > 0 {
+			w.removed(m, users, w.ops.removeOld(w.ctx, m, users))
+		}
+	}
+}
+
+// removed looks for each agreed user again, as it was found, and reports what the root pass did.
+func (w *wizard) removed(m string, users []string, err error) {
+	if len(users) == 0 {
+		return
+	}
+	k := saved.HostPart(m)
+	still := w.ops.oldUsers(w.ctx, m)
+	for _, u := range users {
+		if !slices.ContainsFunc(still, func(o oldUser) bool { return o.Name == u }) {
+			w.row(rowDone, "old versions", "removed "+u+" on "+k+"; its home is archived under /root there. "+
+				"Revoke the old install's GitHub tokens and Linear key yourself")
+			continue
+		}
+		why := "the root pass did not remove it"
+		if err != nil {
+			why = err.Error()
+		}
+		w.row(rowFailed, "old versions", u+" on "+k+": "+why)
+	}
 }
 
 type checkedHost struct {
