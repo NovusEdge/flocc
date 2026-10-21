@@ -57,6 +57,8 @@ type shipOpts struct {
 	TTY         bool
 	Answers     []byte
 	Out         io.Writer
+	// Color asks the host for coloured step lines; Ship sets it from Out.
+	Color bool
 }
 
 // usageError is a refusal of the arguments, which exits 2.
@@ -206,7 +208,7 @@ func Ship(ctx context.Context, o Options, answers io.Reader) (Summary, error) {
 	if o.Out == nil {
 		o.Out = os.Stdout
 	}
-	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, TTY: o.TTY, Answers: doc, Out: o.Out})
+	return ship(ctx, r, root, dest, shipOpts{Target: o.Target, Interactive: o.Interactive, TTY: o.TTY, Answers: doc, Out: o.Out, Color: ui.ColorFor(o.Out)})
 }
 
 func ship(ctx context.Context, r host.Runner, root string, dest Dest, o shipOpts) (Summary, error) {
@@ -259,11 +261,7 @@ func shipTo(ctx context.Context, r host.Runner, root string, dest Dest, o shipOp
 	}
 	c := sshCmd(dest, true, remoteCmd(true))
 	if !o.Interactive {
-		remote := remoteCmd(false)
-		if ui.ColorFor(o.Out) {
-			remote += " --color"
-		}
-		c = sshNoTTY(dest, remote)
+		c = sshNoTTY(dest, remoteCmdWith(false, o.Color))
 		c.Stdin = bytes.NewReader(o.Answers)
 	}
 	c.Stdout = tap
@@ -289,11 +287,20 @@ func checkSudo(ctx context.Context, r host.Runner, dest Dest) error {
 	return fmt.Errorf("sudo asks for a password: give %s passwordless sudo, or use root", strings.TrimSpace(user))
 }
 
-func remoteCmd(interactive bool) string {
+func remoteCmd(interactive bool) string { return remoteCmdWith(interactive, false) }
+
+// remoteCmdWith asks for coloured step lines through the environment, set by env inside sudo
+// because sudo resets the caller's. ship stages a flocc-setup built from the checkout it runs in,
+// which may predate the colour request: an older binary ignores the variable, where it would
+// refuse an unknown flag and fail the whole ship.
+func remoteCmdWith(interactive, color bool) string {
 	// scp through the Daytona gateway drops the exec bit.
 	remote := "chmod 755 /tmp/flocc-setup/flocc-setup && "
 	if interactive {
 		return remote + "sudo /tmp/flocc-setup/flocc-setup"
+	}
+	if color {
+		return remote + "sudo -n env " + ui.ColorEnv + "=1 /tmp/flocc-setup/flocc-setup --answers -"
 	}
 	return remote + "sudo -n /tmp/flocc-setup/flocc-setup --answers -"
 }

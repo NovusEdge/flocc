@@ -150,7 +150,10 @@ func run(args []string) int {
 	phase := fs.String("phase", "root", "root, service or login; the root phase hands off to the service phase itself")
 	answersIn := fs.String("answers", "", `"-" reads the answers document, secrets included, from stdin and runs without a terminal`)
 	email := fs.String("email", "", "login phase: the claude.ai account to sign in as")
-	color := fs.Bool("color", false, "colour the step lines of a run with --answers; the desktop passes it when its terminal shows colour")
+	// The desktop asks through the environment (ui.ColorEnv), which an older flocc-setup ignores;
+	// the flag only carries the request from the root phase to the service phase, whose sudo -i
+	// drops the environment.
+	color := fs.Bool("color", false, "colour the step lines of a run with --answers")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -159,6 +162,7 @@ func run(args []string) int {
 		return 2
 	}
 	fromStdin := *answersIn == "-"
+	wantColor := *color || os.Getenv(ui.ColorEnv) == "1"
 	var doc []byte
 	in := &answers.Answers{}
 	if fromStdin {
@@ -227,7 +231,7 @@ func run(args []string) int {
 	}
 	var u ui.UI = ui.NewHuh()
 	if fromStdin {
-		u = &ui.Scripted{A: a, Out: stdout, Color: *color}
+		u = &ui.Scripted{A: a, Out: stdout, Color: wantColor}
 	}
 	env.UI = u
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -257,7 +261,7 @@ func run(args []string) int {
 			piped = bytes.NewReader(doc)
 		}
 		args := handoffArgs(fromStdin)
-		if *color {
+		if wantColor {
 			args = append(args, "--color")
 		}
 		err = handoff(ctx, runner, stage, args, piped)

@@ -383,6 +383,25 @@ func TestRemoteCmd(t *testing.T) {
 	}
 }
 
+// The staged flocc-setup comes from the checkout ship runs in, so it may be older than the
+// desktop: an unknown flag makes it exit 2, while an unknown environment variable is ignored.
+func TestColorIsRequestedThroughTheEnvironmentNotAFlag(t *testing.T) {
+	want := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo -n env FLOCC_COLOR=1 /tmp/flocc-setup/flocc-setup --answers -"
+	if got := remoteCmdWith(false, true); got != want || strings.Contains(got, "--color") {
+		t.Fatalf("%q", got)
+	}
+	if got := remoteCmdWith(true, true); got != remoteCmd(true) {
+		t.Fatalf("interactive runs take no request: %q", got)
+	}
+	f := okSudo("root@h")
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard, Color: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("interactive: ssh -T root@h " + want) {
+		t.Fatalf("calls %v", f.Calls)
+	}
+}
+
 // mastered is a fake whose shared connection to dest is already open, so Connect does nothing.
 func mastered(dest string) *host.Fake {
 	return host.NewFake().On("ssh -O check "+dest, 0, "")
