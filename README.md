@@ -66,6 +66,21 @@ On the desktop, `flocc keys`, `flocc host add`, `flocc ship` and `flocc login` s
 `flocc host create` makes one as an Incus VM on a machine you reach over SSH, then runs the last
 three for it; `docs/vm-setup.md` explains them. The sections below are the original research.
 
+### Desktop commands
+
+Bare `flocc` opens a full-screen dashboard of every host, its issues and cardinal; `flocc status
+--watch` opens the same view. `setup`, `host create`, `ship`, `login` and `cardinal setup|login`
+show their steps live, full-screen on a terminal. Pick another display with a flag or the
+environment:
+
+```bash
+flocc setup --inline     # steps below the scrollback; or --plain, or --full
+FLOCC_UI=plain flocc ship -H flocc-nimble
+```
+
+A pipe, `NO_COLOR` and `TERM=dumb` always give plain output, one line per finished step. Details
+are in `docs/vm-setup.md`, under "The display" and "The Tailnet section".
+
 ## Recommended: a poller with headless Claude Code in a container
 
 Needs no Linear admin and loads the full repo setup. Costs a short script to maintain.

@@ -4,6 +4,31 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## 0.9.0 (2026-10-22)
+
+The desktop CLI shows what it is doing, and hosts join the tailnet tagged without a browser login.
+
+- Every desktop command writes through one session of steps, drawn full-screen, inline or plain.
+  `setup`, `host create`, `ship`, `login` and `cardinal setup|login` open full-screen on a
+  terminal: a rail of sections, the running step's output, prompts as a modal. Choose with
+  `--full`, `--inline`, `--plain` or `FLOCC_UI`; a pipe, `NO_COLOR` or `TERM=dumb` is always plain.
+  Rows now appear as each step ends, including during `setup`, `ship` staging, builds and tailnet
+  waits.
+- `flocc-setup --events` streams steps as JSON lines and `ship` replays them into the desktop's
+  session, in place of the raw host output and the two summary marker lines. `status --json` adds
+  recent activity per issue and cardinal's status.
+- Bare `flocc`, or `flocc status --watch` on a terminal, opens a dashboard of every host and
+  issue, polled every 10 seconds. `a` attaches, `l` shows logs, `r` releases after a confirmation,
+  `c` attaches to cardinal read-only. `-H all doctor` and `logs` are drawn by the desktop.
+- `flocc cardinal login` and `cardinal attach --write` warn that Ctrl-D twice ends cardinal's
+  session.
+- `flocc setup` has a Tailnet section. The Tailscale OAuth client is a new optional key slot;
+  with it, setup checks the tailnet policy and prints a merged policy to paste (it never writes
+  one), and tags each host's node. `host create` mints a one-off tagged key and joins with no QR
+  login; without the client it joins with `--advertise-tags=tag:flocc-host`.
+- Not confirmed against the live Tailscale API: `--advertise-tags` on a fresh node, the error text
+  for a tag the policy lacks, and tagging a user-owned node through the API.
+
 ## 0.8.0 (2026-10-21)
 
 `flocc cardinal`, the always-on assistant's setup command, and `flocc setup`, one command for the whole setup.

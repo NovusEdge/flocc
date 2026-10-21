@@ -106,6 +106,7 @@ flocc setup        # inside the flocc checkout
 |---|---|---|
 | checkout | the current directory is the flocc checkout | stops if not |
 | keys | the Linear key and agent token | asks for what is missing |
+| tailnet | the Tailscale OAuth client, the tailnet policy, each host's tag | see "The Tailnet section" |
 | host | host files | with none, creates or adds a host, and a stopped create's log offers to continue. For each host it runs `flocc --version`, `status --json` and `doctor`. A host older than the checkout, or failing a doctor check other than login and disk, is shipped. Low disk and unreachable hosts are reported |
 | keys | the publish token and ntfy topic | asks for what is missing, then checks them |
 | old versions | `id`, `loginctl` and `ps` without sudo | shows each old user, default no. A yes removes it in the root pass after its own checks, with its home archived to `/root/flocc-removed-<user>-<date-time>.tar.gz` |
@@ -121,6 +122,51 @@ Which machine a host is on is `machine` in its host file. Setup asks once for a 
 
 Exit codes: 0 when every step is done or skipped by you, 1 when any is incomplete or failed, 2
 without a terminal.
+
+### The display
+
+Every desktop command that does work reports through one session of steps, drawn by one of three
+renderers:
+
+| Mode | Looks like | Default for |
+|---|---|---|
+| full | Alternate screen: a rail of the command's sections, the current section's steps with their live output, a progress bar. Prompts open as a modal over the dimmed screen. | `setup`, `host create`, `ship`, `login`, `cardinal setup`, `cardinal login`, and the dashboard |
+| inline | Running steps and any prompt below the scrollback; each step moves up into scrollback when it ends. | short commands: `keys check`, `cardinal restart`, one-shot `status` |
+| plain | One line per finished step, numbered or typed prompts, no escape codes. | anything that is not a terminal |
+
+Choose one with `--full`, `--inline` or `--plain` (the last one given wins), or `FLOCC_UI=full|inline|plain`
+when no flag is given. A pipe, `NO_COLOR` or `TERM=dumb` gives plain whatever is set. Commands that
+hand the terminal to a child (forwarded host commands, `host run`, `cardinal attach`) always run
+plain. A full-screen run on a terminal smaller than 80 columns by 20 rows switches to inline.
+
+In full-screen, `l` shows the whole log of the running step (`esc` closes it, arrows and page keys
+scroll), `?` lists the keys, and `q` or Ctrl-C asks whether to stop. When the run ends, the rows and
+the "still yours to do" box are printed to the normal screen, so they stay after the program exits.
+Inline and plain print the rows as they end and only the box at the end.
+
+When a step needs the real terminal (a `sudo` password, a Tailscale login, a browser login), the
+screen is handed over with one line naming what comes next, and Ctrl-C goes to that program.
+
+### The dashboard
+
+`flocc` with no command, or `flocc status --watch`, on a terminal. It shows a strip per host
+(version, last tick, usage, disk, capacity), one table of every host's issues (phase, state,
+context use, launches, last update), and the selected issue's recent activity. It polls every
+host's `status --json` every 10 seconds; an unreachable host shows a red dot and its last known
+rows are marked stale. A host older than the desktop is shown as needing a ship. `flocc status
+-H all` prints the same fleet table once, and plain mode does the same for the bare command.
+
+| Key | Does |
+|---|---|
+| up, down (or k, j) | select an issue |
+| a | `flocc -H <host> attach <issue>` |
+| l | `flocc -H <host> logs <issue>` |
+| r | release the issue, after a confirmation |
+| c | cardinal, read-only attach |
+| ? | list the keys |
+| q, Ctrl-C | quit |
+
+`a`, `l` and `c` hand the terminal to the child and return to the dashboard when it exits.
 
 ## The desktop command
 
@@ -296,8 +342,13 @@ host that stopped half-made. In order, it:
    while stopped (below);
 4. checks that no tailnet node already has `<name>`, launches `images:debian/13` as a VM with
    `boot.autostart=true`, and waits for an IPv4 address and outbound HTTPS;
-5. joins the VM to the tailnet with Tailscale SSH: scan the QR code or open the link, or paste a
-   one-off auth key, which reaches the VM on stdin and is neither stored nor logged. A VM already
+5. joins the VM to the tailnet with Tailscale SSH, tagged `tag:flocc-host`. With the Tailscale
+   OAuth client stored, create mints a one-off key (pre-approved, tagged, valid 10 minutes) and
+   runs `tailscale up` with it on stdin, with no terminal step. Without the client it asks for a
+   pasted one-off key, or falls back to the QR code or link login, still with
+   `--advertise-tags=tag:flocc-host`; a pasted key reaches the VM on stdin and is neither stored
+   nor logged. If the policy does not define the tag, this step fails and names the Tailnet section
+   of `flocc setup`. A VM already
    logged in is renamed and given SSH instead of logging in again; the control server confirms the
    new name within 15 seconds or create stops, naming the stale node to remove;
 6. waits until this desktop's tailnet lists the node, runs `flocc host add <name> --ssh
@@ -396,12 +447,51 @@ for over 30 minutes. Installing `earlyoom` in the guest has it kill the largest 
 
 ### The VM on the tailnet
 
-The VM joins the tailnet as you, untagged, with Tailscale SSH on. Under the default policy it can
-therefore reach every device on the tailnet and, through the machine's uplink, the LAN. The rules
-above keep it off the machine itself and off Docker's containers, not off the rest of the network.
-Closing that means tagging the node with a policy that denies its outbound tailnet traffic, which
-changes how hosts log in; that decision is open. After the join, disable key expiry for `<name>` at
-https://login.tailscale.com/admin/machines (create prints this reminder).
+The VM joins the tailnet tagged `tag:flocc-host`, with Tailscale SSH on. A tagged node has no
+owner identity, so a policy that grants the tag no destinations keeps a compromised host off your
+other devices. The firewall rules above keep it off the machine itself and off Docker's containers.
+Tagged nodes have key expiry off, so there is nothing to disable in the console. A node that comes
+up untagged (an old host, or a join without the tag) still gets the "disable key expiry" to-do.
+
+### The Tailnet section
+
+`flocc setup` runs a Tailnet section after Keys and before Hosts, because `host create` depends on
+it. flocc never writes the tailnet policy; it generates one for you to paste and checks it.
+
+1. **Client.** The Tailscale OAuth client is an optional key slot. Create it at
+   https://login.tailscale.com/admin/settings/oauth (Settings, OAuth clients, Generate) with the
+   scopes Auth keys (write) and Devices core (write), both limited to `tag:flocc-host`, plus Policy
+   file (read). Paste `<client id>:<secret>`; an empty paste skips the client. The client is
+   exchanged for a token to check it.
+2. **Policy.** Setup reads the policy and checks for `tagOwners` for `tag:flocc-host`, no grant
+   with the tag as a source, an `ssh` accept rule from `autogroup:member` to the tag for `root` and
+   `autogroup:nonroot`, and tests that deny the tag ports 22 and 443 on each of your devices. When
+   something is missing it writes the policy with the missing parts merged in, your other rules
+   unchanged, to `~/.cache/flocc/tailnet-policy.json`, names what it added, and asks you to paste
+   it at https://login.tailscale.com/admin/acls/file. It then asks to check again, up to three
+   times; the step stays pending until the check passes.
+3. **Hosts.** For each host file, the node is looked up in `tailscale status --json` on the
+   desktop. An untagged node is tagged through the client, only after the policy passes: until the
+   ssh accept rule exists, `ssh root@<host>` stops working the moment the tag lands. Without the
+   client, or before the policy passes, the host gets a pending row naming
+   https://login.tailscale.com/admin/machines.
+
+Without the OAuth client everything still works: hosts join with the login link and are tagged by
+hand, and setup lists the missing client under "still yours to do".
+
+The scopes and what a leaked copy on the desktop allows:
+
+| Scope | Allows | If leaked |
+|---|---|---|
+| Auth keys, `tag:flocc-host` | mint one-off tagged keys | machines can join as `tag:flocc-host`, which reaches nothing |
+| Devices core, `tag:flocc-host` | tag an existing host | machines can be retagged `tag:flocc-host` |
+| Policy file (read) | check the policy | the policy can be read |
+
+> Not confirmed against the live Tailscale API: whether `tailscale up --advertise-tags` accepts
+> the tag on a fresh node as used here, the exact error `tailscale up` prints for a tag the policy
+> does not define (create matches on the word "tags" in it), and whether Devices core can tag a
+> user-owned node without a re-login. The code was written from the API documentation and tested
+> against fakes.
 
 ## What the installer cannot do
 
@@ -435,7 +525,8 @@ Watch it from the desktop with `flocc -H <name> status` (claims, last tick, usag
 `flocc status -H all` shows every host in two tables: one row per host (mode, last tick and exit
 status, running sessions against the cap, 5h and weekly usage, free disk, Claude login, token
 expiry) and one row per live claim (phase, age, context use, whether its tmux session is up).
-`flocc status -H all --watch --interval 30s` redraws until Ctrl-C.
+`flocc status -H all --watch --interval 30s` redraws until Ctrl-C. On a terminal, `--watch` opens
+the dashboard (see "The dashboard") instead, which polls every 10 seconds.
 
 The hosts are every sandbox in the active Daytona organization, read with the Daytona CLI's login,
 plus every host in `~/.config/flocc/hosts/` reached over SSH (`flocc host add` writes them;
@@ -510,6 +601,14 @@ checkout:
     flocc cardinal attach --write                    # /mcp, linear, Authenticate, paste the localhost URL, Ctrl-b d
     flocc cardinal status
     flocc status -H all                              # the CARDINAL table
+
+`cardinal login` and `cardinal attach --write` print this before attaching:
+
+    Detach with Ctrl-b d. Ctrl-D twice ends cardinal's session; the service starts a fresh one.
+
+Ctrl-D twice in a writable attach exits claude, which moves the conversation into a Claude
+background daemon outside `cardinal.service`; the service starts a fresh session about 30 seconds
+later. The default attach is read-only and cannot send Ctrl-D, and neither can the dashboard's `c`.
 
 `setup` is also the repair command. It asks for the machine's sudo password only when a root
 outcome is missing: the user, lingering, the desktop key or the tailnet block. It never restarts a
