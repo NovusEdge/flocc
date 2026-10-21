@@ -8,6 +8,11 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 `flocc host create`, and the end of the `just` host recipes.
 
+- The desktop's forms and output use your terminal's own colours: `ok` and ✓ green, `FAIL` red with
+  its next step in bold, notes yellow, every line indented two spaces. There is no colour when the
+  output is not a terminal, `NO_COLOR` is set or `TERM=dumb`, so logs and the host's summary line
+  stay plain. `host add` says why it passes over a digest issue (closed, or missing).
+
 - `flocc host create <machine> <name>` makes a host as an Incus VM, over SSH as your own account:
   it checks Incus, puts `incusbr0` in a firewalld zone that allows only DHCP and DNS with a forward
   policy to the uplink, lets the VM through Docker's `DOCKER-USER` chain from a oneshot unit tied to
