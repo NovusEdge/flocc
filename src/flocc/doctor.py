@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -246,7 +247,7 @@ def ntfy_check(cfg: Config) -> Result:
     return Result("ok", "ntfy", cfg.ntfy_url)
 
 
-def run_doctor(cfg: Config) -> int:
+def collect_results(cfg: Config) -> list[Result]:
     results = path_checks(cfg) + scope_check(cfg)
     results.append(disk_check(cfg))
     results.append(ntfy_check(cfg))
@@ -262,4 +263,18 @@ def run_doctor(cfg: Config) -> int:
     results += token_checks("publish", cfg.publish_gh_token_file, slug, True, now)
     results += claude_checks(shutil.which("claude"))
     results.append(tmux_check())
-    return report(results)
+    return results
+
+
+def run_doctor(cfg: Config) -> int:
+    return report(collect_results(cfg))
+
+
+def doctor_json(cfg: Config, config_path: Path) -> int:
+    results = collect_results(cfg)
+    # A warning does not fail the doctor run, so it is not ok=false here either.
+    checks = [{"name": "config", "ok": True, "detail": str(config_path)}] + [
+        {"name": r.name, "ok": r.status != "fail", "detail": r.detail} for r in results
+    ]
+    print(json.dumps({"v": 1, "checks": checks}))
+    return 1 if any(r.status == "fail" for r in results) else 0

@@ -237,3 +237,54 @@ def test_claims_carry_launches_against_budget(cfg):
     )
     (row,) = collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"]
     assert (row["launches"], row["launch_limit"]) == (1, 2)
+
+
+def _journal(*lines):
+    def run(argv, **kw):
+        if argv[0] == "systemctl":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        assert argv[:5] == ["journalctl", "--user", "-u", "flocc", "-n"]
+        assert argv[5] == "2000" and "-o" in argv and "short-unix" in argv
+        return subprocess.CompletedProcess(argv, 0, "\n".join(lines) + "\n", "")
+
+    return run
+
+
+def test_status_carries_the_version_and_each_claims_last_five_lines(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, make("NF-1"))
+    lines = [f"{1000 + i}.5 host flocc[7]: NF-1 step {i}" for i in range(7)]
+    lines.insert(3, "1003.9 host flocc[7]: NF-12 belongs to another issue")
+    run = _journal(*lines, "1100.0 host flocc[7]: tick done")
+    report = collect(cfg, FakeSessions(), now=2000.0, mode="systemd", run=run)
+    assert report["v"] == 1 and "activity_error" not in report
+    (row,) = report["claims"]
+    assert [a["text"] for a in row["activity"]] == [f"NF-1 step {i}" for i in range(2, 7)]
+    assert row["activity"][-1]["at"] == 1006
+
+
+def test_status_activity_falls_back_to_run_log_tail(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, make("NF-1"))
+    cfg.state_root.mkdir(parents=True, exist_ok=True)
+    log = cfg.state_root / "run.log"
+    log.write_text("NF-1 started\nother\nNF-1 pushed\n")
+    os.utime(log, (500, 500))
+    (row,) = collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"]
+    assert row["activity"] == [
+        {"at": 500, "text": "NF-1 started"},
+        {"at": 500, "text": "NF-1 pushed"},
+    ]
+
+
+def test_a_failing_journal_leaves_activity_empty_and_status_whole(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, make("NF-1"))
+
+    def run(argv, **kw):
+        if argv[0] == "journalctl":
+            raise subprocess.TimeoutExpired(argv, 10)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="systemd", run=run)
+    assert report["claims"][0]["activity"] == [] and report["activity_error"]
