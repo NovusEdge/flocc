@@ -13,6 +13,7 @@ import (
 
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/replay"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // logStore keeps keys in memory and logs each Set into the fixture's event list, beside the
@@ -135,6 +136,18 @@ func TestFillAsksForEachKeyInOrderAndStoresIt(t *testing.T) {
 		if strings.Contains(f.out.String(), secret) {
 			t.Errorf("%s printed", secret)
 		}
+	}
+}
+
+func TestFillAsksThroughTheUISession(t *testing.T) {
+	rec := &ui.Recorder{Answers: []any{"lin_api_k", "github_pat_agent", "github_pat_publish", true}}
+	f := newFixture(t, ghServer(t, userOK), linServer(t, "viewer-ok.http"), &script{})
+	f.env.Prompt = ui.Prompts{S: ui.New(rec)}
+	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Asked) != 4 || rec.Asked[0].Kind != ui.PSecret || rec.Asked[3].Kind != ui.PConfirm {
+		t.Fatalf("%+v", rec.Asked)
 	}
 }
 

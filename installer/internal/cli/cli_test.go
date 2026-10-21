@@ -5,12 +5,15 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 func testDeps(t *testing.T) (*deps, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	return &deps{out: &out, err: &errb, home: t.TempDir(), getenv: func(string) string { return "" }}, &out, &errb
+	return &deps{out: &out, err: &errb, home: t.TempDir(), getenv: func(string) string { return "" },
+		ui: ui.New(&ui.Recorder{})}, &out, &errb
 }
 
 func TestBareFloccPrintsHelpAndFails(t *testing.T) {
