@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -38,6 +39,9 @@ type (
 		reply chan error
 	}
 	closeMsg struct{ todos []string }
+	// printedMsg follows each Println: Bubble Tea runs commands concurrently, so a Quit sent
+	// while one is in flight would drop the line.
+	printedMsg struct{}
 )
 
 type liveStep struct {
@@ -61,6 +65,8 @@ type inlineModel struct {
 	log         string
 	interrupted bool
 	interrupt   func()
+	printing    int // Printlns issued and not yet printed
+	closing     *closeMsg
 }
 
 func newInlineModel(now func() time.Time) inlineModel {
@@ -97,10 +103,11 @@ func (m inlineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		msg.reply <- msg.err
 		return m, nil
 	case closeMsg:
-		if text := CloseText(msg.todos, m.log); text != "" {
-			return m, tea.Sequence(tea.Println(strings.TrimRight(text, "\n")), tea.Quit)
-		}
-		return m, tea.Quit
+		m.closing = &msg
+		return m.closeIfIdle()
+	case printedMsg:
+		m.printing--
+		return m.closeIfIdle()
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -117,15 +124,29 @@ func (m inlineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.toForm(msg)
 }
 
+// closeIfIdle ends the program once a requested close has nothing left to print.
+func (m inlineModel) closeIfIdle() (tea.Model, tea.Cmd) {
+	if m.closing == nil || m.printing > 0 {
+		return m, nil
+	}
+	if text := CloseText(m.closing.todos, m.log); text != "" {
+		return m, tea.Sequence(tea.Println(strings.TrimRight(text, "\n")), tea.Quit)
+	}
+	return m, tea.Quit
+}
+
 func (m inlineModel) draw(e Event) (tea.Model, tea.Cmd) {
 	switch e.Kind {
 	case KGroup:
-		return m, m.print(groupText(e.Name))
+		cmd := m.print(groupText(e.Name))
+		return m, cmd
 	case KNote:
-		return m, m.print(NoteText(e.Name, e.Text))
+		cmd := m.print(NoteText(e.Name, e.Text))
+		return m, cmd
 	case KTable:
 		if e.Table != nil {
-			return m, m.print(TableText(*e.Table))
+			cmd := m.print(TableText(*e.Table))
+			return m, cmd
 		}
 	case KLog:
 		m.log = e.Text
@@ -145,7 +166,8 @@ func (m inlineModel) draw(e Event) (tea.Model, tea.Cmd) {
 		if i := m.find(e.ID); i >= 0 {
 			m.steps = append(append([]liveStep(nil), m.steps[:i]...), m.steps[i+1:]...)
 		}
-		return m, m.print(RowText(e, nameWidth, true))
+		cmd := m.print(RowText(e, nameWidth, true))
+		return m, cmd
 	}
 	return m, nil
 }
@@ -183,7 +205,8 @@ func (m *inlineModel) print(text string) tea.Cmd {
 		m.queue = append(m.queue, text)
 		return nil
 	}
-	return tea.Println(text)
+	m.printing++
+	return tea.Sequence(tea.Println(text), func() tea.Msg { return printedMsg{} })
 }
 
 func groupText(title string) string { return "\n" + Out{Color: true}.Bold(title) }
@@ -247,7 +270,8 @@ func (m inlineModel) toForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if len(queued) == 0 {
 		return m, cmd
 	}
-	return m, tea.Sequence(cmd, tea.Println(strings.Join(queued, "\n")))
+	m.printing++
+	return m, tea.Sequence(cmd, tea.Println(strings.Join(queued, "\n")), func() tea.Msg { return printedMsg{} })
 }
 
 func (m inlineModel) View() tea.View {
@@ -289,7 +313,53 @@ func cut(s string, n int) string {
 
 type inline struct {
 	p    *tea.Program
+	q    *sendQueue
 	done chan struct{}
+}
+
+// sendQueue delivers messages to a program in order from one goroutine. tea.ExecProcess runs the
+// child inside the program's loop, and Program.Send blocks until the loop takes the message, so a
+// Draw made while a child runs (often by its own output) must queue instead of waiting.
+type sendQueue struct {
+	p    *tea.Program
+	mu   sync.Mutex
+	msgs []tea.Msg
+	wake chan struct{}
+}
+
+func newSendQueue(p *tea.Program, done <-chan struct{}) *sendQueue {
+	q := &sendQueue{p: p, wake: make(chan struct{}, 1)}
+	go func() {
+		for {
+			select {
+			case <-q.wake:
+			case <-done:
+				return
+			}
+			for {
+				q.mu.Lock()
+				if len(q.msgs) == 0 {
+					q.mu.Unlock()
+					break
+				}
+				m := q.msgs[0]
+				q.msgs = q.msgs[1:]
+				q.mu.Unlock()
+				p.Send(m)
+			}
+		}
+	}()
+	return q
+}
+
+func (q *sendQueue) Send(m tea.Msg) {
+	q.mu.Lock()
+	q.msgs = append(q.msgs, m)
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
 }
 
 var errInlineEnded = errors.New("the terminal display ended before the question was answered")
@@ -303,6 +373,7 @@ func newInline(out io.Writer, in io.Reader, opts ...tea.ProgramOption) Renderer 
 	r := &inline{done: make(chan struct{})}
 	opts = append([]tea.ProgramOption{tea.WithOutput(out), tea.WithInput(in), tea.WithoutSignalHandler()}, opts...)
 	r.p = tea.NewProgram(newInlineModel(time.Now), opts...)
+	r.q = newSendQueue(r.p, r.done)
 	go func() {
 		defer close(r.done)
 		r.p.Run()
@@ -310,11 +381,11 @@ func newInline(out io.Writer, in io.Reader, opts ...tea.ProgramOption) Renderer 
 	return r
 }
 
-func (r *inline) Draw(e Event) { r.p.Send(drawMsg{e}) }
+func (r *inline) Draw(e Event) { r.q.Send(drawMsg{e}) }
 
 func (r *inline) Prompt(p PromptReq) (any, error) {
 	reply := make(chan promptReply, 1)
-	r.p.Send(promptMsg{req: p, reply: reply})
+	r.q.Send(promptMsg{req: p, reply: reply})
 	select {
 	case a := <-reply:
 		return a.v, a.err
@@ -325,7 +396,7 @@ func (r *inline) Prompt(p PromptReq) (any, error) {
 
 func (r *inline) Handoff(why string, c *exec.Cmd) error {
 	reply := make(chan error, 1)
-	r.p.Send(handoffMsg{why: why, cmd: c, reply: reply})
+	r.q.Send(handoffMsg{why: why, cmd: c, reply: reply})
 	select {
 	case err := <-reply:
 		return err
@@ -335,7 +406,7 @@ func (r *inline) Handoff(why string, c *exec.Cmd) error {
 }
 
 func (r *inline) Close(todos []string) int {
-	r.p.Send(closeMsg{todos})
+	r.q.Send(closeMsg{todos})
 	<-r.done
 	return 0
 }

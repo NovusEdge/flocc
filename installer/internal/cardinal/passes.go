@@ -104,7 +104,6 @@ func passText(out string, lines int) string {
 func (d Deps) streamPass(ctx context.Context, c host.Cmd) (r steps.CardinalReport, ok bool, output string, err error) {
 	var raw bytes.Buffer
 	rp := ui.Replay(d.UI, "", "")
-	rp.Clean = saved.Sanitize
 	c.Stdout = io.MultiWriter(rp, &raw)
 	err = d.Run.Interactive(ctx, c)
 	rp.Close()

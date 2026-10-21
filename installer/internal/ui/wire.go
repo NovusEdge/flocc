@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"sync"
+
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 )
 
 const WirePrefix = "flocc-event "
@@ -38,9 +40,6 @@ const strayKeep = 20
 
 // Replayer turns a host's stdout into events on a Session.
 type Replayer struct {
-	// Clean, when set, is applied to every string from the far end before it reaches the session,
-	// for a host whose output is not trusted.
-	Clean  func(string) string
 	s      Session
 	prefix string
 
@@ -104,21 +103,42 @@ func (r *Replayer) Data(name string) (string, bool) {
 	return v, ok
 }
 
-func (r *Replayer) clean(s string) string {
-	if r.Clean == nil {
-		return s
+const blockLines = 200
+
+// sanitized makes a decoded event safe to draw: the host is a far end, and its text can carry
+// escape sequences. KData is parsed, not drawn, and stays as sent.
+func sanitized(e Event) Event {
+	e.Name, e.Detail = saved.Sanitize(e.Name), saved.Sanitize(e.Detail)
+	e.Text, e.Err = saved.SanitizeBlock(e.Text, blockLines), saved.SanitizeBlock(e.Err, blockLines)
+	if e.Table != nil {
+		t := *e.Table
+		t.Title = saved.Sanitize(t.Title)
+		t.Headers = sanitizedCells(t.Headers)
+		t.Rows = make([][]string, len(e.Table.Rows))
+		for i, row := range e.Table.Rows {
+			t.Rows[i] = sanitizedCells(row)
+		}
+		e.Table = &t
 	}
-	return r.Clean(s)
+	return e
+}
+
+func sanitizedCells(cells []string) []string {
+	out := make([]string, len(cells))
+	for i, c := range cells {
+		out[i] = saved.Sanitize(c)
+	}
+	return out
 }
 
 func (r *Replayer) line(line string) {
 	e, ok := decode(line)
 	if !ok {
-		r.strayLine(r.clean(line))
+		r.strayLine(saved.Sanitize(line))
 		return
 	}
-	if e.Kind != KData { // machine data is parsed, not drawn
-		e.Name, e.Detail, e.Text, e.Err = r.clean(e.Name), r.clean(e.Detail), r.clean(e.Text), r.clean(e.Err)
+	if e.Kind != KData {
+		e = sanitized(e)
 	}
 	switch e.Kind {
 	case KGroup:

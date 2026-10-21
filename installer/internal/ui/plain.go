@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,8 +10,10 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"charm.land/huh/v2"
 	"golang.org/x/term"
 )
 
@@ -26,20 +29,30 @@ const (
 // plain prints ended rows and prompts as lines, with no live state, so a pipe or a log reads
 // the same as a terminal.
 type plain struct {
-	out   io.Writer
-	rawIn io.Reader
-	in    *bufio.Reader // one reader for the renderer's life, so buffered input survives between prompts
-	color bool
-	now   func() time.Time
+	out    io.Writer
+	errOut io.Writer // handoff banners: stdout may feed a pipe
+	rawIn  io.Reader
+	in     *bufio.Reader // one reader for the renderer's life, so buffered input survives between prompts
+	color  bool
+	now    func() time.Time
+	ctx    context.Context
 
-	wrote bool
-	log   string
-	start map[string]time.Time
-	shown map[string]bool
+	mu        sync.Mutex
+	prompting int
+	queued    []Event // drawn after the open prompt, so a row never lands inside a question
+	wrote     bool
+	log       string
+	start     map[string]time.Time
+	shown     map[string]bool
 }
 
 func NewPlain(out io.Writer, in io.Reader, color bool) Renderer {
-	return &plain{out: out, rawIn: in, in: bufio.NewReader(in), color: color, now: time.Now,
+	return NewPlainCtx(context.Background(), out, in, color)
+}
+
+// NewPlainCtx stops a waiting prompt when ctx ends.
+func NewPlainCtx(ctx context.Context, out io.Writer, in io.Reader, color bool) Renderer {
+	return &plain{out: out, errOut: os.Stderr, rawIn: in, in: bufio.NewReader(in), color: color, now: time.Now, ctx: ctx,
 		start: map[string]time.Time{}, shown: map[string]bool{}}
 }
 
@@ -55,6 +68,16 @@ func (p *plain) blank() {
 }
 
 func (p *plain) Draw(e Event) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.prompting > 0 {
+		p.queued = append(p.queued, e)
+		return
+	}
+	p.draw(e)
+}
+
+func (p *plain) draw(e Event) {
 	switch e.Kind {
 	case KGroup:
 		p.blank()
@@ -106,15 +129,56 @@ func (p *plain) header(q Question) {
 
 // readLine writes the newline the user typed, which a log or pipe never echoes.
 func (p *plain) readLine() (string, error) {
-	s, err := p.in.ReadString('\n')
-	if err != nil && s == "" {
+	line, err := waitFor(p.ctx, func() (string, error) { return p.in.ReadString('\n') })
+	if errors.Is(err, huh.ErrUserAborted) {
+		return "", err
+	}
+	if err != nil && line == "" {
 		return "", ErrNoTerminal
 	}
 	fmt.Fprintln(p.out)
-	return strings.TrimSpace(s), nil
+	return strings.TrimSpace(line), nil
 }
 
+// waitFor runs a blocking read and gives up when ctx ends; the read is left running and its
+// result dropped, which is fine because a cancelled run reads nothing more.
+func waitFor(ctx context.Context, read func() (string, error)) (string, error) {
+	if ctx.Err() != nil {
+		return "", huh.ErrUserAborted
+	}
+	type res struct {
+		s   string
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() { s, err := read(); ch <- res{s, err} }()
+	select {
+	case r := <-ch:
+		return r.s, r.err
+	case <-ctx.Done():
+		return "", huh.ErrUserAborted
+	}
+}
+
+// Prompt holds back every Draw until the answer is in.
 func (p *plain) Prompt(r PromptReq) (any, error) {
+	p.mu.Lock()
+	p.prompting++
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.prompting--; p.prompting == 0 {
+			for _, e := range p.queued {
+				p.draw(e)
+			}
+			p.queued = nil
+		}
+	}()
+	return p.prompt(r)
+}
+
+func (p *plain) prompt(r PromptReq) (any, error) {
 	switch r.Kind {
 	case PConfirm:
 		return p.confirm(r.Q)
@@ -139,7 +203,7 @@ func (p *plain) Prompt(r PromptReq) (any, error) {
 	case PForm:
 		// huh answers with the defaults when input ends, with no error.
 		in := &eofReader{r: p.in}
-		if err := r.Form.WithAccessible(true).WithInput(in).WithOutput(p.out).Run(); err != nil {
+		if err := r.Form.WithAccessible(true).WithInput(in).WithOutput(p.out).RunWithContext(p.ctx); err != nil {
 			return nil, err
 		}
 		if in.eof {
@@ -208,16 +272,19 @@ func (p *plain) choose(q Question, options []string) (int, error) {
 
 func (p *plain) secret() (string, error) {
 	if f, ok := p.rawIn.(*os.File); ok && f == os.Stdin && term.IsTerminal(int(f.Fd())) {
-		b, err := term.ReadPassword(int(f.Fd()))
+		s, err := waitFor(p.ctx, func() (string, error) {
+			b, err := term.ReadPassword(int(f.Fd()))
+			return string(b), err
+		})
 		fmt.Fprintln(p.out)
-		return string(b), err
+		return s, err
 	}
 	return p.readLine()
 }
 
 func (p *plain) Handoff(why string, c *exec.Cmd) error {
 	if b := handoffBanner(why); b != "" {
-		p.println(b)
+		fmt.Fprintln(p.errOut, b)
 	}
 	if c.Stdin == nil {
 		c.Stdin = os.Stdin

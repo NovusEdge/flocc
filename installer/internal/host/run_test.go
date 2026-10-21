@@ -30,10 +30,11 @@ func TestInteractiveHandsOffWhenTheChildNeedsTheTerminal(t *testing.T) {
 	}
 }
 
-func TestInteractiveWhyDefaultsToTheCommandLine(t *testing.T) {
+// The argv of an ssh to a Daytona sandbox carries its token.
+func TestInteractiveWhyDefaultsToTheCommandNameNeverItsArguments(t *testing.T) {
 	f := &fakeTerm{}
-	(Exec{Term: f}).Interactive(context.Background(), Cmd{Name: "true", Args: []string{"-x"}})
-	if f.why != "true -x" {
+	(Exec{Term: f}).Interactive(context.Background(), Cmd{Name: "true", Args: []string{"-x", "SECRETTOKEN@host"}})
+	if f.why != "true" {
 		t.Fatalf("why = %q", f.why)
 	}
 }

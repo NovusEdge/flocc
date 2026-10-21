@@ -120,7 +120,7 @@ func handoffOnly(name string, rest []string) bool {
 }
 
 // openSession gives d a ui session in the mode this command allows, unless a test set one.
-func openSession(d *deps, forcePlain bool) {
+func openSession(ctx context.Context, d *deps, forcePlain bool) {
 	if d.ui == nil {
 		tty := false
 		if f, ok := d.out.(*os.File); ok {
@@ -134,7 +134,7 @@ func openSession(d *deps, forcePlain bool) {
 		if in == nil {
 			in = strings.NewReader("")
 		}
-		d.ui = ui.Open(m, d.out, in)
+		d.ui = ui.Open(ctx, m, d.out, in)
 	}
 	if d.prompt == nil {
 		d.prompt = sessionPrompt{ui.Prompts{S: d.ui}}
@@ -160,7 +160,7 @@ func run(ctx context.Context, d *deps, args []string) (code int) {
 		fmt.Fprint(d.out, usage)
 		return 0
 	}
-	openSession(d, handoffOnly(name, rest))
+	openSession(ctx, d, handoffOnly(name, rest))
 	defer func() {
 		if c := d.ui.Close(); code == 0 {
 			code = c

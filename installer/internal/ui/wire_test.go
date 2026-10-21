@@ -139,10 +139,9 @@ func TestReplayKeepsDataOutOfTheDrawing(t *testing.T) {
 	}
 }
 
-func TestReplayCleansFarEndTextButNotData(t *testing.T) {
+func TestReplaySanitizesFarEndTextButNotData(t *testing.T) {
 	rec := &Recorder{}
 	r := Replay(New(rec), "", "")
-	r.Clean = func(s string) string { return strings.ReplaceAll(s, "\x1b", " ") }
 	r.Write(Encode(Event{Kind: KStep, ID: "h1", Name: "Pa\x1bck", State: Done, Detail: "d\x1b"}))
 	r.Write([]byte("stray\x1b[2J\n"))
 	r.Write(Encode(Event{Kind: KData, Name: "x", Text: "keep\x1b"}))

@@ -85,6 +85,10 @@ type Step struct {
 func (s *session) draw(e Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.drawLocked(e)
+}
+
+func (s *session) drawLocked(e Event) {
 	if !s.closed {
 		s.r.Draw(e)
 	}
@@ -193,24 +197,27 @@ func (s *session) Close() int {
 }
 
 func (st *Step) send(e Event) {
-	e.Kind, e.ID, e.Name = KStep, st.id, st.name
-	st.s.draw(e)
+	e.Kind, e.ID, e.Name = cmp.Or(e.Kind, KStep), st.id, st.name
+	st.s.mu.Lock()
+	defer st.s.mu.Unlock()
+	if !st.ended {
+		st.s.drawLocked(e)
+	}
 }
 
 func (st *Step) Detail(text string)    { st.send(Event{State: Running, Detail: text}) }
 func (st *Step) Progress(n, total int) { st.send(Event{State: Running, N: n, Total: total}) }
-func (st *Step) Line(text string)      { st.s.draw(Event{Kind: KLine, ID: st.id, Text: text}) }
+func (st *Step) Line(text string)      { st.send(Event{Kind: KLine, Text: text}) }
 func (st *Step) Done(detail string)    { st.end(Event{State: Done, Detail: detail}) }
 func (st *Step) Pending(detail string) { st.end(Event{State: Pending, Detail: detail}) }
 func (st *Step) Skip(detail string)    { st.end(Event{State: Skipped, Detail: detail}) }
 func (st *Step) Fail(err error)        { st.end(Event{State: Failed, Err: err.Error()}) }
 
-// end sends the step's last event; any later call is dropped. It must release s.mu before
-// send, which takes it again.
+// end sends the step's last event; any later call is dropped.
 func (st *Step) end(e Event) {
 	st.s.mu.Lock()
+	defer st.s.mu.Unlock()
 	if st.ended {
-		st.s.mu.Unlock()
 		return
 	}
 	st.ended = true
@@ -218,6 +225,6 @@ func (st *Step) end(e Event) {
 	if e.State == Failed || e.State == Pending {
 		st.s.failed = true
 	}
-	st.s.mu.Unlock()
-	st.send(e)
+	e.Kind, e.ID, e.Name = KStep, st.id, st.name
+	st.s.drawLocked(e)
 }

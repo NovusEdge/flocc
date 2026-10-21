@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"io"
 	"slices"
 	"strings"
@@ -11,7 +12,7 @@ func TestOpenFullDrawsAndRecords(t *testing.T) {
 	var out syncBuf
 	pr, pw := io.Pipe()
 	defer pw.Close()
-	s := Open(ModeFull, &out, pr, "flocc setup")
+	s := Open(context.Background(), ModeFull, &out, pr, "flocc setup")
 	s.Group("Keys")
 	s.Step("ssh key").Done("ed25519")
 	s.Close()
