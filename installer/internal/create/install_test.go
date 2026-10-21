@@ -1,10 +1,8 @@
 package create
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +11,7 @@ import (
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 type fakeInst struct {
@@ -62,16 +61,24 @@ func createMachine() *host.Fake {
 
 // createEnv is testEnv with a desktop whose tailnet already lists flocc-a, as it does once the
 // VM has joined.
-func createEnv(m *host.Fake) (*Env, *bytes.Buffer) {
-	e, out := testEnv(m)
+func createEnv(m *host.Fake) (*Env, *fakeUI) {
+	e, u := testEnv(m)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsStatus)
 	e.TTY = true
-	return e, out
+	return e, u
+}
+
+func rowNames(u *fakeUI) []string {
+	var names []string
+	for _, r := range u.Rows() {
+		names = append(names, r.Name)
+	}
+	return names
 }
 
 func TestCreateRunsStepsThenTheVerbsThenSnapshots(t *testing.T) {
 	f := createMachine()
-	e, out := createEnv(f)
+	e, u := createEnv(f)
 	inst := &fakeInst{}
 	step := &fakeStep{name: "s"}
 	if err := Create(context.Background(), e, inst, []Step{step}); err != nil {
@@ -86,8 +93,12 @@ func TestCreateRunsStepsThenTheVerbsThenSnapshots(t *testing.T) {
 	if !f.Ran(snapCreate) || !f.Ran(snapRename) || f.Ran(snapDelete) {
 		t.Fatalf("%v", f.Calls)
 	}
-	if !strings.Contains(out.String(), "incus snapshot restore flocc-a installed") {
-		t.Fatal(out.String())
+	want := []string{"Connect", "s", "Tailnet name", "Add host", "Ship", "Login", "Snapshot"}
+	if got := rowNames(u); !slices.Equal(got, want) {
+		t.Fatalf("rows %q", got)
+	}
+	if last := u.Rows()[len(want)-1]; !strings.Contains(last.Detail, "incus snapshot restore flocc-a installed") {
+		t.Fatalf("%+v", last)
 	}
 }
 
@@ -104,7 +115,7 @@ func TestLoggedNamesEachCreateLog(t *testing.T) {
 }
 
 func TestCreateWaitsForThisDesktopToSeeTheNode(t *testing.T) {
-	e, _ := createEnv(createMachine())
+	e, u := createEnv(createMachine())
 	e.Local = host.NewFake().OnSeq("tailscale status --json", host.Result{Stdout: tsEmpty}, host.Result{Stdout: tsEmpty}, host.Result{Stdout: tsStatus})
 	sleeps := 0
 	e.Sleep = func(time.Duration) { sleeps++ }
@@ -115,15 +126,27 @@ func TestCreateWaitsForThisDesktopToSeeTheNode(t *testing.T) {
 	if sleeps != 2 || inst.calls[0] != "known flocc-a root@flocc-a" {
 		t.Fatalf("sleeps=%d %q", sleeps, inst.calls)
 	}
+	var left []string
+	for _, ev := range u.Events {
+		if ev.Name == "Tailnet name" && ev.Detail != "" && ev.State == ui.Running {
+			left = append(left, ev.Detail)
+		}
+	}
+	if want := []string{"waiting for the tailnet name, 60s left", "waiting for the tailnet name, 58s left"}; !slices.Equal(left, want) {
+		t.Fatalf("%q", left)
+	}
 }
 
 func TestCreateStopsWhenThisDesktopNeverSeesTheNode(t *testing.T) {
-	e, _ := createEnv(createMachine())
+	e, u := createEnv(createMachine())
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
 	inst := &fakeInst{}
 	err := Create(context.Background(), e, inst, nil)
 	if err == nil || !strings.Contains(err.Error(), "does not see it after 1m0s") || len(inst.calls) != 0 {
 		t.Fatalf("%v %q", err, inst.calls)
+	}
+	if rows := u.Rows(); rows[len(rows)-1].Name != "Tailnet name" || rows[len(rows)-1].State != ui.Failed {
+		t.Fatalf("%+v", rows)
 	}
 }
 
@@ -149,11 +172,14 @@ func TestCreateStopsWhenTheHostFileReachesSomethingElse(t *testing.T) {
 
 func TestCreateStopsWhenShipFails(t *testing.T) {
 	f := createMachine()
-	e, _ := createEnv(f)
+	e, u := createEnv(f)
 	inst := &fakeInst{shipErr: errors.New("doctor reports 2 FAIL lines")}
 	err := Create(context.Background(), e, inst, nil)
 	if err == nil || err.Error() != "ship: doctor reports 2 FAIL lines" || slices.Contains(inst.calls, "login flocc-a") || f.Ran(snapCreate) {
 		t.Fatalf("%v %q %v", err, inst.calls, f.Calls)
+	}
+	if rows := u.Rows(); rows[len(rows)-1].Name != "Ship" || rows[len(rows)-1].Err != "ship: doctor reports 2 FAIL lines" {
+		t.Fatalf("%+v", rows)
 	}
 }
 
@@ -175,21 +201,6 @@ func TestCreateStopsWhenTheMachineIsUnreachable(t *testing.T) {
 	}
 }
 
-func TestSnapshotLineLinesUpWithTheNumberedStepLines(t *testing.T) {
-	f := createMachine()
-	e, out := createEnv(f)
-	steps := []Step{&fakeStep{name: "Docker", done: true}, &fakeStep{name: "Egress", done: true}}
-	if err := Create(context.Background(), e, &fakeInst{}, steps); err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(out.String(), "\n")
-	if len(lines) < 3 || !strings.HasPrefix(lines[0], "  ✓ 1/2 Docker ") || !strings.HasPrefix(lines[2], "  ✓     Snapshot ") {
-		t.Fatalf("%q", out.String())
-	}
-	if strings.Index(lines[0], "detail") != strings.Index(lines[2], "flocc-a/installed") {
-		t.Fatalf("the detail columns differ:\n%s", out.String())
-	}
-}
 
 func TestSnapshotSwapsTheNewOneInAfterItExists(t *testing.T) {
 	f := host.NewFake().On(snapQuery, 0, "{}").On(snapDelete, 0, "").On(snapCreate, 0, "").On(snapRename, 0, "")
@@ -205,21 +216,24 @@ func TestSnapshotSwapsTheNewOneInAfterItExists(t *testing.T) {
 
 func TestSnapshotRestoreLineCarriesSudoWhenIncusNeedsIt(t *testing.T) {
 	f := host.NewFake().On("sudo -n "+snapCreate, 0, "").On("sudo -n "+snapRename, 0, "")
-	e, out := testEnv(f)
+	e, u := testEnv(f)
 	e.incusSudo = true
 	if err := snapshot(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "; sudo incus snapshot restore flocc-a installed returns") {
-		t.Fatal(out.String())
+	if rows := u.Rows(); len(rows) != 1 || !strings.Contains(rows[0].Detail, "; sudo incus snapshot restore flocc-a installed returns") {
+		t.Fatalf("%+v", rows)
 	}
 }
 
 func TestSnapshotKeepsTheOldOneWhenTheNewOneFails(t *testing.T) {
 	f := host.NewFake().On(snapQuery, 0, "{}").On(snapCreate, 1, "no space left")
-	e, _ := testEnv(f)
+	e, u := testEnv(f)
 	if err := snapshot(context.Background(), e); err == nil || f.Ran(snapDelete) {
 		t.Fatalf("%v %v", err, f.Calls)
+	}
+	if rows := u.Rows(); len(rows) != 1 || rows[0].State != ui.Failed {
+		t.Fatalf("%+v", rows)
 	}
 }
 
@@ -306,42 +320,36 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
-func TestMainRejectsBadArgumentsBeforeConnecting(t *testing.T) {
-	if code := Main([]string{"box"}, &fakeInst{}); code != 2 {
-		t.Fatal(code)
+func TestCheckStopsAtTheCheckoutBeforeLookingAtTheHostFile(t *testing.T) {
+	inst := &fakeInst{readyErr: errors.New("flocc ship ships the flocc checkout it runs in; cd into it")}
+	err := Check(Spec{Name: "flocc-a"}, inst)
+	if err == nil || !strings.Contains(err.Error(), "flocc ship ships the flocc checkout") || !slices.Equal(inst.calls, []string{"ready"}) {
+		t.Fatalf("%v %q", err, inst.calls)
 	}
 }
 
-// mainStderr runs Main with no ssh on PATH, so a Main that went on to connect fails without
-// reaching any machine, and returns its exit code and what it wrote to os.Stderr.
-func mainStderr(t *testing.T, args []string, inst Installer) (int, string) {
+func TestCheckLooksAtTheHostFile(t *testing.T) {
+	inst := &fakeInst{knownErr: errors.New("flocc-a.toml reaches daytona:flocc-a")}
+	err := Check(Spec{Name: "flocc-a"}, inst)
+	if err == nil || !strings.Contains(err.Error(), "daytona:flocc-a") || !slices.Equal(inst.calls, []string{"ready", "known flocc-a root@flocc-a"}) {
+		t.Fatalf("%v %q", err, inst.calls)
+	}
+}
+
+// With no ssh on PATH a Run that went on to connect fails without reaching any machine.
+func TestRunNamesItsLogAndFailsTheConnectStep(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
+	u := &fakeUI{}
+	err := Run(context.Background(), Spec{Machine: "box", Name: "flocc-a"}, &fakeInst{}, ui.New(u), false)
+	var logs []string
+	for _, ev := range u.Events {
+		if ev.Kind == ui.KLog {
+			logs = append(logs, ev.Text)
+		}
 	}
-	stderr := os.Stderr
-	os.Stderr = w
-	code := Main(args, inst)
-	os.Stderr = stderr
-	w.Close()
-	got, _ := io.ReadAll(r)
-	return code, string(got)
-}
-
-func TestMainChecksTheCheckoutBeforeConnecting(t *testing.T) {
-	inst := &fakeInst{readyErr: errors.New("flocc ship ships the flocc checkout it runs in; cd into it")}
-	code, stderr := mainStderr(t, []string{"box", "flocc-a"}, inst)
-	if code != 1 || !strings.Contains(stderr, "flocc host create: flocc ship ships the flocc checkout") || !slices.Equal(inst.calls, []string{"ready"}) {
-		t.Fatalf("%d %q %q", code, stderr, inst.calls)
-	}
-}
-
-func TestMainChecksTheHostFileBeforeConnecting(t *testing.T) {
-	inst := &fakeInst{knownErr: errors.New("flocc-a.toml reaches daytona:flocc-a")}
-	code, stderr := mainStderr(t, []string{"box", "flocc-a"}, inst)
-	if code != 1 || !strings.Contains(stderr, "daytona:flocc-a") || !slices.Equal(inst.calls, []string{"ready", "known flocc-a root@flocc-a"}) {
-		t.Fatalf("%d %q %q", code, stderr, inst.calls)
+	rows := u.Rows()
+	if err == nil || len(logs) != 1 || !strings.HasSuffix(logs[0], "create-flocc-a.log") || len(rows) != 1 || rows[0].Name != "Connect" || rows[0].State != ui.Failed {
+		t.Fatalf("%v %q %+v", err, logs, rows)
 	}
 }

@@ -29,11 +29,6 @@ type Spec struct {
 	DiskGiB   int
 }
 
-// Prompter is the one question create asks; ui.Huh satisfies it.
-type Prompter interface {
-	Secret(id, title, help string) (string, error)
-}
-
 // RedactLog is the writer behind the run's log. A secret that only becomes known mid-run, such as
 // the Tailscale auth key, is registered with Add, and every later write has it replaced by
 // <token>: host.Exec logs a command's output before any error exists. It rebuilds Part 2a's
@@ -66,17 +61,15 @@ func (l *RedactLog) Write(p []byte) (int, error) {
 type Env struct {
 	M     host.Runner // runs on the machine
 	Local host.Runner // runs on this desktop
-	UI    Prompter
-	Out   io.Writer
+	UI    ui.Session
 	Log   *RedactLog // the log host.Exec writes to; Add registers a secret before it is used
 	Spec  Spec
 	Sleep func(time.Duration)
 	TTY   bool // stdin is a terminal, where ship.Connect can open the machine's master
 
-	prog      *ui.Progress
-	stepTotal int  // steps in the last RunSteps, which the Snapshot line aligns its counter column to
-	sudo      bool // sudo -n works on the machine
-	incusSudo bool // the account is not in incus-admin, so incus goes through sudo
+	step      *ui.Step // the step RunSteps is applying, for the waits inside it
+	sudo      bool     // sudo -n works on the machine
+	incusSudo bool     // the account is not in incus-admin, so incus goes through sudo
 }
 
 func cmd(name string, args ...string) host.Cmd { return host.Cmd{Name: name, Args: args} }
@@ -168,58 +161,55 @@ type Step interface {
 
 // RunSteps checks each step just before it would run: a later step's check needs the earlier
 // steps' outcome, such as the VM existing.
-//
-// The steps are numbered by position, done or not, because which of them run is known only as
-// each is reached. An applied step shows a live line unless it is Attached.
 func RunSteps(ctx context.Context, e *Env, steps []Step) error {
-	p := e.progress()
-	e.stepTotal = len(steps)
-	for i, s := range steps {
+	for _, s := range steps {
+		st := e.UI.Step(s.Name())
+		st.Detail("checking")
 		done, detail, err := s.Check(ctx, e)
 		if err != nil {
-			return fmt.Errorf("%s: %w", s.Name(), err)
+			return failStep(st, fmt.Errorf("%s: %w", s.Name(), err))
 		}
-		l := ui.Line{N: i + 1, Total: len(steps), Name: s.Name(), Detail: detail, Attached: attachedStep(s)}
 		if done {
-			p.Done(l)
+			st.Done(detail)
 			continue
 		}
-		err = p.Run(l, func() (ui.Outcome, error) {
-			if err := s.Apply(ctx, e); err != nil {
-				return ui.Outcome{}, fmt.Errorf("%s: %w", s.Name(), err)
-			}
-			done, detail, err := s.Check(ctx, e)
-			if err != nil {
-				return ui.Outcome{}, fmt.Errorf("%s: %w", s.Name(), err)
-			}
-			if !done {
-				return ui.Outcome{}, fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
-			}
-			return ui.Outcome{Detail: detail}, nil
-		})
+		st.Detail("applying")
+		e.step = st
+		detail, err = e.apply(ctx, s)
+		e.step = nil
 		if err != nil {
-			return err
+			return failStep(st, err)
 		}
+		st.Done(detail)
 	}
 	return nil
 }
 
-// attachedStep reports whether the step reads the terminal or draws on it, as a step that shows
-// a QR code or asks for a key does: a live line under that would be redrawn into it.
-func attachedStep(s Step) bool {
-	a, ok := s.(interface{ Attached() bool })
-	return ok && a.Attached()
-}
-
-func (e *Env) progress() *ui.Progress {
-	if e.prog == nil {
-		e.prog = ui.NewProgress(e.Out)
-		e.prog.NameWidth = 10
+func (e *Env) apply(ctx context.Context, s Step) (string, error) {
+	if err := s.Apply(ctx, e); err != nil {
+		return "", fmt.Errorf("%s: %w", s.Name(), err)
 	}
-	return e.prog
+	done, detail, err := s.Check(ctx, e)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", s.Name(), err)
+	}
+	if !done {
+		return "", fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
+	}
+	return detail, nil
 }
 
-func (e *Env) o() ui.Out { return ui.NewOut(e.Out) }
+func failStep(st *ui.Step, err error) error {
+	st.Fail(err)
+	return err
+}
+
+// waiting shows the countdown of a poll loop on the step being applied.
+func (e *Env) waiting(what string, left time.Duration) {
+	if e.step != nil {
+		e.step.Detail(fmt.Sprintf("%s, %ds left", what, int(left/time.Second)))
+	}
+}
 
 type tsNode struct{ HostName, DNSName string }
 

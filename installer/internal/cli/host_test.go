@@ -23,6 +23,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // hostScript ticks every repo offered, picks the first team and pastes secrets in order. With
@@ -35,10 +36,21 @@ type hostScript struct {
 	err       error
 	confirms  []bool
 	teamAsked bool
-	notes     []string
+	rec       *ui.Recorder // what the session drew
 }
 
-func (s *hostScript) Note(title, _ string) { s.notes = append(s.notes, title) }
+func (s *hostScript) Note(string, string) {}
+
+// texts is each event of kind k, as the text a person would read.
+func (s *hostScript) texts(k ui.Kind) []string {
+	var out []string
+	for _, e := range s.rec.Events {
+		if e.Kind == k {
+			out = append(out, e.Name+" "+e.Text)
+		}
+	}
+	return out
+}
 
 func (s *hostScript) Ask(title, _ string) (string, error) {
 	s.t.Helper()
@@ -225,7 +237,8 @@ func addDeps(t *testing.T, secrets string) (*deps, *fakeLinear, *hostScript) {
 	ls := httptest.NewServer(lin)
 	t.Cleanup(ls.Close)
 	writeSecrets(t, d.home, secrets)
-	p := &hostScript{t: t}
+	p := &hostScript{t: t, rec: &ui.Recorder{}}
+	d.ui = ui.New(p.rec)
 	d.store = func() keys.Store { return keys.Open(d.home, io.Discard) }
 	d.prompt = p
 	d.http = http.DefaultClient
@@ -273,6 +286,46 @@ func TestHostAddMakesTheDigestAndLabelsOnce(t *testing.T) {
 	}
 }
 
+func TestHostAddShowsEachCallAsAStepWithItsOwnOutcome(t *testing.T) {
+	d, _, p := addDeps(t, allKeys)
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range p.rec.Rows() {
+		got = append(got, r.Name+"="+string(r.State))
+	}
+	want := []string{"Host file=done", "Keys=done", "Repos=done", "Linear team=done", "Issues=done", "Labels=done", "Save host=done", "Keys=done"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("%q", got)
+	}
+	var running []string
+	for _, e := range p.rec.Events {
+		if e.Kind == ui.KStep && e.State == ui.Running && e.Name == "Labels" {
+			running = append(running, e.Detail)
+		}
+	}
+	if !slices.Contains(running, "creating label claude") {
+		t.Fatalf("%q", running)
+	}
+}
+
+func TestHostAddFailsTheStepThatFailed(t *testing.T) {
+	d, lin, p := addDeps(t, allKeys)
+	lin.issueErr = "Rate limit exceeded"
+	h1 := hosts.Host{Name: "h1", SSH: "root@h1", Answers: answers.Answers{TeamKey: "NF", DigestIssue: "NF-186"}}
+	if err := hosts.Save(hosts.Dir(d.home), h1); err != nil {
+		t.Fatal(err)
+	}
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err == nil {
+		t.Fatal("no error")
+	}
+	rows := p.rec.Rows()
+	if last := rows[len(rows)-1]; last.Name != "Issues" || last.State != ui.Failed || !strings.Contains(last.Err, "Rate limit") {
+		t.Fatalf("%+v", rows)
+	}
+}
+
 func TestHostAddSharesTheDigestOfAHostOnTheSameTeam(t *testing.T) {
 	d, lin, _ := addDeps(t, allKeys)
 	lin.issues["NF-7"] = "digest"
@@ -316,7 +369,7 @@ func TestHostAddSaysWhyItPassedOverAnotherHostsDigest(t *testing.T) {
 		{"gone", "", "Not using flocc-nimble's digest NF-186: Linear has no such issue."},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			d, lin, _ := addDeps(t, allKeys)
+			d, lin, p := addDeps(t, allKeys)
 			if c.state != "" {
 				lin.issues["NF-186"] = "digest"
 				lin.states = map[string]string{"NF-186": c.state}
@@ -328,9 +381,9 @@ func TestHostAddSaysWhyItPassedOverAnotherHostsDigest(t *testing.T) {
 			if err := hostAdd(context.Background(), d, "flocc-trial", "", ""); err != nil {
 				t.Fatal(err)
 			}
-			out := d.out.(*bytes.Buffer).String()
-			if !strings.Contains(out, "  "+c.want+"\n") || !strings.Contains(out, ", the digest issue; pin it in Linear.\n") || lin.issueCreates != 1 {
-				t.Fatalf("%q", out)
+			notes, todos := strings.Join(p.texts(ui.KNote), "\n"), strings.Join(p.texts(ui.KTodo), "\n")
+			if !strings.Contains(notes, c.want) || !strings.Contains(todos, ", the digest issue; pin it in Linear.") || lin.issueCreates != 1 {
+				t.Fatalf("notes %q todos %q", notes, todos)
 			}
 		})
 	}
@@ -466,6 +519,7 @@ func TestHostImportCopiesTheHostsAnswersAndKeepsItsTopic(t *testing.T) {
 // The next ship sends the desktop's topic, so the phone would stop hearing from the host.
 func TestHostImportSaysWhenTheDesktopsTopicWillReplaceTheHosts(t *testing.T) {
 	d, _, _ := importDeps(t)
+	p := d.prompt.(*hostScript)
 	writeSecrets(t, d.home, "ntfy_topic = 'flocc-desk'\n")
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code != 0 {
 		t.Fatalf("exit %d", code)
@@ -473,9 +527,9 @@ func TestHostImportSaysWhenTheDesktopsTopicWillReplaceTheHosts(t *testing.T) {
 	if topic, _ := d.store().Get(keys.Ntfy); topic != "flocc-desk" {
 		t.Fatalf("topic %q", topic)
 	}
-	want := "The desktop's ntfy topic differs from h1's; the next ship moves h1 to the desktop's (https://ntfy.sh/flocc-desk).\n"
-	if out := d.out.(*bytes.Buffer).String(); !strings.Contains(out, want) {
-		t.Fatal(out)
+	want := "The desktop's ntfy topic differs from h1's; the next ship moves h1 to the desktop's (https://ntfy.sh/flocc-desk)."
+	if got := p.texts(ui.KTodo); len(got) != 1 || !strings.Contains(got[0], want) {
+		t.Fatal(got)
 	}
 }
 
@@ -507,8 +561,9 @@ func TestHostImportNamesTheHostItCouldNotReach(t *testing.T) {
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code == 0 {
 		t.Fatal("exit 0")
 	}
-	if errs := d.err.(*bytes.Buffer).String(); !strings.Contains(errs, "could not reach h1") || len(f.captured()) != 0 {
-		t.Fatalf("%s %v", errs, f.captured())
+	rows := d.prompt.(*hostScript).rec.Rows()
+	if len(rows) != 1 || rows[0].Name != "Connect" || rows[0].State != ui.Failed || !strings.Contains(rows[0].Err, "could not reach h1") || len(f.captured()) != 0 {
+		t.Fatalf("%+v %v", rows, f.captured())
 	}
 }
 
@@ -584,9 +639,11 @@ func TestHostImportStopsWhenTheHostDropsBeforeAKeyIsRead(t *testing.T) {
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code == 0 {
 		t.Fatal("exit 0")
 	}
-	errs := d.err.(*bytes.Buffer).String()
-	if !strings.Contains(errs, "could not reach h1 (ssh: connect to host h1 port 22: Connection timed out); run flocc host import again") {
-		t.Fatal(errs)
+	rows := d.prompt.(*hostScript).rec.Rows()
+	last := rows[len(rows)-1]
+	if last.Name != "Keys" || last.State != ui.Failed ||
+		!strings.Contains(last.Err, "could not reach h1 (ssh: connect to host h1 port 22: Connection timed out); run flocc host import again") {
+		t.Fatalf("%+v", rows)
 	}
 	if v, _ := d.store().Get(keys.Linear); v != "" {
 		t.Fatalf("linear %q", v)
