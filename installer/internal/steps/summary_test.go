@@ -51,7 +51,14 @@ func summaryFake(doctorCode int, doctorOut string) *host.Fake {
 		On(floccBin+" status --json", 0, statusJSON())
 }
 
-func row(k, v string) string { return fmt.Sprintf("  %-14s %s\n", k, v) }
+// rowsText is Rows as "name: detail" lines with the state first, for comparing whole summaries.
+func rowsText(s Summary) string {
+	var b strings.Builder
+	for _, e := range s.Rows() {
+		fmt.Fprintf(&b, "%s %s: %s\n", e.State, e.Name, e.Detail)
+	}
+	return b.String()
+}
 
 func TestSummaryOfAFreshHostWithTheLoginPending(t *testing.T) {
 	fixedNow(t)
@@ -68,17 +75,15 @@ func TestSummaryOfAFreshHostWithTheLoginPending(t *testing.T) {
 	if got, ok := s.TokenExpiry["publish token"]; !ok || !got.IsZero() {
 		t.Fatalf("publish token never expires: %v %v", got, ok)
 	}
-	var b strings.Builder
 	s.Target = "root@h"
-	s.Print(&b)
-	want := "flocc 0.4.0\n" +
-		row("claude login", "none; on the desktop run: flocc login -H root@h") +
-		row("agent token", "expires 2027-01-31 (100 days)") +
-		row("publish token", "never expires") +
-		row("timer", "off until the Claude login") +
-		row("sessions", "none")
-	if b.String() != want {
-		t.Fatalf("got\n%s\nwant\n%s", b.String(), want)
+	want := "done version: flocc 0.4.0\n" +
+		"skipped claude login: none; on the desktop run: flocc login -H root@h\n" +
+		"done agent token: expires 2027-01-31 (100 days)\n" +
+		"done publish token: never expires\n" +
+		"skipped timer: off until the Claude login\n" +
+		"done sessions: none\n"
+	if got := rowsText(s); got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
 }
 
@@ -88,10 +93,11 @@ func TestSummaryFailsOnAnyOtherFailLine(t *testing.T) {
 	if !s.Failing() || !slices.Equal(s.Failed, []string{"FAIL  linear: 401"}) {
 		t.Fatalf("%+v", s)
 	}
-	var b strings.Builder
-	s.Print(&b)
-	if !strings.HasSuffix(b.String(), "  FAIL  linear: 401\n") {
-		t.Fatalf("%q", b.String())
+	if got := s.Todos(); !slices.Equal(got, []string{"linear: 401"}) {
+		t.Fatalf("%q", got)
+	}
+	if strings.Contains(rowsText(s), "linear") {
+		t.Fatalf("a FAIL line is a to-do, not a row:\n%s", rowsText(s))
 	}
 }
 
@@ -113,17 +119,15 @@ func TestSummaryOfAnUpgradedHostWhoseLoginLapsed(t *testing.T) {
 		On("systemctl --user is-enabled --quiet flocc.timer", 0, "").
 		On(floccBin+" status --json", 0, statusJSON("NF-1"))
 	s := Summarize(context.Background(), testEnv(t, f))
-	var b strings.Builder
 	s.Target = "root@h"
-	s.Print(&b)
-	out := b.String()
-	if s.Failing() || !s.Timer || !s.LoginPending || !strings.Contains(out, row("timer", "on")) ||
-		!strings.Contains(out, row("sessions", "NF-1 impl")) || !strings.Contains(out, "flocc login -H root@h") {
+	out := rowsText(s)
+	if s.Failing() || !s.Timer || !s.LoginPending || !strings.Contains(out, "done timer: on\n") ||
+		!strings.Contains(out, "done sessions: NF-1 impl\n") || !strings.Contains(out, "flocc login -H root@h") {
 		t.Fatalf("%q", out)
 	}
 }
 
-func TestSummaryLineRoundTripsAndPrintsNothingWhenEmpty(t *testing.T) {
+func TestSummaryLineRoundTripsAndDrawsNothingWhenEmpty(t *testing.T) {
 	in := Summary{Version: "flocc 0.4.0", Login: "token-only (oauth_token)", LoginPending: true,
 		TokenExpiry: map[string]time.Time{"agent token": jan31, "publish token": {}},
 		Failed:      []string{"FAIL  linear: 401"}, Sessions: []string{"NF-1 impl"}, Target: "never sent"}
@@ -139,10 +143,8 @@ func TestSummaryLineRoundTripsAndPrintsNothingWhenEmpty(t *testing.T) {
 	if _, ok := ParseSummaryLine("flocc-summary {not json"); ok {
 		t.Fatal("a corrupt line must not parse")
 	}
-	var b strings.Builder
-	Summary{}.Print(&b)
-	if b.Len() != 0 {
-		t.Fatalf("%q", b.String())
+	if got := (Summary{}).Rows(); len(got) != 0 {
+		t.Fatalf("%+v", got)
 	}
 }
 
@@ -200,10 +202,17 @@ func TestSummaryShowsAStatusFailure(t *testing.T) {
 	fixedNow(t)
 	f := summaryFake(1, doctorReport)
 	f.Responses[floccBin+" status --json"] = host.Result{Code: 1}
-	var b strings.Builder
-	Summarize(context.Background(), testEnv(t, f)).Print(&b)
-	if !strings.Contains(b.String(), row("sessions", "unknown: flocc status failed")) ||
-		!strings.Contains(b.String(), "flocc login -H <host>") {
-		t.Fatalf("%q", b.String())
+	out := rowsText(Summarize(context.Background(), testEnv(t, f)))
+	if !strings.Contains(out, "skipped sessions: unknown: flocc status failed\n") ||
+		!strings.Contains(out, "flocc login -H <host>") {
+		t.Fatalf("%q", out)
+	}
+}
+
+func TestSummaryRowsFlagAnExpiredToken(t *testing.T) {
+	fixedNow(t)
+	s := Summary{Login: "full", TokenExpiry: map[string]time.Time{"agent token": time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}, Timer: true}
+	if got := rowsText(s); !strings.Contains(got, "pending agent token: expired 2026-10-01\n") {
+		t.Fatalf("%s", got)
 	}
 }

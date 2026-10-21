@@ -40,7 +40,13 @@ func FloccLine(args []string) []string {
 // OnHost runs command, shell words, on the host as the service user with this terminal's
 // streams; tty asks ssh for a terminal.
 func OnHost(ctx context.Context, r host.Runner, dest Dest, command []string, tty bool) error {
-	return scrubErr(r.Interactive(ctx, sshCmd(dest, tty, asServiceUser(command))), dest.Token)
+	return OnHostWhy(ctx, r, dest, command, tty, "command on the host")
+}
+
+// OnHostWhy is OnHost with the line the handoff shows ("-" for none). The default, the command
+// line, would show a Daytona token.
+func OnHostWhy(ctx context.Context, r host.Runner, dest Dest, command []string, tty bool, why string) error {
+	return scrubErr(r.Interactive(ctx, withWhy(sshCmd(dest, tty, asServiceUser(command)), why)), dest.Token)
 }
 
 // Capture runs command on the host as the service user without a terminal and returns what it
@@ -72,7 +78,7 @@ func Connect(ctx context.Context, r host.Runner, dest Dest, name string, tty boo
 		return nil
 	}
 	if tty {
-		if err := r.Interactive(ctx, sshNoTTY(dest, "true")); err != nil {
+		if err := r.Interactive(ctx, withWhy(sshNoTTY(dest, "true"), "connect to "+name)); err != nil {
 			return fmt.Errorf("could not reach %s: %w", name, scrubErr(err, dest.Token))
 		}
 		return nil
@@ -94,4 +100,11 @@ func Connect(ctx context.Context, r host.Runner, dest Dest, name string, tty boo
 		why = fmt.Sprintf("ssh exited %d", res.Code)
 	}
 	return fmt.Errorf("could not reach %s without a prompt (%s); run it in a terminal", name, scrub(why, dest.Token))
+}
+
+// withWhy names an Interactive command for the handoff banner, whose default is the command line
+// and so would show a Daytona token.
+func withWhy(c host.Cmd, why string) host.Cmd {
+	c.Why = why
+	return c
 }
