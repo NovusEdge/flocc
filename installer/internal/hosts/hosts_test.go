@@ -11,6 +11,33 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+func TestMachineRoundTripsAndNoneIsKept(t *testing.T) {
+	dir := t.TempDir()
+	for _, m := range []string{"zer0-day-nimble", "owner@zer0-day-nimble", MachineNone} {
+		if err := Save(dir, Host{Name: "h", SSH: "root@h", Machine: m}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load(dir, "h")
+		if err != nil || got.Machine != m {
+			t.Fatalf("%q: got %+v %v", m, got, err)
+		}
+	}
+}
+
+func TestMachineIsRefusedWithDaytonaAndWhenNotADestination(t *testing.T) {
+	dir := t.TempDir()
+	if err := Save(dir, Host{Name: "d", Daytona: "sb", Machine: "box"}); err == nil {
+		t.Fatal("saved machine with daytona")
+	}
+	if err := Save(dir, Host{Name: "s", SSH: "root@s", Machine: "-oProxyCommand=x"}); err == nil {
+		t.Fatal("saved a machine ssh would read as an option")
+	}
+	os.WriteFile(filepath.Join(dir, "d.toml"), []byte("daytona = \"sb\"\nmachine = \"box\"\n"), 0o600)
+	if _, err := Load(dir, "d"); err == nil || !strings.Contains(err.Error(), "machine") {
+		t.Fatalf("load: %v", err)
+	}
+}
+
 func write(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

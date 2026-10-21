@@ -189,6 +189,23 @@ func fakeGitHub(t *testing.T) *httptest.Server {
 	return srv
 }
 
+func TestHostAddSavesTheMachine(t *testing.T) {
+	d, _, _ := addDeps(t, allKeys)
+	if err := hostAdd(context.Background(), d, "h1", "root@h1", "zer0-day-nimble"); err != nil {
+		t.Fatal(err)
+	}
+	if h := loadHost(t, d, "h1"); h.Machine != "zer0-day-nimble" || h.SSH != "root@h1" {
+		t.Fatalf("%+v", h)
+	}
+	// A second add without a machine keeps the one saved.
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if h := loadHost(t, d, "h1"); h.Machine != "zer0-day-nimble" {
+		t.Fatalf("%+v", h)
+	}
+}
+
 func addDeps(t *testing.T, secrets string) (*deps, *fakeLinear, *hostScript) {
 	t.Helper()
 	d, _, _ := testDeps(t)
@@ -220,7 +237,7 @@ func loadHost(t *testing.T, d *deps, name string) hosts.Host {
 func TestHostAddMakesTheDigestAndLabelsOnce(t *testing.T) {
 	d, lin, p := addDeps(t, allKeys)
 	for range 2 {
-		if err := hostAdd(context.Background(), d, "h1", ""); err != nil {
+		if err := hostAdd(context.Background(), d, "h1", "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -251,7 +268,7 @@ func TestHostAddSharesTheDigestOfAHostOnTheSameTeam(t *testing.T) {
 	if err := hosts.Save(hosts.Dir(d.home), b); err != nil {
 		t.Fatal(err)
 	}
-	if err := hostAdd(context.Background(), d, "h1", "root@10.0.0.5"); err != nil {
+	if err := hostAdd(context.Background(), d, "h1", "root@10.0.0.5", ""); err != nil {
 		t.Fatal(err)
 	}
 	h := loadHost(t, d, "h1")
@@ -271,7 +288,7 @@ func TestHostAddTakesTheDigestFromAHostFileWrittenByHand(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "flocc-nimble.toml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := hostAdd(context.Background(), d, "flocc-trial", ""); err != nil {
+	if err := hostAdd(context.Background(), d, "flocc-trial", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if h := loadHost(t, d, "flocc-trial"); h.DigestIssue != "NF-186" || lin.issueCreates != 0 {
@@ -296,7 +313,7 @@ func TestHostAddSaysWhyItPassedOverAnotherHostsDigest(t *testing.T) {
 			if err := hosts.Save(hosts.Dir(d.home), b); err != nil {
 				t.Fatal(err)
 			}
-			if err := hostAdd(context.Background(), d, "flocc-trial", ""); err != nil {
+			if err := hostAdd(context.Background(), d, "flocc-trial", "", ""); err != nil {
 				t.Fatal(err)
 			}
 			out := d.out.(*bytes.Buffer).String()
@@ -316,7 +333,7 @@ func TestADigestLookupErrorIsNotAMissingDigest(t *testing.T) {
 	if err := hosts.Save(hosts.Dir(d.home), h1); err != nil {
 		t.Fatal(err)
 	}
-	err := hostAdd(context.Background(), d, "h1", "")
+	err := hostAdd(context.Background(), d, "h1", "", "")
 	if err == nil || !strings.Contains(err.Error(), "Rate limit") || lin.issueCreates != 0 || lin.finds != 0 {
 		t.Fatalf("%v creates %d finds %d", err, lin.issueCreates, lin.finds)
 	}
@@ -332,7 +349,7 @@ func TestHostAddSkipsADigestAnotherHostNamesButLinearNoLongerHas(t *testing.T) {
 		t.Fatal(err)
 	}
 	// NF-7 is unknown to fakeLinear, so Linear answers "Entity not found", as for a deleted issue.
-	if err := hostAdd(context.Background(), d, "h1", ""); err != nil {
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if h := loadHost(t, d, "h1"); h.DigestIssue == "NF-7" || lin.issueCreates != 1 {
@@ -345,7 +362,7 @@ func TestHostAddAsksForAMissingKeyOnTheSpot(t *testing.T) {
 	d, lin, p := addDeps(t, "")
 	p.secrets = []string{"lin_api_k", "github_pat_agent", "github_pat_publish"}
 	p.confirms = []bool{true} // the ntfy test push arrived
-	if err := hostAdd(context.Background(), d, "h1", ""); err != nil {
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	st := d.store()
@@ -361,7 +378,7 @@ func TestHostAddAsksForAMissingKeyOnTheSpot(t *testing.T) {
 
 func TestHostAddStopsAtAnEmptyPasteBeforeWritingAnything(t *testing.T) {
 	d, lin, _ := addDeps(t, "")
-	err := hostAdd(context.Background(), d, "h1", "")
+	err := hostAdd(context.Background(), d, "h1", "", "")
 	if !errors.Is(err, keys.ErrStopped) || lin.labelCreates != 0 {
 		t.Fatal(err)
 	}
@@ -378,7 +395,7 @@ func TestHostAddSendsAKeyGitHubOrLinearRejectsToRotate(t *testing.T) {
 	t.Cleanup(rejected.Close)
 	d, _, _ := addDeps(t, allKeys)
 	d.githubAPI = rejected.URL
-	if err := hostAdd(context.Background(), d, "h1", ""); err == nil || !strings.HasSuffix(err.Error(), "; run flocc keys rotate github") {
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err == nil || !strings.HasSuffix(err.Error(), "; run flocc keys rotate github") {
 		t.Fatal(err)
 	}
 	d, _, _ = addDeps(t, allKeys)
@@ -388,14 +405,14 @@ func TestHostAddSendsAKeyGitHubOrLinearRejectsToRotate(t *testing.T) {
 	}))
 	t.Cleanup(lin.Close)
 	d.linearAPI = lin.URL
-	if err := hostAdd(context.Background(), d, "h1", ""); err == nil || !strings.HasSuffix(err.Error(), "; run flocc keys rotate linear") {
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err == nil || !strings.HasSuffix(err.Error(), "; run flocc keys rotate linear") {
 		t.Fatal(err)
 	}
 }
 
 func TestHostAddSaysWhichKeyMissesTheNewRepo(t *testing.T) {
 	d, _, _ := addDeps(t, strings.Replace(allKeys, "github_pat_publish", "github_pat_weak", 1))
-	err := hostAdd(context.Background(), d, "h1", "")
+	err := hostAdd(context.Background(), d, "h1", "", "")
 	if err == nil || !strings.Contains(err.Error(), "o/a: the token cannot push") || !strings.Contains(err.Error(), "the token stays the same") {
 		t.Fatal(err)
 	}
