@@ -535,10 +535,18 @@ func (b *bannerCmd) SetStderr(w io.Writer) {
 }
 
 func (b *bannerCmd) Run() error {
-	if b.why != "" && b.why != "-" && b.out != nil {
-		fmt.Fprintf(b.out, "── %s ──\n", b.why)
+	if banner := handoffBanner(b.why); banner != "" && b.out != nil {
+		fmt.Fprintln(b.out, banner)
 	}
 	return b.cmd.Run()
+}
+
+// handoffBanner is the line printed before a handoff; a why of "-" (forwarded commands) has none.
+func handoffBanner(why string) string {
+	if why == "" || why == "-" {
+		return ""
+	}
+	return "── " + why + " ──"
 }
 
 // recordText is what the normal screen keeps of a full-screen run: every ended step under its

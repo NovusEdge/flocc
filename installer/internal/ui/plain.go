@@ -216,7 +216,9 @@ func (p *plain) secret() (string, error) {
 }
 
 func (p *plain) Handoff(why string, c *exec.Cmd) error {
-	p.println("── " + why + " ──")
+	if b := handoffBanner(why); b != "" {
+		p.println(b)
+	}
 	if c.Stdin == nil {
 		c.Stdin = os.Stdin
 	}

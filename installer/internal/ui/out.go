@@ -17,9 +17,6 @@ type Out struct {
 	Color bool
 }
 
-// ColorEnv is the variable the desktop sets on flocc-setup to ask for coloured step lines.
-const ColorEnv = "FLOCC_COLOR"
-
 // NewOut colours when w is a terminal, NO_COLOR is unset and TERM is not dumb.
 func NewOut(w io.Writer) Out { return Out{W: w, Color: ColorFor(w)} }
 

@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -77,31 +76,6 @@ func handoffArgs(fromStdin bool) []string {
 // dataSink is what ui.Events offers: with it, results go out as KData events instead of the
 // marker lines a person running flocc-setup by hand reads.
 type dataSink interface{ Data(name, text string) }
-
-// colorArgs hands the colour request, and with it the desktop's width, to the service phase. Its
-// sudo -i drops the environment the root phase got them through.
-func colorArgs(color bool, cols int) []string {
-	if !color {
-		return nil
-	}
-	args := []string{"--color"}
-	if cols > 0 {
-		args = append(args, "--cols", strconv.Itoa(cols))
-	}
-	return args
-}
-
-// columns is the width the desktop reported: the flag in the service phase, COLUMNS in the root
-// phase; zero when neither names a usable one.
-func columns(flagValue int, getenv func(string) string) int {
-	if flagValue > 0 {
-		return flagValue
-	}
-	if n, err := strconv.Atoi(getenv(ui.ColumnsEnv)); err == nil && n > 0 {
-		return n
-	}
-	return 0
-}
 
 // rootStage is where flocc ship stages the files. The root phase chowns the stage, so it must
 // never be any other directory.
@@ -183,11 +157,6 @@ func run(args []string) int {
 	phase := fs.String("phase", "root", "root, service or login; the root phase hands off to the service phase itself")
 	answersIn := fs.String("answers", "", `"-" reads the answers document, secrets included, from stdin and runs without a terminal`)
 	email := fs.String("email", "", "login phase: the claude.ai account to sign in as")
-	// The desktop asks through the environment (ui.ColorEnv), which an older flocc-setup ignores;
-	// the flag only carries the request from the root phase to the service phase, whose sudo -i
-	// drops the environment.
-	color := fs.Bool("color", false, "colour the step lines of a run with --answers")
-	colsFlag := fs.Int("cols", 0, "with --color: the desktop terminal's width, for the live step line")
 	events := fs.Bool("events", false, "with --answers -: write flocc-event lines for the desktop to draw")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -201,8 +170,6 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "flocc-setup: --events needs --answers -")
 		return 2
 	}
-	wantColor := *color || os.Getenv(ui.ColorEnv) == "1"
-	cols := columns(*colsFlag, os.Getenv)
 	var doc []byte
 	in := &answers.Answers{}
 	if fromStdin {
@@ -276,7 +243,7 @@ func run(args []string) int {
 	}
 	var u ui.UI = ui.NewHuh()
 	if fromStdin {
-		u = &ui.Scripted{A: a, Out: stdout, Color: wantColor, Cols: cols}
+		u = &ui.Scripted{A: a, Out: stdout}
 	}
 	if *events {
 		u = &ui.Events{Scripted: ui.Scripted{A: a, Out: stdout}, W: stdout}
@@ -309,7 +276,6 @@ func run(args []string) int {
 			piped = bytes.NewReader(doc)
 		}
 		args := handoffArgs(fromStdin)
-		args = append(args, colorArgs(wantColor, cols)...)
 		if *events {
 			args = append(args, "--events")
 		}

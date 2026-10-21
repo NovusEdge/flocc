@@ -3,7 +3,6 @@
 package cardinal
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -83,30 +83,49 @@ func (d Deps) scp(opts []string, dest string, files ...string) host.Cmd {
 	return host.Cmd{Name: "scp", Args: append(args, dest)}
 }
 
-// report finds the pass's flocc-cardinal line in its output.
-func report(out string) (steps.CardinalReport, bool) {
-	var r steps.CardinalReport
-	found := false
-	sc := bufio.NewScanner(strings.NewReader(out))
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	for sc.Scan() {
-		if got, ok := steps.ParseCardinalLine(strings.TrimRight(sc.Text(), "\r")); ok {
-			r, found = got, true
-		}
-	}
-	return r, found
-}
-
 // passOutput is the pass's output without its report line, sanitized: cardinal can rewrite the
 // binaries the user pass and its units run.
-func passOutput(res host.Result, lines int) string {
+func passOutput(res host.Result, lines int) string { return passText(res.Out(), lines) }
+
+// passText is passOutput for output already in hand; wire lines were drawn as they came.
+func passText(out string, lines int) string {
 	var keep []string
-	for _, l := range strings.Split(res.Out(), "\n") {
-		if !strings.HasPrefix(l, steps.CardinalMarker) {
+	for _, l := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(l, steps.CardinalMarker) && !strings.HasPrefix(l, ui.WirePrefix) {
 			keep = append(keep, l)
 		}
 	}
 	return saved.SanitizeBlock(strings.TrimSpace(strings.Join(keep, "\n")), lines)
+}
+
+// streamPass runs c with its stdin and stdout set, so it is a direct run, and draws the events
+// it sends as they come. The report is the "cardinal" data event; steps and notes in it were
+// already drawn, so they are dropped. Output is the pass's other text, for errors.
+func (d Deps) streamPass(ctx context.Context, c host.Cmd) (r steps.CardinalReport, ok bool, output string, err error) {
+	var raw bytes.Buffer
+	rp := ui.Replay(d.UI, "", "")
+	rp.Clean = saved.Sanitize
+	c.Stdout = io.MultiWriter(rp, &raw)
+	err = d.Run.Interactive(ctx, c)
+	rp.Close()
+	output = passText(raw.String(), 20)
+	if text, found := rp.Data("cardinal"); found && json.Unmarshal([]byte(text), &r) == nil {
+		ok = true
+		r.Steps, r.Notes = nil, nil
+	}
+	return r, ok, output, err
+}
+
+// exitText names how a pass that sent no report ended.
+func exitText(err error) string {
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return "exit 0"
+	case errors.As(err, &exit):
+		return fmt.Sprintf("exit %d", exit.ExitCode())
+	}
+	return saved.Sanitize(err.Error())
 }
 
 // reportEvents are a pass's steps and notes as rows. Every string came from the far end, so each
@@ -256,16 +275,12 @@ func (d Deps) hostPass(ctx context.Context, h hosts.Host, bin, phase string, doc
 		return steps.CardinalReport{}, err
 	}
 	body, _ := json.Marshal(doc)
-	c := d.onHost(h, "chmod 755 "+dir+"/flocc-setup && "+dir+"/flocc-setup --phase "+phase+" --answers -; rc=$?; rm -rf "+dir+"; exit $rc")
+	c := d.onHost(h, "chmod 755 "+dir+"/flocc-setup && "+dir+"/flocc-setup --phase "+phase+" --answers - --events; rc=$?; rm -rf "+dir+"; exit $rc")
 	c.Stdin = bytes.NewReader(body)
-	res, err := d.Run.Run(ctx, c)
-	if err != nil {
-		return steps.CardinalReport{}, err
-	}
-	r, ok := report(res.Stdout)
+	r, ok, out, err := d.streamPass(ctx, c)
 	switch {
 	case !ok:
-		return r, fmt.Errorf("%s: the host pass ended without a report (exit %d):\n%s", h.Name, res.Code, passOutput(res, 20))
+		return r, fmt.Errorf("%s: the host pass ended without a report (%s):\n%s", h.Name, exitText(err), out)
 	case r.Error != "":
 		return r, fmt.Errorf("%s: %s", h.Name, saved.Sanitize(r.Error))
 	}
@@ -454,18 +469,14 @@ func (d Deps) userPass(ctx context.Context, s saved.Saved, bin string, doc steps
 		return steps.CardinalReport{}, err
 	}
 	body, _ := json.Marshal(doc)
-	c := d.user(s, false, "chmod 755 ~/"+userStage+"/flocc ~/"+userStage+"/flocc-setup && ~/"+userStage+"/flocc-setup --phase cardinal --answers -")
+	c := d.user(s, false, "chmod 755 ~/"+userStage+"/flocc ~/"+userStage+"/flocc-setup && ~/"+userStage+"/flocc-setup --phase cardinal --answers - --events")
 	c.Stdin = bytes.NewReader(body)
-	res, err := d.Run.Run(ctx, c)
-	if err != nil {
-		return steps.CardinalReport{}, err
-	}
-	r, ok := report(res.Stdout)
+	r, ok, out, err := d.streamPass(ctx, c)
 	switch {
 	case !ok:
-		return r, fmt.Errorf("the user pass ended without a report (exit %d):\n%s", res.Code, passOutput(res, 20))
+		return r, fmt.Errorf("the user pass ended without a report (%s):\n%s", exitText(err), out)
 	case r.Error != "":
-		return r, fmt.Errorf("user pass: %s\n%s", saved.Sanitize(r.Error), passOutput(res, 20))
+		return r, fmt.Errorf("user pass: %s\n%s", saved.Sanitize(r.Error), out)
 	}
 	return r, nil
 }

@@ -118,6 +118,20 @@ func TestPlainHandoff(t *testing.T) {
 	}
 }
 
+func TestPlainHandoffWithoutReasonPrintsNoBanner(t *testing.T) {
+	var out strings.Builder
+	s := New(NewPlain(&out, strings.NewReader(""), false))
+	if err := s.Handoff("-", exec.Command("true")); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "──") {
+		t.Errorf("out = %q", out.String())
+	}
+	if handoffBanner("-") != "" || handoffBanner("") != "" || handoffBanner("x") != "── x ──" {
+		t.Error("handoffBanner")
+	}
+}
+
 func TestPlainSlowStepShownOnce(t *testing.T) {
 	var out strings.Builder
 	p := NewPlain(&out, strings.NewReader(""), false).(*plain)

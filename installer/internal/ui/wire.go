@@ -38,6 +38,9 @@ const strayKeep = 20
 
 // Replayer turns a host's stdout into events on a Session.
 type Replayer struct {
+	// Clean, when set, is applied to every string from the far end before it reaches the session,
+	// for a host whose output is not trusted.
+	Clean  func(string) string
 	s      Session
 	prefix string
 
@@ -101,11 +104,21 @@ func (r *Replayer) Data(name string) (string, bool) {
 	return v, ok
 }
 
+func (r *Replayer) clean(s string) string {
+	if r.Clean == nil {
+		return s
+	}
+	return r.Clean(s)
+}
+
 func (r *Replayer) line(line string) {
 	e, ok := decode(line)
 	if !ok {
-		r.strayLine(line)
+		r.strayLine(r.clean(line))
 		return
+	}
+	if e.Kind != KData { // machine data is parsed, not drawn
+		e.Name, e.Detail, e.Text, e.Err = r.clean(e.Name), r.clean(e.Detail), r.clean(e.Text), r.clean(e.Err)
 	}
 	switch e.Kind {
 	case KGroup:

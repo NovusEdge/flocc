@@ -88,9 +88,11 @@ func (m inlineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case promptMsg:
 		return m.openPrompt(msg)
 	case handoffMsg:
-		return m, tea.Sequence(tea.Println("── "+msg.why+" ──"), tea.ExecProcess(msg.cmd, func(err error) tea.Msg {
-			return handoffDone{err, msg.reply}
-		}))
+		run := tea.ExecProcess(msg.cmd, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
+		if b := handoffBanner(msg.why); b != "" {
+			return m, tea.Sequence(tea.Println(b), run)
+		}
+		return m, run
 	case handoffDone:
 		msg.reply <- msg.err
 		return m, nil
