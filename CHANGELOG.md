@@ -4,6 +4,20 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## 0.8.0 (2026-10-21)
+
+A permission judge for auto-mode blocks, off until a host file names its model.
+
+- With `judge_model` set in a host file's `[permissions]`, a Bash block or any prompt in a test,
+  impl or fix session goes to one tool-less `claude -p` call that sees the command but never the
+  agent's description of it. Its allow lets the retry through for the rest of the run, optionally
+  with a command prefix; a prompt it denies carries its reason. At most `judge_max_per_run` calls
+  (30) per run.
+- When the judge would rather ask you, the issue gets a tier-2 escalation with the command, what
+  the judge thinks it does and why it would not decide. Reply `allow: command <exact command>` and
+  the live session may run it; the session keeps working meanwhile.
+- `allow: command ...` also works in any owner reply or agent block.
+
 ## 0.7.0 (2026-10-21)
 
 Auto-mode blocks on host sessions are logged and can be tuned away.
