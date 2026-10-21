@@ -18,6 +18,7 @@ from flocc.gate import (
 )
 from flocc.ledger import Claim
 from flocc.linear import LinearError
+from flocc.permission import ASKED
 from flocc.publisher import BranchMoved, review_comment
 from flocc.sessions import (
     allowed_plugins,
@@ -354,9 +355,40 @@ def _check_question(rt, claim: Claim, d: Path, name: str) -> None:
     (d / "asking-escalated").touch()
 
 
+def _check_permission(rt, claim: Claim, d: Path, name: str) -> None:
+    asked = d / ASKED
+    escalated = d / f"{ASKED}-escalated"
+    if not asked.exists() or escalated.exists():
+        return
+    try:
+        raw = json.loads(asked.read_text())
+        command = str(raw["command"])
+        reading, reason = (
+            str(raw.get("reading") or "not stated"),
+            str(raw.get("reason") or "not stated"),
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    esc = scoped(
+        Escalation(
+            2,
+            "permission",
+            f"{name} wants to run: {command}\nWhat it does: {reading}\n"
+            f"Why the judge would not decide: {reason}",
+            f"To let it run, reply on this issue with the line: allow: command {command}."
+            " To refuse, reply with what to do instead. The session carries on meanwhile, and its"
+            " wall clock keeps running.",
+            waiting=True,
+        ),
+        claim.issue_key,
+    )
+    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
+    escalated.touch()
+
+
 def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
     idle = d / "idle"
-    if not idle.exists() or (d / "asking").exists():
+    if not idle.exists() or (d / "asking").exists() or (d / ASKED).exists():
         return
     try:
         raw = json.loads(idle.read_text())
@@ -450,4 +482,5 @@ def supervise(rt, claim: Claim) -> None:
         rt.sessions.send(name, HANDOFF_ASK.format(pct=pct))
         requested.touch()
     _check_question(rt, claim, d, name)
+    _check_permission(rt, claim, d, name)
     _check_idle(rt, claim, d, name)

@@ -20,6 +20,7 @@ from flocc.escalation import DEDUPE_S, Escalation, scoped
 from flocc.grants import GrantError, add_comment, allow_lines, parse_allow
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
+from flocc.permission import ASKED
 from flocc.sessions import session_name
 from flocc.supervisor import launch
 from flocc.usage import latest_usage
@@ -284,6 +285,8 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         "asking-escalated",
         "idle",
         "idle-escalated",
+        ASKED,
+        f"{ASKED}-escalated",
     ):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
@@ -396,12 +399,18 @@ def _apply_grants(rt, claim: Claim, body: str) -> None:
     path = state_dir(rt.cfg, claim.issue_key) / "grants.json"
     for line in allow_lines(body):
         try:
-            add_comment(path, parse_allow(line), claim.phase)
+            g = parse_allow(line)
+            add_comment(path, g, claim.phase)
         except GrantError as exc:
             try:
                 rt.linear.comment(claim.issue_id, f"{BOT_PREFIX} grant not applied: {exc}")
             except LinearError as err:
                 print(f"{claim.issue_key}: grant reply not posted: {err}", file=sys.stderr)
+            continue
+        if g.commands:
+            # The owner has answered the judge's question.
+            for name in (ASKED, f"{ASKED}-escalated"):
+                (path.parent / name).unlink(missing_ok=True)
 
 
 def forward_comments(rt) -> dict[str, LinearError]:

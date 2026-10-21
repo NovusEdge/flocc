@@ -10,6 +10,7 @@ from flocc.context import state_dir
 from flocc.escalation import Notifier
 from flocc.grants import Grants, for_phase, set_block
 from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
+from flocc.permission import ASKED
 from flocc.poller import (
     clean_scratchpads,
     forward_comments,
@@ -509,13 +510,30 @@ def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d.mkdir(parents=True)
     from_before = Grants(launches=5)
     set_block(d / "grants.json", from_before)
-    for name in ("scratchpads", "compacted", "asking"):
+    for name in ("scratchpads", "compacted", "asking", ASKED):
         (d / name).write_text("x")
     rt.linear.ready = [issue()]
     poll(rt)
-    for name in ("scratchpads", "compacted", "asking"):
+    for name in ("scratchpads", "compacted", "asking", ASKED):
         assert not (d / name).exists()
     assert for_phase(d / "grants.json", "impl").launches is None
+
+
+def test_an_allow_command_reply_grants_it_and_clears_the_ask(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / ASKED).write_text("{}")
+    (d / f"{ASKED}-escalated").touch()
+    rt.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "ok\nallow: command make e2e, fast", "2026-10-09T10:00:00Z", mine=True)
+        ]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    forward_comments(rt)
+    assert for_phase(d / "grants.json", "test").commands == ("make e2e, fast",)
+    assert not (d / ASKED).exists() and not (d / f"{ASKED}-escalated").exists()
 
 
 def test_escalations_sent_before_a_failure_are_not_resent(rt):
