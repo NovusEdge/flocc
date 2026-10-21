@@ -23,6 +23,61 @@ func TestBareFloccPrintsHelpAndFails(t *testing.T) {
 	}
 }
 
+// dashDeps is a terminal on both ends with a recording dashboard.
+func dashDeps(t *testing.T, names ...string) (*deps, *int) {
+	t.Helper()
+	d, _, _, _ := hostDeps(t, names...)
+	d.tty, d.outTTY = true, func() bool { return true }
+	opened := 0
+	d.dash = func(context.Context) int { opened++; return 0 }
+	return d, &opened
+}
+
+func TestBareFloccOnATerminalOpensTheDashboard(t *testing.T) {
+	d, opened := dashDeps(t, "a")
+	if code := run(context.Background(), d, nil); code != 0 || *opened != 1 {
+		t.Fatalf("exit %d, opened %d", code, *opened)
+	}
+}
+
+func TestBareFloccStaysPlainWhenAskedOrPiped(t *testing.T) {
+	for name, set := range map[string]func(*deps){
+		"flag":      func(d *deps) { d.mode = ui.ModePlain },
+		"piped out": func(d *deps) { d.outTTY = func() bool { return false } },
+		"piped in":  func(d *deps) { d.tty = false },
+	} {
+		d, opened := dashDeps(t, "a")
+		set(d)
+		errb := d.err.(*bytes.Buffer)
+		if code := run(context.Background(), d, nil); code != 2 || *opened != 0 || !strings.Contains(errb.String(), "Desktop commands:") {
+			t.Errorf("%s: exit %d, opened %d, %q", name, code, *opened, errb)
+		}
+	}
+}
+
+func TestBareFloccWithoutHostsSaysSo(t *testing.T) {
+	d, opened := dashDeps(t)
+	errb := d.err.(*bytes.Buffer)
+	if code := run(context.Background(), d, nil); code != 2 || *opened != 0 ||
+		!strings.Contains(errb.String(), "Desktop commands:") || !strings.Contains(errb.String(), "No hosts yet; run flocc setup.") {
+		t.Fatalf("exit %d, opened %d, %q", code, *opened, errb)
+	}
+}
+
+func TestStatusWatchOpensTheDashboardOnATerminalAndPrintsOnceOtherwise(t *testing.T) {
+	d, opened := dashDeps(t, "a")
+	if code := run(context.Background(), d, []string{"status", "--watch"}); code != 0 || *opened != 1 {
+		t.Fatalf("terminal: exit %d, opened %d", code, *opened)
+	}
+	d, opened = dashDeps(t, "a")
+	d.outTTY = func() bool { return false }
+	var got []string
+	d.fleet = func(_ context.Context, _ ui.Session, args []string) int { got = args; return 0 }
+	if code := run(context.Background(), d, []string{"status", "-H", "all", "--watch", "--interval", "9s"}); code != 0 || *opened != 0 || strings.Join(got, " ") != "--interval 9s" {
+		t.Fatalf("piped: exit %d, opened %d, fleet args %q", code, *opened, got)
+	}
+}
+
 func TestHelpGoesToStdout(t *testing.T) {
 	for _, arg := range []string{"help", "-h", "--help"} {
 		d, out, _ := testDeps(t)

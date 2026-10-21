@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/dash"
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
@@ -56,7 +58,9 @@ type deps struct {
 	home     string
 	getenv   func(string) string
 	run      host.Runner
-	tty      bool // stdin is a terminal, so ssh gets -t
+	tty      bool        // stdin is a terminal, so ssh gets -t
+	outTTY   func() bool // stdout is a terminal; nil asks d.out
+	dash     func(context.Context) int
 	resolve  func(context.Context, string) (ship.Dest, error)
 	fleet    func(ctx context.Context, s ui.Session, args []string) int
 
@@ -101,6 +105,9 @@ func Main(args []string) int {
 		return strings.TrimSpace(string(out)), err
 	}
 	d.doShip, d.doLogin = ship.Ship, ship.Login
+	d.dash = func(ctx context.Context) int {
+		return dash.Run(ctx, dash.Options{Source: ship.NewSource(), Self: os.Args[0], In: os.Stdin, Out: os.Stdout})
+	}
 	d.mode, args = ui.StripModeFlags(args)
 	return run(ctx, d, args)
 }
@@ -119,14 +126,41 @@ func handoffOnly(name string, rest []string) bool {
 	return name != "all"
 }
 
+func (d *deps) outTerminal() bool {
+	if d.outTTY != nil {
+		return d.outTTY()
+	}
+	f, ok := d.out.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// dashOK holds when the full-screen dashboard may take the terminal: both ends are a terminal and
+// no flag or variable asks for plain output.
+func (d *deps) dashOK() bool {
+	if d.dash == nil || !d.tty || !d.outTerminal() {
+		return false
+	}
+	return ui.ModeFor(d.mode, d.getenv, true, ui.ModeFull) != ui.ModePlain
+}
+
+// bare is flocc with no command: the dashboard on a terminal, else the usage.
+func bare(ctx context.Context, d *deps) int {
+	if len(listHosts(d)) == 0 {
+		fmt.Fprint(d.err, usage)
+		fmt.Fprintln(d.err, "No hosts yet; run flocc setup.")
+		return 2
+	}
+	if d.dashOK() {
+		return d.dash(ctx)
+	}
+	fmt.Fprint(d.err, usage)
+	return 2
+}
+
 // openSession gives d a ui session in the mode this command allows, unless a test set one.
 func openSession(d *deps, forcePlain bool) {
 	if d.ui == nil {
-		tty := false
-		if f, ok := d.out.(*os.File); ok {
-			tty = term.IsTerminal(int(f.Fd()))
-		}
-		m := ui.ModeFor(d.mode, d.getenv, tty, ui.ModeInline)
+		m := ui.ModeFor(d.mode, d.getenv, d.outTerminal(), ui.ModeInline)
 		if forcePlain {
 			m = ui.ModePlain
 		}
@@ -152,13 +186,19 @@ func run(ctx context.Context, d *deps, args []string) (code int) {
 		return 2
 	}
 	if len(rest) == 0 {
-		fmt.Fprint(d.err, usage)
-		return 2
+		return bare(ctx, d)
 	}
 	switch rest[0] {
 	case "help", "-h", "--help":
 		fmt.Fprint(d.out, usage)
 		return 0
+	}
+	if rest[0] == "status" && (name == "" || name == "all") && slices.Contains(rest[1:], "--watch") {
+		if d.dashOK() {
+			return d.dash(ctx)
+		}
+		// Off a terminal the redraw loop has nothing to redraw: print the table once.
+		name, rest = "all", slices.DeleteFunc(slices.Clone(rest), func(a string) bool { return a == "--watch" })
 	}
 	openSession(d, handoffOnly(name, rest))
 	defer func() {
