@@ -47,6 +47,8 @@ type CardinalStatus struct {
 	Flocc         string          `json:"flocc,omitempty"`
 	ClaudeVersion string          `json:"claude_version,omitempty"`
 	Quick         bool            `json:"quick"`
+	Journal       string          `json:"journal,omitempty"` // full status of a unit that is not active
+	Pane          string          `json:"pane,omitempty"`    // full status only
 }
 
 func secs(d time.Duration) *float64 { s := d.Seconds(); return &s }

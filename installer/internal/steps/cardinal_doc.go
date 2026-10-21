@@ -1,7 +1,9 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 )
 
@@ -59,6 +61,23 @@ func ParseCardinalLine(line string) (CardinalReport, bool) {
 	}
 	return r, true
 }
+
+// ReportSteps checks every step again for the pass's report; pending names steps whose Apply
+// returned ErrPending.
+func ReportSteps(ctx context.Context, e *Env, list []Step) []ReportStep {
+	var out []ReportStep
+	for _, s := range list {
+		ok, detail, err := s.Check(ctx, e)
+		if err != nil {
+			detail = err.Error()
+		}
+		out = append(out, ReportStep{Name: s.Name(), Detail: detail, Done: ok, Pending: slices.Contains(e.Pending, s.Name())})
+	}
+	return out
+}
+
+// CardinalLoginState is "full", "token-only (<method>)" or "none".
+func CardinalLoginState(ctx context.Context, e *Env) string { return claudeLogin(ctx, e) }
 
 // HostDoc is what the desktop sends a host's cardinal-host and cardinal-host-remove phases.
 type HostDoc struct {

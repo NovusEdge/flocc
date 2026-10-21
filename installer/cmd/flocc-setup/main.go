@@ -172,6 +172,9 @@ func readAnswers(r io.Reader) ([]byte, *answers.Answers, error) {
 }
 
 func run(args []string) int {
+	if _, ok := cardinalPhase(args); ok {
+		return runCardinal(args, os.Stdin, os.Stdout, os.Stderr)
+	}
 	fs := flag.NewFlagSet("flocc-setup", flag.ContinueOnError)
 	phase := fs.String("phase", "root", "root, service or login; the root phase hands off to the service phase itself")
 	answersIn := fs.String("answers", "", `"-" reads the answers document, secrets included, from stdin and runs without a terminal`)
