@@ -1,15 +1,19 @@
 import json
 import os
+import re
 import socket
 import time
 from collections import Counter
 from pathlib import Path
 
 from flocc.gate import note_question
+from flocc.grants import for_phase, judge_grants
 from flocc.sessions import session_name
 
 LOG = "permissions.jsonl"
 MODEL_SWITCH = "refusal_fallback_preference"
+_CHAINED = re.compile(r"[;&|`\n]|\$\(")
+_SHORT_N = re.compile(r"-[a-zA-Z]*n[a-zA-Z]*")
 
 
 def _input(payload: dict) -> dict:
@@ -61,9 +65,58 @@ def record(state: Path, line: dict) -> None:
         os.close(fd)
 
 
+def bash_command(payload: dict) -> str | None:
+    command = _input(payload).get("command")
+    if payload.get("tool_name") != "Bash" or not isinstance(command, str):
+        return None
+    return command.strip()
+
+
+def flocc_denied(command: str) -> bool:
+    # A PreToolUse allow skips Claude Code's checks, so it must not reopen what the session's
+    # deny rules close (sessions._DENY).
+    words = command.split()
+    if words[:1] == ["claude"]:
+        return True
+    return words[:2] == ["git", "commit"] and any(
+        w == "--no-verify" or _SHORT_N.fullmatch(w) for w in words[2:]
+    )
+
+
+def granted(grants_path: Path, phase: str, command: str) -> str | None:
+    if flocc_denied(command):
+        return None
+    if command in for_phase(grants_path, phase).commands:
+        return "grant"
+    exact, prefixes = judge_grants(grants_path)
+    if command in exact:
+        return "judge"
+    if not _CHAINED.search(command) and any(
+        command == p or command.startswith(p + " ") for p in prefixes
+    ):
+        return "judge"
+    return None
+
+
 def handle(
     payload: dict, state: Path, phase: str | None, run: str | None, now: float
 ) -> dict | None:
+    if payload.get("hook_event_name") == "PreToolUse":
+        command = bash_command(payload)
+        how = granted(state / "grants.json", phase or "", command) if command else None
+        if how is None:
+            return None
+        line = entry(payload, state, phase, run, now)
+        line.update(decision="allow", decided_by=how)
+        record(state, line)
+        who = "the owner" if how == "grant" else "the permission judge"
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": f"flocc: granted by {who} for this run",
+            }
+        }
     line = entry(payload, state, phase, run, now)
     if is_model_switch(payload):
         # Nothing answers this dialog on a host; as an open question it reaches the owner. The

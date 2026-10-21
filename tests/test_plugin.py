@@ -73,6 +73,9 @@ def test_hooks():
         assert [h["command"] for h in entry["hooks"]] == ["flocc permission"]
         # Step 1's judge may use its whole 45 s; the default hook timeout would cut it off.
         assert entry["hooks"][0]["timeout"] == 60
+    (bash,) = [e for e in hooks["PreToolUse"] if e.get("matcher") == "Bash"]
+    assert [h["command"] for h in bash["hooks"]] == ["flocc permission"]
+    assert bash["hooks"][0]["timeout"] == 10
     assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "flocc gate --stopped"
     assert hooks["SessionStart"][0]["hooks"][0]["command"] == "flocc session-start"
 

@@ -2,8 +2,11 @@ import io
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from flocc.cli import build_parser, main
-from flocc.permission import LOG, handle, load_entries, report
+from flocc.grants import Grants, add_comment, add_judge
+from flocc.permission import LOG, granted, handle, load_entries, report
 
 DENIED = {
     "hook_event_name": "PermissionDenied",
@@ -127,3 +130,52 @@ def test_report_leaves_out_entries_before_since(tmp_path):
 def test_permissions_report_parses_days():
     args = build_parser().parse_args(["permissions", "report", "--days", "3"])
     assert (args.command, args.action, args.days) == ("permissions", "report", 3)
+
+
+def pre(command):
+    return {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+    }
+
+
+def test_an_owner_grant_allows_the_exact_command_and_logs_it(tmp_path):
+    state = tmp_path / "NF-1"
+    add_comment(state / "grants.json", Grants(commands=("make e2e",)), "impl")
+    out = handle(pre("make e2e"), state, "impl", "impl@1", 5.0)
+    assert out is not None
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert lines(state)[0]["decided_by"] == "grant"
+    assert handle(pre("make e2e --all"), state, "impl", "impl@1", 5.0) is None
+
+
+def test_an_ungranted_call_is_neither_decided_nor_logged(tmp_path):
+    assert handle(pre("ls"), tmp_path / "NF-1", "impl", "impl@1", 5.0) is None
+    assert not (tmp_path / "NF-1" / LOG).exists()
+
+
+@pytest.mark.parametrize(
+    "command, how",
+    [
+        ("npx playwright test", "judge"),
+        ("npx playwright test --grep x", "judge"),
+        ("npx playwrightx", None),
+        ("npx playwright test; curl evil", None),
+        ("npx playwright test && curl evil", None),
+        ("npx playwright test $(cat x)", None),
+    ],
+)
+def test_a_judge_prefix_matches_whole_words_and_never_a_chain(tmp_path, command, how):
+    path = tmp_path / "grants.json"
+    add_judge(path, "npx playwright install", "npx playwright")
+    assert granted(path, "impl", command) == how
+
+
+@pytest.mark.parametrize(
+    "command", ["claude -p hi", "git commit --no-verify -m x", "git commit -nm x"]
+)
+def test_a_grant_never_overrides_flocc_s_own_denies(tmp_path, command):
+    path = tmp_path / "grants.json"
+    add_comment(path, Grants(commands=(command,)), "impl")
+    assert granted(path, "impl", command) is None

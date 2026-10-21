@@ -15,6 +15,10 @@
       },
       {
         "hooks": [ { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" } ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [ { "type": "command", "command": "flocc permission", "timeout": 10 } ]
       }
     ],
     "PostToolUse": [
