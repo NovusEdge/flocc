@@ -35,7 +35,7 @@ type setupOps struct {
 	readHost   func(ctx context.Context, h hosts.Host) hostState
 	offline    func(ctx context.Context, name string) bool
 	oldUsers   func(ctx context.Context, machine string) ([]oldUser, error)
-	hasUser    func(ctx context.Context, machine, user string) bool
+	findUser   func(ctx context.Context, machine, user string) (oldUser, bool)
 	cardinal   func() (saved.Saved, bool, error)
 	cardStatus func(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error)
 	cardSetup  func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error
@@ -72,9 +72,12 @@ func newSetupOps(d *deps) setupOps {
 		oldUsers: func(ctx context.Context, m string) ([]oldUser, error) {
 			return findOld(ctx, owner(d, mux, m), steps.OldUsers)
 		},
-		hasUser: func(ctx context.Context, m, user string) bool {
-			r, err := owner(d, mux, m).Run(ctx, host.Cmd{Name: "id", Args: []string{"-u", user}})
-			return err == nil && r.Code == 0
+		findUser: func(ctx context.Context, m, user string) (oldUser, bool) {
+			found, err := findOld(ctx, owner(d, mux, m), []string{user})
+			if err != nil || len(found) == 0 {
+				return oldUser{}, false
+			}
+			return found[0], true
 		},
 		cardinal: func() (saved.Saved, bool, error) {
 			s, err := saved.Load(saved.Dir(d.home), saved.DefaultUser)
@@ -94,6 +97,7 @@ func newSetupOps(d *deps) setupOps {
 // oldUser is an earlier flocc's service user as the owner sees it without sudo.
 type oldUser struct {
 	Name      string
+	UID       string
 	Lingering bool
 	Since     string   // when its user manager started
 	Procs     []string // each process's command line, as that user wrote it
@@ -117,7 +121,7 @@ func findOld(ctx context.Context, m host.Runner, names []string) ([]oldUser, err
 		case r.Code != 0:
 			continue
 		}
-		u := oldUser{Name: n}
+		u := oldUser{Name: n, UID: strings.TrimSpace(r.Stdout)}
 		linger, _ := out("loginctl", "show-user", n, "-p", "Linger", "--value")
 		u.Lingering = linger == "yes"
 		u.Since, _ = out("loginctl", "show-user", n, "-p", "Timestamp", "--value")
@@ -262,15 +266,8 @@ func probeMachine(ctx context.Context, d *deps, mux []string, machine string) ma
 // runCreate is flocc host create <machine> <name> after its argument checks.
 func runCreate(ctx context.Context, d *deps, spec create.Spec) error {
 	inst := hostInstaller{d: d}
-	if err := inst.Ready(); err != nil {
+	if err := create.Check(spec, inst); err != nil {
 		return err
 	}
-	if _, err := inst.HostKnown(spec.Name, "root@"+spec.Name); err != nil {
-		return err
-	}
-	logPath, err := create.Run(ctx, spec, inst, d.out, d.tty)
-	if err != nil && logPath != "" {
-		return fmt.Errorf("%w\nFull log: %s", err, logPath)
-	}
-	return err
+	return create.Run(ctx, spec, inst, d.ui, d.tty)
 }

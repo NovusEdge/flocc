@@ -3,29 +3,35 @@ package cli
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-// create.Main writes to os.Stderr, so the test reads it there: hostCmd's fall-through for an
-// unknown sub-verb also returns 2, with the desktop usage on d.err.
+// hostCmd's fall-through for an unknown sub-verb also returns 2, with the desktop usage on d.err.
 func TestHostCreateIsADesktopVerbThatChecksItsArguments(t *testing.T) {
 	d, _, errb := testDeps(t)
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stderr := os.Stderr
-	os.Stderr = w
 	code := run(context.Background(), d, []string{"host", "create", "only-one-arg"})
-	os.Stderr = stderr
-	w.Close()
-	got, _ := io.ReadAll(r)
-	if code != 2 || !strings.Contains(string(got), "flocc host create: usage: flocc host create [--cpus N]") || errb.Len() != 0 {
-		t.Fatalf("%d stderr=%q d.err=%q", code, got, errb)
+	if code != 2 || !strings.Contains(errb.String(), "flocc host create: usage: flocc host create [--cpus N]") {
+		t.Fatalf("%d d.err=%q", code, errb)
+	}
+}
+
+// Ship and host add would hit these only after the firewall, the VM and the tailnet changed.
+func TestHostCreateChecksTheCheckoutBeforeConnecting(t *testing.T) {
+	d, _, _ := testDeps(t)
+	rec := &ui.Recorder{}
+	d.ui = ui.New(rec)
+	d.repoRoot = func() (string, error) { return "", errors.New("exit status 128") }
+	if code := hostCreate(context.Background(), d, []string{"box", "flocc-a"}); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	rows := rec.Rows()
+	if len(rows) != 1 || rows[0].Name != "Check" || rows[0].State != ui.Failed || !strings.Contains(rows[0].Err, "flocc checkout") {
+		t.Fatalf("%+v", rows)
 	}
 }
 

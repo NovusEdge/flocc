@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 type opsLog struct{ calls []string }
@@ -70,7 +70,7 @@ func doneOps(l *opsLog) setupOps {
 		},
 		offline:  func(context.Context, string) bool { return false },
 		oldUsers: func(_ context.Context, m string) ([]oldUser, error) { l.add("old %s", m); return nil, nil },
-		hasUser:  func(context.Context, string, string) bool { return false },
+		findUser: func(context.Context, string, string) (oldUser, bool) { return oldUser{}, false },
 		cardinal: func() (saved.Saved, bool, error) {
 			return saved.Saved{Machine: "zer0-day-nimble", User: "cardinal", RenewHour: 4}, true, nil
 		},
@@ -91,63 +91,76 @@ func doneOps(l *opsLog) setupOps {
 	}
 }
 
-// setupScript answers by title prefix: a bool for Confirm, a string for Ask, an int for Choose.
-// An unscripted Confirm takes its default, so a test can see what the default is; an unscripted
-// Ask is left empty. The other prompter methods are nil and panic: the wizard must not call them.
+// setupScript is the session's renderer in setup tests. It answers by title prefix: a bool for
+// Confirm, a string for Ask, an int for Choose. An unscripted Confirm takes its default, so a test
+// can see what the default is; an unscripted Ask is left empty; an unscripted Choose fails.
 type setupScript struct {
-	prompter
+	ui.Recorder
 	answers map[string]any
 	err     error // returned by the prompt whose title starts with errAt
 	errAt   string
 	asked   []string
 }
 
-func (s *setupScript) answer(title string) (any, error) {
+func (s *setupScript) Prompt(p ui.PromptReq) (any, error) {
+	s.Recorder.Asked = append(s.Recorder.Asked, p)
+	title := p.Q.Title
 	s.asked = append(s.asked, title)
 	if s.errAt != "" && strings.HasPrefix(title, s.errAt) {
 		return nil, s.err
 	}
-	for p, v := range s.answers {
-		if strings.HasPrefix(title, p) {
+	for prefix, v := range s.answers {
+		if strings.HasPrefix(title, prefix) {
 			return v, nil
 		}
 	}
-	return nil, nil
+	switch p.Kind {
+	case ui.PConfirm:
+		return p.Q.Default == "yes", nil
+	case ui.PAsk:
+		return "", nil
+	}
+	return nil, fmt.Errorf("unscripted prompt %q", title)
 }
 
-func (s *setupScript) Confirm(title string, def bool) (bool, error) {
-	v, err := s.answer(title)
-	if v == nil || err != nil {
-		return def, err
+// shown is everything the session drew, as one string for Contains checks.
+type shown struct{ s *setupScript }
+
+func (o shown) String() string {
+	var b strings.Builder
+	for _, e := range o.s.Events {
+		fmt.Fprintf(&b, "%s %s %s %s %s %s\n", e.Kind, e.Name, e.State, e.Detail, e.Err, e.Text)
 	}
-	return v.(bool), nil
+	return b.String()
 }
 
-func (s *setupScript) Ask(title, _ string) (string, error) {
-	v, err := s.answer(title)
-	if v == nil || err != nil {
-		return "", err
-	}
-	return v.(string), nil
-}
-
-func (s *setupScript) Choose(title string, _ []string) (int, error) {
-	v, err := s.answer(title)
-	if err != nil {
-		return 0, err
-	}
-	if v == nil {
-		return 0, fmt.Errorf("unscripted choice %q", title)
-	}
-	return v.(int), nil
-}
-
-func setupDeps(t *testing.T, answers map[string]any) (*deps, *bytes.Buffer, *setupScript) {
+func setupDeps(t *testing.T, answers map[string]any) (*deps, shown, *setupScript) {
 	t.Helper()
-	d, out, _ := testDeps(t)
+	d, _, _ := testDeps(t)
 	p := &setupScript{answers: answers}
-	d.prompt, d.tty = p, true
-	return d, out, p
+	d.ui, d.tty = ui.New(p), true
+	return d, shown{p}, p
+}
+
+func rowOf(t *testing.T, p *setupScript, name string) ui.Event {
+	t.Helper()
+	for _, r := range p.Rows() {
+		if r.Name == name {
+			return r
+		}
+	}
+	t.Fatalf("no row %q in %+v", name, p.Rows())
+	return ui.Event{}
+}
+
+func todos(p *setupScript) []string {
+	var out []string
+	for _, e := range p.Events {
+		if e.Kind == ui.KTodo {
+			out = append(out, e.Text)
+		}
+	}
+	return out
 }
 
 func TestSetupNeedsATerminal(t *testing.T) {
@@ -306,6 +319,77 @@ func TestSetupShipsAnOldOrFailingHostAndReportsTheRest(t *testing.T) {
 	}
 }
 
+// A host's row opens before its slow reads, so a terminal shows what the wizard is waiting on.
+func TestSetupShowsAHostRowBeforeReadingAndShipping(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	d, _, p := setupDeps(t, nil)
+	running := func(detail string) bool {
+		return slices.ContainsFunc(p.Events, func(e ui.Event) bool {
+			return e.Kind == ui.KStep && e.Name == "flocc-nimble" && e.State == ui.Running && e.Detail == detail
+		})
+	}
+	reads := 0
+	ops.readHost = func(context.Context, hosts.Host) hostState {
+		reads++
+		if reads == 1 && !running("reading flocc --version, status, doctor") {
+			t.Error("no Running event before the first read")
+		}
+		if reads == 2 && !running("shipping the checkout: flocc is not installed there") {
+			t.Error("no shipping detail before the second read")
+		}
+		if reads == 1 {
+			return hostState{}
+		}
+		return hostState{Version: "0.8.0"}
+	}
+	ops.ship = func(context.Context, string) error {
+		if !running("shipping the checkout: flocc is not installed there") {
+			t.Error("no Running event before ship")
+		}
+		return nil
+	}
+	if code := runSetup(context.Background(), d, ops); code != 0 || reads != 2 {
+		t.Fatalf("exit %d reads %d", code, reads)
+	}
+	if r := rowOf(t, p, "flocc-nimble"); r.State != ui.Done || r.Detail != "flocc 0.8.0, doctor ok" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestSetupGroupsRowsBySection(t *testing.T) {
+	var l opsLog
+	d, _, p := setupDeps(t, nil)
+	runSetup(context.Background(), d, doneOps(&l))
+	var groups []string
+	for _, e := range p.Events {
+		if e.Kind == ui.KGroup {
+			groups = append(groups, e.Name)
+		}
+	}
+	if want := []string{"Checkout", "Keys", "Hosts", "Keys", "Old versions", "Cardinal", "Logins"}; !slices.Equal(groups, want) {
+		t.Fatalf("%q", groups)
+	}
+}
+
+func TestSetupSendsWhatTheOwnerMustDoToTheTodoBox(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	ops.readHost = func(context.Context, hosts.Host) hostState {
+		return hostState{Version: "0.8.0", LowDisk: "disk: 1.0 GB free"}
+	}
+	d, _, p := setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, ops); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	if r := rowOf(t, p, "flocc-nimble"); r.State != ui.Pending {
+		t.Fatalf("%+v", r)
+	}
+	if got := todos(p); len(got) != 1 || !strings.HasPrefix(got[0], "flocc-nimble: disk: 1.0 GB free") {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestSetupFailsAHostStillFailingAfterShip(t *testing.T) {
 	var l opsLog
 	ops := doneOps(&l)
@@ -431,11 +515,19 @@ func TestSetupCardinalWhenNoneIsSaved(t *testing.T) {
 		var l opsLog
 		ops := doneOps(&l)
 		ops.cardinal = func() (saved.Saved, bool, error) { return saved.Saved{}, false, nil }
-		ops.hasUser = func(_ context.Context, m, u string) bool { return c.hasUser && u == "cardinal" }
-		d, _, _ := setupDeps(t, c.answers)
+		ops.findUser = func(_ context.Context, m, u string) (oldUser, bool) {
+			return oldUser{Name: u, UID: "1002", Lingering: true, Procs: []string{"/usr/bin/tmux -L cardinal -D"}}, c.hasUser && u == "cardinal"
+		}
+		d, _, p := setupDeps(t, c.answers)
 		code := runSetup(context.Background(), d, ops)
 		if code != c.code || (c.want == "") == l.has("cardinal setup") || (c.want != "" && !l.has(c.want)) {
 			t.Errorf("%s: exit %d calls %v", c.name, code, l.calls)
+		}
+		if c.hasUser {
+			q := p.Recorder.Asked[0].Q
+			if !slices.Contains(q.Facts, "uid 1002") || !slices.Contains(q.Facts, "lingering") || !slices.Contains(q.Facts, "running /usr/bin/tmux -L cardinal -D") {
+				t.Errorf("%s: facts %q", c.name, q.Facts)
+			}
 		}
 	}
 }

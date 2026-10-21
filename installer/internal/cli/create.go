@@ -6,8 +6,29 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 )
+
+// hostCreate is flocc host create after "host create". The steps of the run, and the failure of
+// any of them, are rows of the session.
+func hostCreate(ctx context.Context, d *deps, args []string) int {
+	spec, err := create.ParseArgs(args)
+	if err != nil {
+		fmt.Fprintln(d.err, "flocc host create:", err)
+		return 2
+	}
+	inst := hostInstaller{d: d}
+	if err := create.Check(spec, inst); err != nil {
+		d.ui.Step("Check").Fail(err)
+		return 1
+	}
+	if err := create.Run(ctx, spec, inst, d.ui, d.tty); err != nil {
+		d.ui.Todo("Run the same command again to continue.")
+		return 1
+	}
+	return 0
+}
 
 // hostInstaller gives host create the desktop verbs it runs once the VM is on the tailnet.
 type hostInstaller struct{ d *deps }

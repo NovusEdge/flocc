@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -33,14 +32,17 @@ type Installer interface {
 func Steps() []Step { return []Step{Incus{}, Firewalld{}, Docker{}, VM{}, Egress{}, Tailnet{}} }
 
 func Create(ctx context.Context, e *Env, inst Installer, steps []Step) error {
+	st := e.UI.Step("Connect")
+	st.Detail("ssh " + e.Spec.Machine)
 	// Attached, so a Tailscale SSH check-mode URL for the machine shows on the terminal instead
 	// of hanging a captured command; ControlPersist carries the approval through the run.
-	if err := e.M.Interactive(ctx, cmd("true")); err != nil {
-		return fmt.Errorf("ssh %s: %w", e.Spec.Machine, err)
+	if err := e.M.Interactive(ctx, host.Cmd{Name: "true", Why: "ssh to " + e.Spec.Machine}); err != nil {
+		return failStep(st, fmt.Errorf("ssh %s: %w", e.Spec.Machine, err))
 	}
 	if err := e.Probe(ctx); err != nil {
-		return err
+		return failStep(st, err)
 	}
+	st.Done(e.Spec.Machine)
 	if err := RunSteps(ctx, e, steps); err != nil {
 		return err
 	}
@@ -51,25 +53,36 @@ func Create(ctx context.Context, e *Env, inst Installer, steps []Step) error {
 	ssh := "root@" + name
 	known, err := inst.HostKnown(name, ssh)
 	if err != nil {
-		return err
+		return failStep(e.UI.Step("Host file"), err)
 	}
 	if !known {
-		if err := inst.AddHost(ctx, name, ssh, e.Spec.Machine); err != nil {
-			return fmt.Errorf("host add: %w", err)
+		if err := e.phase("Add host", "host add", func() error { return inst.AddHost(ctx, name, ssh, e.Spec.Machine) }); err != nil {
+			return err
 		}
 	}
-	if err := inst.Ship(ctx, name); err != nil {
-		return fmt.Errorf("ship: %w", err)
+	if err := e.phase("Ship", "ship", func() error { return inst.Ship(ctx, name) }); err != nil {
+		return err
 	}
-	if err := inst.Login(ctx, name); err != nil {
-		return fmt.Errorf("login: %w", err)
+	if err := e.phase("Login", "login", func() error { return inst.Login(ctx, name) }); err != nil {
+		return err
 	}
 	// host add, ship and login reach the VM, not the machine, and can leave the machine's master
 	// idle past ControlPersist; a fresh captured connection would wait on a check-mode URL unseen.
 	if err := e.connect(ctx); err != nil {
-		return err
+		return failStep(e.UI.Step("Connect"), err)
 	}
 	return snapshot(ctx, e)
+}
+
+// phase runs one of the installer's verbs as a step. The verb may draw steps of its own; a failure
+// is named here once more so the run's last row says which verb stopped it.
+func (e *Env) phase(name, verb string, fn func() error) error {
+	st := e.UI.Step(name)
+	if err := fn(); err != nil {
+		return failStep(st, fmt.Errorf("%s: %w", verb, err))
+	}
+	st.Done("")
+	return nil
 }
 
 // connect opens the machine's shared master on this terminal without BatchMode, so the owner can
@@ -86,22 +99,36 @@ const (
 // waitTailnet waits until this desktop's tailnet lists the node: host add and ship reach it by
 // name right after tailscale up returns, which can be before this desktop has heard of it.
 func waitTailnet(ctx context.Context, e *Env) error {
-	for range tailnetPolls {
+	st := e.UI.Step("Tailnet name")
+	for i := range tailnetPolls {
 		seen, err := tailnetHas(ctx, e, e.Spec.Name)
 		if err != nil {
-			return err
+			return failStep(st, err)
 		}
 		if seen {
+			st.Done(e.Spec.Name + " is on this desktop's tailnet")
 			return nil
 		}
+		st.Detail(fmt.Sprintf("waiting for the tailnet name, %ds left", (tailnetPolls-i)*int(tailnetPoll/time.Second)))
 		e.Sleep(tailnetPoll)
 	}
-	return fmt.Errorf("%s joined the tailnet, but this desktop does not see it after %s; check tailscale status here, then run create again", e.Spec.Name, tailnetPoll*tailnetPolls)
+	return failStep(st, fmt.Errorf("%s joined the tailnet, but this desktop does not see it after %s; check tailscale status here, then run create again", e.Spec.Name, tailnetPoll*tailnetPolls))
 }
 
 // snapshot takes the new snapshot under a temporary name and swaps it in afterwards, so a failed
 // snapshot leaves the last good installed one.
 func snapshot(ctx context.Context, e *Env) error {
+	st := e.UI.Step("Snapshot")
+	st.Detail("taking installed-new")
+	if err := takeSnapshot(ctx, e); err != nil {
+		return failStep(st, err)
+	}
+	name := e.Spec.Name
+	st.Done(name + "/installed; " + e.incusLine("snapshot restore "+name+" installed") + " returns to it")
+	return nil
+}
+
+func takeSnapshot(ctx context.Context, e *Env) error {
 	name := e.Spec.Name
 	has := func(snap string) bool { return e.ok(ctx, e.incus("query", "/1.0/instances/"+name+"/snapshots/"+snap)) }
 	do := func(args ...string) error {
@@ -130,8 +157,6 @@ func snapshot(ctx context.Context, e *Env) error {
 	if err := do("rename", name, "installed-new", "installed"); err != nil {
 		return err
 	}
-	e.progress().Done(ui.Line{Total: e.stepTotal, Name: "Snapshot",
-		Detail: name + "/installed; " + e.incusLine("snapshot restore "+name+" installed") + " returns to it"})
 	return nil
 }
 
@@ -165,56 +190,37 @@ func ParseArgs(args []string) (Spec, error) {
 	return s, nil
 }
 
-func Main(args []string, inst Installer) int {
-	spec, err := ParseArgs(args)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "flocc host create:", err)
-		return 2
+// Check fails when ship or host add would, for a reason known before create changes the machine,
+// the firewall, the VM or the tailnet.
+func Check(spec Spec, inst Installer) error {
+	if err := inst.Ready(); err != nil {
+		return err
 	}
-	// Ship and host add would hit these only after the firewall, the VM and the tailnet changed.
-	err = inst.Ready()
-	if err == nil {
-		_, err = inst.HostKnown(spec.Name, "root@"+spec.Name)
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "flocc host create:", err)
-		return 1
-	}
-	st, _ := os.Stdin.Stat()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	logPath, err := Run(ctx, spec, inst, os.Stdout, st != nil && st.Mode()&os.ModeCharDevice != 0)
-	if err != nil {
-		if logPath == "" {
-			fmt.Fprintln(os.Stderr, "flocc host create:", err)
-			return 1
-		}
-		fmt.Fprintf(os.Stderr, "\nflocc host create: %s\n\nFull log: %s\nRun the same command again to continue.\n", err, logPath)
-		return 1
-	}
-	return 0
+	_, err := inst.HostKnown(spec.Name, "root@"+spec.Name)
+	return err
 }
 
 // Run makes the host once its arguments and the installer are checked, logging to
-// ~/.cache/flocc/create-<name>.log, whose path it returns for the error message.
-func Run(ctx context.Context, spec Spec, inst Installer, out io.Writer, tty bool) (string, error) {
+// ~/.cache/flocc/create-<name>.log, which the session's record names. Every failure after the log
+// opens is a failed step of s.
+func Run(ctx context.Context, spec Spec, inst Installer, s ui.Session, tty bool) error {
 	logPath, logf, err := openLog(spec.Name)
 	if err != nil {
-		return "", err
+		return failStep(s.Step("Log"), err)
 	}
 	defer logf.Close()
+	s.LogPath(logPath)
 	log := NewRedactLog(logf)
-	run := host.Exec{Log: log}
+	run := host.Exec{Log: log, Term: s}
 	// Captured commands buffer stderr, so one that stops at a password or host-key prompt would
 	// hang with nothing shown; BatchMode makes it fail instead.
 	opts := append([]string{"-o", "BatchMode=yes"}, ControlOpts()...)
 	e := &Env{M: Remote{R: run, Target: spec.Machine, Opts: opts}, Local: run,
-		UI: ui.NewHuh(), Out: out, Log: log, Spec: spec, Sleep: time.Sleep, TTY: tty}
-	err = e.connect(ctx)
-	if err == nil {
-		err = Create(ctx, e, inst, Steps())
+		UI: s, Log: log, Spec: spec, Sleep: time.Sleep, TTY: tty}
+	if err := e.connect(ctx); err != nil {
+		return failStep(s.Step("Connect"), err)
 	}
-	return logPath, err
+	return Create(ctx, e, inst, Steps())
 }
 
 // Logged names each host a create run has logged for. A run that stopped before host add left

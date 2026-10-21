@@ -28,14 +28,15 @@ func TestPreconditionsReportSudoAndIncusApart(t *testing.T) {
 	}
 }
 
+// fakeUI records the session and answers every question with key.
 type fakeUI struct {
+	ui.Recorder
 	key   string
-	asked int
 	onAsk func()
 }
 
-func (u *fakeUI) Secret(string, string, string) (string, error) {
-	u.asked++
+func (u *fakeUI) Prompt(p ui.PromptReq) (any, error) {
+	u.Asked = append(u.Asked, p)
 	if u.onAsk != nil {
 		u.onAsk()
 	}
@@ -44,13 +45,13 @@ func (u *fakeUI) Secret(string, string, string) (string, error) {
 
 // testEnv runs machine commands on m directly, without the ssh wrapper, so tests name the
 // commands as the machine sees them. With TTY, e.connect's attached ssh succeeds on any Fake.
-func testEnv(m *host.Fake) (*Env, *bytes.Buffer) {
-	var out bytes.Buffer
+func testEnv(m *host.Fake) (*Env, *fakeUI) {
+	u := &fakeUI{}
 	return &Env{
-		M: m, Local: host.NewFake(), UI: &fakeUI{}, Out: &out, Log: NewRedactLog(io.Discard),
+		M: m, Local: host.NewFake(), UI: ui.New(u), Log: NewRedactLog(io.Discard),
 		Spec:  Spec{Machine: "laptop", Name: "flocc-a", CPUs: 4, MemoryGiB: 8, DiskGiB: 40},
 		Sleep: func(time.Duration) {}, sudo: true, TTY: true,
-	}, &out
+	}, u
 }
 
 type recorder struct{ run, interactive []host.Cmd }
@@ -344,47 +345,78 @@ func (s *fakeStep) Apply(context.Context, *Env) error {
 
 func TestRunStepsSkipsDoneStepsAndAppliesTheRest(t *testing.T) {
 	a, b := &fakeStep{name: "a", done: true}, &fakeStep{name: "b"}
-	e, out := testEnv(host.NewFake())
+	e, u := testEnv(host.NewFake())
 	if err := RunSteps(context.Background(), e, []Step{a, b}); err != nil {
 		t.Fatal(err)
 	}
 	if a.applied != 0 || b.applied != 1 {
 		t.Fatalf("a=%d b=%d", a.applied, b.applied)
 	}
-	if !strings.Contains(out.String(), "✓ 1/2 a ") || !strings.Contains(out.String(), "→ 2/2 b ") || !strings.Contains(out.String(), "✓ 2/2 b ") {
-		t.Fatal(out.String())
-	}
-	if strings.ContainsAny(out.String(), "\r\x1b") {
-		t.Fatalf("a buffer is not a terminal: %q", out.String())
+	rows := u.Rows()
+	if len(rows) != 2 || rows[0].Name != "a" || rows[0].State != ui.Done || rows[0].Detail != "detail a" ||
+		rows[1].Name != "b" || rows[1].State != ui.Done {
+		t.Fatalf("%+v", rows)
 	}
 }
 
-type qrStep struct{ fakeStep }
-
-func (*qrStep) Attached() bool { return true }
-
-func TestRunStepsGivesAnAttachedStepPlainLinesAndTheRestALiveLine(t *testing.T) {
-	e, out := testEnv(host.NewFake())
-	e.prog = &ui.Progress{Out: ui.Out{W: out, Color: true}, Animate: true, NameWidth: 10}
-	if err := RunSteps(context.Background(), e, []Step{&qrStep{fakeStep{name: "qr"}}, &fakeStep{name: "b"}}); err != nil {
+func TestRunStepsShowsAStepBeforeItsCheckReturns(t *testing.T) {
+	e, u := testEnv(host.NewFake())
+	s := &probeStep{fakeStep: fakeStep{name: "a"}, seen: func() int { return len(u.Events) }}
+	if err := RunSteps(context.Background(), e, []Step{s}); err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.SplitAfter(out.String(), "\n")
-	if len(lines) < 3 || strings.Contains(lines[0]+lines[1], "\r") || strings.Contains(lines[0]+lines[1], "⠋") {
-		t.Fatalf("the attached step got a live line: %q", out.String())
+	if s.atCheck == 0 || u.Events[0].State != ui.Running || u.Events[0].Name != "a" {
+		t.Fatalf("events at the first check: %d %+v", s.atCheck, u.Events)
 	}
-	if !strings.Contains(lines[2], "\r") {
-		t.Fatalf("the other step should animate: %q", lines[2])
+}
+
+type probeStep struct {
+	fakeStep
+	seen    func() int
+	atCheck int
+}
+
+func (s *probeStep) Check(ctx context.Context, e *Env) (bool, string, error) {
+	if s.atCheck == 0 {
+		s.atCheck = s.seen()
 	}
+	return s.fakeStep.Check(ctx, e)
 }
 
 func TestRunStepsStopsAtTheFirstFailure(t *testing.T) {
 	a, b := &fakeStep{name: "a", applyErr: errors.New("boom")}, &fakeStep{name: "b"}
-	e, _ := testEnv(host.NewFake())
+	e, u := testEnv(host.NewFake())
 	err := RunSteps(context.Background(), e, []Step{a, b})
 	if err == nil || err.Error() != "a: boom" || b.applied != 0 {
 		t.Fatalf("err=%v b=%d", err, b.applied)
 	}
+	if rows := u.Rows(); len(rows) != 1 || rows[0].State != ui.Failed || rows[0].Err != "a: boom" {
+		t.Fatalf("%+v", rows)
+	}
+}
+
+func TestEnvWaitingShowsTheCountdownOnTheStepBeingApplied(t *testing.T) {
+	e, u := testEnv(host.NewFake())
+	w := &waitStep{fakeStep: fakeStep{name: "w"}}
+	if err := RunSteps(context.Background(), e, []Step{w}); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ev := range u.Events {
+		if ev.State == ui.Running && strings.Contains(ev.Detail, "left") {
+			got = append(got, ev.Detail)
+		}
+	}
+	if !slices.Equal(got, []string{"waiting for x, 10s left"}) {
+		t.Fatalf("%q", got)
+	}
+}
+
+type waitStep struct{ fakeStep }
+
+func (s *waitStep) Apply(ctx context.Context, e *Env) error {
+	e.waiting("waiting for x", 10*time.Second)
+	return s.fakeStep.Apply(ctx, e)
 }
 
 func TestRunStepsFailsWhenTheCheckStillFails(t *testing.T) {

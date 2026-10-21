@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 const (
@@ -39,10 +42,6 @@ func starting(state string) bool { return state == "" || state == "NoState" || s
 type Tailnet struct{}
 
 func (Tailnet) Name() string { return "Tailscale" }
-
-// Attached: Apply asks for the auth key in a form, opens the shared ssh master and runs tailscale
-// up attached, which shows a QR code or a login link.
-func (Tailnet) Attached() bool { return true }
 
 func (Tailnet) Check(ctx context.Context, e *Env) (bool, string, error) {
 	ts := e.vmTailscale(ctx)
@@ -82,6 +81,7 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 			}
 			return fmt.Errorf("tailscaled in the VM is still %s after %ds; check the VM's network, then run create again", ts.state, settleWait)
 		}
+		e.waiting("waiting for tailscaled in the VM", time.Duration(settleWait-i)*time.Second)
 		e.Sleep(time.Second)
 		ts = e.vmTailscale(ctx)
 	}
@@ -103,6 +103,7 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 				// set cannot take a name another node holds: the tailnet still has a stale node of this name.
 				return tailnetTaken(name)
 			}
+			e.waiting("waiting for the control server to confirm the name", time.Duration(renameWait-i)*time.Second)
 			e.Sleep(time.Second)
 		}
 	}
@@ -119,10 +120,12 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 	if ts.state == "Stopped" {
 		// tailscale down keeps the login, so up rejoins as the same node without a key. Attached,
 		// in case the control server asks for a login after all.
-		return e.M.Interactive(ctx, e.incus(up...))
+		return e.M.Interactive(ctx, e.attached(up...))
 	}
-	key, err := e.UI.Secret("tailscale_auth_key", "Tailscale auth key for "+name+" (optional)",
-		"Paste a one-off auth key, or leave this empty to log in with the QR code or link that follows. The key is used once and not stored.")
+	key, err := e.UI.Secret(ui.Question{
+		Title: "Tailscale auth key for " + name + " (optional)",
+		Help:  "Paste a one-off auth key, or leave this empty to log in with the QR code or link that follows. The key is used once and not stored.",
+	})
 	if err != nil {
 		return err
 	}
@@ -132,7 +135,7 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 		return err
 	}
 	if key = strings.TrimSpace(key); key == "" {
-		err = e.M.Interactive(ctx, e.incus(append(up, "--qr")...))
+		err = e.M.Interactive(ctx, e.attached(append(up, "--qr")...))
 	} else {
 		// Before the first command that can print it: the log gets tailscale's output as it comes.
 		e.Log.Add(key)
@@ -145,8 +148,13 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(e.Out)
-	e.o().WarnLine("Tailscale key expiry: open https://login.tailscale.com/admin/machines, find %s and choose Disable key expiry. An untagged node's key otherwise expires after 180 days.", name)
-	fmt.Fprintln(e.Out)
+	e.UI.Todo("Tailscale key expiry: open https://login.tailscale.com/admin/machines, find " + name + " and choose Disable key expiry. An untagged node's key otherwise expires after 180 days.")
 	return nil
+}
+
+// attached is the incus command for a tailscale login that draws a QR code or link on the terminal.
+func (e *Env) attached(args ...string) host.Cmd {
+	c := e.incus(args...)
+	c.Why = "tailscale login in the VM"
+	return c
 }

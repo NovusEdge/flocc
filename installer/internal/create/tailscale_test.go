@@ -50,7 +50,7 @@ func TestTailnetJoinsByQRWhenNoKeyIsGiven(t *testing.T) {
 		On(hasTS, 1, "").
 		On(installTS, 0, "").
 		On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`)
-	e, out := testEnv(f)
+	e, u := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
 	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
@@ -58,8 +58,9 @@ func TestTailnetJoinsByQRWhenNoKeyIsGiven(t *testing.T) {
 	if !f.Ran(installTS) || !f.Ran("interactive: "+upQR) {
 		t.Fatalf("%v", f.Calls)
 	}
-	if !strings.Contains(out.String(), "Disable key expiry") {
-		t.Fatal(out.String())
+	e.UI.Close()
+	if len(u.Todos) != 1 || !strings.Contains(u.Todos[0], "Disable key expiry") {
+		t.Fatal(u.Todos)
 	}
 }
 
@@ -80,13 +81,13 @@ func TestTailnetInstallsAgainWhenTailscaledIsNotRunning(t *testing.T) {
 
 func TestTailnetStopsOnANameCollisionBeforeAsking(t *testing.T) {
 	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin","Self":{"PublicKey":"nodekey:bb"}}`)
-	e, _ := testEnv(f)
+	e, u := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsStatus)
 	err := Tailnet{}.Apply(context.Background(), e)
 	if err == nil || !strings.Contains(err.Error(), "already a node on your tailnet") {
 		t.Fatal(err)
 	}
-	if e.UI.(*fakeUI).asked != 0 {
+	if len(u.Asked) != 0 {
 		t.Fatal("asked for a key")
 	}
 	for _, c := range f.Calls {
@@ -104,25 +105,25 @@ const tsWithVM = `{"Self":{"HostName":"desk","DNSName":"desk.tail1.ts.net."},
 func TestTailnetRejoinsAStoppedVMAsItself(t *testing.T) {
 	up := "interactive: incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a"
 	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"Stopped","Self":{"PublicKey":"nodekey:aa"}}`)
-	e, _ := testEnv(f)
+	e, u := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsWithVM)
 	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran(up) || e.UI.(*fakeUI).asked != 0 {
-		t.Fatalf("asked=%d %v", e.UI.(*fakeUI).asked, f.Calls)
+	if !f.Ran(up) || len(u.Asked) != 0 {
+		t.Fatalf("asked=%d %v", len(u.Asked), f.Calls)
 	}
 }
 
 func TestTailnetLogsAnExpiredVMInAgainAsItself(t *testing.T) {
 	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin","Self":{"PublicKey":"nodekey:aa"}}`)
-	e, _ := testEnv(f)
+	e, u := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsWithVM)
 	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran("interactive: "+upQR) || e.UI.(*fakeUI).asked != 1 {
-		t.Fatalf("asked=%d %v", e.UI.(*fakeUI).asked, f.Calls)
+	if !f.Ran("interactive: "+upQR) || len(u.Asked) != 1 {
+		t.Fatalf("asked=%d %v", len(u.Asked), f.Calls)
 	}
 }
 
@@ -167,11 +168,11 @@ const (
 func TestTailnetFixesARunningNodeWithoutAskingAgain(t *testing.T) {
 	f := host.NewFake().On(hasTS, 0, "").On(prefsInVM, 0, `{"RunSSH":false}`).On(tsSet, 0, "").
 		OnSeq(tsInVM, host.Result{Stdout: fmt.Sprintf(runningAs, "flocc-a-1")}, host.Result{Stdout: fmt.Sprintf(runningAs, "flocc-a")})
-	e, _ := testEnv(f)
+	e, u := testEnv(f)
 	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran(tsSet) || e.UI.(*fakeUI).asked != 0 {
+	if !f.Ran(tsSet) || len(u.Asked) != 0 {
 		t.Fatalf("%v", f.Calls)
 	}
 }
@@ -218,9 +219,9 @@ func TestTailnetStopsWaitingForTheRenameWhenCancelled(t *testing.T) {
 
 func TestAuthKeyGoesOnStdin(t *testing.T) {
 	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upKey, 0, "")
-	e, _ := testEnv(f)
+	e, u := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
-	e.UI = &fakeUI{key: "  tskey-auth-k1-SECRET\n"}
+	u.key = "  tskey-auth-k1-SECRET\n"
 	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
@@ -239,10 +240,10 @@ func TestAuthKeyGoesOnStdin(t *testing.T) {
 func TestAuthKeyPromptIsFollowedByAReconnect(t *testing.T) {
 	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upKey, 0, "").
 		On("tailscale status --json", 0, tsEmpty)
-	e, _ := testEnv(f)
+	e, u := testEnv(f)
 	e.Local = f
 	asked := -1
-	e.UI = &fakeUI{key: "tskey-auth-k1-SECRET", onAsk: func() { asked = len(f.Calls) }}
+	u.key, u.onAsk = "tskey-auth-k1-SECRET", func() { asked = len(f.Calls) }
 	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
@@ -270,19 +271,19 @@ func TestAuthKeyNeverReachesArgvOrTheLog(t *testing.T) {
 	const key = "tskey-auth-k1-SECRET"
 	var logged bytes.Buffer
 	log := NewRedactLog(&logged)
-	e, out := testEnv(host.NewFake())
+	e, u := testEnv(host.NewFake())
 	e.Log = log
 	e.M = Remote{R: host.Exec{Log: log}, Target: "laptop"}
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
-	e.UI = &fakeUI{key: key}
+	u.key = key
 	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(got); string(b) != key {
 		t.Fatalf("the VM read %q", b)
 	}
-	if strings.Contains(logged.String(), key) || strings.Contains(out.String(), key) {
-		t.Fatalf("key leaked:\n%s\n%s", logged.String(), out.String())
+	if shown := fmt.Sprintf("%+v", u.Events); strings.Contains(logged.String(), key) || strings.Contains(shown, key) {
+		t.Fatalf("key leaked:\n%s\n%s", logged.String(), shown)
 	}
 	if !strings.Contains(logged.String(), "'--auth-key=file:/dev/stdin'") {
 		t.Fatal(logged.String())
@@ -302,16 +303,16 @@ func TestAuthKeyEchoedByTheVMStaysOutOfTheLogAndTheError(t *testing.T) {
 	const key = "tskey-auth-k1-SECRET"
 	var logged bytes.Buffer
 	log := NewRedactLog(&logged)
-	e, out := testEnv(host.NewFake())
+	e, u := testEnv(host.NewFake())
 	e.Log = log
 	e.M = Remote{R: host.Exec{Log: log}, Target: "laptop"}
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
-	e.UI = &fakeUI{key: key}
+	u.key = key
 	err := Tailnet{}.Apply(context.Background(), e)
 	if err == nil {
 		t.Fatal("a failing tailscale up passed")
 	}
-	for name, text := range map[string]string{"error": err.Error(), "log": logged.String(), "terminal": out.String()} {
+	for name, text := range map[string]string{"error": err.Error(), "log": logged.String(), "events": fmt.Sprintf("%+v", u.Events)} {
 		if strings.Contains(text, key) {
 			t.Errorf("key in the %s:\n%s", name, text)
 		}
@@ -324,9 +325,9 @@ func TestAuthKeyEchoedByTheVMStaysOutOfTheLogAndTheError(t *testing.T) {
 func TestAuthKeyIsScrubbedFromErrors(t *testing.T) {
 	const key = "tskey-auth-k1-SECRET"
 	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upKey, 1, "backend error: invalid key: "+key)
-	e, _ := testEnv(f)
+	e, u := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
-	e.UI = &fakeUI{key: key}
+	u.key = key
 	err := Tailnet{}.Apply(context.Background(), e)
 	if err == nil || strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "<auth key>") {
 		t.Fatal(err)
