@@ -221,8 +221,9 @@ func addHost(ctx context.Context, d *deps, name string, reach hosts.Host) error 
 		if err := keys.Fill(ctx, e, m, []keys.Slot{keys.Publish, keys.Ntfy}); err != nil {
 			return "", fmt.Errorf("the host is saved; %w", err)
 		}
-		if problems := keys.Check(ctx, e, m); len(problems) > 0 {
-			return "", fmt.Errorf("the host is saved, but the keys do not cover it yet:\n  %s", strings.Join(problems, "\n  "))
+		// Check has failed a row for each problem; the remedies become to-dos.
+		if report(d, keys.Check(ctx, e, m)) != 0 {
+			return "", errors.New("the host is saved, but the keys do not cover it yet")
 		}
 		return "every key covers the host", nil
 	})
