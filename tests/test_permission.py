@@ -301,3 +301,25 @@ def test_a_broken_config_still_logs_the_block(tmp_path, monkeypatch, capsys):
     assert main(["permission"]) == 0
     assert lines(tmp_path / "NF-1")[0]["decided_by"] == "none"
     assert "missing.toml" in capsys.readouterr().err
+
+
+def test_the_agents_own_question_is_never_judged(tmp_path, on):
+    question = {
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [{"question": "A or B?"}]},
+    }
+    out, j = judged(question, tmp_path / "NF-1", on, Verdict("allow", "x"))
+    assert out is None and j.actions == []
+    assert not (tmp_path / "NF-1" / "asking").exists()
+
+
+def test_a_multi_line_command_is_granted_and_asked_about_on_one_line(tmp_path, on):
+    state = tmp_path / "NF-1"
+    heredoc = "cat <<EOF > x\na  b\nEOF"
+    add_comment(state / "grants.json", Grants(commands=("cat <<EOF > x a b EOF",)), "impl")
+    assert granted(state / "grants.json", "impl", heredoc) == "grant"
+    payload = {**PROMPT, "tool_input": {"command": heredoc}}
+    judged(payload, tmp_path / "NF-2", on, Verdict("owner", "r", "x"))
+    asked = json.loads((tmp_path / "NF-2" / ASKED).read_text())
+    assert asked["command"] == "cat <<EOF > x a b EOF"

@@ -9,7 +9,7 @@ from pathlib import Path
 from flocc import judge as judge_mod
 from flocc.config import Config
 from flocc.gate import note_question
-from flocc.grants import add_judge, for_phase, judge_grants
+from flocc.grants import add_judge, for_phase, judge_grants, one_line
 from flocc.sessions import session_name
 
 LOG = "permissions.jsonl"
@@ -86,6 +86,7 @@ def flocc_denied(command: str) -> bool:
 
 
 def granted(grants_path: Path, phase: str, command: str) -> str | None:
+    command = one_line(command)
     if flocc_denied(command):
         return None
     if command in for_phase(grants_path, phase).commands:
@@ -133,7 +134,8 @@ def ask_owner(state: Path, line: dict, verdict: judge_mod.Verdict, now: float) -
     asked = {
         "at": now,
         "tool": line["tool"],
-        "command": command if isinstance(command, str) else json.dumps(line["input"]),
+        # One line, so the escalation's "allow: command ..." can be copied back as it stands.
+        "command": one_line(command) if isinstance(command, str) else json.dumps(line["input"]),
         "reading": verdict.reading,
         "reason": verdict.reason,
     }
@@ -157,7 +159,7 @@ def _act(
     command = line["input"].get("command")
     if verdict.decision == "allow" and event == "PermissionDenied" and isinstance(command, str):
         # The retry goes through the classifier again; the grant is what PreToolUse lets past it.
-        add_judge(state / "grants.json", command.strip(), verdict.rule)
+        add_judge(state / "grants.json", one_line(command), verdict.rule)
         return {"hookSpecificOutput": {"hookEventName": "PermissionDenied", "retry": True}}
     if verdict.decision == "allow" and event == "PermissionRequest":
         return _request("allow")
@@ -195,10 +197,12 @@ def handle(
             }
         }
     line = entry(payload, state, phase, run, now)
-    if is_model_switch(payload):
-        # Nothing answers this dialog on a host; as an open question it reaches the owner. The
+    if line["tool"] == "AskUserQuestion":
+        # The agent's own questions reach the owner through the gate and _check_question. Only
+        # the model-switch dialog, which nothing answers on a host, is made a question here; the
         # Stop hook clears `asking` when the turn ends.
-        note_question(state, payload, now)
+        if is_model_switch(payload):
+            note_question(state, payload, now)
         record(state, line)
         return None
     event = line["event"]

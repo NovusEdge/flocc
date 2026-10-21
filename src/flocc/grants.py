@@ -21,13 +21,19 @@ class Grants:
     commands: tuple[str, ...] = ()
 
 
+def one_line(command: str) -> str:
+    # An allow: line cannot hold a newline, so grants and the commands checked against them are
+    # compared with all whitespace runs collapsed to one space.
+    return " ".join(command.split())
+
+
 def parse_allow(text: str) -> Grants:
     # A command can hold commas, so it takes the rest of the line and shares it with nothing.
     word, _, rest = text.strip().partition(" ")
     if word == "command":
         if not rest.strip():
             raise GrantError("allow: command needs the exact command after it")
-        return Grants(commands=(rest.strip(),))
+        return Grants(commands=(one_line(rest),))
     launches = fix_rounds = None
     agents: list[str] = []
     workflows: list[str] = []

@@ -959,3 +959,17 @@ def test_cleanup_skips_an_unreadable_listing(rt, tmp_path, monkeypatch, capsys):
     clean_scratchpads(rt)
     assert not pad.exists()
     assert capsys.readouterr().err.count("not cleaned") == 2
+
+
+def test_any_owner_reply_answers_the_judges_question(rt):
+    ledger.insert_claim(rt.con, make("NF-1", ()))
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / ASKED).write_text("{}")
+    (d / f"{ASKED}-escalated").touch()
+    rt.linear.replies = {
+        "id-NF-1": [Comment("c1", "no, vendor it instead", "2026-10-09T10:00:00Z", mine=True)]
+    }
+    rt.sessions.alive_names.add("NF-1-test")
+    forward_comments(rt)
+    assert not (d / ASKED).exists() and not (d / f"{ASKED}-escalated").exists()

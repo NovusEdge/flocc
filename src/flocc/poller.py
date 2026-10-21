@@ -407,10 +407,6 @@ def _apply_grants(rt, claim: Claim, body: str) -> None:
             except LinearError as err:
                 print(f"{claim.issue_key}: grant reply not posted: {err}", file=sys.stderr)
             continue
-        if g.commands:
-            # The owner has answered the judge's question.
-            for name in (ASKED, f"{ASKED}-escalated"):
-                (path.parent / name).unlink(missing_ok=True)
 
 
 def forward_comments(rt) -> dict[str, LinearError]:
@@ -449,6 +445,10 @@ def forward_comments(rt) -> dict[str, LinearError]:
                 # After delivery: a dead session breaks out above with last_comment_at unmoved, so
                 # the comment is seen again and neither applied nor answered twice.
                 _apply_grants(rt, claim, comment.body)
+                # Any reply answers the judge's question: a grant, a refusal or other directions.
+                # A marker left behind would keep _check_idle quiet for the rest of the claim.
+                for marker in (ASKED, f"{ASKED}-escalated"):
+                    (state_dir(rt.cfg, claim.issue_key) / marker).unlink(missing_ok=True)
             ledger.update_claim(rt.con, claim.issue_key, last_comment_at=comment.created_at)
     return failed
 
