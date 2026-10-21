@@ -281,6 +281,7 @@ type doctorReport struct {
 	Checks []struct {
 		Name   string `json:"name"`
 		OK     bool   `json:"ok"`
+		Warn   bool   `json:"warn"`
 		Detail string `json:"detail"`
 	} `json:"checks"`
 }
@@ -300,9 +301,12 @@ func doctorOf(ctx context.Context, d *deps, h hosts.Host, dest ship.Dest, st *ui
 	failed := 0
 	for _, c := range rep.Checks {
 		e := ui.Event{Kind: ui.KStep, Name: sanitize(c.Name), State: ui.Done, Detail: sanitize(c.Detail)}
-		if !c.OK {
+		switch {
+		case !c.OK:
 			e.State, e.Err = ui.Failed, e.Detail
 			failed++
+		case c.Warn:
+			e.State = ui.Pending
 		}
 		o.rows = append(o.rows, e)
 	}

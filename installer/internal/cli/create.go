@@ -35,6 +35,15 @@ type hostInstaller struct{ d *deps }
 
 func (h hostInstaller) Ready() error { return needCheckout(h.d) }
 
+// Tailnet is the stored OAuth client, or nil (not a nil *tailnet.Client in the interface) without
+// one, which sends the VM through the QR login.
+func (h hostInstaller) Tailnet() create.KeyMinter {
+	if c := tailnetClientOf(h.d); c != nil {
+		return c
+	}
+	return nil
+}
+
 func (h hostInstaller) HostKnown(name, ssh string) (bool, error) {
 	got, err := hosts.Load(hosts.Dir(h.d.home), name)
 	switch {

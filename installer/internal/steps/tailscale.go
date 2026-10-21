@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 )
 
 type Tailscale struct{}
@@ -77,6 +79,9 @@ func (Tailscale) Apply(ctx context.Context, e *Env) error {
 		return nil
 	}
 	if tsState(ctx, e) != "Running" {
+		if key := scriptedTailscaleKey(e); key != "" {
+			return joinWithKey(ctx, e, key)
+		}
 		def := e.Answers.Hostname
 		if def == "" {
 			def = "flocc"
@@ -96,4 +101,26 @@ func (Tailscale) Apply(ctx context.Context, e *Env) error {
 	}
 	_, err := e.Must(ctx, "tailscale", "set", "--ssh")
 	return err
+}
+
+func scriptedTailscaleKey(e *Env) string {
+	if e.Answers == nil || e.Answers.Secrets == nil {
+		return ""
+	}
+	return e.Answers.Secrets.TailscaleAuthKey
+}
+
+// joinWithKey joins tagged with the desktop's minted key, which has no login and no key expiry to
+// follow up. The key goes on stdin so it never shows in a process list.
+func joinWithKey(ctx context.Context, e *Env, key string) error {
+	name := e.Answers.Hostname
+	if name == "" {
+		name = "flocc"
+	}
+	c := cmd("tailscale", "up", "--ssh", "--hostname="+name, "--advertise-tags="+tailnet.Tag, "--auth-key=file:/dev/stdin")
+	c.Stdin = strings.NewReader(key)
+	if _, err := e.MustCmd(ctx, c); err != nil {
+		return errors.New(strings.ReplaceAll(err.Error(), key, "<auth key>"))
+	}
+	return nil
 }

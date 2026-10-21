@@ -64,6 +64,9 @@ func (w *wizard) run() {
 	if !w.checkout() || !w.fillKeys([]keys.Slot{keys.Linear, keys.Agent}, false) {
 		return
 	}
+	if w.tailnet(); w.stopped {
+		return
+	}
 	list := w.hostFiles()
 	if w.stopped || len(list) == 0 {
 		return

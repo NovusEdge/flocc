@@ -30,6 +30,8 @@ const (
 	needSSH      = "ssh accept rule from autogroup:member to " + Tag + " for root and autogroup:nonroot"
 	needDeny     = "test that " + Tag + " cannot reach the owner's devices"
 	hasTagSource = Tag + " is the source of a grant or acl; remove it so hosts reach nothing"
+	hasWildcard  = "a grant from * lets tagged hosts reach your devices"
+	memberGroup  = "autogroup:member"
 )
 
 type sshRule struct {
@@ -49,7 +51,7 @@ type srcRule struct {
 }
 
 func (r sshRule) admitsHosts() bool {
-	return r.Action == "accept" && slices.Contains(r.Src, "autogroup:member") &&
+	return r.Action == "accept" && slices.Contains(r.Src, memberGroup) &&
 		slices.Contains(r.Dst, Tag) && slices.Contains(r.Users, "root") &&
 		slices.Contains(r.Users, "autogroup:nonroot")
 }
@@ -141,6 +143,7 @@ type facts struct {
 	top                 object
 	owners              object
 	hasOwner, tagSource bool
+	wildSource          bool
 	ssh                 []sshRule
 	tests               []accessTest
 }
@@ -164,6 +167,7 @@ func read(policy []byte) (facts, error) {
 		}
 		for _, r := range rules {
 			f.tagSource = f.tagSource || slices.Contains(r.Src, Tag)
+			f.wildSource = f.wildSource || slices.Contains(r.Src, "*")
 		}
 	}
 	if f.ssh, err = decodeList[sshRule](f.top.get("ssh"), "ssh"); err != nil {
@@ -181,6 +185,9 @@ func (f facts) missing() Missing {
 	if f.tagSource {
 		m = append(m, hasTagSource)
 	}
+	if f.wildSource {
+		m = append(m, hasWildcard)
+	}
 	if !slices.ContainsFunc(f.ssh, sshRule.admitsHosts) {
 		m = append(m, needSSH)
 	}
@@ -191,7 +198,7 @@ func (f facts) missing() Missing {
 }
 
 // Check reports what the policy lacks for hosts tagged Tag to be reachable and to reach nothing.
-// A src of "*" is not counted as the tag: the check is for the tag named in the policy.
+// A src of "*" counts against the policy: Tailscale's default grant from * covers tagged nodes too.
 func Check(policy []byte) (Missing, error) {
 	f, err := read(policy)
 	if err != nil {
@@ -244,6 +251,14 @@ func Merge(policy []byte, owner string, devices []Device) ([]byte, Missing, erro
 	}
 	top := f.top
 	var added Missing
+	if f.wildSource {
+		for _, key := range []string{"grants", "acls"} {
+			if top, err = narrowWildcard(top, key); err != nil {
+				return nil, nil, err
+			}
+		}
+		added = append(added, "src * narrowed to "+memberGroup+" ("+hasWildcard+")")
+	}
 	if !f.hasOwner {
 		owners := f.owners.set(Tag, []string{"autogroup:admin"})
 		top = top.set("tagOwners", json.RawMessage(owners.bytes()))
@@ -293,6 +308,40 @@ func Merge(policy []byte, owner string, devices []Device) ([]byte, Missing, erro
 	}
 	out.WriteByte('\n')
 	return out.Bytes(), added, nil
+}
+
+// narrowWildcard replaces a "*" in the src of each rule under key with autogroup:member, which
+// excludes tagged nodes, and leaves every other field and source where it was.
+func narrowWildcard(top object, key string) (object, error) {
+	raw := top.get(key)
+	if raw == nil {
+		return top, nil
+	}
+	var rules []json.RawMessage
+	if err := json.Unmarshal(raw, &rules); err != nil {
+		return top, fmt.Errorf("policy %s: %w", key, err)
+	}
+	for i, r := range rules {
+		rule, err := parseObject(r)
+		if err != nil {
+			return top, fmt.Errorf("policy %s: %w", key, err)
+		}
+		var src []string
+		if json.Unmarshal(rule.get("src"), &src) != nil || !slices.Contains(src, "*") {
+			continue
+		}
+		var narrowed []string
+		for _, s := range src {
+			if s == "*" {
+				s = memberGroup
+			}
+			if !slices.Contains(narrowed, s) {
+				narrowed = append(narrowed, s)
+			}
+		}
+		rules[i] = rule.set("src", narrowed).bytes()
+	}
+	return top.set(key, rules), nil
 }
 
 func hasSSHTest(top object) bool {

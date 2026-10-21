@@ -18,30 +18,34 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 )
 
 // setupOps are the existing functions flocc setup calls, as fields so its tests can replace each.
 type setupOps struct {
-	checkout   func() (root, version string, err error)
-	fillKeys   func(ctx context.Context, slots []keys.Slot) error
-	checkKeys  func(ctx context.Context) []string
-	hosts      func() []hosts.Host
-	saveHost   func(h hosts.Host) error
-	createLogs func() []string
-	machine    func(ctx context.Context, machine string) machineState
-	create     func(ctx context.Context, spec create.Spec) error
-	add        func(ctx context.Context, name string, reach hosts.Host) error
-	ship       func(ctx context.Context, name string) error
-	readHost   func(ctx context.Context, h hosts.Host) hostState
-	offline    func(ctx context.Context, name string) bool
-	oldUsers   func(ctx context.Context, machine string) ([]oldUser, error)
-	findUser   func(ctx context.Context, machine, user string) (oldUser, bool)
-	cardinal   func() (saved.Saved, bool, error)
-	cardStatus func(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error)
-	cardSetup  func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error
-	removeOld  func(ctx context.Context, machine string, users []string) error
-	login      func(ctx context.Context, name, email string) error
-	cardLogin  func(ctx context.Context, s saved.Saved, email string) error
+	checkout  func() (root, version string, err error)
+	fillKeys  func(ctx context.Context, slots []keys.Slot) error
+	checkKeys func(ctx context.Context) []string
+	// tailnetClient is the stored OAuth client; false when the owner has none.
+	tailnetClient   func() (tailnetAPI, bool)
+	tailscaleStatus func(ctx context.Context) ([]byte, error)
+	hosts           func() []hosts.Host
+	saveHost        func(h hosts.Host) error
+	createLogs      func() []string
+	machine         func(ctx context.Context, machine string) machineState
+	create          func(ctx context.Context, spec create.Spec) error
+	add             func(ctx context.Context, name string, reach hosts.Host) error
+	ship            func(ctx context.Context, name string) error
+	readHost        func(ctx context.Context, h hosts.Host) hostState
+	offline         func(ctx context.Context, name string) bool
+	oldUsers        func(ctx context.Context, machine string) ([]oldUser, error)
+	findUser        func(ctx context.Context, machine, user string) (oldUser, bool)
+	cardinal        func() (saved.Saved, bool, error)
+	cardStatus      func(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error)
+	cardSetup       func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error
+	removeOld       func(ctx context.Context, machine string, users []string) error
+	login           func(ctx context.Context, name, email string) error
+	cardLogin       func(ctx context.Context, s saved.Saved, email string) error
 }
 
 // machineState is what a machine allows. Err is set when ssh could not reach it.
@@ -59,7 +63,18 @@ func newSetupOps(d *deps) setupOps {
 		fillKeys: func(ctx context.Context, s []keys.Slot) error {
 			return keys.Fill(ctx, keysEnv(d), mapped(listHosts(d)), s)
 		},
-		checkKeys:  func(ctx context.Context) []string { return keys.Check(ctx, keysEnv(d), mapped(listHosts(d))) },
+		checkKeys: func(ctx context.Context) []string { return keys.Check(ctx, keysEnv(d), mapped(listHosts(d))) },
+		tailnetClient: func() (tailnetAPI, bool) {
+			c := tailnetClientOf(d)
+			return c, c != nil
+		},
+		tailscaleStatus: func(ctx context.Context) ([]byte, error) {
+			out, err := host.Must(ctx, d.run, host.Cmd{Name: "tailscale", Args: []string{"status", "--json"}})
+			if err != nil {
+				return nil, fmt.Errorf("reading the tailnet on this desktop: %w", err)
+			}
+			return []byte(out), nil
+		},
 		hosts:      func() []hosts.Host { return listHosts(d) },
 		saveHost:   func(h hosts.Host) error { return hosts.Save(hosts.Dir(d.home), h) },
 		createLogs: create.Logged,
@@ -92,6 +107,20 @@ func newSetupOps(d *deps) setupOps {
 		login:      func(ctx context.Context, name, email string) error { return loginWith(ctx, d, name, email) },
 		cardLogin:  cd.Login,
 	}
+}
+
+// tailscaleAPI is a var so tests can point the client at a local server.
+var tailscaleAPI = "https://api.tailscale.com"
+
+// tailnetClientOf is the stored OAuth client, or nil when none is stored or the keyring fails: both
+// leave the owner on the browser login.
+func tailnetClientOf(d *deps) *tailnet.Client {
+	v, err := d.store().Get(keys.Tailscale)
+	id, secret, ok := keys.SplitClient(v)
+	if err != nil || !ok {
+		return nil
+	}
+	return &tailnet.Client{HTTP: d.http, Base: tailscaleAPI, ID: id, Secret: secret}
 }
 
 // oldUser is an earlier flocc's service user as the owner sees it without sudo.

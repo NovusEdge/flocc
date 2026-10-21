@@ -167,3 +167,29 @@ func TestPolicyAsksForJSON(t *testing.T) {
 		t.Fatalf("policy = %s, %v", b, err)
 	}
 }
+
+func TestRefusedTokenIsErrRefused(t *testing.T) {
+	for _, code := range []int{401, 403} {
+		c := server(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) })
+		if _, err := c.Token(context.Background()); !errors.Is(err, ErrRefused) {
+			t.Errorf("%d: err = %v", code, err)
+		}
+	}
+	c := server(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(502) })
+	if _, err := c.Token(context.Background()); errors.Is(err, ErrRefused) {
+		t.Errorf("502 counted as a refusal: %v", err)
+	}
+}
+
+func TestRefusedPolicyReadIsErrRefused(t *testing.T) {
+	c := server(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenOr(w, r) {
+			return
+		}
+		w.WriteHeader(403)
+		io.WriteString(w, "missing scope policy_file:read")
+	})
+	if _, err := c.Policy(context.Background()); !errors.Is(err, ErrRefused) {
+		t.Errorf("err = %v", err)
+	}
+}

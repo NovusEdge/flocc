@@ -196,14 +196,20 @@ def test_write_probe_404_on_a_readable_repo_means_read_only():
 def test_doctor_json_prints_the_checks_and_keeps_the_exit_code(tmp_path, capsys, monkeypatch):
     from flocc.cli import main
 
-    results = [Result("ok", "git", "/usr/bin/git"), Result("fail", "tmux", "no server")]
+    results = [
+        Result("ok", "git", "/usr/bin/git"),
+        Result("warn", "ntfy", "placeholder"),
+        Result("fail", "tmux", "no server"),
+    ]
     monkeypatch.setattr("flocc.doctor.collect_results", lambda cfg: results)
     assert main(["--config", str(EXAMPLE), "doctor", "--json"]) == 1
     out = json.loads(capsys.readouterr().out)
     assert out["v"] == 1
     assert out["checks"][0] == {"name": "config", "ok": True, "detail": str(EXAMPLE)}
+    # A warning stays ok=true for older desktops and carries warn=true for newer ones.
     assert out["checks"][1:] == [
         {"name": "git", "ok": True, "detail": "/usr/bin/git"},
+        {"name": "ntfy", "ok": True, "warn": True, "detail": "placeholder"},
         {"name": "tmux", "ok": False, "detail": "no server"},
     ]
 

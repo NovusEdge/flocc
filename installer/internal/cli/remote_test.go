@@ -369,7 +369,7 @@ func TestDashHAllStatusIsTheFleetView(t *testing.T) {
 }
 
 // doctorJSON is flocc doctor --json from a host new enough to send it.
-const doctorJSON = `{"v":1,"checks":[{"name":"config","ok":true,"detail":"/x"},{"name":"linear","ok":false,"detail":"401"}]}`
+const doctorJSON = `{"v":1,"checks":[{"name":"config","ok":true,"detail":"/x"},{"name":"ntfy","ok":true,"warn":true,"detail":"placeholder"},{"name":"linear","ok":false,"detail":"401"}]}`
 
 // groups is each group's title with the events after it, up to the next group.
 func groups(rec *ui.Recorder) map[string][]ui.Event {
@@ -394,8 +394,9 @@ func TestDashHAllDoctorDrawsARowPerCheckForEveryHostAndFailsTheUnreachableOne(t 
 		t.Fatal("exit 0 with a failing check and an unreachable host")
 	}
 	a := groups(f.rec)["a"]
-	if len(a) != 2 || a[0].Name != "config" || a[0].State != ui.Done || a[0].Detail != "/x" ||
-		a[1].Name != "linear" || a[1].State != ui.Failed || a[1].Err != "401" {
+	if len(a) != 3 || a[0].Name != "config" || a[0].State != ui.Done || a[0].Detail != "/x" ||
+		a[1].Name != "ntfy" || a[1].State != ui.Pending ||
+		a[2].Name != "linear" || a[2].State != ui.Failed || a[2].Err != "401" {
 		t.Fatalf("%+v", a)
 	}
 	if _, ok := groups(f.rec)["b"]; ok {
