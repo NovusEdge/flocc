@@ -234,15 +234,11 @@ func (m inlineModel) toForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.form == nil {
 		return m, nil
 	}
-	_, cmd := m.form.Update(msg)
-	switch m.form.State {
-	case huh.StateCompleted:
-		m.reply <- promptReply{v: m.result()}
-	case huh.StateAborted:
-		m.reply <- promptReply{err: huh.ErrUserAborted}
-	default:
+	cmd, reply, ended := advance(m.form, m.result, msg)
+	if !ended {
 		return m, cmd
 	}
+	m.reply <- reply
 	m.form, m.result, m.reply = nil, nil, nil
 	queued := m.queue
 	m.queue = nil

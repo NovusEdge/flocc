@@ -1,9 +1,24 @@
 package ui
 
 import (
+	"io"
 	"slices"
+	"strings"
 	"testing"
 )
+
+func TestOpenFullDrawsAndRecords(t *testing.T) {
+	var out syncBuf
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	s := Open(ModeFull, &out, pr, "flocc setup")
+	s.Group("Keys")
+	s.Step("ssh key").Done("ed25519")
+	s.Close()
+	if got := out.String(); !strings.Contains(got, "\x1b[?1049h") || !strings.Contains(got, "ed25519") {
+		t.Errorf("full mode output lacks the alt screen or the record: %q", got)
+	}
+}
 
 func TestModeFor(t *testing.T) {
 	cases := []struct {
@@ -20,7 +35,8 @@ func TestModeFor(t *testing.T) {
 		{"flag", ModeInline, env(), true, ModeFull, ModeInline},
 		{"env", "", env("FLOCC_UI", "plain"), true, ModeFull, ModePlain},
 		{"flag beats env", ModeInline, env("FLOCC_UI", "plain"), true, ModeFull, ModeInline},
-		{"default full falls back to inline", "", env(), true, ModeFull, ModeInline},
+		{"default full stays full", "", env(), true, ModeFull, ModeFull},
+		{"flag full", ModeFull, env(), true, ModeInline, ModeFull},
 		{"bad env takes default", "", env("FLOCC_UI", "fancy"), true, ModeInline, ModeInline},
 	}
 	for _, c := range cases {

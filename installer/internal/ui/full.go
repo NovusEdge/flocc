@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/progress"
@@ -90,6 +91,7 @@ type fullModel struct {
 	form        *huh.Form
 	result      func() any
 	reply       chan promptReply
+	stopping    bool // the open form is the stop question, not a prompt of the session
 	interrupted bool
 	interrupt   func()
 }
@@ -126,10 +128,10 @@ func (m fullModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case promptMsg:
 		m.form, m.result = formFor(msg.req)
-		m.reply = msg.reply
+		m.reply, m.stopping = msg.reply, false
 		return m, m.form.Init()
 	case handoffMsg:
-		return m, tea.ExecProcess(msg.cmd, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
+		return m, tea.Exec(&bannerCmd{cmd: msg.cmd, why: msg.why}, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
 	case handoffDone:
 		msg.reply <- msg.err
 		return m, nil
@@ -142,6 +144,9 @@ func (m fullModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.handover = msg.Width < minFullCols || msg.Height < minFullRows
+		if m.handover {
+			return m, tea.Quit
+		}
 	case tea.KeyPressMsg:
 		if m.form == nil {
 			return m.key(msg.String())
@@ -154,8 +159,9 @@ func (m fullModel) key(k string) (tea.Model, tea.Cmd) {
 	page := max(m.bodyHeight()-1, 1)
 	switch k {
 	case "q", "ctrl+c":
-		m.interrupted = true
-		m.interrupt()
+		m.form, m.result = stopForm(m.title)
+		m.stopping = true
+		return m, m.form.Init()
 	case "l":
 		m.logView, m.scroll = !m.logView, 0
 	case "esc":
@@ -370,9 +376,6 @@ func (m fullModel) rail() []string {
 
 func (m fullModel) paneLines(width int) []string {
 	out := Out{Color: true}
-	if m.form != nil {
-		return strings.Split(m.form.View(), "\n")
-	}
 	if m.logView {
 		return m.logLines(width)
 	}
@@ -436,6 +439,17 @@ func cell(s string, w int) string {
 }
 
 func (m fullModel) View() tea.View {
+	w, h := m.dims()
+	frame := m.frame()
+	if m.form != nil {
+		frame = overlay(frame, modalBox(m.form.View(), w), w, h)
+	}
+	v := tea.NewView(frame)
+	v.AltScreen = true
+	return v
+}
+
+func (m fullModel) frame() string {
 	w, _ := m.dims()
 	out := Out{Color: true}
 	dim := func(s string) string { return out.paint("2", s) }
@@ -468,9 +482,7 @@ func (m fullModel) View() tea.View {
 	bar := m.bar
 	bar.SetWidth(max(min(40, w-lipgloss.Width(keys)-8), 10))
 	lines = append(lines, rule, bar.ViewAs(m.fraction())+"  "+dim(keys))
-	v := tea.NewView(strings.Join(lines, "\n"))
-	v.AltScreen = true
-	return v
+	return strings.Join(lines, "\n")
 }
 
 // toForm gives the open form every message it was not handed already, and closes it when it ends.
@@ -478,76 +490,218 @@ func (m fullModel) toForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.form == nil {
 		return m, nil
 	}
-	_, cmd := m.form.Update(msg)
-	switch m.form.State {
-	case huh.StateCompleted:
-		m.reply <- promptReply{v: m.result()}
-	case huh.StateAborted:
-		m.reply <- promptReply{err: huh.ErrUserAborted}
-	default:
+	cmd, reply, ended := advance(m.form, m.result, msg)
+	if !ended {
 		return m, cmd
 	}
-	m.form, m.result, m.reply = nil, nil, nil
+	if m.stopping {
+		if stop, _ := reply.v.(bool); stop {
+			m.interrupted = true
+			m.interrupt()
+		}
+	} else {
+		m.reply <- reply
+	}
+	m.form, m.result, m.reply, m.stopping = nil, nil, nil, false
 	return m, cmd
 }
 
-type full struct {
-	p     *tea.Program
-	out   io.Writer
-	done  chan struct{}
-	final fullModel // set before done closes
+// bannerCmd runs cmd after printing "── why ──" to the terminal's output: Println does nothing on the
+// alternate screen, and the child draws on the normal screen Bubble Tea has released. A why of
+// "-" shows none, for forwarded commands.
+type bannerCmd struct {
+	cmd *exec.Cmd
+	why string
+	out io.Writer
 }
 
-// NewFull draws the session on the alternate screen of out, reading keys from in. Prompts and
-// hand-overs use the inline mechanism until the full-screen ones exist.
+func (b *bannerCmd) SetStdin(r io.Reader) {
+	if b.cmd.Stdin == nil {
+		b.cmd.Stdin = r
+	}
+}
+
+func (b *bannerCmd) SetStdout(w io.Writer) {
+	b.out = w
+	if b.cmd.Stdout == nil {
+		b.cmd.Stdout = w
+	}
+}
+
+func (b *bannerCmd) SetStderr(w io.Writer) {
+	if b.cmd.Stderr == nil {
+		b.cmd.Stderr = w
+	}
+}
+
+func (b *bannerCmd) Run() error {
+	if b.why != "" && b.why != "-" && b.out != nil {
+		fmt.Fprintf(b.out, "── %s ──\n", b.why)
+	}
+	return b.cmd.Run()
+}
+
+// recordText is what the normal screen keeps of a full-screen run: every ended step under its
+// group, then the to-do box and the log path.
+func recordText(m fullModel, todos []string) string {
+	var b strings.Builder
+	for _, g := range m.groups {
+		var rows []string
+		for _, it := range g.items {
+			if it.step != nil && !it.step.running() {
+				rows = append(rows, RowText(it.step.ev, nameWidth, true))
+			}
+		}
+		if len(rows) > 0 {
+			b.WriteString(groupText(g.name) + "\n" + strings.Join(rows, "\n") + "\n")
+		}
+	}
+	b.WriteString(CloseText(todos, m.log))
+	return b.String()
+}
+
+// full keeps its own copy of every event: when the terminal is too small the program quits and
+// the copy is replayed into an inline renderer, and the record is rebuilt from it after the
+// alternate screen is gone. mu orders Draw against that swap, so no event falls between the two.
+type full struct {
+	p        *tea.Program
+	out      io.Writer
+	in       io.Reader
+	done     chan struct{} // closes after a hand-over, if any, is complete
+	newInner func(io.Writer, io.Reader) Renderer
+
+	mu     sync.Mutex
+	events []Event
+	inner  Renderer // non-nil once the run was handed over
+}
+
+// NewFull draws the session on the alternate screen of out, reading keys from in. Below 80x20 it
+// hands the session over to an inline renderer on the same streams.
 func NewFull(out io.Writer, in io.Reader, title string) Renderer { return newFull(out, in, title) }
 
 func newFull(out io.Writer, in io.Reader, title string, opts ...tea.ProgramOption) *full {
-	r := &full{out: out, done: make(chan struct{})}
+	return newFullWith(out, in, title, NewInline, opts...)
+}
+
+func newFullWith(out io.Writer, in io.Reader, title string, inner func(io.Writer, io.Reader) Renderer, opts ...tea.ProgramOption) *full {
+	r := &full{out: out, in: in, done: make(chan struct{}), newInner: inner}
 	m := newFullModel(time.Now, buildVersion())
 	m.title = title
 	opts = append([]tea.ProgramOption{tea.WithOutput(out), tea.WithInput(in), tea.WithoutSignalHandler()}, opts...)
 	r.p = tea.NewProgram(m, opts...)
-	go func() {
-		defer close(r.done)
-		if fm, err := r.p.Run(); err == nil {
-			r.final, _ = fm.(fullModel)
-		}
-	}()
+	go r.run()
 	return r
 }
 
-func (r *full) Draw(e Event) { r.p.Send(drawMsg{e}) }
+func (r *full) run() {
+	defer close(r.done)
+	defer r.restoreOnPanic()
+	fm, err := r.p.Run()
+	if m, ok := fm.(fullModel); ok && err == nil && m.handover {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		inner := r.newInner(r.out, r.in)
+		for _, e := range r.events {
+			inner.Draw(e)
+		}
+		r.inner = inner
+	}
+}
+
+// restoreOnPanic runs deferred: it gives the terminal back before the record is printed, then
+// lets the panic go on.
+func (r *full) restoreOnPanic() {
+	x := recover()
+	if x == nil {
+		return
+	}
+	r.p.Kill()
+	r.p.Wait()
+	var todos []string
+	r.mu.Lock()
+	for _, e := range r.events {
+		if e.Kind == KTodo {
+			todos = append(todos, e.Text)
+		}
+	}
+	r.mu.Unlock()
+	io.WriteString(r.out, r.record(todos))
+	panic(x)
+}
+
+func (r *full) record(todos []string) string {
+	m := newFullModel(time.Now, "")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.events {
+		m.add(e)
+	}
+	return recordText(m, todos)
+}
+
+// handedOver is the inline renderer the run moved to, or nil.
+func (r *full) handedOver() Renderer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inner
+}
+
+func (r *full) Draw(e Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, e)
+	if r.inner != nil {
+		r.inner.Draw(e)
+		return
+	}
+	r.p.Send(drawMsg{e})
+}
 
 func (r *full) Prompt(p PromptReq) (any, error) {
+	if in := r.handedOver(); in != nil {
+		return in.Prompt(p)
+	}
 	reply := make(chan promptReply, 1)
 	r.p.Send(promptMsg{req: p, reply: reply})
 	select {
 	case a := <-reply:
 		return a.v, a.err
 	case <-r.done:
+		if in := r.handedOver(); in != nil {
+			return in.Prompt(p)
+		}
 		return nil, errInlineEnded
 	}
 }
 
 func (r *full) Handoff(why string, c *exec.Cmd) error {
+	if in := r.handedOver(); in != nil {
+		return in.Handoff(why, c)
+	}
 	reply := make(chan error, 1)
 	r.p.Send(handoffMsg{why: why, cmd: c, reply: reply})
 	select {
 	case err := <-reply:
 		return err
 	case <-r.done:
+		if in := r.handedOver(); in != nil {
+			return in.Handoff(why, c)
+		}
 		return errInlineEnded
 	}
 }
 
-// Close leaves the alternate screen, so nothing drawn there survives; the to-dos and the log path
-// go to the normal screen as text.
+// Close leaves the alternate screen, so nothing drawn there survives; the record goes to the
+// normal screen as text.
 func (r *full) Close(todos []string) int {
+	if in := r.handedOver(); in != nil {
+		return in.Close(todos)
+	}
 	r.p.Send(closeMsg{todos})
 	<-r.done
-	if text := CloseText(todos, r.final.log); text != "" {
-		io.WriteString(r.out, text)
+	if in := r.handedOver(); in != nil {
+		return in.Close(todos)
 	}
+	io.WriteString(r.out, r.record(todos))
 	return 0
 }

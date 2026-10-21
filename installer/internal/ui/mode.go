@@ -16,7 +16,7 @@ const ModeEnv = "FLOCC_UI"
 func (m Mode) valid() bool { return m == ModePlain || m == ModeInline || m == ModeFull }
 
 // ModeFor picks the renderer: a non-terminal out, NO_COLOR or TERM=dumb is always plain; else the
-// flag, else FLOCC_UI, else def. Full falls back to inline until full.go exists.
+// flag, else FLOCC_UI, else def.
 func ModeFor(flag Mode, getenv func(string) string, isTerminal bool, def Mode) Mode {
 	if !colorOK(isTerminal, getenv) {
 		return ModePlain
@@ -28,16 +28,17 @@ func ModeFor(flag Mode, getenv func(string) string, isTerminal bool, def Mode) M
 	if !m.valid() {
 		m = def
 	}
-	if m == ModeFull {
-		return ModeInline
-	}
 	return m
 }
 
-// Open starts a session on out/in in mode m.
-func Open(m Mode, out io.Writer, in io.Reader) Session {
-	if m == ModePlain {
+// Open starts a session on out/in in mode m. title names the command in the full-screen header
+// and stop question (flocc setup, host create, ...); the others ignore it.
+func Open(m Mode, out io.Writer, in io.Reader, title ...string) Session {
+	switch m {
+	case ModePlain:
 		return New(NewPlain(out, in, false))
+	case ModeFull:
+		return New(NewFull(out, in, append(title, "flocc")[0]))
 	}
 	return New(NewInline(out, in))
 }
