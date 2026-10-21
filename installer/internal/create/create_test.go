@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 type fakeUI struct {
@@ -338,8 +339,30 @@ func TestRunStepsSkipsDoneStepsAndAppliesTheRest(t *testing.T) {
 	if a.applied != 0 || b.applied != 1 {
 		t.Fatalf("a=%d b=%d", a.applied, b.applied)
 	}
-	if !strings.Contains(out.String(), "✓ a") || !strings.Contains(out.String(), "• b") || !strings.Contains(out.String(), "✓ b") {
+	if !strings.Contains(out.String(), "✓ 1/2 a ") || !strings.Contains(out.String(), "→ 2/2 b ") || !strings.Contains(out.String(), "✓ 2/2 b ") {
 		t.Fatal(out.String())
+	}
+	if strings.ContainsAny(out.String(), "\r\x1b") {
+		t.Fatalf("a buffer is not a terminal: %q", out.String())
+	}
+}
+
+type qrStep struct{ fakeStep }
+
+func (*qrStep) Attached() bool { return true }
+
+func TestRunStepsGivesAnAttachedStepPlainLinesAndTheRestALiveLine(t *testing.T) {
+	e, out := testEnv(host.NewFake())
+	e.prog = &ui.Progress{Out: ui.Out{W: out, Color: true}, Animate: true, NameWidth: 10}
+	if err := RunSteps(context.Background(), e, []Step{&qrStep{fakeStep{name: "qr"}}, &fakeStep{name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(out.String(), "\n")
+	if len(lines) < 3 || strings.Contains(lines[0]+lines[1], "\r") || strings.Contains(lines[0]+lines[1], "⠋") {
+		t.Fatalf("the attached step got a live line: %q", out.String())
+	}
+	if !strings.Contains(lines[2], "\r") {
+		t.Fatalf("the other step should animate: %q", lines[2])
 	}
 }
 

@@ -12,6 +12,9 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
   its next step in bold, notes yellow, every line indented two spaces. There is no colour when the
   output is not a terminal, `NO_COLOR` is set or `TERM=dumb`, so logs and the host's summary line
   stay plain. `host add` says why it passes over a digest issue (closed, or missing).
+- `ship` and `host create` show the step being applied as a live line with a counter and elapsed
+  time (`⠙ 3/9 Packages ... 0:41`), replaced by its result when it ends. Where the output is not a
+  terminal, each step gets a plain start line and a done line instead.
 
 - `flocc host create <machine> <name>` makes a host as an Incus VM, over SSH as your own account:
   it checks Incus, puts `incusbr0` in a firewalld zone that allows only DHCP and DNS with a forward

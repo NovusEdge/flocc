@@ -40,6 +40,10 @@ type Tailnet struct{}
 
 func (Tailnet) Name() string { return "Tailscale" }
 
+// Attached: Apply asks for the auth key in a form, opens the shared ssh master and runs tailscale
+// up attached, which shows a QR code or a login link.
+func (Tailnet) Attached() bool { return true }
+
 func (Tailnet) Check(ctx context.Context, e *Env) (bool, string, error) {
 	ts := e.vmTailscale(ctx)
 	label, _, _ := strings.Cut(ts.dnsName, ".")

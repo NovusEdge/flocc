@@ -73,6 +73,7 @@ type Env struct {
 	Sleep func(time.Duration)
 	TTY   bool // stdin is a terminal, where ship.Connect can open the machine's master
 
+	prog      *ui.Progress
 	sudo      bool // sudo -n works on the machine
 	incusSudo bool // the account is not in incus-admin, so incus goes through sudo
 }
@@ -154,29 +155,54 @@ type Step interface {
 
 // RunSteps checks each step just before it would run: a later step's check needs the earlier
 // steps' outcome, such as the VM existing.
+//
+// The steps are numbered by position, done or not, because which of them run is known only as
+// each is reached. An applied step shows a live line unless it is Attached.
 func RunSteps(ctx context.Context, e *Env, steps []Step) error {
-	for _, s := range steps {
+	p := e.progress()
+	for i, s := range steps {
 		done, detail, err := s.Check(ctx, e)
 		if err != nil {
 			return fmt.Errorf("%s: %w", s.Name(), err)
 		}
-		if !done {
-			o := e.o()
-			o.Line("%s %-10s %s", o.Warn("•"), s.Name(), detail)
+		l := ui.Line{N: i + 1, Total: len(steps), Name: s.Name(), Detail: detail, Attached: attachedStep(s)}
+		if done {
+			p.Done(l)
+			continue
+		}
+		err = p.Run(l, func() (ui.Outcome, error) {
 			if err := s.Apply(ctx, e); err != nil {
-				return fmt.Errorf("%s: %w", s.Name(), err)
+				return ui.Outcome{}, fmt.Errorf("%s: %w", s.Name(), err)
 			}
-			if done, detail, err = s.Check(ctx, e); err != nil {
-				return fmt.Errorf("%s: %w", s.Name(), err)
+			done, detail, err := s.Check(ctx, e)
+			if err != nil {
+				return ui.Outcome{}, fmt.Errorf("%s: %w", s.Name(), err)
 			}
 			if !done {
-				return fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
+				return ui.Outcome{}, fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
 			}
+			return ui.Outcome{Detail: detail}, nil
+		})
+		if err != nil {
+			return err
 		}
-		o := e.o()
-		o.Line("%s %-10s %s", o.OK("✓"), s.Name(), detail)
 	}
 	return nil
+}
+
+// attachedStep reports whether the step reads the terminal or draws on it, as a step that shows
+// a QR code or asks for a key does: a live line under that would be redrawn into it.
+func attachedStep(s Step) bool {
+	a, ok := s.(interface{ Attached() bool })
+	return ok && a.Attached()
+}
+
+func (e *Env) progress() *ui.Progress {
+	if e.prog == nil {
+		e.prog = ui.NewProgress(e.Out)
+		e.prog.NameWidth = 10
+	}
+	return e.prog
 }
 
 func (e *Env) o() ui.Out { return ui.NewOut(e.Out) }

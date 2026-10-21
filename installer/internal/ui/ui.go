@@ -26,6 +26,9 @@ type UI interface {
 	ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error
 	PickRedo(done []string) ([]string, error)
 	Spin(title string, fn func() error) error
+	// Step runs fn as the step l under a progress line. Anything fn shows goes through this UI, so
+	// a Note while a live line is up clears it first.
+	Step(l Line, fn func() (Outcome, error)) error
 }
 
 // Scripted answers from an answers file and never reads the terminal.
@@ -35,7 +38,19 @@ type Scripted struct {
 	// Color is set by the desktop's --color: the output reaches the desktop through a pipe, so
 	// only the desktop can tell whether its own terminal shows colour.
 	Color bool
+	// Prog draws the live step line; made on first use from Out and Color, which also decide
+	// whether it animates: --color says the far end is a terminal.
+	Prog *Progress
 }
+
+func (s *Scripted) progress() *Progress {
+	if s.Prog == nil {
+		s.Prog = &Progress{Out: Out{W: s.Out, Color: s.Color}, Animate: s.Color}
+	}
+	return s.Prog
+}
+
+func (s *Scripted) Step(l Line, fn func() (Outcome, error)) error { return s.progress().Run(l, fn) }
 
 func (s *Scripted) Status(steps []StepStatus) {
 	o := Out{W: s.Out, Color: s.Color}
@@ -49,8 +64,10 @@ func (s *Scripted) Status(steps []StepStatus) {
 }
 
 func (s *Scripted) Note(title, body string) {
-	fmt.Fprintf(s.Out, "\n%s\n", title)
-	Out{W: s.Out, Color: s.Color}.Line("%s", body)
+	s.progress().Quiet(func() {
+		fmt.Fprintf(s.Out, "\n%s\n", title)
+		Out{W: s.Out, Color: s.Color}.Line("%s", body)
+	})
 }
 
 func (s *Scripted) Confirm(string, bool) (bool, error)   { return true, nil }

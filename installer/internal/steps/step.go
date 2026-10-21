@@ -111,29 +111,42 @@ func RunAll(ctx context.Context, e *Env, steps []Step) error {
 	if err != nil {
 		return err
 	}
+	var todo []int
 	for i, s := range steps {
-		if statuses[i].Done && !slices.Contains(redo, s.Name()) {
-			continue
+		if !statuses[i].Done || slices.Contains(redo, s.Name()) {
+			todo = append(todo, i)
 		}
-		if err := s.Apply(ctx, e); err != nil {
-			if errors.Is(err, ErrPending) {
-				e.Pending = append(e.Pending, s.Name())
-				continue
-			}
-			if errors.Is(err, ErrStopped) {
-				return err
-			}
-			return fmt.Errorf("%s: %w", s.Name(), err)
-		}
-		ok, detail, err := s.Check(ctx, e)
-		if err != nil {
-			return fmt.Errorf("%s: check: %w", s.Name(), err)
-		}
-		if !ok {
-			return fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
+	}
+	for n, i := range todo {
+		s := steps[i]
+		line := ui.Line{N: n + 1, Total: len(todo), Name: s.Name(), Detail: statuses[i].Detail}
+		if err := e.UI.Step(line, func() (ui.Outcome, error) { return apply(ctx, e, s, line.Detail) }); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// apply runs one step and checks it again. The errors are final: RunAll returns them as they are.
+func apply(ctx context.Context, e *Env, s Step, before string) (ui.Outcome, error) {
+	if err := s.Apply(ctx, e); err != nil {
+		if errors.Is(err, ErrPending) {
+			e.Pending = append(e.Pending, s.Name())
+			return ui.Outcome{Detail: before, Pending: true}, nil
+		}
+		if errors.Is(err, ErrStopped) {
+			return ui.Outcome{}, err
+		}
+		return ui.Outcome{}, fmt.Errorf("%s: %w", s.Name(), err)
+	}
+	ok, detail, err := s.Check(ctx, e)
+	if err != nil {
+		return ui.Outcome{}, fmt.Errorf("%s: check: %w", s.Name(), err)
+	}
+	if !ok {
+		return ui.Outcome{}, fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
+	}
+	return ui.Outcome{Detail: detail}, nil
 }
 
 func cmd(name string, args ...string) host.Cmd { return host.Cmd{Name: name, Args: args} }
