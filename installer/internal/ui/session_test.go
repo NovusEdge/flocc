@@ -51,12 +51,23 @@ func TestTodosAndCode(t *testing.T) {
 	r := &Recorder{}
 	s := New(r)
 	s.Todo("log in on flocc-2")
-	s.Step("x").Pending("waits on you")
+	s.Step("x").Fail(errors.New("boom"))
 	if code := s.Close(); code != 1 {
 		t.Errorf("code %d", code)
 	}
 	if len(r.Todos) != 1 {
 		t.Errorf("todos %v", r.Todos)
+	}
+}
+
+func TestPendingRowsDoNotFailTheSession(t *testing.T) {
+	s := New(&Recorder{})
+	s.Step("Login").Pending("claude is not logged in")
+	if s.Failed() {
+		t.Error("Failed() is true after only a pending row")
+	}
+	if code := s.Close(); code != 0 {
+		t.Errorf("Close = %d, want 0", code)
 	}
 }
 

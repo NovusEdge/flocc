@@ -56,8 +56,8 @@ type Session interface {
 	Table(t Table)
 	Plan(groups []string) // the sections to come; only full-screen draws them
 	LogPath(p string)     // named in the record at the end
-	Failed() bool         // any step failed or ended pending
-	Close() int           // 1 when a step failed or is pending, else 0
+	Failed() bool         // any step failed
+	Close() int           // 1 when a step failed, else 0
 }
 
 // session serialises every call into Renderer.Draw under one mutex, so a renderer sees events in
@@ -222,7 +222,7 @@ func (st *Step) end(e Event) {
 	}
 	st.ended = true
 	delete(st.s.open, st.id)
-	if e.State == Failed || e.State == Pending {
+	if e.State == Failed {
 		st.s.failed = true
 	}
 	e.Kind, e.ID, e.Name = KStep, st.id, st.name

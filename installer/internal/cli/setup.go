@@ -36,6 +36,7 @@ type wizard struct {
 	d         *deps
 	ops       setupOps
 	version   [3]int
+	pending   bool                    // a row ended pending: setup is not finished
 	stopped   bool                    // a prompt was cancelled: nothing more is asked or run
 	failed    map[string]bool         // by saved.HostPart: machines whose host failed, which steps 4-6 skip
 	probed    map[string]machineState // by saved.HostPart
@@ -475,6 +476,7 @@ func (w *wizard) end(st *ui.Step, state rowState, name, detail string) {
 		st.Skip(detail)
 	case rowPending:
 		st.Pending(detail)
+		w.pending = true
 		w.d.ui.Todo(name + ": " + detail)
 	default:
 		st.Fail(errors.New(detail))
@@ -501,7 +503,7 @@ func (w *wizard) summary() int {
 		w.d.ui.Todo("Stopped. Run flocc setup again to go on.")
 		return 1
 	}
-	if w.d.ui.Failed() {
+	if w.pending || w.d.ui.Failed() {
 		return 1
 	}
 	return 0
