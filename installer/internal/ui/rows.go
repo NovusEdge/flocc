@@ -34,12 +34,18 @@ func RowText(e Event, nameWidth int, color bool) string {
 
 // ThemedRow is RowText drawn with th: the mark in its state's colour, the detail in Dim.
 func ThemedRow(e Event, nameWidth int, th theme.Theme) string {
-	return rowText(e, nameWidth, ThemedMark(e.State, th), func(s string) string {
+	return rowText(e, nameWidth, ThemedMark(e.State, th), dimmer(th))
+}
+
+// dimmer draws text in Dim and leaves an empty string empty, so a row without detail keeps no
+// trailing escape codes for TrimRight to miss.
+func dimmer(th theme.Theme) func(string) string {
+	return func(s string) string {
 		if s == "" {
 			return s
 		}
 		return th.Dim.Render(s)
-	})
+	}
 }
 
 func rowText(e Event, nameWidth int, mark string, detail func(string) string) string {

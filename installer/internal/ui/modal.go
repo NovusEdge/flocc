@@ -6,6 +6,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 const modalWidth = 64
@@ -23,9 +25,13 @@ func overlay(frame, box string, w, h int) string {
 }
 
 // modalBox is the open form in a rounded box. huh draws the question's title and facts itself.
-func modalBox(form string, w int) string {
+func modalBox(form string, w int) string { return modalBoxIn(theme.New(true), form, w) }
+
+// modalBoxIn is modalBox with the border in th's accent.
+func modalBoxIn(th theme.Theme, form string, w int) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.Accent.GetForeground()).
 		Padding(0, 1).
 		Width(min(modalWidth, max(w-8, 1))).
 		Render(form)
@@ -44,7 +50,7 @@ func advance(f *huh.Form, result func() any, msg tea.Msg) (cmd tea.Cmd, reply pr
 }
 
 // stopForm asks whether to cancel the running step.
-func stopForm(title string) (*huh.Form, func() any) {
+func stopForm(dark *bool, title string) (*huh.Form, func() any) {
 	var stop bool
 	f := huh.NewConfirm().
 		Title("Stop " + title + "?").
@@ -52,5 +58,5 @@ func stopForm(title string) (*huh.Form, func() any) {
 		Affirmative("Stop").
 		Negative("Keep going").
 		Value(&stop)
-	return Form(huh.NewGroup(f)), func() any { return stop }
+	return formIn(dark, huh.NewGroup(f)), func() any { return stop }
 }

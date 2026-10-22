@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"image/color"
 	"io"
 	"os/exec"
 	"regexp"
@@ -12,6 +14,9 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme/themetest"
 )
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -48,6 +53,134 @@ func keysAndHosts(m fullModel) fullModel {
 	)
 }
 
+func themed(m fullModel) fullModel {
+	m.th = theme.New(true)
+	return m
+}
+
+func lineWith(t *testing.T, v, sub string) int {
+	t.Helper()
+	for i, l := range strings.Split(v, "\n") {
+		if strings.Contains(l, sub) {
+			return i
+		}
+	}
+	t.Fatalf("no line with %q:\n%s", sub, v)
+	return -1
+}
+
+func TestFullHandsOverBelowSixtyByTwenty(t *testing.T) {
+	m := keysAndHosts(newFullModel(fixedNow, "dev"))
+	m, cmd := updateFull(m, tea.WindowSizeMsg{Width: 59, Height: 19})
+	if !m.handover || cmd == nil {
+		t.Error("59×19 did not hand over")
+	}
+	for _, sz := range [][2]int{{60, 19}, {59, 20}} {
+		if m, _ := updateFull(newFullModel(fixedNow, "dev"), tea.WindowSizeMsg{Width: sz[0], Height: sz[1]}); !m.handover {
+			t.Errorf("%d×%d did not hand over", sz[0], sz[1])
+		}
+	}
+	m, _ = updateFull(newFullModel(fixedNow, "dev"), tea.WindowSizeMsg{Width: 60, Height: 20})
+	if m.handover {
+		t.Error("60×20 handed over")
+	}
+}
+
+func TestFullStacksBelowHundredColumns(t *testing.T) {
+	stacked := plainView(keysAndHosts(sized(80, 24)))
+	if lineWith(t, stacked, "╭─ sections") >= lineWith(t, stacked, "╭─ Hosts") {
+		t.Errorf("at 80 columns the rail is not above the live pane:\n%s", stacked)
+	}
+	side := plainView(keysAndHosts(sized(140, 40)))
+	top := lineWith(t, side, "╭─ sections")
+	if top != lineWith(t, side, "╭─ Hosts") {
+		t.Errorf("at 140 columns the rail is not beside the live pane:\n%s", side)
+	}
+	row := []rune(strings.Split(side, "\n")[top])
+	if w := slices.Index(row, '╮') + 1 - theme.MarginX; w != 24 {
+		t.Errorf("rail pane is %d wide, want 24", w)
+	}
+}
+
+func TestFullKeyBarReplacesHints(t *testing.T) {
+	m := themed(keysAndHosts(sized(100, 30)))
+	v := plainView(m)
+	for _, want := range []string{"l log", "? keys", "q quit"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("key bar lacks %q:\n%s", want, v)
+		}
+	}
+	if strings.Contains(v, "PgUp") {
+		t.Errorf("old hint text is back:\n%s", v)
+	}
+	scroll := func(m fullModel) (on, off bool) {
+		raw := m.View().Content
+		return strings.Contains(raw, m.th.Accent.Render("↑↓")), strings.Contains(raw, m.th.Off.Render("↑↓"))
+	}
+	if on, off := scroll(m); on || !off {
+		t.Errorf("↑↓ scroll outside the log view: on=%v off=%v", on, off)
+	}
+	m, _ = updateFull(m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if on, off := scroll(m); !on || off {
+		t.Errorf("↑↓ scroll in the log view: on=%v off=%v", on, off)
+	}
+}
+
+func TestFullKeysPanelListsEveryKey(t *testing.T) {
+	m := keysAndHosts(sized(100, 30))
+	m, _ = updateFull(m, tea.KeyPressMsg{Code: '?', Text: "?"})
+	v := plainView(m)
+	for _, want := range []string{"╭─ keys", "PgUp", "esc", "scroll"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("keys panel lacks %q:\n%s", want, v)
+		}
+	}
+	if got := strings.Count(v, "\n") + 1; got != 30 {
+		t.Errorf("view is %d lines with the panel open, want 30", got)
+	}
+}
+
+func TestFullGolden(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {140, 40}} {
+		m := keysAndHosts(sized(sz[0], sz[1]))
+		m.title = "flocc setup"
+		themetest.Golden(t, fmt.Sprintf("full_%dx%d", sz[0], sz[1]), m.View().Content)
+	}
+}
+
+func TestFullLogViewGolden(t *testing.T) {
+	m := keysAndHosts(sized(80, 24))
+	m.title = "flocc setup"
+	m = feed(m, Event{Kind: KLine, ID: "s3", Text: "pulling image"}, Event{Kind: KLine, ID: "s3", Text: "extracting"})
+	m, _ = updateFull(m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	themetest.Golden(t, "full_log_80x24", m.View().Content)
+}
+
+func TestFullBackgroundSwitchesPaletteSpinnerAndBar(t *testing.T) {
+	m := themed(sized(100, 30))
+	asked := false
+	if batch, ok := m.Init()().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			asked = asked || (c != nil && c() == tea.RequestBackgroundColor())
+		}
+	}
+	if !asked {
+		t.Error("Init does not request the background colour")
+	}
+	m, _ = updateFull(m, tea.BackgroundColorMsg{Color: color.White})
+	light := theme.For(false)
+	if m.th.Dark || m.bar.FullColor != light.Accent || m.bar.EmptyColor != light.Dim {
+		t.Errorf("light background left dark=%v bar=%v/%v", m.th.Dark, m.bar.FullColor, m.bar.EmptyColor)
+	}
+	if m.spinner.Style.GetForeground() != light.Accent {
+		t.Error("spinner kept the dark accent")
+	}
+	m, _ = updateFull(m, tea.BackgroundColorMsg{Color: color.Black})
+	if !m.th.Dark || m.bar.FullColor != theme.For(true).Accent {
+		t.Error("dark background did not switch back")
+	}
+}
+
 func TestFullFrame(t *testing.T) {
 	m := keysAndHosts(sized(100, 30))
 	if !m.View().AltScreen {
@@ -63,7 +196,7 @@ func TestFullFrame(t *testing.T) {
 	if !strings.Contains(v, glyph+" Hosts") {
 		t.Errorf("no spinner before Hosts:\n%s", v)
 	}
-	if !strings.Contains(v, "Hosts\n") && !strings.Contains(v, "Hosts ") {
+	if !strings.Contains(v, "╭─ Hosts") {
 		t.Errorf("no pane title:\n%s", v)
 	}
 	if got := strings.Count(v, "\n") + 1; got != 30 {
@@ -120,7 +253,7 @@ func TestFullLogViewToggleAndScroll(t *testing.T) {
 		t.Fatal("l did not open the log view")
 	}
 	tail := plainView(m)
-	if !strings.Contains(tail, "flocc-1") || strings.Contains(tail, "line A\n") {
+	if !strings.Contains(tail, "log of flocc-1") || strings.Contains(tail, "line A ") {
 		t.Errorf("log view should follow the tail:\n%s", tail)
 	}
 	for range 5 {
@@ -147,14 +280,14 @@ func TestFullPaneShowsOnlyLastSixLines(t *testing.T) {
 }
 
 func TestFullSmallTerminalHandsOver(t *testing.T) {
-	if m := sized(70, 20); !m.handover {
-		t.Error("70x20 did not set handover")
+	if m := sized(59, 30); !m.handover {
+		t.Error("59x30 did not set handover")
 	}
-	if m := sized(80, 19); !m.handover {
-		t.Error("80x19 did not set handover")
+	if m := sized(100, 19); !m.handover {
+		t.Error("100x19 did not set handover")
 	}
-	if m := sized(80, 20); m.handover {
-		t.Error("80x20 set handover")
+	if m := sized(60, 20); m.handover {
+		t.Error("60x20 set handover")
 	}
 }
 
@@ -272,7 +405,7 @@ func TestFullHandsOverToInlineBelowMinimum(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
 	rec := &Recorder{}
-	r := newFullWith(&out, pr, "flocc setup", func(io.Writer, io.Reader) Renderer { return rec }, tea.WithWindowSize(70, 20))
+	r := newFullWith(&out, pr, "flocc setup", func(io.Writer, io.Reader) Renderer { return rec }, tea.WithWindowSize(59, 19))
 	waitDone(t, r)
 	// Draws after the swap go straight to the inline renderer.
 	r.Draw(Event{Kind: KStep, ID: "b", Name: "second", State: Done})
