@@ -23,11 +23,11 @@ flocc setup        # inside the flocc checkout
 
 | Step | Checks | Does |
 |---|---|---|
-| Checkout | The current directory is the flocc checkout | Stops if not |
-| Keys | The Linear key and the agent token | Asks for what is missing |
+| Checkout | The current directory is the flocc checkout | Stops if not. Makes `.env` from `.env.example` when it is missing |
+| Keys | The Linear key and the agent token | Takes them from the environment or `.env` (see [Keys](../keys.md#take-keys-from-the-environment-or-a-env-file)), then asks for what is missing |
 | Tailnet | The Tailscale OAuth client, the tailnet policy, each host's tag | See [Tailnet](../tailnet.md) |
 | Hosts | Host files | With none, creates or adds a host. For each host it runs `flocc --version`, `status --json` and `doctor`. A host older than the checkout, or failing a doctor check other than login and disk, is shipped. Low disk and unreachable hosts are reported |
-| Keys | The publish token and the ntfy topic | Asks for what is missing, then checks them |
+| Keys | The publish token and the ntfy topic | Takes them from the environment or `.env`, asks for what is missing, then checks them |
 | Old versions | `id`, `loginctl` and `ps`, without sudo | Shows each old user from an earlier install, default no. A yes removes it in the root pass after its own checks, with its home archived to `/root/flocc-removed-<user>-<date-time>.tar.gz` |
 | Cardinal | One machine: the saved one, else the first host's | Status ok: nothing. Failing: setup. A `cardinal` user without a saved file: asks to adopt, default no. No cardinal: asks, default yes |
 | Logins | Each host's and cardinal's login | `full` is done and `unknown` is shown. Anything else runs `flocc login` or `flocc cardinal login` with the pool account you give |
