@@ -1053,6 +1053,30 @@ def test_reap_clears_caches_a_killed_setup_left(rt):
     assert shared.exists()
 
 
+def test_reap_removes_stray_canary_dirs_and_prunes_the_repos(rt, monkeypatch):
+    stray = rt.cfg.worktree_root / ".canary-x"
+    stray.mkdir(parents=True)
+    (stray / "file").write_text("x")
+    ran = []
+    next(iter(rt.cfg.repos.values())).path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "flocc.poller.subprocess.run", lambda argv, **kw: ran.append((argv, kw["cwd"]))
+    )
+    reap_worktrees(rt)
+    assert not stray.exists()
+    paths = {repo.path for repo in rt.cfg.repos.values() if repo.path.exists()}
+    assert paths and {cwd for _, cwd in ran} == paths
+    assert all(argv == ["git", "worktree", "prune"] for argv, _ in ran)
+
+
+def test_reap_prune_failure_is_tolerated(rt, monkeypatch):
+    def broken(argv, **kw):
+        raise OSError("no git")
+
+    monkeypatch.setattr("flocc.poller.subprocess.run", broken)
+    reap_worktrees(rt)
+
+
 def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monkeypatch):
     finished(rt, "NF-5")
 

@@ -2,6 +2,7 @@ import argparse
 import io
 import json
 import os
+import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -690,6 +691,21 @@ def _canary(host_cfg, monkeypatch, result):
     cfg = load(host_cfg)
     cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
     return cfg, next(iter(cfg.repos))
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
+def test_canary_turns_a_kill_signal_into_an_exit_and_restores_the_handlers(
+    host_cfg, monkeypatch, sig
+):
+    _, repo = _canary(host_cfg, monkeypatch, None)
+    before = signal.getsignal(sig)
+
+    def killed(*a):
+        signal.raise_signal(sig)
+
+    monkeypatch.setattr("flocc.worktree.setup_at_base", killed)
+    assert main(["--config", str(host_cfg), "canary", repo]) == 128 + sig
+    assert signal.getsignal(sig) == before
 
 
 def test_canary_clears_the_mark_when_setup_passes(host_cfg, monkeypatch, capsys):

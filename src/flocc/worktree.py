@@ -1,3 +1,4 @@
+import contextlib
 import os
 import shlex
 import shutil
@@ -38,6 +39,18 @@ def run_bounded(
         text=True,
         start_new_session=True,
     )
+    try:
+        return _communicate(proc, timeout_s)
+    except BaseException:
+        # A caller interrupted (Ctrl-C, or SIGTERM turned into SystemExit) would leave ./setup
+        # running with nobody to wait for it.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        raise
+
+
+def _communicate(proc: subprocess.Popen, timeout_s: float) -> tuple[int | None, str]:
     try:
         out, _ = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:

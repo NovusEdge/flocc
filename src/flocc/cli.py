@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -514,6 +515,13 @@ def cmd_canary(args) -> int:
             print("canary: a tick is running; try again in a moment", file=sys.stderr)
             return 1
         con = ledger.connect(cfg.ledger_path)
+
+        # A signal's default action skips setup_at_base's finally, leaving ./setup running and
+        # the .canary-* worktree behind.
+        def _exit(signum, frame):
+            raise SystemExit(128 + signum)
+
+        saved = {sig: signal.signal(sig, _exit) for sig in (signal.SIGTERM, signal.SIGHUP)}
         try:
             code, out, sha = worktree.setup_at_base(
                 cfg.repos[args.repo], cfg.worktree_root, cfg.setup_timeout_s, cfg.shared_uv_cache
@@ -522,6 +530,9 @@ def cmd_canary(args) -> int:
             why = getattr(exc, "stderr", None) or exc
             print(f"canary: {args.repo}'s base was not checked out: {why}", file=sys.stderr)
             return 1
+        finally:
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)
         if code == 0:
             canary.clear(con, args.repo)
             print(
