@@ -130,3 +130,36 @@ func TestCheckPrefixRefusesAKeyInTheWrongSlot(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitClientTakesTheSecretAloneOrIDColonSecret(t *testing.T) {
+	for _, c := range []struct{ in, id, secret string }{
+		{"tskey-client-kAbc123CNTRL-xyz", "flocc", "tskey-client-kAbc123CNTRL-xyz"},
+		{"kAbc123CNTRL:tskey-client-kAbc123CNTRL-xyz", "kAbc123CNTRL", "tskey-client-kAbc123CNTRL-xyz"},
+	} {
+		id, secret, ok := SplitClient(c.in)
+		if !ok || id != c.id || secret != c.secret {
+			t.Errorf("%q: %q %q %v", c.in, id, secret, ok)
+		}
+		if err := CheckPrefix(Tailscale, c.in); err != nil {
+			t.Errorf("%q: %v", c.in, err)
+		}
+	}
+	for _, bad := range []string{"kAbc123CNTRL", "tskey-client-", ":tskey-client-x", "x:"} {
+		if err := CheckPrefix(Tailscale, bad); err == nil || !strings.Contains(err.Error(), "tskey-client-") {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+}
+
+func TestMaskedShowsOnlyAKnownPrefixTheLastFourAndTheLength(t *testing.T) {
+	for in, want := range map[string]string{
+		"lin_api_0123456789abcdefWXYZ":     "lin_api_…WXYZ, 28 characters",
+		"tskey-client-kAbc-0123456789QRST": "tskey-client-…QRST, 32 characters",
+		"hunter2-my-password":              "19 characters, no known prefix",
+		"short":                            "5 characters, no known prefix",
+	} {
+		if got := Masked(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+}

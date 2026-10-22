@@ -245,7 +245,7 @@ func formFor(r PromptReq) (*huh.Form, func() any) {
 		s := r.Q.Default
 		in := huh.NewInput().Title(r.Q.Title).Description(desc).Value(&s)
 		if r.Kind == PSecret {
-			in = in.EchoMode(huh.EchoModeNone)
+			in = in.EchoMode(huh.EchoModePassword)
 		}
 		f = in
 		result = func() any { return s }

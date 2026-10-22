@@ -215,13 +215,14 @@ import again. An agent token from a host shipped before 0.5.0 also lacks Actions
 statuses (read), which 0.5.0 asks for: add both to its permissions there; the token's value stays
 the same.
 
-`flocc keys` asks for each key it does not have yet, and only in a terminal: it reads with echo
-off, so a stdin that is not a terminal is refused. For each key it opens the page where the key
-is made, with a QR code for a phone; GitHub's token page arrives with the name, description,
+`flocc keys` asks for each key it does not have yet, and only in a terminal: a paste shows as
+dots, so a stdin that is not a terminal is refused. For each key it opens the page where the key
+is made in the browser; GitHub's token page arrives with the name, description,
 owner, permissions and the longest expiry (366 days) filled in, and the repos to tick are printed
 beside it. A fine-grained token serves one owner, so map only repos of one owner per token. Paste
-the key at the prompt: nothing shows while you paste, and a key is never taken as a command-line
-argument, so none lands in shell history. Each paste is checked before it is stored, first by
+the key at the prompt. flocc then shows what it got as the key's kind, its last four characters
+and its length, and a key is never taken as a command-line argument, so none lands in shell
+history. Each paste is checked before it is stored, first by
 its prefix (a Linear key in a GitHub slot is refused at once), then against the APIs without
 changing anything: the Linear key must see the hosts' teams and be able to write (it sets a
 digest issue's title to the title it already has, so make the key with Full access), the agent

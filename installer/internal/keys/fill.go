@@ -77,9 +77,9 @@ func Fill(ctx context.Context, e Env, m Mapped, slots []Slot) error {
 func optional(s Slot) bool { return s == Tailscale }
 
 func fillKey(ctx context.Context, e Env, m Mapped, s Slot) error {
-	help := "Paste it here; nothing shows while you paste. Leave it empty to stop."
+	help := "Paste it here. Leave it empty to stop."
 	if optional(s) {
-		help = "Paste it here; nothing shows while you paste. Leave it empty to skip it."
+		help = "Paste it here. Leave it empty to skip it."
 	}
 	stored, err := askKey(ctx, e, m, s, help)
 	if err == nil && !stored && !optional(s) {
@@ -124,6 +124,7 @@ func askChecked(ctx context.Context, e Env, m Mapped, s Slot, help string) (v st
 			if strings.TrimSpace(raw) == "" {
 				return "", false, nil
 			}
+			e.UI.Note(s.Title(), "pasted "+maskedPaste(s, strings.TrimSpace(raw)))
 		}
 		// A refused paste ends its row as skipped, not failed: the loop asks again, and a failed
 		// row would turn the exit status to 1 even when the next paste passes.
@@ -152,6 +153,14 @@ func askChecked(ctx context.Context, e Env, m Mapped, s Slot, help string) (v st
 		st.Done(note)
 		return v, true, nil
 	}
+}
+
+// maskedPaste is Masked for a paste, which for the Tailscale slot may carry the client ID first.
+func maskedPaste(s Slot, v string) string {
+	if _, secret, ok := SplitClient(v); s == Tailscale && ok {
+		return Masked(secret)
+	}
+	return Masked(v)
 }
 
 // Adopt checks a key read from elsewhere, such as a host's secret file, as a paste is checked,
@@ -207,7 +216,7 @@ func Replace(ctx context.Context, e Env, m Mapped, slots []Slot) ([]Slot, error)
 	}
 	var asked []pending
 	for _, s := range slots {
-		v, ok, err := askChecked(ctx, e, m, s, "Paste the new one; nothing shows while you paste. Leave it empty to keep the current one.")
+		v, ok, err := askChecked(ctx, e, m, s, "Paste the new one. Leave it empty to keep the current one.")
 		if err != nil {
 			return nil, err
 		}
@@ -428,7 +437,7 @@ func Page(s Slot, m Mapped) (string, string) {
 	case Tailscale:
 		return "https://login.tailscale.com/admin/settings/oauth",
 			"Settings → OAuth clients → Generate. Scopes: Auth keys (write) and Devices core (write), both with tag " + tailnet.Tag +
-				"; Policy file (read). Paste the client ID, a colon, then the secret: <id>:<secret>."
+				"; Policy file (read). Paste the client secret, which starts with tskey-client-."
 	}
 	q := url.Values{"expires_in": {"366"}, "name": {tokenName[s]}}
 	if s == Agent {

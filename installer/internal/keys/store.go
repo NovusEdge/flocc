@@ -218,15 +218,40 @@ func CheckPrefix(s Slot, v string) error {
 	case (s == Agent || s == Publish) && !strings.HasPrefix(v, "github_pat_"):
 		return errors.New("a fine-grained GitHub token starts with github_pat_")
 	case s == Tailscale && !validClient(v):
-		return errors.New("paste the client ID, a colon, then the secret: <id>:<secret>")
+		return errors.New("paste the client secret, which starts with " + clientPrefix)
 	}
 	return nil
 }
 
-// SplitClient cuts a Tailscale paste into the OAuth client's ID and secret.
+const clientPrefix = "tskey-client-"
+
+// SplitClient cuts a Tailscale paste into the OAuth client's ID and secret. The secret alone is
+// enough: the token endpoint ignores the ID, and tailscale up's own OAuth path sends a placeholder.
+// id:secret, the form flocc asked for first, still works.
 func SplitClient(v string) (id, secret string, ok bool) {
+	if strings.HasPrefix(v, clientPrefix) {
+		return "flocc", v, len(v) > len(clientPrefix)
+	}
 	id, secret, ok = strings.Cut(v, ":")
 	return id, secret, ok && id != "" && secret != ""
+}
+
+// knownPrefixes are the public parts of the keys flocc takes, which say what kind of key it is.
+var knownPrefixes = []string{"lin_api_", "github_pat_", clientPrefix, "ghp_", "gho_"}
+
+// Masked describes a pasted key without what makes it usable: its kind's public prefix, its last
+// four characters, and its length. A paste with no known prefix may be some other secret, such as
+// a password, so only its length is shown.
+func Masked(v string) string {
+	for _, p := range knownPrefixes {
+		if strings.HasPrefix(v, p) {
+			if len(v)-len(p) < 12 {
+				return fmt.Sprintf("%s…, %d characters", p, len(v))
+			}
+			return fmt.Sprintf("%s…%s, %d characters", p, v[len(v)-4:], len(v))
+		}
+	}
+	return fmt.Sprintf("%d characters, no known prefix", len(v))
 }
 
 func validClient(v string) bool { _, _, ok := SplitClient(v); return ok }

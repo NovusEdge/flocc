@@ -237,7 +237,9 @@ func tailscaleServer(t *testing.T, status int) *httptest.Server {
 	t.Helper()
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
-		if r.URL.Path != "/api/v2/oauth/token" || r.Form.Get("client_id") != "kid" || r.Form.Get("client_secret") != "ksecret" {
+		// Like Tailscale's, it ignores client_id.
+		sec := r.Form.Get("client_secret")
+		if r.URL.Path != "/api/v2/oauth/token" || sec != "ksecret" && sec != "tskey-client-kid-0123456789QRST" {
 			status = http.StatusUnauthorized
 		}
 		w.WriteHeader(status)
@@ -264,22 +266,39 @@ func TestTheTailscaleSlotIsOptionalAndAnEmptyPasteSkipsIt(t *testing.T) {
 
 func TestTheTailscaleClientIsCheckedByAskingForAToken(t *testing.T) {
 	ts := tailscaleServer(t, http.StatusOK)
-	f := newFixture(t, nil, nil, &script{secrets: []string{"kid", "kid:ksecret"}})
+	f := newFixture(t, nil, nil, &script{secrets: []string{"kid", "tskey-client-kid-0123456789QRST"}})
 	f.env.TailscaleAPI = ts.URL
 	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Tailscale}); err != nil {
 		t.Fatal(err)
 	}
-	if f.store.m[Tailscale] != "kid:ksecret" {
+	if f.store.m[Tailscale] != "tskey-client-kid-0123456789QRST" {
 		t.Fatalf("%v", f.store.m)
 	}
 	if r := f.row("Check Tailscale OAuth client"); r.State != ui.Done || r.Detail != "token ok" {
 		t.Errorf("%+v", f.rec.Rows())
 	}
-	if !strings.Contains(f.text(), "a colon, then the secret") {
-		t.Errorf("a paste without a colon was not refused:\n%s", f.text())
+	if !strings.Contains(f.text(), "starts with tskey-client-") {
+		t.Errorf("a paste that is not a client secret was not refused:\n%s", f.text())
 	}
-	if strings.Contains(f.text(), "ksecret") {
+	if strings.Contains(f.text(), "0123456789") {
 		t.Error("the secret reached an event")
+	}
+}
+
+func TestEachPasteIsShownMasked(t *testing.T) {
+	ts := tailscaleServer(t, http.StatusOK)
+	f := newFixture(t, nil, nil, &script{secrets: []string{"hunter2", "kid:tskey-client-kid-0123456789QRST"}})
+	f.env.TailscaleAPI = ts.URL
+	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Tailscale}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"pasted 7 characters, no known prefix", "pasted tskey-client-…QRST, 31 characters"} {
+		if !strings.Contains(f.text(), want) {
+			t.Errorf("no %q in:\n%s", want, f.text())
+		}
+	}
+	if strings.Contains(f.text(), "hunter2") {
+		t.Error("a paste reached an event")
 	}
 }
 
