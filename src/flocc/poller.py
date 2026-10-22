@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from flocc import ledger
+from flocc import canary, ledger
 from flocc.admission import admit
 from flocc.agentblock import (
     BlockError,
@@ -27,7 +27,9 @@ from flocc.worktree import (
     contains,
     git,
     has_uncommitted_changes,
+    head_at_base,
     install_hook,
+    origin_base,
     prepare_worktree,
     recover_tests,
 )
@@ -144,8 +146,19 @@ def clean_scratchpads(rt) -> None:
             print(f"scratchpads: {listing} not cleaned: {exc}", file=sys.stderr)
 
 
+def _main_hold(rt, repo: str, bases: dict[str, str | None]) -> str | None:
+    # Fetches only for a marked repo, once per poll, so an unmarked one costs nothing per tick.
+    if canary.get_mark(rt.con, repo) is None:
+        return None
+    cfg_repo = rt.cfg.repos[repo]
+    if repo not in bases:
+        bases[repo] = origin_base(cfg_repo)
+    return canary.hold_reason(rt.con, repo, cfg_repo.base_branch, bases[repo], rt.now())
+
+
 def poll(rt) -> None:
     cfg = rt.cfg
+    bases: dict[str, str | None] = {}
     for issue in rt.linear.ready_issues(cfg.team_key, cfg.trigger_label):
         claim = ledger.get_claim(rt.con, issue.key)
         rerun = claim is not None
@@ -206,6 +219,10 @@ def poll(rt) -> None:
             continue
         for cause in ("no-repo", "no-criteria", "bad-deps"):
             ledger.clear_alert(rt.con, f"{issue.key}:{cause}")
+        hold = _main_hold(rt, repo, bases)
+        if hold:
+            print(f"{issue.key}: held, {hold}", file=sys.stderr)
+            continue
         live = ledger.live_claims(rt.con)
         usage = latest_usage(cfg.state_root, rt.now())
         free = rt.free_disk_gb(cfg.worktree_root)
@@ -237,14 +254,35 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
             shared_uv_cache=cfg.shared_uv_cache,
         )
     except (subprocess.SubprocessError, OSError) as exc:  # nothing is claimed yet
-        # A tier 2 escalation labels and comments every time it is sent, and a broken ./setup
-        # fails on every poll.
-        if ledger.alert_seen(rt.con, cause, DEDUPE_S, rt.now()):
-            return
         stderr = getattr(exc, "stderr", None) or ""
         if isinstance(stderr, bytes):
             stderr = stderr.decode(errors="replace")
         detail = f"\n\n{stderr.strip()[-1500:]}" if stderr.strip() else ""
+        # prepare_worktree fetched origin and cut the worktree at the base, so an untouched
+        # checkout that fails is main's or the host's failure, and every issue would repeat it.
+        # Before the dedupe below: a mark must land even when this issue's own alert is recent.
+        base = head_at_base(cfg.repos[repo], cfg.worktree_root.resolve() / issue.key)
+        if base is not None:
+            base_branch = cfg.repos[repo].base_branch
+            canary.mark(rt.con, repo, base, rt.now(), stderr.strip() or str(exc))
+            rt.notifier.send(
+                Escalation(
+                    1,
+                    f"{repo}:main-broken",
+                    f"./setup fails on a clean checkout of {repo}'s {base_branch} at {base[:9]},"
+                    f" so its issues are held: {exc}{detail}",
+                    f"Fix ./setup on {base_branch} or on the host. Issues resume after a new"
+                    f" commit on {base_branch}, after 24 hours, or once flocc canary {repo} passes",
+                    issue_key=issue.key,
+                ),
+                issue,
+                issue.team_id,
+            )
+            return
+        # A tier 2 escalation labels and comments every time it is sent, and a broken ./setup
+        # fails on every poll.
+        if ledger.alert_seen(rt.con, cause, DEDUPE_S, rt.now()):
+            return
         rt.notifier.send(
             Escalation(
                 2,
