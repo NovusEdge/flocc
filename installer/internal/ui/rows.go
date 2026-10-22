@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"charm.land/lipgloss/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 var marks = map[State]struct{ glyph, code string }{
@@ -16,19 +20,39 @@ func Mark(s State, color bool) string {
 	return Out{Color: color}.paint(m.code, m.glyph)
 }
 
+// ThemedMark is Mark drawn with th: running in Accent, done Up, pending Warn, skipped Dim, failed Err.
+func ThemedMark(s State, th theme.Theme) string {
+	style := map[State]lipgloss.Style{Running: th.Accent, Done: th.Up, Pending: th.Warn, Skipped: th.Dim, Failed: th.Err}[s]
+	return style.Render(marks[s].glyph)
+}
+
 // RowText is an ended step as the plain and inline renderers print it: two spaces in, the mark,
 // the name padded to nameWidth, the detail (or the error), continuation lines under the detail.
 func RowText(e Event, nameWidth int, color bool) string {
-	detail := e.Detail
+	return rowText(e, nameWidth, Mark(e.State, color), same)
+}
+
+// ThemedRow is RowText drawn with th: the mark in its state's colour, the detail in Dim.
+func ThemedRow(e Event, nameWidth int, th theme.Theme) string {
+	return rowText(e, nameWidth, ThemedMark(e.State, th), func(s string) string {
+		if s == "" {
+			return s
+		}
+		return th.Dim.Render(s)
+	})
+}
+
+func rowText(e Event, nameWidth int, mark string, detail func(string) string) string {
+	text := e.Detail
 	if e.State == Failed && e.Err != "" {
-		detail = e.Err
+		text = e.Err
 	}
-	lines := strings.Split(strings.TrimRight(detail, "\n"), "\n")
-	head := fmt.Sprintf("%s%s %-*s %s", indent, Mark(e.State, color), nameWidth, e.Name, lines[0])
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	head := fmt.Sprintf("%s%s %-*s %s", indent, mark, nameWidth, e.Name, detail(lines[0]))
 	out := []string{strings.TrimRight(head, " ")}
 	pad := strings.Repeat(" ", len(indent)+2+nameWidth+1)
 	for _, l := range lines[1:] {
-		out = append(out, pad+l)
+		out = append(out, pad+detail(l))
 	}
 	return strings.Join(out, "\n")
 }

@@ -127,7 +127,7 @@ func (m fullModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.add(msg.e)
 		return m, nil
 	case promptMsg:
-		m.form, m.result = formFor(msg.req)
+		m.form, m.result = formFor(new(true), msg.req)
 		m.reply, m.stopping = msg.reply, false
 		return m, m.form.Init()
 	case handoffMsg:
