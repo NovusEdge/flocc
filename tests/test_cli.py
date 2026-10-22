@@ -699,6 +699,25 @@ def test_canary_marks_the_repo_when_setup_fails(host_cfg, monkeypatch, capsys):
     assert "go: not found" in capsys.readouterr().err
 
 
+def test_canary_forget_clears_every_mark_and_counts_them(host_cfg, capsys):
+    cfg = load(host_cfg)
+    cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    con = ledger.connect(cfg.ledger_path)
+    canary.mark(con, "backend", "abc", 1.0, "x")
+    canary.mark(con, "web", "def", 1.0, "y")
+    canary.clear(con, "docs")
+    assert main(["--config", str(host_cfg), "canary", "--forget"]) == 0
+    assert "cleared 2 main-broken holds" in capsys.readouterr().out
+    assert canary.get_mark(con, "backend") is None and canary.get_mark(con, "web") is None
+    assert main(["--config", str(host_cfg), "canary", "--forget"]) == 0
+    assert "cleared 0 main-broken holds" in capsys.readouterr().out
+
+
+def test_canary_needs_a_repo_or_forget(host_cfg, capsys):
+    assert main(["--config", str(host_cfg), "canary"]) == 2
+    assert "repo" in capsys.readouterr().err
+
+
 def test_canary_refuses_an_unknown_repo(host_cfg, capsys):
     assert main(["--config", str(host_cfg), "canary", "nope"]) == 2
     assert "no repo nope" in capsys.readouterr().err

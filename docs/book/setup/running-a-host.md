@@ -62,7 +62,7 @@ The hosts share the owner's Claude login and so its 5-hour and weekly usage limi
 
 ## A repo whose main fails setup
 
-When `./setup` fails in a fresh checkout of a repo's base branch, the failure is main's or the host's, and every issue of that repo would repeat it. flocc comments once on the issue that hit it, pushes, and holds the repo's other issues. The hold ends when a new commit lands on the base branch, after 24 hours, or when `flocc -H <host> canary <repo>` passes. Run that after fixing something on the host, which moves no commit.
+When `./setup` fails in a fresh checkout of a repo's base branch, the failure is main's or the host's, and every issue of that repo would repeat it. flocc comments once on the issue that hit it, pushes, and holds the repo's other issues. The hold ends when a new commit lands on the base branch, after 24 hours, or when `flocc -H <host> canary <repo>` passes. Run that after fixing something on the host, which moves no commit. Every `flocc ship` clears all holds with `flocc canary --forget`. A `./setup` that times out holds only its own issue.
 
 ## What the host carries for the repos
 

@@ -494,6 +494,13 @@ def cmd_canary(args) -> int:
     from flocc.tick import tick_lock
 
     cfg, _ = _config(args)
+    if args.forget:
+        n = canary.forget_all(ledger.connect(cfg.ledger_path))
+        print(f"canary: cleared {n} main-broken hold{'s' * (n != 1)}")
+        return 0
+    if args.repo is None:
+        print("canary: name a repo, or pass --forget", file=sys.stderr)
+        return 2
     if args.repo not in cfg.repos:
         print(
             f"canary: no repo {args.repo} in the config ({', '.join(cfg.repos)})", file=sys.stderr
@@ -817,7 +824,8 @@ def build_parser() -> argparse.ArgumentParser:
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )
-    can.add_argument("repo", help="repo name from the config")
+    can.add_argument("repo", nargs="?", help="repo name from the config")
+    can.add_argument("--forget", action="store_true", help="clear every repo's broken-main hold")
     doctor = add("doctor", "Check config and host setup")
     doctor.add_argument("--json", action="store_true", help="print the checks as JSON")
     status = add("status", "Show claims, last tick, usage and disk")

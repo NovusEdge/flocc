@@ -32,6 +32,24 @@ func systemdRun(f *host.Fake, doctorCode int, doctorOut string) *host.Fake {
 		On("systemctl --user enable --now flocc.timer", 0, "")
 }
 
+const forgetCmd = "/home/flocc/.local/bin/flocc canary --forget"
+
+func TestForgetHoldsRunsCanaryForget(t *testing.T) {
+	f := host.NewFake().On(forgetCmd, 0, "canary: cleared 1 main-broken hold\n")
+	ForgetHolds(context.Background(), testEnv(t, f))
+	if !f.Ran(forgetCmd) {
+		t.Fatalf("calls: %v", f.Calls)
+	}
+}
+
+func TestForgetHoldsToleratesAFailingCommand(t *testing.T) {
+	f := host.NewFake().On(forgetCmd, 2, "")
+	ForgetHolds(context.Background(), testEnv(t, f))
+	if !f.Ran(forgetCmd) {
+		t.Fatalf("calls: %v", f.Calls)
+	}
+}
+
 func TestRunWithTheLoginPendingStartsTmuxButNotTheTimer(t *testing.T) {
 	f := systemdRun(host.NewFake(), 1, "ok    tmux: server on socket flocc\n"+loginFailLine)
 	e := testEnv(t, f)
