@@ -39,6 +39,4 @@ def hold_reason(
     if now - float(m["at"]) >= HOLD_S or (current_sha is not None and current_sha != m["sha"]):
         clear(con, repo)
         return None
-    return (
-        f"./setup fails on {base_branch} at {m['sha'][:9]}; after fixing it, run flocc canary {repo}"
-    )
+    return f"./setup fails on {base_branch} at {m['sha'][:9]}; after fixing it, run flocc canary {repo}"

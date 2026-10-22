@@ -510,10 +510,10 @@ def test_origin_base_fetches_a_new_commit_and_survives_a_dead_remote(origin, tmp
     assert origin_base(repo) is None
 
 
-@pytest.mark.parametrize("body, code", [("exit 0", 0),("exit 3", 3)])
+@pytest.mark.parametrize("body, code", [("exit 0", 0), ("exit 3", 3)])
 def test_setup_at_base_runs_setup_on_a_throwaway_checkout(origin, tmp_path, body, code):
     push_setup(origin, body)
-    got, out, sha = setup_at_base(RepoConfig(origin), tmp_path / "wt", 30, False)
+    got, _, sha = setup_at_base(RepoConfig(origin), tmp_path / "wt", 30, False)
     assert got == code and sha == git("rev-parse", "origin/main", cwd=origin)
     assert "canary" not in git("worktree", "list", cwd=origin)
     assert list((tmp_path / "wt").iterdir()) == []
