@@ -403,6 +403,15 @@ func (d Deps) readStatus(ctx context.Context, s saved.Saved) (steps.CardinalStat
 }
 
 func (d Deps) status(ctx context.Context, s saved.Saved) int {
+	// readStatus captures stderr, so a check URL would show only once its timeout ends. On a
+	// terminal the connection opens on screen first and readStatus reuses it.
+	if d.TTY {
+		dest := ship.Dest{SSH: s.Dest(), Opts: append(append([]string{}, saved.Pinned...), d.Mux...)}
+		if err := ship.Connect(ctx, d.Run, dest, s.Dest(), true); err != nil {
+			d.UI.Step("cardinal status").Fail(err)
+			return 1
+		}
+	}
 	st, err := d.readStatus(ctx, s)
 	if err != nil {
 		d.UI.Step("cardinal status").Fail(err)
