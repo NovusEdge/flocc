@@ -347,6 +347,14 @@ def test_tests_amended_refuses_a_file_the_tester_did_not_write(claims_env, tmp_p
     assert not (state / "tests-amended.json").exists()
 
 
+def test_gate_answered_credits_the_time_the_question_was_open(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+    (tmp_path / "asking").write_text(json.dumps({"at": time.time() - 600, "question": "Q?"}))
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert main(["gate", "--answered"]) == 0
+    assert 590 <= int((tmp_path / "asked-seconds").read_text()) <= 700
+
+
 def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))

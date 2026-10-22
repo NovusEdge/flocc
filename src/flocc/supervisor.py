@@ -11,6 +11,7 @@ from flocc.agentblock import settings_from_json
 from flocc.context import phase_prompt, state_dir
 from flocc.escalation import Escalation, scoped
 from flocc.gate import (
+    ASKED,
     LAUNCH_GRANTS_ENV,
     clear_idle,
     clear_question,
@@ -117,6 +118,9 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | No
     for leftover in (*_MARKERS, "status.json", "compacted", PANE, STALL_ESCALATED):
         (d / leftover).unlink(missing_ok=True)
     clear_question(d)
+    # A new phase or claim starts a new clock; a restart of the same session keeps its credit.
+    if started_at is not None:
+        (d / ASKED).unlink(missing_ok=True)
     clear_idle(d)
     # Both keys: for a worktree, trust may be keyed on the main checkout's root instead.
     repo = rt.cfg.repos.get(claim.repo)
@@ -358,6 +362,13 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         )
 
 
+def _asked_seconds(d: Path) -> float:
+    try:
+        return float((d / ASKED).read_text())
+    except (OSError, ValueError):
+        return 0.0
+
+
 def _digest(detail: str) -> str:
     return hashlib.sha256(detail.encode()).hexdigest()
 
@@ -526,9 +537,15 @@ def supervise(rt, claim: Claim) -> None:
         _relaunch(rt, claim)
         ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
-    limit = rt.cfg.review_wall_clock_s if claim.phase == "review" else claim.wall_clock_s
-    # A session waiting on an answer burns no tokens, and the question escalation already pages the owner.
-    if rt.now() - claim.started_at > limit and not (d / "asking").exists():
+    elapsed = rt.now() - claim.started_at
+    if claim.phase == "review":
+        limit, held = rt.cfg.review_wall_clock_s, False
+    else:
+        limit = claim.wall_clock_s + _asked_seconds(d)
+        # A session waiting on an answer burns no tokens and the question escalation already
+        # pages the owner; the hold ends QUESTION_WAIT_S past the limit, so no wait is unbounded.
+        held = (d / "asking").exists() and elapsed <= limit + QUESTION_WAIT_S
+    if elapsed > limit and not held:
         if claim.phase == "review":
             _record_usage(rt, key, claim.phase, "end")
             _review_skipped(rt, claim, f"stopped at the wall-clock limit ({name})")

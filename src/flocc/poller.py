@@ -363,6 +363,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         "asking-escalated",
         "idle",
         "idle-escalated",
+        "asked-seconds",
     ):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the

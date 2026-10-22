@@ -335,6 +335,19 @@ def test_question_marker(tmp_path):
     assert not (tmp_path / "asking").exists() and not (tmp_path / "asking-escalated").exists()
 
 
+def test_answering_credits_the_open_time_and_clearing_without_a_time_does_not(tmp_path):
+    note_question(tmp_path, {}, 100.0)
+    clear_question(tmp_path, 150.0)
+    assert (tmp_path / "asked-seconds").read_text() == "50"
+    note_question(tmp_path, {}, 200.0)
+    clear_question(tmp_path, 210.0)
+    assert (tmp_path / "asked-seconds").read_text() == "60"
+    clear_question(tmp_path, 999.0)
+    note_question(tmp_path, {}, 300.0)
+    clear_question(tmp_path)
+    assert (tmp_path / "asked-seconds").read_text() == "60" and not (tmp_path / "asking").exists()
+
+
 def test_a_new_question_drops_the_old_escalation_mark(tmp_path):
     payload = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Q"}]}}
     (tmp_path / "asking-escalated").touch()

@@ -292,7 +292,7 @@ def cmd_gate(args) -> int:
                 agent_type = str(_hook_input().get("agent_type", ""))
                 gate.record_stop(state, run, time.time(), agent_type, phase)
             else:
-                gate.clear_question(state)
+                gate.clear_question(state, time.time())
         except Exception as exc:  # noqa: BLE001 - must not block the stop
             print(f"flocc gate could not record the event: {exc}", file=sys.stderr)
             return 1
