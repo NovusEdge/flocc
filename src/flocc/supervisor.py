@@ -36,6 +36,7 @@ HANDOFF_ASK = (
 )
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
+FAILURE_HASH = "check-failure.sha256"
 CHECK_OUTPUT = "check-output.log"
 QUESTION_WAIT_S = 7200
 PANE = "pane.json"
@@ -298,6 +299,21 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             line = f"{key}: commits without the Flocc trailer: {', '.join(result.untrailed)}"
             ledger.add_digest(rt.con, key, line, rt.now())
         _start_review(rt, claim, issue.title, issue.description, result.url)
+    elif (
+        result.status == "check_failed"
+        and claim.fix_attempts > 0
+        and _same_failure(rt, claim, result.detail)
+    ):
+        if result.log:
+            (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
+        _block(
+            rt,
+            claim,
+            "check-failed",
+            "The check failed the same way twice; the cause is likely outside the code:\n"
+            + result.detail,
+            f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
+        )
     elif result.status == "check_failed" and claim.fix_attempts < rt.cfg.check_fix_rounds:
         extra = f"The check failed with:\n\n{result.detail}"
         if result.log:
@@ -308,6 +324,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         if claim.fix_attempts > 0 and context.exists():
             extra = f"An earlier fix round failed with:\n\n{context.read_text()}\n\n{extra}"
         context.write_text(extra)
+        (state_dir(rt.cfg, key) / FAILURE_HASH).write_text(_digest(result.detail))
         start = rt.now()
         launch(rt, claim, "fix", extra=extra, started_at=start)
         ledger.update_claim(
@@ -334,6 +351,15 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             f" flocc release --keep-worktree {key}. If it is right, run"
             f" flocc release --accept-tests {key}",
         )
+
+
+def _digest(detail: str) -> str:
+    return hashlib.sha256(detail.encode()).hexdigest()
+
+
+def _same_failure(rt, claim: Claim, detail: str) -> bool:
+    path = state_dir(rt.cfg, claim.issue_key) / FAILURE_HASH
+    return path.exists() and path.read_text() == _digest(detail)
 
 
 def _check_question(rt, claim: Claim, d: Path, name: str) -> None:

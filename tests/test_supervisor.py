@@ -357,9 +357,37 @@ def test_check_failure_gets_two_fixes_then_blocks(rt):
     assert "flocc release --keep-worktree NF-1" in rt.notifier.sent[-1].action
 
 
+def test_the_same_check_failure_twice_blocks_without_another_round(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+    started = len(rt.sessions.started)
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and len(rt.sessions.started) == started
+    summary = rt.notifier.sent[-1].summary
+    assert summary == (
+        "The check failed the same way twice; the cause is likely outside the code:\nE1 boom"
+    )
+
+
+def test_a_different_check_failure_gets_its_second_round(rt):
+    failures = iter(["E1 boom", "E2 bang"])
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and current(rt).fix_attempts == 2
+
+
 def test_one_check_fix_round_keeps_the_old_behaviour(rt):
     rt.cfg = replace(rt.cfg, check_fix_rounds=1)
-    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    failures = iter(["E1 boom", "E2 bang"])
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
     add(rt, phase="impl", tester_sha="sha-tests")
     done(rt)
     supervise(rt, current(rt))
