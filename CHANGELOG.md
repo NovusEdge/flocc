@@ -41,8 +41,19 @@ The desktop CLI shows what it is doing, and hosts join the tailnet tagged withou
 - `host create` runs its firewalld and Docker steps as root in one `sudo` on the machine, so a
   password on sudo is asked once instead of stopping create; the setup wizard no longer refuses
   such a machine.
-- Not confirmed against the live Tailscale API: `--advertise-tags` on a fresh node, the error text
-  for a tag the policy lacks, and tagging a user-owned node through the API.
+  create stops before the build when the checkout lacks the commit the desktop flocc was built
+  from, and the first ssh to the machine gives up after 10 seconds.
+- `flocc keys` and `flocc setup`, run in a flocc checkout, take each key from the shell's
+  environment or the checkout's `.env` (`FLOCC_LINEAR_API_KEY`, `FLOCC_GITHUB_AGENT_TOKEN`,
+  `FLOCC_GITHUB_PUBLISH_TOKEN`, `FLOCC_NTFY_TOPIC`, `FLOCC_TAILSCALE_OAUTH_SECRET`) and check it
+  as a paste. `.env.example` lists them, and setup makes `.env` from it when missing.
+- A pasted key shows as dots, then as its kind, last four characters and length. The Tailscale
+  client secret alone is enough. Key pages open in the browser without a QR code.
+- `flocc cardinal status` connects on the terminal first, so a Tailscale SSH check shows its link
+  at once instead of reading as an unreachable machine.
+- The docs are a GitBook book in `docs/book/`; `docs/vm-setup.md` points into it.
+- Not confirmed against the live Tailscale API: the error text for a tag the policy lacks, and
+  tagging a user-owned node through the API.
 
 ## 0.8.0 (2026-10-21)
 
