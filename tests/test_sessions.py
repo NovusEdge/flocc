@@ -86,6 +86,25 @@ def test_trust_marks_onboarding_done_when_every_folder_is_trusted(tmp_path):
     assert json.loads(cj.read_text())["hasCompletedOnboarding"] is True
 
 
+def test_trust_dismisses_the_auto_mode_setup_dialog_and_keeps_its_counts(tmp_path):
+    cj = tmp_path / ".claude.json"
+    cj.write_text(
+        json.dumps(
+            {
+                "hasCompletedOnboarding": True,
+                "projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}},
+                "autoModeEnvSetup": {"denials": 5, "dismissedAt": 1792673965473},
+            }
+        )
+    )
+    trust_folders(cj, ["/wt/NF-1"])
+    assert json.loads(cj.read_text())["autoModeEnvSetup"] == {
+        "denials": 5,
+        "dismissedAt": 1792673965473,
+        "dismissed": True,
+    }
+
+
 def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
     cj = tmp_path / ".claude.json"
     cj.write_text(
@@ -93,6 +112,7 @@ def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
             {
                 "hasCompletedOnboarding": True,
                 "projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}},
+                "autoModeEnvSetup": {"dismissed": True},
             }
         )
     )

@@ -45,17 +45,26 @@ def trust_folders(claude_json: Path, paths) -> None:
     # `claude auth login` signs in without the first-run onboarding, so a host logged in that way
     # (0.4.0's flocc-setup --phase login) starts every session on the "Press Enter to continue"
     # security notes; flocc-nimble lost three hours of NF-260 to it on 2026-10-20.
+    # After five auto-mode denials Claude Code asks "Teach auto mode about your environment?"
+    # mid-turn; `dismissed` is what its "Don't show again" writes. NF-256 sat on it on 2026-10-22.
     try:
         data = json.loads(claude_json.read_text())
     except FileNotFoundError:
         data = {}
     projects = data.setdefault("projects", {})
     missing = [str(p) for p in paths if not projects.get(str(p), {}).get("hasTrustDialogAccepted")]
-    if not missing and data.get("hasCompletedOnboarding") is True:
+    env_setup = data.get("autoModeEnvSetup")
+    env_setup = env_setup if isinstance(env_setup, dict) else {}
+    if (
+        not missing
+        and data.get("hasCompletedOnboarding") is True
+        and env_setup.get("dismissed") is True
+    ):
         return
     for p in missing:
         projects.setdefault(p, {})["hasTrustDialogAccepted"] = True
     data["hasCompletedOnboarding"] = True
+    data["autoModeEnvSetup"] = {**env_setup, "dismissed": True}
     tmp = claude_json.with_name(f"{claude_json.name}.flocc.tmp")
     # Mode 600 from the start: the file holds the account's OAuth state.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -177,3 +186,6 @@ class Sessions:
     def send(self, name: str, text: str) -> None:
         self._tmux("send-keys", "-t", f"={name}:", "-l", text)
         self._tmux("send-keys", "-t", f"={name}:", "Enter")
+
+    def press(self, name: str, keys: list[str]) -> None:
+        self._tmux("send-keys", "-t", f"={name}:", *keys)

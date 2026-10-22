@@ -6,7 +6,8 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
-Runs stop less often on the host's or main's problems.
+Host sessions no longer wait silently on a dialog, and runs stop less often on the host's or
+main's problems.
 
 - When `./setup` fails on an untouched checkout of a repo's base branch, the repo's issues are
   held instead of each running setup again every tick, with one comment and push. A new commit
@@ -14,6 +15,16 @@ Runs stop less often on the host's or main's problems.
 - Host file `playwright = "<version>"` installs chromium's system libraries and fonts on apt
   hosts, `docker = true` installs Docker and adds the service user to its group, and `[tools]`
   sets mise tools' global versions for the service user.
+- `flocc permission` denies every permission dialog in a host session, AskUserQuestion excepted,
+  and tells the agent nobody is there to approve, so it finds another way or asks the owner. A
+  hook's "ask" used to hold the session until its wall-clock limit.
+- Each launch marks Claude Code's "Teach auto mode about your environment?" dialog as dismissed
+  in `~/.claude.json`, as its "Don't show again" does.
+- A session whose screen stays the same for `stall_escalate_s` (default 1200) in the middle of a
+  turn is escalated: a needs-decision comment and an ntfy push carrying the pane's last lines.
+- `flocc press NF-12 Down Enter` answers a dialog and `flocc say NF-12 <message>` types into a
+  session. `attach` shows that it is read-only and that Ctrl-b d detaches.
+- Bare `flocc` off a terminal prints every host's status instead of the usage.
 
 ## 0.9.0 (2026-10-22)
 
