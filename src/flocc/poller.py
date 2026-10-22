@@ -73,6 +73,35 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
     ledger.clear_issue_alerts(rt.con, claim.issue_key)
 
 
+def restart_timed_out(rt) -> None:
+    """Sends a run that hit the wall clock after committing back to Todo, once per issue."""
+    for claim in ledger.finished_claims(rt.con):
+        key = claim.issue_key
+        once = f"timeout_restart:{key}"
+        wt = Path(claim.worktree)
+        if claim.state != "timed_out" or claim.base_sha is None or not wt.exists():
+            continue
+        if ledger.meta_get(rt.con, once):
+            continue
+        try:
+            stamps = git("log", "--format=%ct", claim.branch, "--not", claim.base_sha, cwd=wt)
+            if not any(float(s) > claim.started_at for s in stamps.split()):
+                continue
+            if rt.linear.state_types([key])[key] in ("completed", "canceled"):
+                continue
+        except (subprocess.CalledProcessError, OSError, LinearError, KeyError, ValueError) as exc:
+            print(f"restart: {key} not checked: {exc}", file=sys.stderr)
+            continue
+        # Recorded first: a release that fails halfway must not restart the issue every tick.
+        ledger.meta_set(rt.con, once, "1")
+        text = "stopped at the wall-clock limit with new commits; restarting once"
+        try:
+            rt.linear.comment(claim.issue_id, text)
+        except LinearError as exc:
+            print(f"restart: {key} not commented: {exc}", file=sys.stderr)
+        release_claim(rt, claim, keep_worktree=True, to_todo=True)
+
+
 def reap_worktrees(rt) -> None:
     """Removes the worktrees of finished runs whose issue is closed; the branch stays."""
     # Caches a killed tick left behind; setup runs under the tick lock, so none is in use here.

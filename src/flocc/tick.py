@@ -18,6 +18,7 @@ from flocc.poller import (
     maybe_digest,
     poll,
     reap_worktrees,
+    restart_timed_out,
     route_escalations,
 )
 from flocc.publisher import comment_on_pr, publish, read_amended
@@ -174,6 +175,8 @@ def tick(cfg: Config, config_path: Path) -> int:
                 )
         failed |= route_escalations(rt)
         failed |= forward_comments(rt)
+        # Before poll, which then picks the released issue up in this tick.
+        restart_timed_out(rt)
         # Before poll, so the space it frees counts toward this tick's admission.
         reap_worktrees(rt)
         # Before poll: a rerun's _start drops the old listing, which would orphan its pads.
