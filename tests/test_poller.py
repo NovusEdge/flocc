@@ -909,7 +909,14 @@ def test_a_timeout_with_new_commits_restarts_once(rt, monkeypatch):
 
 @pytest.mark.parametrize(
     ("times", "state_type"),
-    [([500], "started"), ([], "started"), ([1500], "completed"), ([1500], "canceled")],
+    [
+        ([500], "started"),
+        ([], "started"),
+        ([1500], "completed"),
+        ([1500], "canceled"),
+        ([1500], "unstarted"),
+        ([1500], "backlog"),
+    ],
 )
 def test_a_timeout_without_new_commits_or_an_open_issue_stays(rt, monkeypatch, times, state_type):
     timed_out(rt, monkeypatch, times, state_type)
@@ -930,6 +937,13 @@ def test_a_fix_timeout_restarts(rt, monkeypatch):
     ledger.update_claim(rt.con, "NF-5", phase="fix")
     restart_timed_out(rt)
     assert ledger.get_claim(rt.con, "NF-5") is None
+
+
+def test_an_issue_without_the_trigger_label_is_not_restarted(rt, monkeypatch):
+    timed_out(rt, monkeypatch, [1500])
+    rt.linear.issue = lambda key: issue(key, labels=("backend",))
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == []
 
 
 def test_a_blocked_claim_is_not_restarted(rt, monkeypatch):

@@ -90,7 +90,11 @@ def restart_timed_out(rt) -> None:
             stamps = git("log", "--format=%ct", claim.branch, "--not", claim.base_sha, cwd=wt)
             if not any(float(s) > claim.started_at for s in stamps.split()):
                 continue
-            if rt.linear.state_types([key])[key] in ("completed", "canceled"):
+            # An issue since parked, unlabelled or closed is no longer wanted; releasing it would
+            # strand its worktree with nothing to pick it up again.
+            if rt.linear.state_types([key])[key] != "started":
+                continue
+            if rt.cfg.trigger_label not in rt.linear.issue(key).labels:
                 continue
         except (subprocess.CalledProcessError, OSError, LinearError, KeyError, ValueError) as exc:
             print(f"restart: {key} not checked: {exc}", file=sys.stderr)
