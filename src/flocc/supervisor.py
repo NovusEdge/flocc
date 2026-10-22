@@ -370,7 +370,9 @@ def _asked_seconds(d: Path) -> float:
 
 
 def _digest(detail: str) -> str:
-    return hashlib.sha256(detail.encode()).hexdigest()
+    # Durations and counts differ on every run of the same failure.
+    steady = " ".join(re.sub(r"\d+(?:\.\d+)?", "N", detail).split())
+    return hashlib.sha256(steady.encode()).hexdigest()
 
 
 def _same_failure(rt, claim: Claim, detail: str) -> bool:

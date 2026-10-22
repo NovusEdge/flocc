@@ -373,6 +373,25 @@ def test_the_same_check_failure_twice_blocks_without_another_round(rt):
     )
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("FAILED t.py::test_a - 1 failed in 37.36s", "FAILED t.py::test_a - 1 failed in 41.02s"),
+        ("--- FAIL: TestA (0.123s)\n\tx", "--- FAIL: TestA (0.456s)\n   x"),
+    ],
+)
+def test_failures_differing_only_in_numbers_and_spacing_count_as_the_same(rt, first, second):
+    failures = iter([first, second])
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    assert "the same way twice" in rt.notifier.sent[-1].summary
+
+
 def test_a_different_check_failure_gets_its_second_round(rt):
     failures = iter(["E1 boom", "E2 bang"])
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
