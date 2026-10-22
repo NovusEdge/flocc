@@ -14,12 +14,13 @@ import (
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 const (
-	Bridge = "incusbr0"
+	Bridge = steps.IncusBridge
 	Image  = "images:debian/13"
 )
 
@@ -75,15 +76,19 @@ type Env struct {
 	TTY   bool // stdin is a terminal, where ship.Connect can open the machine's master
 	// Tailnet is nil without a stored OAuth client; the VM then logs in by QR code.
 	Tailnet KeyMinter
+	// Checkout is the flocc checkout flocc-setup is built from.
+	Checkout func() (string, error)
 
 	step      *ui.Step // the step RunSteps is applying, for the waits inside it
 	sudo      bool     // sudo -n works on the machine
 	incusSudo bool     // the account is not in incus-admin, so incus goes through sudo
+	rootDone  string   // the root pass's detail once it ran
 }
 
 func cmd(name string, args ...string) host.Cmd { return host.Cmd{Name: name, Args: args} }
 
-// root runs c as root. Most commands are captured with no terminal, so sudo must never prompt.
+// root runs c as root for incus. Most commands are captured with no terminal, so sudo must never
+// prompt.
 func (e *Env) root(c host.Cmd) host.Cmd {
 	c.Args = append([]string{"-n", c.Name}, c.Args...)
 	c.Name = "sudo"
@@ -133,13 +138,11 @@ func (e *Env) Probe(ctx context.Context) error {
 	return nil
 }
 
-// Preconditions reports what the machine allows before anything changes there: whether sudo
-// works without a password, which create's firewall and Docker steps need even to check, and
-// whether incus runs as an administrator (nil), else the fix. m runs commands on the machine.
-func Preconditions(ctx context.Context, m host.Runner, machine string) (sudo bool, incus error) {
+// Preconditions reports whether incus runs as an administrator on the machine (nil), else the fix.
+// m runs commands on the machine.
+func Preconditions(ctx context.Context, m host.Runner, machine string) error {
 	e := &Env{M: m, Spec: Spec{Machine: machine}}
-	incus = e.Probe(ctx)
-	return e.sudo, incus
+	return e.Probe(ctx)
 }
 
 // regroup says how a new group reaches create's commands: the shared master logged in before the
@@ -151,14 +154,6 @@ func regroup(machine string, opts []string) string {
 		}
 	}
 	return "then log in again"
-}
-
-// needRoot stops a step that reads or changes the machine's firewall, which only root can.
-func (e *Env) needRoot(what string) error {
-	if e.sudo {
-		return nil
-	}
-	return fmt.Errorf("%s on %s needs root, and sudo there asks for a password, which create cannot type. Give your account passwordless sudo on %s (a file in /etc/sudoers.d/ written with visudo), then run create again", what, e.Spec.Machine, e.Spec.Machine)
 }
 
 type Step interface {

@@ -1,0 +1,137 @@
+// Package rootpass is the desktop's side of a root pass: build flocc-setup, stage it in a directory
+// the owner's mktemp made, and run it through sudo in one ssh -t. flocc cardinal and flocc host
+// create both use it; create cannot import cardinal, which imports create.
+package rootpass
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
+)
+
+func SSH(opts []string, tty bool, dest, remote string) host.Cmd {
+	args := append([]string{}, opts...)
+	if tty {
+		args = append(args, "-t")
+	} else {
+		// A RequestTTY in the owner's ssh config would otherwise give the pass a pty, which echoes
+		// its stdin and never passes EOF.
+		args = append(args, "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+	}
+	return host.Cmd{Name: "ssh", Args: append(args, dest, remote)}
+}
+
+// Build makes ./installer/cmd/<name> for linux/arch from the checkout at root, one step per
+// binary, into a new temporary directory the caller removes.
+func Build(ctx context.Context, r host.Runner, s ui.Session, root, arch string, names ...string) (string, error) {
+	dir, err := os.MkdirTemp("", "flocc-rootpass-")
+	if err != nil {
+		return "", err
+	}
+	for _, b := range names {
+		st := s.Step("Build " + b)
+		if _, err := host.Must(ctx, r, host.Cmd{Name: "go", Dir: root,
+			Args: []string{"build", "-o", filepath.Join(dir, b), "./installer/cmd/" + b},
+			Env:  []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + arch}}); err != nil {
+			os.RemoveAll(dir)
+			st.Fail(err)
+			return "", err
+		}
+		st.Done("linux/" + arch)
+	}
+	return dir, nil
+}
+
+type Pass struct {
+	Machine string     // the owner's ssh destination on the machine
+	Opts    []string   // ssh options: the shared master's
+	Prefix  string     // the stage's mktemp prefix: "/tmp/flocc-cardinal" or "/tmp/flocc-create"
+	Files   []string   // local files to stage; one must be named flocc-setup
+	Calls   [][]string // flocc-setup's arguments, one sudo each, in order; shell-safe words only
+	Why     string     // the handoff banner
+}
+
+// Run stages p.Files from a stage only the owner's mktemp could have made, and runs every call on
+// one line in one ssh -t: sudo's ticket for that terminal covers every call after the first, so the
+// owner types one password. A failed call stops the ones after it. The stage goes after a success
+// and stays, with its log, after a failure. It returns the reports in call order, and on failure
+// also an error naming the last report error and the stage's log.
+func Run(ctx context.Context, r host.Runner, p Pass) ([]steps.CardinalReport, error) {
+	dir, err := host.Must(ctx, r, SSH(p.Opts, false, p.Machine, "mktemp -d "+p.Prefix+".XXXXXX"))
+	dir = strings.TrimSpace(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !steps.ValidRootStage(dir) || !strings.HasPrefix(dir, p.Prefix+".") {
+		return nil, fmt.Errorf("mktemp on %s returned %q", p.Machine, dir)
+	}
+	scp := host.Cmd{Name: "scp", Args: append(append(append([]string{"-q"}, p.Opts...), p.Files...), p.Machine+":"+dir+"/")}
+	if _, err := host.Must(ctx, r, scp); err != nil {
+		return nil, err
+	}
+	remote := "chmod 755 " + dir + "/flocc-setup"
+	for _, call := range p.Calls {
+		remote += " && sudo " + dir + "/flocc-setup " + strings.Join(call, " ")
+	}
+	remote += " && rm -rf " + dir
+	var reports []steps.CardinalReport
+	// Safe on os.Stdout only because c has no Stdin: under a ui session that makes Interactive a
+	// handoff, so the tap writes while the session has released the terminal.
+	tap := Tap(os.Stdout, &reports)
+	c := SSH(p.Opts, true, p.Machine, remote)
+	c.Why = p.Why
+	c.Stdout = tap
+	err = r.Interactive(ctx, c)
+	tap.Flush()
+	if err != nil {
+		var why string
+		for _, rep := range reports {
+			if rep.Error != "" {
+				why = saved.Sanitize(rep.Error) + "; "
+			}
+		}
+		return reports, fmt.Errorf("the root pass failed: %sits log is %s/setup.log on %s: %w", why, dir, p.Machine, err)
+	}
+	return reports, nil
+}
+
+// Events are a pass's steps and notes as rows. Every string came from the far end, so each is
+// sanitized.
+func Events(r steps.CardinalReport) []ui.Event {
+	var evs []ui.Event
+	for _, s := range r.Steps {
+		e := ui.Event{Name: saved.Sanitize(s.Name), Detail: saved.Sanitize(s.Detail), State: ui.Done}
+		switch {
+		case s.Pending:
+			e.State = ui.Pending
+		case !s.Done:
+			e.State = ui.Failed
+		}
+		evs = append(evs, e)
+	}
+	for _, n := range r.Notes {
+		evs = append(evs, ui.Event{Name: "note", Detail: saved.Sanitize(n), State: ui.Skipped})
+	}
+	return evs
+}
+
+// Tap passes a pass's output through as it comes, prompts included, and keeps each
+// flocc-cardinal line in rs for Events.
+func Tap(out io.Writer, rs *[]steps.CardinalReport) *ship.LineTap {
+	return &ship.LineTap{Out: out, Marker: steps.CardinalMarker, Take: func(line string) bool {
+		got, ok := steps.ParseCardinalLine(line)
+		if ok {
+			*rs = append(*rs, got)
+		}
+		return ok
+	}}
+}

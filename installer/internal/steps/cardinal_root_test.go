@@ -187,11 +187,11 @@ func TestEgressRestartsOnlyWhenTheRulesChange(t *testing.T) {
 	}
 }
 
-func TestCheckCardinalStage(t *testing.T) {
+func TestCheckRootStage(t *testing.T) {
 	uid := os.Getuid()
 	files := []string{"flocc-setup", "desktop.pub"}
-	good := func(t *testing.T) string {
-		dir, err := os.MkdirTemp("/tmp", "flocc-cardinal.")
+	goodWith := func(t *testing.T, prefix string) string {
+		dir, err := os.MkdirTemp("/tmp", prefix)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -201,8 +201,11 @@ func TestCheckCardinalStage(t *testing.T) {
 		}
 		return dir
 	}
-	if err := CheckCardinalStage(good(t), uid, files...); err != nil {
-		t.Fatalf("good stage refused: %v", err)
+	good := func(t *testing.T) string { return goodWith(t, "flocc-cardinal.") }
+	for _, prefix := range []string{"flocc-cardinal.", "flocc-create."} {
+		if err := CheckRootStage(goodWith(t, prefix), uid, files...); err != nil {
+			t.Fatalf("good %s stage refused: %v", prefix, err)
+		}
 	}
 	loose := good(t)
 	os.Chmod(loose, 0o755)
@@ -218,8 +221,9 @@ func TestCheckCardinalStage(t *testing.T) {
 		"another owner":   {good(t), uid + 1},
 		"fixed stage":     {"/tmp/flocc-setup", uid},
 		"outside of /tmp": {"/var/tmp/flocc-cardinal.abcdef", uid},
+		"another prefix":  {"/tmp/flocc-other.abcdef", uid},
 	} {
-		if err := CheckCardinalStage(c.dir, c.uid, files...); err == nil {
+		if err := CheckRootStage(c.dir, c.uid, files...); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}

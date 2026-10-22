@@ -53,7 +53,6 @@ type setupOps struct {
 // machineState is what a machine allows. Err is set when ssh could not reach it.
 type machineState struct {
 	Err   error
-	Sudo  bool  // sudo -n works there
 	Incus error // nil when incus runs as an administrator, else the fix
 }
 
@@ -292,8 +291,7 @@ func probeMachine(ctx context.Context, d *deps, mux []string, machine string) ma
 	if err := ship.Connect(ctx, d.run, ship.Dest{SSH: machine, Opts: mux}, machine, d.tty); err != nil {
 		return machineState{Err: err}
 	}
-	sudo, incus := create.Preconditions(ctx, owner(d, mux, machine), machine)
-	return machineState{Sudo: sudo, Incus: incus}
+	return machineState{Incus: create.Preconditions(ctx, owner(d, mux, machine), machine)}
 }
 
 // runCreate is flocc host create <machine> <name> after its argument checks.

@@ -83,7 +83,7 @@ func TestCaptureSendsStdinWithoutATerminalAndScrubsOutput(t *testing.T) {
 // opened first where the owner can see it.
 func TestConnectOpensTheConnectionOnTheTerminalUnlessAMasterIsLive(t *testing.T) {
 	dest := Dest{SSH: "root@h", Opts: []string{"-o", "ControlPath=/s"}}
-	check, warm := "ssh -o ControlPath=/s -O check root@h", "ssh -o ControlPath=/s -T root@h true"
+	check, warm := "ssh -o ControlPath=/s -O check root@h", "ssh -o ConnectTimeout=10 -o ControlPath=/s -T root@h true"
 	f := host.NewFake().On(check, 255, "")
 	if err := Connect(context.Background(), f, dest, "h1", true); err != nil || !f.Ran("interactive: "+warm) {
 		t.Fatalf("%v %v", err, f.Calls)
@@ -100,7 +100,7 @@ func TestConnectOpensTheConnectionOnTheTerminalUnlessAMasterIsLive(t *testing.T)
 
 func TestConnectWithoutATerminalNeverPrompts(t *testing.T) {
 	dest := Dest{SSH: "root@h"}
-	warm := "ssh -o BatchMode=yes -T root@h true"
+	warm := "ssh -o BatchMode=yes -o ConnectTimeout=10 -T root@h true"
 	f := host.NewFake().On("ssh -O check root@h", 255, "")
 	f.Responses[warm] = host.Result{Stderr: "# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/x\n", Code: 255}
 	err := Connect(context.Background(), f, dest, "h1", false)

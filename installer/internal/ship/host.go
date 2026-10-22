@@ -77,8 +77,13 @@ func Connect(ctx context.Context, r host.Runner, dest Dest, name string, tty boo
 	if res, err := r.Run(ctx, check); err == nil && res.Code == 0 {
 		return nil
 	}
+	// A machine that is asleep or off the tailnet would otherwise hold the handoff with nothing on
+	// screen. ConnectTimeout ends before authentication, so a Tailscale check keeps its time.
+	timeout := []string{"-o", "ConnectTimeout=10"}
 	if tty {
-		if err := r.Interactive(ctx, withWhy(sshNoTTY(dest, "true"), "connect to "+name)); err != nil {
+		d := dest
+		d.Opts = append(slices.Clone(timeout), dest.Opts...)
+		if err := r.Interactive(ctx, withWhy(sshNoTTY(d, "true"), "connect to "+name)); err != nil {
 			return fmt.Errorf("could not reach %s: %w", name, scrubErr(err, dest.Token))
 		}
 		return nil
@@ -86,7 +91,7 @@ func Connect(ctx context.Context, r host.Runner, dest Dest, name string, tty boo
 	ctx, cancel := context.WithTimeout(ctx, connectWait)
 	defer cancel()
 	d := dest
-	d.Opts = append([]string{"-o", "BatchMode=yes"}, dest.Opts...)
+	d.Opts = append(append([]string{"-o", "BatchMode=yes"}, timeout...), dest.Opts...)
 	res, err := r.Run(ctx, sshNoTTY(d, "true"))
 	if err == nil && res.Code == 0 {
 		return nil

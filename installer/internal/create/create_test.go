@@ -6,24 +6,23 @@ import (
 	"errors"
 	"io"
 	"os/exec"
-	"path"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/NovusEdge/flocc/installer/internal/dockerguard"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-func TestPreconditionsReportSudoAndIncusApart(t *testing.T) {
+func TestPreconditionsReportIncus(t *testing.T) {
 	f := host.NewFake().On("sudo -n true", 1, "").On("id -nG", 0, "owner incus-admin\n").On("incus query /1.0", 0, "{}")
-	sudo, incus := Preconditions(context.Background(), f, "zer0-day-nimble")
-	if sudo || incus != nil {
-		t.Fatalf("sudo %v incus %v", sudo, incus)
+	if incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus != nil {
+		t.Fatalf("incus %v", incus)
 	}
 	f = host.NewFake().On("sudo -n true", 1, "").On("id -nG", 0, "owner\n")
-	if _, incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus == nil || !strings.Contains(incus.Error(), "incus-admin") {
+	if incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus == nil || !strings.Contains(incus.Error(), "incus-admin") {
 		t.Fatalf("incus %v", incus)
 	}
 }
@@ -66,122 +65,8 @@ func (r *recorder) Interactive(_ context.Context, c host.Cmd) error {
 	return nil
 }
 
-func isDocker(unit string) bool {
-	return slices.Contains([]string{"docker", "docker.service", "docker.socket", "dockerd"}, unit)
-}
-
-// touchesDocker reports whether c could start, stop, reload or kill dockerd. It reads c as words,
-// so a verb or unit in any order among flags and other units counts, as does one behind sudo,
-// sh -c or a ; or &&.
-func touchesDocker(c string) bool {
-	c = strings.NewReplacer("'", " ", `"`, " ", "`", " ", "(", " ", ")", " ", "&", ";", "|", ";", "\n", ";").Replace(c)
-	for _, seg := range strings.Split(c, ";") {
-		f := strings.Fields(seg)
-		for i, w := range f {
-			var words []string // the arguments after w, without flags
-			for _, a := range f[i+1:] {
-				if !strings.HasPrefix(a, "-") {
-					words = append(words, a)
-				}
-			}
-			switch base := path.Base(w); {
-			case base == "systemctl":
-				readOnly := []string{"is-active", "is-enabled", "is-failed", "status", "show", "cat", "list-units", "list-unit-files"}
-				if len(words) > 0 && !slices.Contains(readOnly, words[0]) && slices.ContainsFunc(words[1:], isDocker) {
-					return true
-				}
-			case base == "service" || base == "invoke-rc.d":
-				if len(words) > 0 && isDocker(words[0]) && (len(words) < 2 || words[1] != "status") {
-					return true
-				}
-			case strings.HasSuffix(w, "init.d/docker"):
-				if len(words) == 0 || words[0] != "status" {
-					return true
-				}
-			case base == "kill" || base == "pkill" || base == "killall":
-				if slices.ContainsFunc(words, func(a string) bool { return isDocker(a) || strings.Contains(a, "dockerd") }) {
-					return true
-				}
-			case base == "dockerd":
-				if i == 0 || slices.Contains([]string{"sudo", "-n", "env", "exec", "nohup", "--", "-c"}, f[i-1]) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func TestTouchesDocker(t *testing.T) {
-	for _, c := range []string{
-		"sudo -n systemctl enable --now docker.service",
-		"sudo -n systemctl disable --now docker.service",
-		"sudo -n systemctl --no-block restart docker",
-		"sudo -n systemctl restart --no-block docker.service",
-		"sudo -n systemctl try-reload-or-restart docker",
-		"sudo -n systemctl reload-or-try-restart docker",
-		"sudo -n systemctl force-reload docker",
-		"sudo -n systemctl condrestart docker",
-		"sudo -n systemctl mask docker.socket",
-		"sudo -n /usr/bin/systemctl stop docker.socket",
-		"sudo -n systemctl restart flocc-docker-user.service docker.service",
-		"sh -c 'iptables -L && systemctl restart docker'",
-		"sudo -n /etc/init.d/docker restart",
-		"sudo -n service docker restart",
-		"sudo -n kill $(pidof dockerd)",
-		"sudo -n pkill dockerd",
-		"sudo -n pkill -f /usr/bin/dockerd",
-		"sudo -n killall dockerd",
-		"sudo -n dockerd",
-	} {
-		if !touchesDocker(c) {
-			t.Errorf("not caught: %s", c)
-		}
-	}
-	for _, c := range []string{
-		"systemctl is-active docker",
-		"systemctl is-active --quiet docker.service",
-		"systemctl is-enabled --quiet docker.service",
-		"systemctl show -p ActiveState docker.service",
-		"sudo -n systemctl daemon-reload",
-		"sudo -n systemctl enable --now flocc-docker-user.service",
-		"sudo -n systemctl restart flocc-docker-user.service",
-		"service docker status",
-		"pidof dockerd",
-		"After=docker.service",
-	} {
-		if touchesDocker(c) {
-			t.Errorf("wrongly caught: %s", c)
-		}
-	}
-}
-
 // dockerUntouched fails when any command could stop, start or reload dockerd.
-func dockerUntouched(t *testing.T, calls []string) {
-	t.Helper()
-	for _, c := range calls {
-		if touchesDocker(c) {
-			t.Errorf("touches Docker: %s", c)
-		}
-	}
-}
-
-// rootCalls lists the commands that need root: sudo, firewall-cmd, iptables, ip6tables, tee,
-// docker, and the systemctl verbs that change state. Each must be a sudo -n call.
-func rootCalls(calls []string) []string {
-	var r []string
-	for _, c := range calls {
-		f := strings.Fields(c)
-		switch {
-		case len(f) == 0:
-		case slices.Contains([]string{"sudo", "firewall-cmd", "iptables", "ip6tables", "tee", "docker"}, f[0]):
-			r = append(r, c)
-		case f[0] == "systemctl" && len(f) > 1 && slices.Contains([]string{"enable", "disable", "start", "stop", "restart", "daemon-reload"}, f[1]):
-			r = append(r, c)
-		}
-	}
-	return r
-}
+var dockerUntouched = dockerguard.Untouched
 
 // shWords has sh parse line into words, the way the remote login shell parses ssh's command.
 func shWords(t *testing.T, line string) []string {
@@ -293,17 +178,6 @@ func TestProbeSaysToCloseTheSharedConnectionAfterUsermod(t *testing.T) {
 	}
 	e, _ := testEnv(host.NewFake())
 	if err := e.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), regroup("laptop", ControlOpts())) {
-		t.Fatal(err)
-	}
-}
-
-func TestNeedRootNamesTheFix(t *testing.T) {
-	e, _ := testEnv(host.NewFake())
-	if e.needRoot("x") != nil {
-		t.Fatal("sudo works, so root is available")
-	}
-	e.sudo = false
-	if err := e.needRoot("Reading firewalld"); err == nil || !strings.Contains(err.Error(), "passwordless sudo") {
 		t.Fatal(err)
 	}
 }

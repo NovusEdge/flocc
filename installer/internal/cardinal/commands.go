@@ -16,6 +16,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
+	"github.com/NovusEdge/flocc/installer/internal/rootpass"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -299,7 +300,7 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, o SetupOptions) error {
 				continue
 			}
 			st.Done(h.Addr)
-			ui.Rows(d.UI, reportEvents(r))
+			ui.Rows(d.UI, rootpass.Events(r))
 			lines = append(lines, steps.CardinalHostFile{Name: h.Host.Name, Addr: h.Addr, KnownHost: r.HostKey})
 		}
 		if len(failed) > 0 {
@@ -337,7 +338,7 @@ func (d Deps) setup(ctx context.Context, s saved.Saved, o SetupOptions) error {
 			return err
 		}
 	}
-	ui.Rows(d.UI, reportEvents(r))
+	ui.Rows(d.UI, rootpass.Events(r))
 	d.UI.Step("Login").Done(saved.Sanitize(r.Login))
 	if r.Login != "full" {
 		d.UI.Todo("flocc cardinal login --user " + s.User + " --email <pool account>")
@@ -351,7 +352,7 @@ func (d Deps) login(ctx context.Context, s saved.Saved, email string) error {
 		remote += " --email " + email
 	}
 	var rs []steps.CardinalReport
-	tap := reportTap(os.Stdout, &rs)
+	tap := rootpass.Tap(os.Stdout, &rs)
 	c := d.user(s, true, remote)
 	c.Why = "cardinal login on " + s.Dest() + ". " + detachWarning
 	c.Stdout = ship.WatchURLs(tap, d.Open, anthropicURL)
@@ -359,7 +360,7 @@ func (d Deps) login(ctx context.Context, s saved.Saved, email string) error {
 	tap.Flush()
 	d.UI.Group("Login")
 	for _, r := range rs {
-		ui.Rows(d.UI, reportEvents(r))
+		ui.Rows(d.UI, rootpass.Events(r))
 	}
 	if err != nil {
 		return err
@@ -522,7 +523,7 @@ func (d Deps) remove(ctx context.Context, s saved.Saved, purge bool) error {
 			continue
 		}
 		st.Done("")
-		ui.Rows(d.UI, reportEvents(r))
+		ui.Rows(d.UI, rootpass.Events(r))
 	}
 	dir := saved.Dir(d.Home)
 	if purge {

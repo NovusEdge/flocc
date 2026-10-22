@@ -38,6 +38,9 @@ The desktop CLI shows what it is doing, and hosts join the tailnet tagged withou
   with it, setup checks the tailnet policy and prints a merged policy to paste (it never writes
   one), and tags each host's node. `host create` mints a one-off tagged key and joins with no QR
   login; without the client it joins with `--advertise-tags=tag:flocc-host`.
+- `host create` runs its firewalld and Docker steps as root in one `sudo` on the machine, so a
+  password on sudo is asked once instead of stopping create; the setup wizard no longer refuses
+  such a machine.
 - Not confirmed against the live Tailscale API: `--advertise-tags` on a fresh node, the error text
   for a tag the policy lacks, and tagging a user-owned node through the API.
 
