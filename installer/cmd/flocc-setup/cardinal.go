@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,10 +24,10 @@ import (
 )
 
 var (
-	cardinalRootPhases = []string{"cardinal-root", "cardinal-purge", "cardinal-host", "cardinal-host-remove"}
+	cardinalRootPhases = []string{"cardinal-root", "cardinal-purge", "cardinal-host", "cardinal-host-remove", "create-root"}
 	cardinalUserPhases = []string{"cardinal", "cardinal-login", "cardinal-prestart", "cardinal-renew", "cardinal-status"}
 	// stageFiles are what each machine root phase reads from its stage.
-	stageFiles = map[string][]string{"cardinal-root": {"flocc-setup", "desktop.pub"}, "cardinal-purge": {"flocc-setup"}}
+	stageFiles = map[string][]string{"cardinal-root": {"flocc-setup", "desktop.pub"}, "cardinal-purge": {"flocc-setup"}, "create-root": {"flocc-setup"}}
 )
 
 // cardinalPhase finds a cardinal phase in args before the flag set parses them: the cardinal
@@ -78,7 +79,8 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return code
 	}
 	files, staged := stageFiles[*phase]
-	if (*user != "" || staged) && !saved.ValidUser(*user) {
+	needsUser := *phase == "cardinal-root" || *phase == "cardinal-purge"
+	if (*user != "" || needsUser) && !saved.ValidUser(*user) {
 		return fail(2, fmt.Errorf("--user %q is not a user name", *user))
 	}
 	if err := checkCardinalPhase(*phase, os.Geteuid()); err != nil {
@@ -148,6 +150,15 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "cardinal-root":
 		list := steps.CardinalRootSteps(*user, *adopt)
 		err := steps.RunAll(ctx, env, list)
+		return finish(steps.CardinalReport{Steps: steps.ReportSteps(ctx, env, list)}, err)
+	case "create-root":
+		list := steps.CreateRootSteps()
+		err := steps.RunAll(ctx, env, list)
+		// Under a cancelled context every check reads "not running", which is done: after a Ctrl-C
+		// the report holds the cancellation and no steps, even when RunAll returned nil.
+		if ctx.Err() != nil {
+			return finish(steps.CardinalReport{}, cmp.Or(err, ctx.Err()))
+		}
 		return finish(steps.CardinalReport{Steps: steps.ReportSteps(ctx, env, list)}, err)
 	case "cardinal-purge":
 		if slices.Contains(steps.OldUsers, *user) {

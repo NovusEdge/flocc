@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+func TestCreateRootIsARootPhaseWithoutAUser(t *testing.T) {
+	if _, ok := cardinalPhase([]string{"--phase", "create-root"}); !ok {
+		t.Fatal("create-root is not routed to runCardinal")
+	}
+	if checkCardinalPhase("create-root", 0) != nil || checkCardinalPhase("create-root", 1000) == nil {
+		t.Fatal("create-root is not a root phase")
+	}
+	// Refused before anything runs (not root, or no SUDO_UID), and never as a bad --user.
+	var errb strings.Builder
+	if code := runCardinal([]string{"--phase", "create-root"}, nil, io.Discard, &errb); code != 2 || strings.Contains(errb.String(), "user name") {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+}
+
 func TestCardinalPhaseIsFoundBeforeParsing(t *testing.T) {
 	for args, want := range map[string]bool{
 		"--phase cardinal-status --quick": true,
