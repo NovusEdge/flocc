@@ -94,7 +94,7 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if sudoUID, err = strconv.Atoi(os.Getenv("SUDO_UID")); err != nil {
 			return fail(2, errors.New("run the root pass through sudo; SUDO_UID names the stage's owner"))
 		}
-		if err := steps.CheckCardinalStage(stage, sudoUID, files...); err != nil {
+		if err := steps.CheckRootStage(stage, sudoUID, files...); err != nil {
 			return fail(2, err)
 		}
 	}

@@ -388,7 +388,7 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey strin
 	if err != nil {
 		return err
 	}
-	if !steps.ValidCardinalStage(dir) {
+	if !steps.ValidRootStage(dir) {
 		return fmt.Errorf("mktemp on %s returned %q", s.Machine, dir)
 	}
 	files := []string{filepath.Join(bin, "flocc-setup")}

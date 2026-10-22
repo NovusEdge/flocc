@@ -14,12 +14,13 @@ import (
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 const (
-	Bridge = "incusbr0"
+	Bridge = steps.IncusBridge
 	Image  = "images:debian/13"
 )
 
