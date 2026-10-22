@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shlex
@@ -6,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from flocc.config import TRAILER, RepoConfig
+from flocc.gate import AMENDED
 from flocc.ledger import Claim
 from flocc.worktree import changed_files, git, run_bounded
 
@@ -56,6 +58,21 @@ def failure_excerpt(out: str, limit: int = _TAIL) -> str:
     return text if len(text) <= limit else text[: limit - 4] + "\n..."
 
 
+def read_amended(state: Path) -> dict[str, dict]:
+    try:
+        data = json.loads((state / AMENDED).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def amended_section(amended: dict[str, dict] | None) -> str:
+    if not amended:
+        return ""
+    lines = "\n".join(f"- `{path}`: {entry.get('question', '')}" for path, entry in amended.items())
+    return f"\n\n## Amended tests\n\nThe owner approved these changes to the tester's files:\n\n{lines}"
+
+
 def publish(
     claim: Claim,
     repo: RepoConfig,
@@ -66,12 +83,14 @@ def publish(
     check_timeout_s: float = 1800,
     trailer: bool = True,
     accepted_sha: str | None = None,
+    amended: dict[str, dict] | None = None,
 ) -> PublishResult:
     wt = Path(claim.worktree)
     if claim.base_sha is None or claim.tester_sha is None:
         raise ValueError(f"{claim.issue_key} has no recorded tester commit to guard")
     tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
     touched = changed_files(wt, accepted_sha or claim.tester_sha, "HEAD") & tester_files
+    touched -= set(amended or {})
     if touched:
         return PublishResult("tests_touched", ", ".join(sorted(touched)))
     # Only commits are pushed, and the guard above compares commits only; a check on the working
@@ -159,7 +178,7 @@ def publish(
             "--title",
             f"{claim.issue_key}: {title}",
             "--body",
-            f"Fixes {claim.issue_key}\n\n{summary}",
+            f"Fixes {claim.issue_key}\n\n{summary}{amended_section(amended)}",
         ],
         cwd=wt,
         env=env,

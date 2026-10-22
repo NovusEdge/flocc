@@ -19,7 +19,7 @@ from flocc.gate import (
 )
 from flocc.ledger import Claim
 from flocc.linear import LinearError
-from flocc.publisher import BranchMoved, review_comment
+from flocc.publisher import BranchMoved, amended_section, read_amended, review_comment
 from flocc.sessions import (
     allowed_plugins,
     claude_argv,
@@ -211,6 +211,7 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
         (d / "review-input.md").write_text(
             f"# Review {key}: {title}\n\nPR: {url}\n\nThe diff is in {d / 'pr.diff'}.\n\n"
             f"## Issue description, including the acceptance criteria\n\n{description}\n"
+            f"{amended_section(read_amended(d))}\n"
         )
         launch(rt, claim, "review", started_at=start)
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from flocc import ledger
 from flocc.config import Config, trailer_enabled
+from flocc.context import state_dir
 from flocc.escalation import Escalation, Notifier, ntfy_push
 from flocc.linear import Linear, LinearError, http_transport
 from flocc.poller import (
@@ -19,7 +20,7 @@ from flocc.poller import (
     reap_worktrees,
     route_escalations,
 )
-from flocc.publisher import comment_on_pr, publish
+from flocc.publisher import comment_on_pr, publish, read_amended
 from flocc.runtime import Runtime
 from flocc.sessions import Sessions
 from flocc.supervisor import supervise
@@ -68,6 +69,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
             check_timeout_s=cfg.check_timeout_s,
             trailer=trailer_enabled(cfg, cfg.repos[claim.repo]),
             accepted_sha=ledger.accepted_tests(con, claim.issue_key),
+            amended=read_amended(state_dir(cfg, claim.issue_key)),
         )
 
     def review_diff(claim):

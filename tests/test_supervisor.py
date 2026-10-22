@@ -147,6 +147,24 @@ def test_implementer_done_publishes_and_starts_the_review(rt):
     assert not (d / "done.json").exists()
 
 
+def test_review_input_lists_the_amended_tests(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    d = state_dir(rt.cfg, "NF-1")
+    amended = {"t/test_a.py": {"question": "Amend t/test_a.py?", "response": {}}}
+    (d / "tests-amended.json").write_text(json.dumps(amended))
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    text = (d / "review-input.md").read_text()
+    assert "## Amended tests" in text and "- `t/test_a.py`: Amend t/test_a.py?" in text
+
+
+def test_review_input_has_no_amended_section_without_amendments(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert "Amended tests" not in (state_dir(rt.cfg, "NF-1") / "review-input.md").read_text()
+
+
 def test_review_model_comes_from_config(rt):
     rt.cfg = replace(rt.cfg, review_model="sonnet")
     add(rt, phase="impl", tester_sha="sha-tests")

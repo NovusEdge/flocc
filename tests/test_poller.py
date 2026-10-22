@@ -511,11 +511,12 @@ def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d.mkdir(parents=True)
     from_before = Grants(launches=5)
     set_block(d / "grants.json", from_before)
-    for name in ("scratchpads", "compacted", "asking"):
+    names = ("scratchpads", "compacted", "asking", "tests-amended.json", "answers.jsonl")
+    for name in names:
         (d / name).write_text("x")
     rt.linear.ready = [issue()]
     poll(rt)
-    for name in ("scratchpads", "compacted", "asking"):
+    for name in names:
         assert not (d / name).exists()
     assert for_phase(d / "grants.json", "impl").launches is None
 
