@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -253,6 +254,33 @@ func TestHostPassDrawsTheHostsEventsAndFailsWithoutAReport(t *testing.T) {
 	rows := rec.Rows()
 	if len(rows) != 1 || rows[0].Name != "sshd" || rows[0].State != ui.Failed {
 		t.Fatalf("rows %+v", rows)
+	}
+}
+
+func TestStatusTableIsTheTableDrawStatusDraws(t *testing.T) {
+	age := 60.0
+	st := steps.CardinalStatus{Unit: "active", Login: "full", Tmux: true, SessionAgeS: &age}
+	tb := StatusTable(st)
+	var names []string
+	for _, r := range tb.Rows {
+		names = append(names, r[0])
+	}
+	if tb.Title != "cardinal" || strings.Join(names, ",") != "unit,session,tmux,login" {
+		t.Fatalf("%q %v", tb.Title, names)
+	}
+	rec := &ui.Recorder{}
+	DrawStatus(ui.New(rec), st)
+	var tables []ui.Event
+	for _, e := range rec.Events {
+		if e.Kind == ui.KTable {
+			tables = append(tables, e)
+		}
+	}
+	if len(tables) != 1 {
+		t.Fatalf("DrawStatus drew %d tables, want 1", len(tables))
+	}
+	if !reflect.DeepEqual(*tables[0].Table, tb) {
+		t.Errorf("DrawStatus drew %+v, StatusTable gave %+v", *tables[0].Table, tb)
 	}
 }
 

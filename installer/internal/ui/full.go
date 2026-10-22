@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"runtime/debug"
 	"slices"
@@ -10,21 +11,20 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 const (
-	railWidth   = 22
-	railSep     = " │ "
-	paneTail    = 6
-	minFullCols = 80
-	minFullRows = 20
-	hints       = "l log · ? keys · q quit"
-	hintsLong   = "l log · ↑↓ PgUp PgDn scroll · q quit"
+	railWidth = 24 // outer width of the rail pane when it sits beside the live pane
+	paneGap   = 1
+	paneTail  = 6
 )
 
 type fullStep struct {
@@ -94,19 +94,35 @@ type fullModel struct {
 	stopping    bool // the open form is the stop question, not a prompt of the session
 	interrupted bool
 	interrupt   func()
+	th          theme.Theme
+	formDark    *bool // what an open form reads; see themeIn
+	hold        handoffHold
 }
 
 func newFullModel(now func() time.Time, version string) fullModel {
+	th := withDark(theme.FromEnv(os.Getenv, true), true)
 	return fullModel{
+		hold:      newHandoffHold(now()),
 		cur:       -1,
 		steps:     map[string]*fullStep{},
 		version:   version,
 		start:     now(),
 		now:       now,
-		spinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Yellow))),
-		bar:       progress.New(),
+		spinner:   th.Spinner(),
+		bar:       newBar(true),
 		interrupt: interruptSelf,
+		th:        th,
+		formDark:  new(true),
 	}
+}
+
+// newBar builds the progress bar from the palette: progress.New() would keep its default
+// #7571F9 fill.
+func newBar(dark bool) progress.Model {
+	p := theme.For(dark)
+	b := progress.New(progress.WithColors(p.Accent))
+	b.EmptyColor = p.Dim
+	return b
 }
 
 // buildVersion is the main module's version, which is "(devel)" or empty outside a tagged build.
@@ -119,19 +135,42 @@ func buildVersion() string {
 	return "dev"
 }
 
-func (m fullModel) Init() tea.Cmd { return m.spinner.Tick }
+func (m fullModel) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, tea.RequestBackgroundColor, replyTimer())
+}
 
 func (m fullModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	start, consumed := m.hold.step(msg, m.now())
+	var next tea.Model = m
+	var cmd tea.Cmd
+	if !consumed {
+		next, cmd = m.update(msg)
+	}
+	if start != nil {
+		cmd = tea.Batch(cmd, fullHandoff(*start))
+	}
+	return next, cmd
+}
+
+func fullHandoff(msg handoffMsg) tea.Cmd {
+	return tea.Exec(&bannerCmd{cmd: msg.cmd, why: msg.why}, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
+}
+
+func (m fullModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		m.th = withDark(m.th, msg.IsDark())
+		m.spinner.Style = m.th.Accent
+		m.bar = newBar(m.th.Dark)
+		*m.formDark = m.th.Dark
+		return m.toForm(msg) // a select caches its rendered options until it sees an update
 	case drawMsg:
 		m.add(msg.e)
 		return m, nil
 	case promptMsg:
-		m.form, m.result = formFor(msg.req)
+		m.form, m.result = formFor(m.formDark, msg.req)
 		m.reply, m.stopping = msg.reply, false
 		return m, m.form.Init()
-	case handoffMsg:
-		return m, tea.Exec(&bannerCmd{cmd: msg.cmd, why: msg.why}, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
 	case handoffDone:
 		msg.reply <- msg.err
 		return m, nil
@@ -143,7 +182,7 @@ func (m fullModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.handover = msg.Width < minFullCols || msg.Height < minFullRows
+		m.handover = msg.Width < theme.MinW || msg.Height < theme.MinH
 		if m.handover {
 			return m, tea.Quit
 		}
@@ -159,7 +198,7 @@ func (m fullModel) key(k string) (tea.Model, tea.Cmd) {
 	page := max(m.bodyHeight()-1, 1)
 	switch k {
 	case "q", "ctrl+c":
-		m.form, m.result = stopForm(m.title)
+		m.form, m.result = stopForm(m.formDark, m.title)
 		m.stopping = true
 		return m, m.form.Init()
 	case "l":
@@ -186,7 +225,7 @@ func (m *fullModel) scrollBy(n int) {
 	}
 	limit := 0
 	if s := m.selected(); s != nil {
-		limit = max(len(s.lines)-(m.bodyHeight()-1), 0)
+		limit = max(len(s.lines)-m.bodyHeight(), 0)
 	}
 	m.scroll = min(max(m.scroll+n, 0), limit)
 }
@@ -327,16 +366,47 @@ func (m fullModel) dims() (w, h int) {
 	return
 }
 
-// bodyHeight is what is left between the header rule and the bottom rule.
-func (m fullModel) bodyHeight() int {
-	_, h := m.dims()
-	return max(h-4, 1)
+// bodyLayout is where the panes and the key bar go inside the margin.
+type bodyLayout struct {
+	stacked                    bool
+	railW, railH, liveW, liveH int
+	bar                        string
 }
 
-func (m fullModel) railLine(name string) string {
+func (m fullModel) layout() bodyLayout {
+	w, h := m.dims()
+	iw, ih := theme.Inner(w, h)
+	bar := m.keyBar(iw)
+	body := max(ih-1-lipgloss.Height(bar), 3)
+	if w >= theme.StackBelow {
+		return bodyLayout{railW: railWidth, railH: body, liveW: max(iw-railWidth-paneGap, 4), liveH: body, bar: bar}
+	}
+	railH := min(len(m.rail(1))+2, max(body/3, 3))
+	return bodyLayout{stacked: true, railW: iw, railH: railH, liveW: iw, liveH: max(body-railH, 3), bar: bar}
+}
+
+// bodyHeight is the number of text rows in the live pane.
+func (m fullModel) bodyHeight() int { return max(m.layout().liveH-2, 1) }
+
+func (m fullModel) keyBar(width int) string {
+	th, inLog := m.th, m.logView
+	if m.showKeys {
+		return th.KeyHelp([][]key.Binding{
+			{th.Key(true, "l", "log", "l"), th.Key(inLog, "↑↓", "scroll", "up", "down"), th.Key(inLog, "PgUp/PgDn", "page", "pgup", "pgdown"), th.Key(inLog, "esc", "back")},
+			{th.Key(true, "?", "keys"), th.Key(true, "q", "quit", "q", "ctrl+c")},
+		}, width)
+	}
+	return th.KeyBar([]key.Binding{
+		th.Key(true, "l", "log"), th.Key(inLog, "↑↓", "scroll", "up", "down"), th.Key(inLog, "esc", "back"),
+		th.Key(true, "?", "keys"), th.Key(true, "q", "quit", "q", "ctrl+c"),
+	}, width)
+}
+
+func (m fullModel) railLine(name string, width int) string {
+	th := m.th
 	g := m.find(name)
 	if g == nil {
-		return Mark(Skipped, true) + " " + name
+		return ThemedMark(Skipped, th) + " " + name
 	}
 	running, ended, failed, pending := g.steps()
 	started := 0
@@ -345,68 +415,67 @@ func (m fullModel) railLine(name string) string {
 			started++
 		}
 	}
-	mark := Mark(Done, true)
+	mark := ThemedMark(Done, th)
 	switch {
 	case running > 0:
 		mark = m.spinner.View()
 	case failed:
-		mark = Mark(Failed, true)
+		mark = ThemedMark(Failed, th)
 	case pending:
-		mark = Mark(Pending, true)
+		mark = ThemedMark(Pending, th)
 	case ended == 0:
-		mark = Mark(Skipped, true)
+		mark = ThemedMark(Skipped, th)
 	}
 	count := fmt.Sprintf("%d/%d", ended, started)
-	room := max(railWidth-2-len(count)-1, 1)
+	room := max(width-2-len(count)-1, 1)
 	label := lipgloss.NewStyle().MaxWidth(room).Render(name)
-	gap := strings.Repeat(" ", max(railWidth-2-lipgloss.Width(label)-len(count), 1))
-	return mark + " " + label + gap + count
+	gap := strings.Repeat(" ", max(width-2-lipgloss.Width(label)-len(count), 1))
+	return mark + " " + label + gap + dimmer(th)(count)
 }
 
-func (m fullModel) rail() []string {
+func (m fullModel) rail(width int) []string {
 	var lines []string
 	for _, n := range m.railNames() {
-		lines = append(lines, m.railLine(n))
+		lines = append(lines, m.railLine(n, width))
 	}
 	if m.todos > 0 {
-		lines = append(lines, "", Mark(Pending, true)+fmt.Sprintf(" %d left for you", m.todos))
+		lines = append(lines, "", ThemedMark(Pending, m.th)+fmt.Sprintf(" %d left for you", m.todos))
 	}
 	return lines
 }
 
 func (m fullModel) paneLines(width int) []string {
-	out := Out{Color: true}
 	if m.logView {
 		return m.logLines(width)
 	}
 	if m.cur < 0 {
 		return nil
 	}
-	g := m.groups[m.cur]
-	lines := []string{out.Bold(g.name)}
-	for _, it := range g.items {
+	var lines []string
+	for _, it := range m.groups[m.cur].items {
 		switch {
 		case it.step == nil:
 			lines = append(lines, strings.Split(it.text, "\n")...)
 		case it.step.running():
 			lines = append(lines, m.runningLine(it.step, width))
 		default:
-			lines = append(lines, strings.Split(RowText(it.step.ev, nameWidth, true), "\n")...)
+			lines = append(lines, strings.Split(ThemedRow(it.step.ev, nameWidth, m.th), "\n")...)
 		}
 	}
 	if s := m.selected(); s != nil && len(s.lines) > 0 {
 		lines = append(lines, "")
 		for _, l := range s.lines[max(len(s.lines)-paneTail, 0):] {
-			lines = append(lines, out.paint("2", indent+indent+indent+l))
+			lines = append(lines, m.th.Dim.Render(indent+indent+indent+l))
 		}
 	}
 	if room := m.bodyHeight(); len(lines) > room {
-		lines = append(lines[:1], lines[len(lines)-room+1:]...)
+		lines = lines[len(lines)-room:]
 	}
 	return lines
 }
 
 func (m fullModel) runningLine(s *fullStep, width int) string {
+	dim := dimmer(m.th)
 	detail := s.ev.Detail
 	if s.ev.Total > 0 {
 		detail = strings.TrimSpace(fmt.Sprintf("%d/%d %s", s.ev.N, s.ev.Total, detail))
@@ -414,75 +483,75 @@ func (m fullModel) runningLine(s *fullStep, width int) string {
 	suffix := "   " + clockFmt(m.now().Sub(s.start))
 	fixed := indent + "  " + fmt.Sprintf("%-*s %s", nameWidth, s.ev.Name, suffix)
 	detail = cut(detail, max(width-lipgloss.Width(fixed), 1))
-	head := fmt.Sprintf("%s%s %-*s %s", indent, m.spinner.View(), nameWidth, s.ev.Name, detail)
-	return strings.TrimRight(head, " ") + suffix
+	head := fmt.Sprintf("%s%s %-*s %s", indent, m.spinner.View(), nameWidth, s.ev.Name, dim(detail))
+	return strings.TrimRight(head, " ") + dim(suffix)
 }
 
 func (m fullModel) logLines(width int) []string {
 	s := m.selected()
 	if s == nil {
-		return []string{Out{Color: true}.Bold("log"), "no step yet"}
+		return []string{"no step yet"}
 	}
-	room := max(m.bodyHeight()-1, 1)
+	room := m.bodyHeight()
 	end := len(s.lines) - m.scroll
-	lines := []string{Out{Color: true}.Bold("log of " + s.ev.Name)}
+	var lines []string
 	for _, l := range s.lines[max(end-room, 0):max(end, 0)] {
 		lines = append(lines, cut(l, width))
 	}
 	return lines
 }
 
-// cell clips s to w columns and pads it to w.
-func cell(s string, w int) string {
-	s = lipgloss.NewStyle().MaxWidth(w).Render(s)
-	return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
-}
-
 func (m fullModel) View() tea.View {
 	w, h := m.dims()
 	frame := m.frame()
 	if m.form != nil {
-		frame = overlay(frame, modalBox(m.form.View(), w), w, h)
+		frame = overlay(frame, modalBoxIn(m.th, m.form.View(), w), w, h)
 	}
 	v := tea.NewView(frame)
 	v.AltScreen = true
 	return v
 }
 
-func (m fullModel) frame() string {
-	w, _ := m.dims()
-	out := Out{Color: true}
-	dim := func(s string) string { return out.paint("2", s) }
-
-	right := "v" + m.version + " · " + clockFmt(m.now().Sub(m.start))
-	title := lipgloss.NewStyle().MaxWidth(max(w-lipgloss.Width(right)-1, 1)).Render(m.title)
-	gap := strings.Repeat(" ", max(w-lipgloss.Width(title)-lipgloss.Width(right), 1))
-	header := out.paint("1;36", title) + gap + dim(right)
-	rule := dim(strings.Repeat("─", w))
-
-	bh := m.bodyHeight()
-	paneW := max(w-railWidth-lipgloss.Width(railSep), 1)
-	rail, pane := m.rail(), m.paneLines(paneW)
-	lines := []string{header, rule}
-	for i := range bh {
-		var l, p string
-		if i < len(rail) {
-			l = rail[i]
-		}
-		if i < len(pane) {
-			p = pane[i]
-		}
-		row := cell(l, railWidth) + dim(railSep) + lipgloss.NewStyle().MaxWidth(paneW).Render(p)
-		lines = append(lines, strings.TrimRight(row, " "))
-	}
-	keys := hints
-	if m.showKeys {
-		keys = hintsLong
-	}
+func (m fullModel) header(width int) string {
+	right := m.th.Dim.Render("v" + m.version + " · " + clockFmt(m.now().Sub(m.start)))
+	rw := lipgloss.Width(right)
+	title := m.th.Title.Render(lipgloss.NewStyle().MaxWidth(max(width-rw-1, 1)).Render(m.title))
+	tw := lipgloss.Width(title)
 	bar := m.bar
-	bar.SetWidth(max(min(40, w-lipgloss.Width(keys)-8), 10))
-	lines = append(lines, rule, bar.ViewAs(m.fraction())+"  "+dim(keys))
-	return strings.Join(lines, "\n")
+	bar.SetWidth(min(24, width/4))
+	bv := bar.ViewAs(m.fraction())
+	if gap := width - tw - lipgloss.Width(bv) - 2 - rw; gap >= 1 {
+		return title + strings.Repeat(" ", gap) + bv + "  " + right
+	}
+	return title + strings.Repeat(" ", max(width-tw-rw, 1)) + right
+}
+
+func (m fullModel) frame() string {
+	w, h := m.dims()
+	iw, _ := theme.Inner(w, h)
+	lo := m.layout()
+
+	title, hint := "", "l log"
+	if m.cur >= 0 {
+		title = m.groups[m.cur].name
+	}
+	if m.logView {
+		title, hint = "log", "l back"
+		if s := m.selected(); s != nil {
+			title = "log of " + s.ev.Name
+		}
+	}
+	railRows := m.rail(lo.railW - 4)
+	if m.cur >= 0 {
+		railRows = theme.Window(railRows, slices.Index(m.railNames(), m.groups[m.cur].name), lo.railH-2)
+	}
+	rail := m.th.Pane("sections", "", strings.Join(railRows, "\n"), lo.railW, lo.railH)
+	live := m.th.Pane(title, hint, strings.Join(m.paneLines(lo.liveW-4), "\n"), lo.liveW, lo.liveH)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, rail, strings.Repeat(" ", paneGap), live)
+	if lo.stacked {
+		body = rail + "\n" + live
+	}
+	return theme.Screen(m.header(iw)+"\n"+body+"\n"+lo.bar, w, h)
 }
 
 // toForm gives the open form every message it was not handed already, and closes it when it ends.
@@ -557,7 +626,7 @@ func recordText(m fullModel, todos []string) string {
 		var rows []string
 		for _, it := range g.items {
 			if it.step != nil && !it.step.running() {
-				rows = append(rows, RowText(it.step.ev, nameWidth, true))
+				rows = append(rows, ThemedRow(it.step.ev, nameWidth, m.th))
 			}
 		}
 		if len(rows) > 0 {
@@ -580,11 +649,12 @@ type full struct {
 	newInner func(io.Writer, io.Reader) Renderer
 
 	mu     sync.Mutex
+	th     theme.Theme // the program's last, for the record
 	events []Event
 	inner  Renderer // non-nil once the run was handed over
 }
 
-// NewFull draws the session on the alternate screen of out, reading keys from in. Below 80x20 it
+// NewFull draws the session on the alternate screen of out, reading keys from in. Below 60x20 it
 // hands the session over to an inline renderer on the same streams.
 func NewFull(out io.Writer, in io.Reader, title string) Renderer { return newFull(out, in, title) }
 
@@ -596,6 +666,8 @@ func newFullWith(out io.Writer, in io.Reader, title string, inner func(io.Writer
 	r := &full{out: out, in: in, done: make(chan struct{}), newInner: inner}
 	m := newFullModel(time.Now, buildVersion())
 	m.title = title
+	m.hold.in = in
+	r.th = m.th
 	opts = append([]tea.ProgramOption{tea.WithOutput(out), tea.WithInput(in), tea.WithoutSignalHandler()}, opts...)
 	r.p = tea.NewProgram(m, opts...)
 	r.q = newSendQueue(r.p, r.done)
@@ -607,6 +679,11 @@ func (r *full) run() {
 	defer close(r.done)
 	defer r.restoreOnPanic()
 	fm, err := r.p.Run()
+	if m, ok := fm.(fullModel); ok {
+		r.mu.Lock()
+		r.th = m.th
+		r.mu.Unlock()
+	}
 	if m, ok := fm.(fullModel); ok && err == nil && m.handover {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -643,6 +720,7 @@ func (r *full) record(todos []string) string {
 	m := newFullModel(time.Now, "")
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	m.th = r.th
 	for _, e := range r.events {
 		m.add(e)
 	}

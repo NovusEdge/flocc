@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,10 +99,57 @@ func Main(args []string) int {
 	}
 	d.doShip, d.doLogin = ship.Ship, ship.Login
 	d.dash = func(ctx context.Context) int {
-		return dash.Run(ctx, dash.Options{Source: ship.NewSource(), Self: os.Args[0], In: os.Stdin, Out: os.Stdout})
+		o := dash.Options{Source: ship.NewSource(), Self: os.Args[0], In: os.Stdin, Out: os.Stdout, Open: ship.Browse,
+			// Not d.store(): d.ui is nil on this path, so its keyring-wait note would be written to
+			// stderr over the alternate screen.
+			Titles: dashTitles(func() keys.Store { return keys.Open(home, io.Discard) }, d.linearAPI, d.http)}
+		if _, err := d.repoRoot(); err != nil {
+			o.ShipBlock = "cd into the flocc checkout to ship"
+		}
+		return dash.Run(ctx, o)
 	}
 	d.mode, args = ui.StripModeFlags(args)
 	return run(ctx, d, args)
+}
+
+// dashTitles looks issue titles up with the stored Linear key, which it reads on the first call:
+// the keyring can block, and that call runs in a command, not in the dashboard's update. A failed
+// read is not kept, so the next poll tries again: the key may have been stored since.
+func dashTitles(store func() keys.Store, base string, client *http.Client) func(context.Context, []string) (map[string]dash.Title, error) {
+	var (
+		mu  sync.Mutex
+		got string
+	)
+	key := func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if got != "" {
+			return got, nil
+		}
+		k, err := store().Get(keys.Linear)
+		if err == nil && k == "" {
+			err = errors.New("no Linear key stored; run flocc keys")
+		}
+		if err == nil {
+			got = k
+		}
+		return k, err
+	}
+	return func(ctx context.Context, want []string) (map[string]dash.Title, error) {
+		k, err := key()
+		if err != nil {
+			return nil, err
+		}
+		issues, err := (&linearapi.Client{URL: base, Key: k, HTTP: client}).IssuesByKey(ctx, want)
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[string]dash.Title, len(issues))
+		for _, is := range issues {
+			out[is.Key] = dash.Title{Title: is.Title, URL: is.URL}
+		}
+		return out, nil
+	}
 }
 
 // handoffOnly is a command whose whole job is one handoff to a child that owns the terminal, so

@@ -199,7 +199,7 @@ func (Claude) Check(ctx context.Context, e *Env) (bool, string, error) {
 		}
 	}
 	_, v := claudeVersion(ctx, e)
-	return true, v + ", " + plural(len(l.Plugins), "plugin"), nil
+	return true, v + ", " + Plural(len(l.Plugins), "plugin"), nil
 }
 
 func (Claude) Apply(ctx context.Context, e *Env) error {

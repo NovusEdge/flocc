@@ -151,7 +151,8 @@ func apply(ctx context.Context, e *Env, s Step, before string) (ui.Outcome, erro
 
 func cmd(name string, args ...string) host.Cmd { return host.Cmd{Name: name, Args: args} }
 
-func plural(n int, word string) string {
+// Plural renders "1 host" or "2 hosts".
+func Plural(n int, word string) string {
 	if n == 1 {
 		return "1 " + word
 	}

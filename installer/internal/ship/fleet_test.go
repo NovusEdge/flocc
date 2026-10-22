@@ -41,6 +41,33 @@ func plainText(s string) string {
 	return b.String()
 }
 
+func TestFactsKeepTheCells(t *testing.T) {
+	exit := "1"
+	rep := &Report{LastTick: &struct {
+		Exit *string  `json:"exit"`
+		AgeS *float64 `json:"age_s"`
+	}{Exit: &exit, AgeS: new(float64)}}
+	text, sev := TickFact(rep)
+	if text != "0s ago, exit 1" || sev != SevBad {
+		t.Errorf("TickFact = %q, %v", text, sev)
+	}
+	if got := tickCell(rep); got != cell(text, sev) {
+		t.Errorf("tickCell drifted from TickFact: %q", got)
+	}
+	if text, sev := PctFact(90, 80); text != "90%" || sev != SevWarn {
+		t.Errorf("PctFact = %q, %v", text, sev)
+	}
+	if text, sev := DiskFact(&Report{}); text != "-" || sev != SevDim {
+		t.Errorf("DiskFact = %q, %v", text, sev)
+	}
+	if text, sev := LoginFact(&Report{}); text != "-" || sev != SevDim {
+		t.Errorf("LoginFact = %q, %v", text, sev)
+	}
+	if text, sev := TokensFact(&Report{}); text != "-" || sev != SevDim {
+		t.Errorf("TokensFact = %q, %v", text, sev)
+	}
+}
+
 func TestEstimateHourly(t *testing.T) {
 	// 2 vCPU, 4 GiB, 25 GiB disk of which 5 are free: 0.1008 + 0.0648 + 20 * 0.000108.
 	if got := estimateHourly(2, 4, 25); got < 0.1677 || got > 0.1679 {
@@ -537,13 +564,13 @@ func render(rows []Row, cards []CardinalRow, notes []string) string {
 		b.WriteString(lt.String() + "\n")
 	}
 	for _, f := range failures {
-		b.WriteString(cell(f, bad) + "\n")
+		b.WriteString(cell(f, SevBad) + "\n")
 	}
 	for _, n := range notes {
-		b.WriteString(cell(n, dim) + "\n")
+		b.WriteString(cell(n, SevDim) + "\n")
 	}
 	for _, line := range footnotes {
-		b.WriteString(cell(line, dim) + "\n")
+		b.WriteString(cell(line, SevDim) + "\n")
 	}
 	return b.String()
 }

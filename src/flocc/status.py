@@ -127,18 +127,39 @@ def _recent_lines(cfg: Config, mode: str, run) -> list[tuple[int, str]]:
         return [(int(float(m.group(1))), m.group(2)) for m in parsed if m]
     log = cfg.state_root / "run.log"
     # run.log lines carry no timestamp, so they all take the file's last write time.
-    at = int(log.stat().st_mtime)
-    with log.open("rb") as f:
-        f.seek(0, 2)
-        f.seek(max(0, f.tell() - _LOG_TAIL))
-        tail = f.read().decode(errors="replace").splitlines()
+    try:
+        at = int(log.stat().st_mtime)
+        with log.open("rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - _LOG_TAIL))
+            tail = f.read().decode(errors="replace").splitlines()
+    except FileNotFoundError:
+        # A loop host writes run.log on its first tick; before that there is nothing to report.
+        return []
     return [(at, line) for line in tail[-_ACTIVITY_LINES:]]
 
 
+def _naming(key: str) -> re.Pattern:
+    # Word-bounded: NF-24 must not match NF-240.
+    return re.compile(rf"\b{re.escape(key)}\b")
+
+
 def _activity(lines: list[tuple[int, str]], key: str) -> list[dict]:
-    named = re.compile(rf"\b{re.escape(key)}\b")
+    named = _naming(key)
     hits = [{"at": at, "text": text} for at, text in lines if named.search(text)]
     return hits[-_ACTIVITY_KEPT:]
+
+
+def issue_lines(
+    cfg: Config, key: str, n: int, mode: str | None = None, run=subprocess.run
+) -> list[tuple[int, str]]:
+    named = _naming(key)
+    hits = [
+        (at, text)
+        for at, text in _recent_lines(cfg, mode or detect_mode(), run)
+        if named.search(text)
+    ]
+    return hits[-n:] if n > 0 else []
 
 
 def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:

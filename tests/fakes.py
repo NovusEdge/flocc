@@ -11,6 +11,12 @@ class FakeSessions:
     started: list = field(default_factory=list)
     sent: list = field(default_factory=list)
     killed: list = field(default_factory=list)
+    panes: dict = field(default_factory=dict)
+    captured: list = field(default_factory=list)
+
+    def capture(self, name, lines):
+        self.captured.append((name, lines))
+        return self.panes[name]
 
     def start(self, name, cwd, argv):
         self.started.append((name, argv))

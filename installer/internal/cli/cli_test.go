@@ -4,11 +4,80 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/NovusEdge/flocc/installer/internal/dash"
+	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
+
+// countingStore holds one Linear key and counts how often it is read.
+type countingStore struct {
+	linear string
+	reads  *atomic.Int32
+}
+
+func (s *countingStore) Get(sl keys.Slot) (string, error) {
+	s.reads.Add(1)
+	if sl == keys.Linear {
+		return s.linear, nil
+	}
+	return "", nil
+}
+func (*countingStore) Set(keys.Slot, string) error { return nil }
+func (*countingStore) Where() string               { return "memory" }
+
+func TestDashTitlesMapsIssuesAndReadsTheKeyOnce(t *testing.T) {
+	var auth atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth.Store(r.Header.Get("Authorization"))
+		w.Write([]byte(`{"data":{"issues":{"nodes":[{"id":"u","identifier":"NF-240","title":"Fix the poller tick","url":"https://linear.app/x/issue/NF-240","state":{"type":"started"}}]}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	reads := new(atomic.Int32)
+	titles := dashTitles(func() keys.Store { return &countingStore{"lin_api_k", reads} }, srv.URL, srv.Client())
+	for range 2 {
+		got, err := titles(context.Background(), []string{"NF-240", "NF-999"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := (dash.Title{Title: "Fix the poller tick", URL: "https://linear.app/x/issue/NF-240"}); len(got) != 1 || got["NF-240"] != want {
+			t.Fatalf("got %v", got)
+		}
+	}
+	if auth.Load() != "lin_api_k" || reads.Load() != 1 {
+		t.Errorf("auth %v, key read %d times", auth.Load(), reads.Load())
+	}
+}
+
+func TestDashTitlesNamesFlocckeysWhenThereIsNoKey(t *testing.T) {
+	titles := dashTitles(func() keys.Store { return &countingStore{reads: new(atomic.Int32)} }, "http://unused.invalid", http.DefaultClient)
+	_, err := titles(context.Background(), []string{"NF-240"})
+	if err == nil || !strings.Contains(err.Error(), "flocc keys") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestDashTitlesRetriesAFailedKeyRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":{"issues":{"nodes":[{"id":"u","identifier":"NF-240","title":"T","url":"u","state":{"type":"started"}}]}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	st := &countingStore{reads: new(atomic.Int32)}
+	titles := dashTitles(func() keys.Store { return st }, srv.URL, srv.Client())
+	if _, err := titles(context.Background(), []string{"NF-240"}); err == nil {
+		t.Fatal("no error without a key")
+	}
+	st.linear = "lin_api_k"
+	got, err := titles(context.Background(), []string{"NF-240"})
+	if err != nil || got["NF-240"].Title != "T" {
+		t.Fatalf("after the key was stored: %v, %v", got, err)
+	}
+}
 
 func testDeps(t *testing.T) (*deps, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()

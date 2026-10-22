@@ -193,3 +193,35 @@ def test_the_hosts_rules_and_environment_reach_the_session():
 def test_no_rules_leave_auto_mode_and_allow_alone():
     s = settings_of(argv_with())
     assert "autoMode" not in s and "allow" not in s["permissions"]
+
+
+def test_capture_asks_tmux_for_plain_text():
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="a\nb\n\n\n", stderr="")
+
+    out = Sessions(runner=run).capture("NF-240", 50)
+    assert calls[-1] == [
+        "tmux",
+        "-N",
+        "-L",
+        "flocc",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-t",
+        "=NF-240:",
+        "-S",
+        "-50",
+    ]
+    assert out == "a\nb\n\n\n"
+
+
+def test_capture_of_a_dead_session_is_empty():
+    def run(argv, **kw):
+        assert kw["check"] is False
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no session")
+
+    assert Sessions(runner=run).capture("NF-240", 5) == ""

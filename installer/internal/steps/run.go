@@ -23,7 +23,7 @@ type Run struct{}
 type DoctorFailed struct{ Fails []string }
 
 func (d *DoctorFailed) Error() string {
-	return fmt.Sprintf("doctor reports %s; fix them and run flocc ship -H <host> again", plural(len(d.Fails), "FAIL line"))
+	return fmt.Sprintf("doctor reports %s; fix them and run flocc ship -H <host> again", Plural(len(d.Fails), "FAIL line"))
 }
 
 const loginFail = "FAIL  claude login:"

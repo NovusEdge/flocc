@@ -148,9 +148,9 @@ func (f HostFiles) Check(ctx context.Context, e *Env) (bool, string, error) {
 		}
 	}
 	if s := f.stale(e); len(s) > 0 {
-		return false, plural(len(s), "stale host file"), nil
+		return false, Plural(len(s), "stale host file"), nil
 	}
-	return true, plural(len(f.Hosts), "host"), nil
+	return true, Plural(len(f.Hosts), "host"), nil
 }
 
 func (f HostFiles) Apply(ctx context.Context, e *Env) error {
@@ -252,7 +252,7 @@ func (k KnownHosts) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if !bytes.Equal(b, k.merged(b)) {
 		return false, "host keys missing or changed", nil
 	}
-	return true, plural(len(k.Hosts), "host key"), nil
+	return true, Plural(len(k.Hosts), "host key"), nil
 }
 
 func (k KnownHosts) Apply(ctx context.Context, e *Env) error {
@@ -373,7 +373,7 @@ func (h HostsReachable) Check(ctx context.Context, e *Env) (bool, string, error)
 	if u := h.unreachable(ctx, e); len(u) > 0 {
 		return false, "unreachable: " + strings.Join(u, ", "), nil
 	}
-	return true, plural(len(h.Hosts), "host") + " reached, tailnet blocked", nil
+	return true, Plural(len(h.Hosts), "host") + " reached, tailnet blocked", nil
 }
 
 func (h HostsReachable) Apply(ctx context.Context, e *Env) error {
