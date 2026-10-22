@@ -10,7 +10,7 @@ Check each condition. The host starts an issue only when all hold.
 2. It carries the `claude` label, or whatever `trigger_label` is set to.
 3. It is in an unstarted state such as Todo, in the host's team.
 4. A label or the Linear project is named exactly like a repository mapped on that host. If none matches, the service comments "No configured repo matches this issue's labels or project" once, unless `skip_unmapped = true`.
-5. The description has an `Acceptance criteria` heading followed by a list. If not, the service comments once and skips the issue until the description changes.
+5. The description has an `Acceptance criteria`, `Done when` or `Definition of done` heading followed by a list. If not, the service comments once and skips the issue until the description changes.
 6. The `agent` block, if any, parses. An unknown key, a `wall_clock` that is not like `90m` or `2h`, a missing closing fence or an `mcp` server the host does not configure gets a "Skipping:" comment.
 7. Admission allows it: the host is under `session_cap`, usage is below `five_hour_max_pct` and `weekly_max_pct`, free disk is above `min_free_disk_gb`, its `paths` do not overlap a live claim, and every `depends_on` issue is done. `flocc -H <host> logs` prints `held, <reason>` for an issue that waits.
 

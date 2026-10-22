@@ -7,7 +7,7 @@ from flocc.grants import GrantError, parse_allow
 _OPEN = re.compile(r"^```agent[ \t]*$", re.MULTILINE)
 _BLOCK = re.compile(r"^```agent[ \t]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
 _CRITERIA = re.compile(
-    r"^(?:#{1,6}[ \t]*|\*\*)acceptance criteria[ \t]*:?(?:\*\*)?[ \t]*:?[ \t]*\n"
+    r"^(?:#{1,6}[ \t]*|\*\*)(?:acceptance criteria|done when|definition of done)[ \t]*:?(?:\*\*)?[ \t]*:?[ \t]*\n"
     r"(?:[ \t]*\n)*[ \t]*(?:[-*]|\d+\.)[ \t]+\S",
     re.IGNORECASE | re.MULTILINE,
 )

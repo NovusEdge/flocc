@@ -224,8 +224,8 @@ def poll(rt) -> None:
                 rt,
                 issue,
                 f"{issue.key}:no-criteria",
-                "Skipping until the description has an 'Acceptance criteria' heading"
-                " followed by a list.",
+                "Skipping until the description has an 'Acceptance criteria', 'Done when' or"
+                " 'Definition of done' heading followed by a list.",
             )
             continue
         try:
