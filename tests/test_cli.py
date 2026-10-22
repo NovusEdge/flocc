@@ -5,10 +5,11 @@ import os
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
-from flocc import canary, gate, ledger
+from flocc import canary, ledger
 from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.grants import Grants, set_block
@@ -298,73 +299,52 @@ def test_gate_records_and_clears_a_question(tmp_path, monkeypatch):
     assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
 
 
-def test_gate_answered_logs_the_answer(tmp_path, monkeypatch):
-    gate_env(monkeypatch, tmp_path, "impl")
-    q = {
-        "tool_name": "AskUserQuestion",
-        "tool_input": {"questions": [{"question": "Q?"}]},
-        "tool_response": {"answers": {"Q?": "Yes"}},
-    }
-    (tmp_path / "asking").write_text("{}")
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
-    assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
-    [line] = (tmp_path / "answers.jsonl").read_text().splitlines()
-    assert json.loads(line)["run"] == "impl@1" and json.loads(line)["questions"] == ["Q?"]
+def tester_claim(claims_env, tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    for args in (["init", "-q"], ["config", "user.name", "t"], ["config", "user.email", "t@t"]):
+        subprocess.run(["git", *args], cwd=wt, check=True)
+
+    def commit(name, text):
+        (wt / name).parent.mkdir(parents=True, exist_ok=True)
+        (wt / name).write_text(text)
+        subprocess.run(["git", "add", "."], cwd=wt, check=True)
+        subprocess.run(["git", "commit", "-qm", name], cwd=wt, check=True)
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt, check=True, capture_output=True)
+        return out.stdout.decode().strip()
+
+    base = commit("README", "x")
+    tester = commit("gateway/tests/test_a.py", "def test_a(): ...\n")
+    claim = make("NF-1", (), worktree=str(wt))
+    claim.base_sha, claim.tester_sha = base, tester
+    ledger.insert_claim(claims_env, claim)
 
 
-TEST_PATH = "gateway/tests/test_nf321_neutral_names.py"
-AMEND_Q = f"Amend {TEST_PATH} to use the neutral names?"
-
-
-def answer(state, run, question=AMEND_Q):
-    gate.note_answer(
-        state,
-        {
-            "tool_input": {"questions": [{"question": question}]},
-            "tool_response": {"answers": {question: "Yes"}},
-        },
-        run,
-        1.0,
-    )
-
-
-def amend(monkeypatch, tmp_path, *paths, question="Amend"):
-    gate_env(monkeypatch, tmp_path, "impl")
-    return main(["tests-amended", *paths, "--question", question])
-
-
-def test_tests_amended_records_the_path_with_question_and_response(tmp_path, monkeypatch, capsys):
-    answer(tmp_path, "impl@1")
-    assert amend(monkeypatch, tmp_path, TEST_PATH) == 0
+def test_tests_amended_records_paths_with_the_reason(claims_env, tmp_path, capsys):
+    tester_claim(claims_env, tmp_path)
+    state = Path(os.environ["FLOCC_STATE"])
+    cmd = ["tests-amended", "gateway/tests/test_a.py", "--reason", "contradicts the API"]
+    assert main(cmd) == 0
     assert "recorded 1 amended test file" in capsys.readouterr().out
-    entry = json.loads((tmp_path / "tests-amended.json").read_text())[TEST_PATH]
-    assert entry["question"] == AMEND_Q and entry["response"] == {"answers": {AMEND_Q: "Yes"}}
-    other = "gateway/tests/test_other.py"
-    answer(tmp_path, "impl@1", f"Amend {other} too?")
-    assert amend(monkeypatch, tmp_path, other, question="too") == 0
-    assert set(json.loads((tmp_path / "tests-amended.json").read_text())) == {TEST_PATH, other}
+    recorded = json.loads((state / "tests-amended.json").read_text())
+    assert recorded == {"gateway/tests/test_a.py": {"reason": "contradicts the API"}}
 
 
-def test_tests_amended_matches_on_the_basename(tmp_path, monkeypatch):
-    answer(tmp_path, "impl@1", "Amend test_nf321_neutral_names.py?")
-    assert amend(monkeypatch, tmp_path, TEST_PATH) == 0
+def test_tests_amended_merges_into_the_existing_file(claims_env, tmp_path):
+    tester_claim(claims_env, tmp_path)
+    state = Path(os.environ["FLOCC_STATE"])
+    (state / "tests-amended.json").write_text(json.dumps({"other.py": {"reason": "r"}}))
+    assert main(["tests-amended", "gateway/tests/test_a.py", "--reason", "why"]) == 0
+    recorded = json.loads((state / "tests-amended.json").read_text())
+    assert set(recorded) == {"other.py", "gateway/tests/test_a.py"}
 
 
-@pytest.mark.parametrize(
-    ("run", "question", "path"),
-    [
-        ("impl@1", "Something else", TEST_PATH),
-        ("impl@1", "Amend", "gateway/tests/test_unrelated.py"),
-        ("impl@0", "Amend", TEST_PATH),
-    ],
-)
-def test_tests_amended_refuses_without_a_matching_answer(
-    tmp_path, monkeypatch, capsys, run, question, path
-):
-    answer(tmp_path, run)
-    assert amend(monkeypatch, tmp_path, path, question=question) == 2
-    assert "tests-amended:" in capsys.readouterr().err
-    assert not (tmp_path / "tests-amended.json").exists()
+def test_tests_amended_refuses_a_file_the_tester_did_not_write(claims_env, tmp_path, capsys):
+    tester_claim(claims_env, tmp_path)
+    state = Path(os.environ["FLOCC_STATE"])
+    assert main(["tests-amended", "src/app.py", "--reason", "why"]) == 2
+    assert "src/app.py" in capsys.readouterr().err
+    assert not (state / "tests-amended.json").exists()
 
 
 def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):

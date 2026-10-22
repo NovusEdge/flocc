@@ -150,12 +150,12 @@ def test_implementer_done_publishes_and_starts_the_review(rt):
 def test_review_input_lists_the_amended_tests(rt):
     add(rt, phase="impl", tester_sha="sha-tests")
     d = state_dir(rt.cfg, "NF-1")
-    amended = {"t/test_a.py": {"question": "Amend t/test_a.py?", "response": {}}}
+    amended = {"t/test_a.py": {"reason": "asserts the old API"}}
     (d / "tests-amended.json").write_text(json.dumps(amended))
     done(rt, "Implemented.")
     supervise(rt, current(rt))
     text = (d / "review-input.md").read_text()
-    assert "## Amended tests" in text and "- `t/test_a.py`: Amend t/test_a.py?" in text
+    assert "## Amended tests" in text and "- `t/test_a.py`: asserts the old API" in text
 
 
 def test_review_input_has_no_amended_section_without_amendments(rt):

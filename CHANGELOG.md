@@ -25,6 +25,12 @@ main's problems.
 - `flocc press NF-12 Down Enter` answers a dialog and `flocc say NF-12 <message>` types into a
   session. `attach` shows that it is read-only and that Ctrl-b d detaches.
 - Bare `flocc` off a terminal prints every host's status instead of the usage.
+- A failed check gets `check_fix_rounds` (default 2) fix sessions before the claim blocks; it
+  used to get one. The second round sees the first round's failure too.
+- An implementer that finds a tester's test wrong fixes it and records it with
+  `flocc tests-amended <path> --reason ...` instead of blocking the run. The PR body and the
+  review input list each amended file with its reason. An amendment that removes or skips a test,
+  and any touched tester file not recorded, still blocks.
 
 ## 0.9.0 (2026-10-22)
 

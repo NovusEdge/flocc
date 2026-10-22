@@ -5,12 +5,11 @@ description: Use when you are the implementer or fixer session for a flocc issue
 
 Make the committed tests pass by implementing the behavior.
 
-- Do not edit, delete or skip any file the tester committed. The service rejects the run if you
-  do. If you believe a test is wrong, do not edit it: ask the owner (see the escalate skill), state
-  the test change you propose, and keep working only on parts that do not depend on that test.
-  After the owner approves changing a tester file, run
-  `flocc tests-amended <path>... --question "<words from your question>"` before you commit the
-  change; without it the run blocks at publish.
+- Do not edit a file the tester committed unless one of its tests is wrong: it contradicts the
+  acceptance criteria or the real API. Then fix the test, run
+  `flocc tests-amended <path>... --reason "<why it was wrong>"`, and carry on; do not ask the
+  owner. Never delete or skip a test to make it pass: the service rejects the run if you do. Any
+  other change to a tester file also gets the run rejected.
 - Claim the files you will edit before editing them: `flocc claim '<path>'`. Claim files,
   not trees: `**` and any glob that matches a directory are refused, a `*` within one directory
   is fine. A rejected claim names the issue that holds it; message that session or escalate. A

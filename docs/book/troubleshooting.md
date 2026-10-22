@@ -22,6 +22,10 @@ The claim stays until you release it. Fix what the issue's comment or the digest
 
 A run that touched files the tester committed is refused at publish. Run `flocc release ENG-12 --accept-tests` to approve the tester's files as they stand on the branch.
 
+A tester file the implementer fixed because its test was wrong, and recorded with `flocc tests-amended <path> --reason ...`, does not block. It goes into the PR's "Amended tests" section with the reason, and the reviewer judges it. An amendment that removes or skips a test blocks, and so does any touched tester file that is not recorded.
+
+A failed check gets `check_fix_rounds` (default 2) fix sessions before the claim blocks.
+
 A failed `./setup` or a worktree that is not clean after `./setup` fails the start of the issue with a tier 2 escalation. Gitignore everything `./setup` and the check write.
 
 ## Keys

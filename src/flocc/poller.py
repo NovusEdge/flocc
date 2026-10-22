@@ -332,7 +332,6 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         "idle",
         "idle-escalated",
         "tests-amended.json",
-        "answers.jsonl",
     ):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the

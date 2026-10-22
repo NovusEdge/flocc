@@ -511,7 +511,7 @@ def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d.mkdir(parents=True)
     from_before = Grants(launches=5)
     set_block(d / "grants.json", from_before)
-    names = ("scratchpads", "compacted", "asking", "tests-amended.json", "answers.jsonl")
+    names = ("scratchpads", "compacted", "asking", "tests-amended.json")
     for name in names:
         (d / name).write_text("x")
     rt.linear.ready = [issue()]

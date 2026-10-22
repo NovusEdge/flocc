@@ -151,28 +151,18 @@ def _shared_paths(args, repo: str) -> tuple[str, ...]:
 
 
 def cmd_tests_amended(args) -> int:
+    from flocc.worktree import changed_files
+
     state = _state_dir()
-    match = next(
-        (
-            (q, entry)
-            for entry in reversed(gate.answers(state, os.environ.get("FLOCC_RUN")))
-            for q in entry.get("questions", [])
-            if args.question in q
-        ),
-        None,
-    )
-    if match is None:
+    claim = ledger.get_claim(_ledger(args), state.name)
+    if claim is None or claim.base_sha is None or claim.tester_sha is None:
+        print(f"tests-amended: no live claim with a tester commit for {state.name}", file=sys.stderr)
+        return 1
+    tester_files = changed_files(Path(claim.worktree), claim.base_sha, claim.tester_sha)
+    foreign = [p for p in args.paths if p not in tester_files]
+    if foreign:
         print(
-            f'tests-amended: no answered question of this run contains "{args.question}";'
-            " ask the owner with AskUserQuestion first",
-            file=sys.stderr,
-        )
-        return 2
-    question, entry = match
-    unnamed = [p for p in args.paths if p not in question and PurePosixPath(p).name not in question]
-    if unnamed:
-        print(
-            f"tests-amended: the question does not name {', '.join(unnamed)}: {question}",
+            f"tests-amended: {', '.join(foreign)} not among the files the tester committed",
             file=sys.stderr,
         )
         return 2
@@ -184,7 +174,7 @@ def cmd_tests_amended(args) -> int:
     if not isinstance(recorded, dict):
         recorded = {}
     for p in args.paths:
-        recorded[p] = {"question": question, "response": entry.get("response")}
+        recorded[p] = {"reason": args.reason}
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(recorded))
     os.replace(tmp, path)
@@ -300,12 +290,6 @@ def cmd_gate(args) -> int:
                 agent_type = str(_hook_input().get("agent_type", ""))
                 gate.record_stop(state, run, time.time(), agent_type, phase)
             else:
-                payload = _hook_input()
-                if payload.get("tool_name") == "AskUserQuestion":
-                    try:
-                        gate.note_answer(state, payload, run, time.time())
-                    except Exception as exc:  # noqa: BLE001 - the log must not change the exit code
-                        print(f"flocc gate could not log the answer: {exc}", file=sys.stderr)
                 gate.clear_question(state)
         except Exception as exc:  # noqa: BLE001 - must not block the stop
             print(f"flocc gate could not record the event: {exc}", file=sys.stderr)
@@ -802,11 +786,9 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("message_file", nargs="?", help="commit message file (commit-msg)")
     claim = add("claim", "Claim file globs for this issue")
     claim.add_argument("globs", nargs="+", help="file globs to claim")
-    amended = add(
-        "tests-amended", "Record tester files the owner approved changing, from an answered question"
-    )
+    amended = add("tests-amended", "Declare tester files you changed because a test was wrong")
     amended.add_argument("paths", nargs="+", help="repo-relative paths of the amended tester files")
-    amended.add_argument("--question", required=True, help="words from the answered question")
+    amended.add_argument("--reason", required=True, help="why the test was wrong")
     add("context", "Print the issue's claims and context")
     gate = add("gate", "Hook: allow or refuse a subagent or workflow launch, track questions")
     which = gate.add_mutually_exclusive_group()
