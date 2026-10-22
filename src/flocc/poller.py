@@ -265,7 +265,10 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         # failure, and every issue would repeat it. A git failure (a fetch on a network blip)
         # says nothing about main. Before the dedupe below: a mark must land even when this
         # issue's own alert is recent.
-        setup_failed = isinstance(exc, DirtyWorktree) or getattr(exc, "cmd", None) == ["./setup"]
+        # A timeout is a slow host as often as a broken main; it stays this issue's problem.
+        setup_failed = isinstance(exc, DirtyWorktree) or (
+            isinstance(exc, subprocess.CalledProcessError) and exc.cmd == ["./setup"]
+        )
         base = None
         if setup_failed and not reused:
             base = head_at_base(cfg.repos[repo], cfg.worktree_root.resolve() / issue.key)

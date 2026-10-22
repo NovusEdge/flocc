@@ -668,6 +668,22 @@ def test_setup_failing_on_untouched_main_marks_the_repo_and_holds_its_issues(rt,
     assert ledger.get_claim(rt.con, "NF-10") is None
 
 
+def test_a_setup_timeout_on_untouched_main_never_marks_the_repo(rt, monkeypatch):
+    from flocc import canary
+
+    _broken_main(rt, monkeypatch)
+
+    def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
+        raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
+
+    monkeypatch.setattr("flocc.poller.prepare_worktree", slow)
+    rt.linear.ready = [issue("NF-9")]
+    poll(rt)
+    assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
+    [esc] = rt.notifier.sent
+    assert esc.tier == 2 and esc.cause == "NF-9:prepare"
+
+
 def test_setup_failing_on_the_issues_own_commits_is_the_issues(rt, monkeypatch):
     calls = _broken_main(rt, monkeypatch, at_base=None)
     rt.linear.ready = [issue("NF-9"), issue("NF-10")]
