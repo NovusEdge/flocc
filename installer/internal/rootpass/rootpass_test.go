@@ -39,6 +39,19 @@ func TestRunStagesUnderThePrefixAndSudoesEachCall(t *testing.T) {
 	}
 }
 
+func TestRunHandsOffTheTerminalWithoutStdin(t *testing.T) {
+	dir := "/tmp/flocc-create.Ab12Cd"
+	f := host.NewFake().
+		On(SSH(opts, false, "laptop", "mktemp -d /tmp/flocc-create.XXXXXX").String(), 0, dir+"\n").
+		On("scp -q -o ControlMaster=auto /bin/x/flocc-setup laptop:"+dir+"/", 0, "")
+	if _, err := Run(context.Background(), f, pass("/tmp/flocc-create")); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.Interactives[0]; c.Stdin != nil || c.Stdout == nil {
+		t.Fatalf("stdin %v, stdout %v", c.Stdin, c.Stdout)
+	}
+}
+
 func TestRunRefusesAStageOutsideThePrefix(t *testing.T) {
 	f := host.NewFake().
 		On(SSH(opts, false, "laptop", "mktemp -d /tmp/flocc-create.XXXXXX").String(), 0, "/tmp/flocc-cardinal.Ab12Cd\n")

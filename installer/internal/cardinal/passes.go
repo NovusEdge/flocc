@@ -329,7 +329,6 @@ func rootCalls(user, why string, o SetupOptions) []rootCall {
 	return calls
 }
 
-// rootPass runs a setup's or purge's sudo calls as one rootpass.Run.
 func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey string, calls []rootCall) error {
 	if !d.TTY {
 		return errors.New("the machine's sudo asks for a password; run this in a terminal")

@@ -84,6 +84,8 @@ func Run(ctx context.Context, r host.Runner, p Pass) ([]steps.CardinalReport, er
 	}
 	remote += " && rm -rf " + dir
 	var reports []steps.CardinalReport
+	// Safe on os.Stdout only because c has no Stdin: under a ui session that makes Interactive a
+	// handoff, so the tap writes while the session has released the terminal.
 	tap := Tap(os.Stdout, &reports)
 	c := SSH(p.Opts, true, p.Machine, remote)
 	c.Why = p.Why

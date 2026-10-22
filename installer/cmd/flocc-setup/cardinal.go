@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
@@ -58,6 +58,18 @@ func checkCardinalPhase(phase string, euid int) error {
 		return fmt.Errorf("the %s phase runs as the cardinal user, not root", phase)
 	}
 	return nil
+}
+
+func createRootReport(ctx context.Context, env *steps.Env) (steps.CardinalReport, error) {
+	list := steps.CreateRootSteps()
+	err := steps.RunAll(ctx, env, list)
+	report := steps.CardinalReport{Steps: steps.ReportSteps(ctx, env, list)}
+	// Under a cancelled context every check reads "not running", which is done, and a command error
+	// is the cancellation's doing: after a Ctrl-C the report holds the interruption and no steps.
+	if ctx.Err() != nil {
+		return steps.CardinalReport{}, fmt.Errorf("interrupted: %w", ctx.Err())
+	}
+	return report, err
 }
 
 func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -124,6 +136,11 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if slices.Contains(cardinalRootPhases, *phase) {
+		// sudo ORs 022 into the owner's umask; a 077 owner would make the 0644 files these phases write
+		// 0600, which the desktop then cannot read without sudo.
+		syscall.Umask(0o022)
+	}
 	finish := func(r steps.CardinalReport, err error) int {
 		if err != nil {
 			r.Error = err.Error()
@@ -152,14 +169,7 @@ func runCardinal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		err := steps.RunAll(ctx, env, list)
 		return finish(steps.CardinalReport{Steps: steps.ReportSteps(ctx, env, list)}, err)
 	case "create-root":
-		list := steps.CreateRootSteps()
-		err := steps.RunAll(ctx, env, list)
-		// Under a cancelled context every check reads "not running", which is done: after a Ctrl-C
-		// the report holds the cancellation and no steps, even when RunAll returned nil.
-		if ctx.Err() != nil {
-			return finish(steps.CardinalReport{}, cmp.Or(err, ctx.Err()))
-		}
-		return finish(steps.CardinalReport{Steps: steps.ReportSteps(ctx, env, list)}, err)
+		return finish(createRootReport(ctx, env))
 	case "cardinal-purge":
 		if slices.Contains(steps.OldUsers, *user) {
 			return finish(steps.RemoveOldUser(ctx, env, *user, sudoUID, time.Now()))

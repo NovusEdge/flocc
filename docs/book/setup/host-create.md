@@ -11,7 +11,7 @@ flocc host create [--cpus 4] [--memory 8] [--disk 40] <machine> <name>
 ## Requirements
 
 - On the machine, your account needs `incus-admin` membership or passwordless sudo for Incus.
-- When firewalld or Docker runs there, create builds `flocc-setup`, stages it and runs the firewall and Docker steps as root in one `ssh -t ... sudo`. Sudo asks for your password once per run, and not at all with passwordless sudo. A password needs a terminal. A run stopped in the pass leaves `/tmp/flocc-create.XXXXXX/setup.log` on the machine.
+- When firewalld or Docker runs there, create builds `flocc-setup`, stages it and runs the firewall and Docker steps as root in one `ssh -t ... sudo`. Sudo asks for your password once per run, and not at all with passwordless sudo. A password needs a terminal. A run stopped after sudo accepts the password leaves `/tmp/flocc-create.XXXXXX/setup.log` on the machine; one stopped at the password prompt leaves only the staged binary in `/tmp/flocc-create.XXXXXX`.
 - The desktop must be on the tailnet.
 - Run create inside the flocc checkout, since its ship step ships that commit. Create checks this before it touches the machine.
 
