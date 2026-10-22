@@ -49,7 +49,9 @@ def phase_prompt(phase: str, issue_key: str, extra: str = "") -> str:
     elif phase == "impl":
         body = (
             f"You are the implementer for {issue_key}. Follow the implementer skill: make the"
-            " committed tests pass without changing them, then run flocc done."
+            " committed tests pass. Fix a test only when it contradicts the acceptance criteria"
+            " or the real API, and record it with flocc tests-amended; never delete or skip a"
+            " test. Then run flocc done."
         )
     elif phase == "review":
         body = (

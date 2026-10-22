@@ -56,5 +56,8 @@ def test_phase_prompts_name_the_skill():
     assert "tester skill" in phase_prompt("test", "NF-1")
     assert "handoff.md" in phase_prompt("test", "NF-1")
     assert "implementer skill" in phase_prompt("impl", "NF-1")
+    impl = phase_prompt("impl", "NF-1")
+    assert "without changing them" not in impl
+    assert "flocc tests-amended" in impl and "never delete or skip" in impl
     fix = phase_prompt("fix", "NF-1", extra="E1 boom")
     assert "check failed" in fix and fix.endswith("E1 boom")
