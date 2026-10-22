@@ -375,6 +375,8 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         (d / "handoff.md").replace(d / "handoff.prev.md")
     # A fresh claim gets its own review fix round.
     ledger.meta_set(rt.con, f"review_fix:{issue.key}", "")
+    for round_ in (1, 2):
+        ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")
     (d / "owner-items.md").unlink(missing_ok=True)
     # A previous claim's grants, scratchpads, compaction and question belong to that run; the
     # agent block's grants are written again at launch.

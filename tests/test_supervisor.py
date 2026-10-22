@@ -36,7 +36,7 @@ def rt(tmp_cfg, tmp_path):
         exe="/opt/flocc",
         claude_exe="/opt/claude",
         config_path=tmp_path / "c.toml",
-        publish_fn=lambda claim, title, summary: PublishResult("opened", url="https://pr/1"),
+        publish_fn=lambda claim, title, summary, **kw: PublishResult("opened", url="https://pr/1"),
         git_head=lambda path: "sha-tests",
         review_diff=lambda claim: "diff --git a/x b/x",
         comment_pr=lambda claim, url, body: pr_comments.append((url, body)),
@@ -278,6 +278,122 @@ def test_fix_round_ends_in_a_second_review_posted_again(rt):
     last = rt.linear.comments[-1]
     assert last.startswith("Review: changes requested — https://pr/1")
     assert "Needs the owner: run AC-8 against the real server." in last
+
+
+OWNER = "Fixed a.\n\nNeeds the owner: run AC-8 against the real server."
+
+
+def after_fix(rt, summary=OWNER):
+    review_session(rt, CHANGES)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, summary)
+    supervise(rt, current(rt))
+    return state_dir(rt.cfg, "NF-1")
+
+
+def test_owner_items_reach_the_comment_of_an_approving_second_review(rt):
+    d = after_fix(rt)
+    (d / "review.md").write_text("Verdict: approve\n")
+    done(rt, "review")
+    supervise(rt, current(rt))
+    last = rt.linear.comments[-1]
+    assert last.startswith("Review: approve — https://pr/1")
+    assert "Needs the owner: run AC-8 against the real server." in last
+
+
+def test_owner_items_reach_the_comment_when_the_second_review_is_skipped(rt):
+    over = {"used_percentage": 95.0, "resets_at": 4_000_000_000}
+
+    def publish(c, t, s, **kw):
+        if kw:
+            write_status(state_dir(rt.cfg, "NF-1"), {"rate_limits": {"five_hour": over}})
+        return PublishResult("opened", url="https://pr/1", existing=bool(kw))
+
+    rt.publish_fn = publish
+    after_fix(rt)
+    assert current(rt).state == "done"
+    assert "Needs the owner: run AC-8" in rt.linear.comments[-1]
+
+
+def test_owner_items_reach_the_comment_when_the_second_review_dies(rt):
+    after_fix(rt)
+    for _ in range(2):
+        rt.sessions.alive_names.clear()
+        supervise(rt, current(rt))
+    assert current(rt).state == "done"
+    assert "Needs the owner: run AC-8" in rt.linear.comments[-1]
+
+
+def test_a_sentence_mentioning_the_owner_is_not_an_owner_item(rt):
+    d = after_fix(rt, "Fixed a. Nothing here needs the owner today.")
+    assert not (d / "owner-items.md").exists()
+
+
+def test_a_bulleted_owner_heading_is_an_owner_item(rt):
+    d = after_fix(rt, "Fixed a.\n\n## Needs the owner\n- run AC-8")
+    assert "run AC-8" in (d / "owner-items.md").read_text()
+
+
+def test_the_fix_push_comments_once_more_without_a_digest_line(rt):
+    rt.publish_fn = lambda c, t, s, **kw: PublishResult(
+        "opened", url="https://pr/1", existing=bool(ledger.meta_get(rt.con, "review_fix:NF-1"))
+    )
+    review_session(rt, CHANGES)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Fixed.")
+    supervise(rt, current(rt))
+    assert "Review fix pushed to https://pr/1; reviewing again" in rt.linear.comments
+    assert "PR for review: https://pr/1" not in rt.linear.comments[-1]
+    lines = [line for _, _, line in ledger.pending_digest(rt.con)]
+    assert sum("PR ready for review" in line for line in lines) == 1
+
+
+def test_a_pr_closed_during_the_fix_ends_the_claim(rt):
+    seen = []
+
+    def publish(c, t, s, **kw):
+        seen.append(kw)
+        return PublishResult("pr_closed") if kw else PublishResult("opened", url="https://pr/1")
+
+    rt.publish_fn = publish
+    review_session(rt, CHANGES)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, OWNER)
+    supervise(rt, current(rt))
+    assert seen == [{}, {"reuse_only": True}]
+    assert current(rt).state == "done"
+    last = rt.linear.comments[-1]
+    assert "closed or merged during the review fix; nothing more was published" in last
+    assert "Needs the owner: run AC-8" in last
+    assert all(name != "NF-1-review" for name, _ in rt.sessions.started[1:])
+
+
+def test_a_tick_that_dies_after_the_fix_launch_does_not_post_or_relaunch_a_review(rt):
+    review_session(rt, CHANGES)
+
+    def dies(name, cwd, argv):
+        raise KeyboardInterrupt
+
+    rt.sessions.start = dies
+    done(rt, "review")
+    with pytest.raises(KeyboardInterrupt):
+        supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and len(rt.pr_comments) == 1
+    assert ledger.meta_get(rt.con, "review_posted:NF-1:1") == "1"
+
+
+def test_fix_launch_failure_restores_the_review_phase_and_ends_done(rt):
+    review_session(rt, CHANGES)
+    rt.cfg.agent_gh_token_file.write_text("")
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert (current(rt).state, current(rt).phase) == ("done", "review")
 
 
 def test_changes_requested_after_a_fix_round_without_owner_items_adds_nothing(rt):
@@ -748,11 +864,10 @@ def test_comment_already_posted_is_not_posted_again(rt):
     assert len(rt.pr_comments) == 1
     # A tick that died after the post but before finishing the claim.
     ledger.update_claim(rt.con, "NF-1", state="running")
-    ledger.meta_set(rt.con, "review_posted:NF-1", "1")
+    ledger.meta_set(rt.con, "review_posted:NF-1:1", "1")
     done(rt, "review")
     supervise(rt, current(rt))
     assert len(rt.pr_comments) == 1 and current(rt).state == "done"
-    assert not ledger.meta_get(rt.con, "review_posted:NF-1")
 
 
 @pytest.mark.parametrize("pct", ["five_hour", "seven_day"])

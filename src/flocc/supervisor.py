@@ -52,6 +52,9 @@ _VERDICT = re.compile(
 )
 
 
+_OWNER_HEADING = re.compile(r"^[\s#*-]*needs the owner", re.IGNORECASE | re.MULTILINE)
+
+
 class LaunchError(RuntimeError):
     pass
 
@@ -189,7 +192,7 @@ def _review_skipped(rt, claim: Claim, why: str) -> None:
     url = _pr_url(rt, claim)
     rt.sessions.kill(session_name(key, "review"))
     ledger.add_digest(rt.con, key, f"review skipped, {why}; PR: {url}", rt.now())
-    ledger.meta_set(rt.con, f"review_posted:{key}", "")
+    _post_owner_items(rt, claim)
     ledger.update_claim(rt.con, key, state="done")
 
 
@@ -212,6 +215,7 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
     if _over_usage_limit(rt):
         (d / "pr-url").write_text(url)
         ledger.add_digest(rt.con, key, f"review skipped, usage over the limit; PR: {url}", rt.now())
+        _post_owner_items(rt, claim)
         ledger.update_claim(rt.con, key, state="done")
         return
     try:
@@ -233,6 +237,7 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
         print(f"{key}: review not started: {exc}", file=sys.stderr)
         ledger.add_digest(rt.con, key, f"review not started ({exc}); PR: {url}", rt.now())
+        _post_owner_items(rt, claim)
         ledger.update_claim(rt.con, key, state="done")
         return
     ledger.update_claim(rt.con, key, phase="review", restarts=0, started_at=start)
@@ -246,8 +251,11 @@ def _finish_review(rt, claim: Claim) -> None:
         _review_skipped(rt, claim, "the session finished without review.md")
         return
     url = _pr_url(rt, claim)
+    fixed = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
     counter = f"review_post_failures:{key}"
-    posted = f"review_posted:{key}"
+    # One key per round, never cleared before the fresh claim (poller._start): a tick that dies
+    # anywhere after the post must not comment the same review twice, nor skip the second one.
+    posted = f"review_posted:{key}:{2 if fixed else 1}"
     # Set right after the post: a tick that dies before finishing the claim must not comment twice.
     if not ledger.meta_get(rt.con, posted):
         try:
@@ -266,21 +274,13 @@ def _finish_review(rt, claim: Claim) -> None:
     matches = _VERDICT.findall(text)
     verdict = matches[-1].lower() if matches else "no verdict"
     line = f"Review: {verdict} — {url}"
-    if verdict == "changes requested":
-        if not ledger.meta_get(rt.con, f"review_fix:{key}"):
-            # Cleared first: the second review's comment must post again.
-            ledger.meta_set(rt.con, posted, "")
-            if _start_review_fix(rt, claim, text):
-                _comment_or_digest(
-                    rt, claim, f"{line}\n\nA fix round started; a second review follows."
-                )
-                return
-        else:
-            owner = _owner_items(rt, claim)
-            if owner:
-                line += f"\n\n{owner}"
+    if verdict == "changes requested" and not fixed and _start_review_fix(rt, claim, text):
+        _comment_or_digest(rt, claim, f"{line}\n\nA fix round started; a second review follows.")
+        return
+    owner = _owner_items(rt, claim)
+    if owner:
+        line += f"\n\n{owner}"
     _comment_or_digest(rt, claim, line)
-    ledger.meta_set(rt.con, posted, "")
     ledger.update_claim(rt.con, key, state="done")
 
 
@@ -294,6 +294,12 @@ def _comment_or_digest(rt, claim: Claim, line: str) -> None:
 def _owner_items(rt, claim: Claim) -> str:
     path = state_dir(rt.cfg, claim.issue_key) / OWNER_ITEMS
     return path.read_text().strip() if path.exists() else ""
+
+
+def _post_owner_items(rt, claim: Claim) -> None:
+    owner = _owner_items(rt, claim)
+    if owner:
+        _comment_or_digest(rt, claim, owner)
 
 
 def _start_review_fix(rt, claim: Claim, review: str) -> bool:
@@ -310,17 +316,26 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     )
     d = state_dir(rt.cfg, key)
     start = rt.now()
-    # Set before the launch: a tick that dies after it must not start a second round.
-    ledger.meta_set(rt.con, f"review_fix:{key}", "1")
     (d / OWNER_ITEMS).unlink(missing_ok=True)
+    (d / FIX_CONTEXT).write_text(extra)
+    # Both before the launch: a tick that dies after the session starts must find the claim in
+    # the fix phase, not in review where it would start a reviewer beside the live fix.
+    ledger.meta_set(rt.con, f"review_fix:{key}", "1")
+    ledger.update_claim(rt.con, key, phase="fix", fix_attempts=0, restarts=0, started_at=start)
     try:
-        (d / FIX_CONTEXT).write_text(extra)
         launch(rt, claim, "fix", extra=extra, started_at=start)
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
         print(f"{key}: review fix not started: {exc}", file=sys.stderr)
         ledger.add_digest(rt.con, key, f"review fix not started ({exc})", rt.now())
+        ledger.update_claim(
+            rt.con,
+            key,
+            phase=claim.phase,
+            fix_attempts=claim.fix_attempts,
+            restarts=claim.restarts,
+            started_at=claim.started_at,
+        )
         return False
-    ledger.update_claim(rt.con, key, phase="fix", fix_attempts=0, restarts=0, started_at=start)
     return True
 
 
@@ -349,22 +364,34 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=start
         )
         return
-    if claim.phase == "fix" and ledger.meta_get(rt.con, f"review_fix:{key}"):
+    review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
+    if claim.phase == "fix" and review_fix and (found := _OWNER_HEADING.search(summary)):
         # Kept apart from later check-fix summaries, which would overwrite it.
-        at = summary.lower().find("needs the owner")
-        if at >= 0:
-            (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[at:])
+        (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[found.start() :].lstrip())
     issue = rt.linear.issue(key)
     try:
-        result = rt.publish_fn(claim, issue.title, summary)
+        # After a review fix the PR must still be open: a new one would reopen finished work.
+        result = (
+            rt.publish_fn(claim, issue.title, summary, reuse_only=True)
+            if review_fix
+            else rt.publish_fn(claim, issue.title, summary)
+        )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
         _publish_failed(rt, claim, exc)
         return
     # Failures count only in a row: the fix phase's publish, or a rerun's, starts from zero.
     ledger.meta_set(rt.con, f"publish_failures:{key}", "0")
-    if result.status == "opened":
-        rt.linear.comment(issue.id, f"PR for review: {result.url}")
-        ledger.add_digest(rt.con, key, f"PR ready for review: {result.url}", rt.now())
+    if result.status == "pr_closed":
+        line = "The PR was closed or merged during the review fix; nothing more was published."
+        owner = _owner_items(rt, claim)
+        _comment_or_digest(rt, claim, f"{line}\n\n{owner}" if owner else line)
+        ledger.update_claim(rt.con, key, state="done")
+    elif result.status == "opened":
+        if review_fix and result.existing:
+            rt.linear.comment(issue.id, f"Review fix pushed to {result.url}; reviewing again")
+        else:
+            rt.linear.comment(issue.id, f"PR for review: {result.url}")
+            ledger.add_digest(rt.con, key, f"PR ready for review: {result.url}", rt.now())
         if result.untrailed:
             line = f"{key}: commits without the Flocc trailer: {', '.join(result.untrailed)}"
             ledger.add_digest(rt.con, key, line, rt.now())

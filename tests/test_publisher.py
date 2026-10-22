@@ -72,6 +72,20 @@ def test_retry_reuses_the_open_pr(origin, tmp_path):
     assert result.url.endswith("/pull/9") and not any(c[2] == "create" for c in gh.calls)
 
 
+def test_reused_pr_is_marked_existing_and_a_new_one_is_not(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    assert publish(claim, repo, "t", "s", token="t", runner=Gh()).existing is False
+    gh = Gh(existing="https://github.com/o/r/pull/9\n")
+    assert publish(claim, repo, "t", "s", token="t", runner=gh).existing is True
+
+
+def test_reuse_only_never_creates_a_pr(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    gh = Gh()
+    result = publish(claim, repo, "t", "s", token="t", runner=gh, reuse_only=True)
+    assert result.status == "pr_closed" and not any(c[2] == "create" for c in gh.calls)
+
+
 def test_a_push_rejected_because_the_branch_moved_says_so(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path)
     other = tmp_path / "other-host"

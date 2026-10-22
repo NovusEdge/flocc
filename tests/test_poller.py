@@ -199,9 +199,13 @@ def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeyp
 
 def test_a_fresh_claim_gets_its_own_review_fix_round(rt):
     ledger.meta_set(rt.con, "review_fix:NF-9", "1")
+    ledger.meta_set(rt.con, "review_posted:NF-9:1", "1")
+    ledger.meta_set(rt.con, "review_posted:NF-9:2", "1")
     rt.linear.ready = [issue()]
     poll(rt)
     assert not ledger.meta_get(rt.con, "review_fix:NF-9")
+    assert not ledger.meta_get(rt.con, "review_posted:NF-9:1")
+    assert not ledger.meta_get(rt.con, "review_posted:NF-9:2")
 
 
 def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypatch):
