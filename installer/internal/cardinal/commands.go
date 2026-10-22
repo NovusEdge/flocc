@@ -352,9 +352,8 @@ func (d Deps) login(ctx context.Context, s saved.Saved, email string) error {
 	var rs []steps.CardinalReport
 	tap := reportTap(os.Stdout, &rs)
 	c := d.user(s, true, remote)
-	c.Why = "cardinal login on " + s.Dest()
+	c.Why = "cardinal login on " + s.Dest() + ". " + detachWarning
 	c.Stdout = ship.WatchURLs(tap, d.Open, anthropicURL)
-	d.UI.Note("cardinal", detachWarning)
 	err := d.Run.Interactive(ctx, c)
 	tap.Flush()
 	d.UI.Group("Login")
@@ -448,8 +447,9 @@ func (d Deps) RemoveOld(ctx context.Context, machine string, users []string) err
 	})
 }
 
-// detachWarning precedes every writable attach: a double Ctrl-D exits claude, which moves the
-// conversation into a Claude background daemon outside cardinal.service.
+// detachWarning is part of the handoff text of every writable attach and of login, because a
+// handoff leaves the alternate screen before anything drawn on it is read. A double Ctrl-D exits
+// claude, which moves the conversation into a Claude background daemon outside cardinal.service.
 const detachWarning = "Detach with Ctrl-b d. Ctrl-D twice ends cardinal's session; the service starts a fresh one."
 
 func (d Deps) attach(ctx context.Context, s saved.Saved, write bool) error {
@@ -462,7 +462,7 @@ func (d Deps) attach(ctx context.Context, s saved.Saved, write bool) error {
 	c.Why = "cardinal session on " + s.Dest()
 	c.Attach = true
 	if write {
-		d.UI.Note("cardinal", detachWarning)
+		c.Why += ". " + detachWarning
 	}
 	err := d.Run.Interactive(ctx, c)
 	if write {

@@ -314,7 +314,7 @@ func TestAttachWriteWarnsAboutCtrlDBeforeTheHandoff(t *testing.T) {
 	if err := d.attach(context.Background(), card, true); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"note: " + detachWarning, "handoff: cardinal session on " + card.Dest()}
+	want := []string{"handoff: cardinal session on " + card.Dest() + ". " + detachWarning}
 	if !slices.Equal(o.order, want) {
 		t.Fatalf("order %q", o.order)
 	}
@@ -324,6 +324,20 @@ func TestAttachWriteWarnsAboutCtrlDBeforeTheHandoff(t *testing.T) {
 	}
 	if len(o.order) != 1 || !strings.HasPrefix(o.order[0], "handoff") {
 		t.Fatalf("read-only attach: %q", o.order)
+	}
+}
+
+// The note would sit on the alternate screen, which the handoff leaves before the owner reads it.
+func TestLoginCarriesTheDetachWarningInTheHandoffText(t *testing.T) {
+	f := host.NewFake()
+	o := &orderRenderer{}
+	d, _ := testDeps(t, f)
+	d.UI = ui.New(o)
+	d.Run = handoffRunner{f, d.UI}
+	d.login(context.Background(), card, "")
+	want := []string{"handoff: cardinal login on " + card.Dest() + ". " + detachWarning}
+	if !slices.Equal(o.order, want) {
+		t.Fatalf("order %q", o.order)
 	}
 }
 

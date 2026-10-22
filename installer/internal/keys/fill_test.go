@@ -256,7 +256,7 @@ func TestTheTailscaleSlotIsOptionalAndAnEmptyPasteSkipsIt(t *testing.T) {
 	if f.store.m[Tailscale] != "" || f.env.UI.Failed() {
 		t.Fatalf("%v", f.store.m)
 	}
-	if page := strings.Join(p.facts[0], "\n");!strings.Contains(page, "https://login.tailscale.com/admin/settings/oauth") ||
+	if page := strings.Join(p.facts[0], "\n"); !strings.Contains(page, "https://login.tailscale.com/admin/settings/oauth") ||
 		!strings.Contains(page, "Auth keys (write) and Devices core (write)") || !strings.Contains(page, "tag:flocc-host") {
 		t.Fatal(page)
 	}
