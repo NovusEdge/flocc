@@ -141,6 +141,13 @@ type Answers struct {
 	// Other hosts handle the repos left unmapped here; renders skip_unmapped.
 	SharedTeam  bool         `toml:"shared_team,omitempty"`
 	Permissions *Permissions `toml:"permissions,omitempty"`
+	// Playwright is the version whose chromium system libraries and fonts the Browsers step
+	// installs; empty installs none.
+	Playwright string `toml:"playwright,omitempty"`
+	// Tools are mise tools and versions the Tools step sets globally for the service user.
+	Tools map[string]string `toml:"tools,omitempty"`
+	// Docker installs Docker for the service user's checks (testcontainers) on apt hosts.
+	Docker bool `toml:"docker,omitempty"`
 	// Read only from an --answers file, for runs without a terminal; Save drops it.
 	Secrets *Secrets `toml:"secrets,omitempty"`
 }
@@ -259,6 +266,15 @@ func (a *Answers) Overlay(o *Answers) error {
 	}
 	if o.Permissions != nil {
 		a.Permissions = o.Permissions
+	}
+	if o.Playwright != "" {
+		a.Playwright = o.Playwright
+	}
+	if o.Tools != nil {
+		a.Tools = o.Tools
+	}
+	if o.Docker {
+		a.Docker = true
 	}
 	if o.Secrets != nil {
 		a.Secrets = o.Secrets

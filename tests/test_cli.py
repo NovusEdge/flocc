@@ -8,12 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from flocc import ledger
+from flocc import canary, ledger
 from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.grants import Grants, set_block
 from flocc.linear import LinearError
 from flocc.runtime import Runtime
+from flocc.tick import tick_lock
 from tests.fakes import FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -625,3 +626,48 @@ def test_peek_exits_3_when_the_session_dies_before_the_capture(host_cfg, monkeyp
     fake = _peek_host(host_cfg, monkeypatch, "")
     assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3
     assert fake.captured
+
+
+def _canary(host_cfg, monkeypatch, result):
+    monkeypatch.setattr("flocc.worktree.setup_at_base", lambda *a: result)
+    cfg = load(host_cfg)
+    cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    return cfg, next(iter(cfg.repos))
+
+
+def test_canary_clears_the_mark_when_setup_passes(host_cfg, monkeypatch, capsys):
+    cfg, repo = _canary(host_cfg, monkeypatch, (0, "ok", "abc123def456"))
+    canary.mark(ledger.connect(cfg.ledger_path), repo, "abc123def456", 1.0, "old")
+    assert main(["--config", str(host_cfg), "canary", repo]) == 0
+    assert canary.get_mark(ledger.connect(cfg.ledger_path), repo) is None
+    assert "no longer held" in capsys.readouterr().out
+
+
+def test_canary_marks_the_repo_when_setup_fails(host_cfg, monkeypatch, capsys):
+    cfg, repo = _canary(host_cfg, monkeypatch, (2, "go: not found", "abc123def456"))
+    assert main(["--config", str(host_cfg), "canary", repo]) == 1
+    assert canary.get_mark(ledger.connect(cfg.ledger_path), repo)["output"] == "go: not found"
+    assert "go: not found" in capsys.readouterr().err
+
+
+def test_canary_refuses_an_unknown_repo(host_cfg, capsys):
+    assert main(["--config", str(host_cfg), "canary", "nope"]) == 2
+    assert "no repo nope" in capsys.readouterr().err
+
+
+def test_canary_waits_for_a_running_tick(host_cfg, monkeypatch, capsys):
+    cfg, repo = _canary(host_cfg, monkeypatch, (0, "", "abc"))
+    with tick_lock(cfg.tick_lock):
+        assert main(["--config", str(host_cfg), "canary", repo]) == 1
+    assert "a tick is running" in capsys.readouterr().err
+
+
+def test_canary_reports_a_base_it_cannot_fetch(host_cfg, monkeypatch, capsys):
+    _, repo = _canary(host_cfg, monkeypatch, None)
+
+    def unreachable(*a):
+        raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="no remote")
+
+    monkeypatch.setattr("flocc.worktree.setup_at_base", unreachable)
+    assert main(["--config", str(host_cfg), "canary", repo]) == 1
+    assert "no remote" in capsys.readouterr().err

@@ -6,8 +6,15 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
-A host session no longer waits silently on a dialog nobody is there to answer.
+Host sessions no longer wait silently on a dialog, and runs stop less often on the host's or
+main's problems.
 
+- When `./setup` fails on an untouched checkout of a repo's base branch, the repo's issues are
+  held instead of each running setup again every tick, with one comment and push. A new commit
+  on the base, 24 hours, or a passing `flocc canary <repo>` lifts the hold.
+- Host file `playwright = "<version>"` installs chromium's system libraries and fonts on apt
+  hosts, `docker = true` installs Docker and adds the service user to its group, and `[tools]`
+  sets mise tools' global versions for the service user.
 - `flocc permission` denies every permission dialog in a host session, AskUserQuestion excepted,
   and tells the agent nobody is there to approve, so it finds another way or asks the owner. A
   hook's "ask" used to hold the session until its wall-clock limit.

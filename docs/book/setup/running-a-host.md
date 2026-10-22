@@ -60,6 +60,24 @@ The cost of `skip_unmapped` is that a typo in a label no longer gets that commen
 
 The hosts share the owner's Claude login and so its 5-hour and weekly usage limits. Each applies `five_hour_max_pct` and `weekly_max_pct` to the same account, so size the caps with that in mind. Tailscale hostnames must differ between hosts. `flocc status -H all` shows all hosts together.
 
+## A repo whose main fails setup
+
+When `./setup` fails in a fresh checkout of a repo's base branch, the failure is main's or the host's, and every issue of that repo would repeat it. flocc comments once on the issue that hit it, pushes, and holds the repo's other issues. The hold ends when a new commit lands on the base branch, after 24 hours, or when `flocc -H <host> canary <repo>` passes. Run that after fixing something on the host, which moves no commit.
+
+## What the host carries for the repos
+
+Three host-file keys install what repos' setups and checks need and the service user cannot install itself:
+
+```toml
+playwright = "1.64.0"   # chromium's system libraries and fonts, on apt hosts
+docker = true           # docker.io, the daemon, and the service user in the docker group
+
+[tools]                 # mise global versions for the service user
+go = "1.27.1"
+```
+
+Use the Playwright version the repos pin. A tool in `[tools]` must be one mise can install, at an exact version or a prefix such as `1.27`; `flocc ship` sets it with `mise use -g`, and `latest` never reads back as set. The docker group is root-equivalent on the VM, and it reaches sessions only once the service user's systemd manager restarts (`systemctl restart user@<uid>` as root, when no session is running).
+
 ## Auto-mode blocks
 
 Host sessions run in auto mode. When its classifier blocks a command, the agent hears why and works around it or gives up. Nothing waits for you. After three blocks in a row Claude Code shows a prompt, which denies itself after two minutes. Every block and prompt is logged per issue in `~/.local/state/flocc/<KEY>/permissions.jsonl`.

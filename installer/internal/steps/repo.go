@@ -49,7 +49,7 @@ func (Repo) Apply(ctx context.Context, e *Env) error {
 		{Name: "./setup", Dir: dir, Env: []string{"MISE_DISABLE_TOOLS=go"}},
 		{Name: e.Real(".local/bin/mise"), Args: []string{"exec", "--", "uv", "tool", "install", "--force", "--editable", "."}, Dir: dir},
 	} {
-		if err := e.UI.Spin(c.String(), func() error { _, err := e.MustCmd(ctx, c); return err }); err != nil {
+		if err := e.SpinCmd(ctx, c); err != nil {
 			return err
 		}
 	}

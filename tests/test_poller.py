@@ -609,6 +609,100 @@ def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
     assert ledger.get_claim(rt.con, "NF-9") is None
 
 
+def _broken_main(rt, monkeypatch, at_base="sha-main"):
+    calls = []
+
+    def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
+        calls.append(key)
+        raise subprocess.CalledProcessError(1, ["./setup"], stderr="mise: no version set for go\n")
+
+    monkeypatch.setattr("flocc.poller.prepare_worktree", failing)
+    monkeypatch.setattr("flocc.poller.head_at_base", lambda repo, path: at_base)
+    monkeypatch.setattr("flocc.poller.origin_base", lambda repo: "sha-main")
+    return calls
+
+
+def test_a_kept_worktree_or_a_git_failure_never_marks_the_repo(rt, monkeypatch):
+    from flocc import canary
+
+    _broken_main(rt, monkeypatch)
+    (rt.cfg.worktree_root / "NF-9").mkdir(parents=True)
+
+    def fetch_fails(repo, root, key, setup_timeout_s, shared_uv_cache):
+        if key == "NF-10":
+            raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="network down")
+        raise subprocess.CalledProcessError(1, ["./setup"], stderr="uncommitted junk\n")
+
+    monkeypatch.setattr("flocc.poller.prepare_worktree", fetch_fails)
+    rt.linear.ready = [issue("NF-9"), issue("NF-10")]
+    poll(rt)
+    assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
+    assert all(e.tier == 2 for e in rt.notifier.sent)
+
+
+def test_a_failed_escalation_leaves_no_silent_hold(rt, monkeypatch):
+    from flocc import canary
+
+    _broken_main(rt, monkeypatch)
+
+    def down(esc, issue, team_id):
+        raise LinearError("down")
+
+    rt.notifier.send = down
+    rt.linear.ready = [issue("NF-9")]
+    with pytest.raises(LinearError):
+        poll(rt)
+    assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
+
+
+def test_setup_failing_on_untouched_main_marks_the_repo_and_holds_its_issues(rt, monkeypatch):
+    calls = _broken_main(rt, monkeypatch)
+    rt.linear.ready = [issue("NF-9"), issue("NF-10")]
+    poll(rt)
+    poll(rt)
+    assert calls == ["NF-9"]
+    [esc] = rt.notifier.sent
+    assert esc.tier == 1 and esc.issue_key == "NF-9" and esc.cause.endswith("main-broken")
+    assert "mise: no version set for go" in esc.summary and "flocc canary" in esc.action
+    assert ledger.get_claim(rt.con, "NF-10") is None
+
+
+def test_setup_failing_on_the_issues_own_commits_is_the_issues(rt, monkeypatch):
+    calls = _broken_main(rt, monkeypatch, at_base=None)
+    rt.linear.ready = [issue("NF-9"), issue("NF-10")]
+    poll(rt)
+    assert calls == ["NF-9", "NF-10"]
+    assert all(e.tier == 2 for e in rt.notifier.sent)
+
+
+def test_a_new_commit_on_main_lets_the_next_issue_try_again(rt, monkeypatch):
+    calls = _broken_main(rt, monkeypatch)
+    rt.linear.ready = [issue("NF-9")]
+    poll(rt)
+    monkeypatch.setattr("flocc.poller.origin_base", lambda repo: "sha-fixed")
+    poll(rt)
+    assert calls == ["NF-9", "NF-9"]
+
+
+def test_a_dead_remote_keeps_the_hold_without_failing_the_poll(rt, monkeypatch):
+    calls = _broken_main(rt, monkeypatch)
+    rt.linear.ready = [issue("NF-9")]
+    poll(rt)
+    monkeypatch.setattr("flocc.poller.origin_base", lambda repo: None)
+    poll(rt)
+    assert calls == ["NF-9"]
+
+
+def test_main_broken_marks_even_when_the_issues_prepare_alert_is_recent(rt, monkeypatch):
+    calls = _broken_main(rt, monkeypatch, at_base=None)
+    rt.linear.ready = [issue("NF-9")]
+    poll(rt)
+    monkeypatch.setattr("flocc.poller.head_at_base", lambda repo, path: "sha-main")
+    poll(rt)
+    poll(rt)
+    assert calls == ["NF-9", "NF-9"]
+
+
 def test_tick_pages_once_runtime_setup_failures_repeat(tmp_cfg, tmp_path, monkeypatch):
     for name in ("linear.key", "gh-publish.token"):
         (tmp_path / name).write_text("k\n")

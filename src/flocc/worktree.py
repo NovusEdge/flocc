@@ -3,6 +3,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import tempfile
 from pathlib import Path
 
 from flocc.config import TRAILER, RepoConfig
@@ -122,6 +123,61 @@ def prepare_worktree(
             more = f"\n... and {len(added) - _LISTED} more" if len(added) > _LISTED else ""
             raise DirtyWorktree(f"./setup left files git sees; gitignore them:\n{listed}{more}")
     return path, branch, base
+
+
+def origin_base(repo: RepoConfig) -> str | None:
+    try:
+        git("fetch", "-q", "origin", repo.base_branch, cwd=repo.path)
+        return git("rev-parse", f"origin/{repo.base_branch}", cwd=repo.path)
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def head_at_base(repo: RepoConfig, path: Path) -> str | None:
+    """The base SHA when the worktree at path is still exactly origin/<base>."""
+    try:
+        head = git("rev-parse", "HEAD", cwd=path)
+        base = git("rev-parse", f"origin/{repo.base_branch}", cwd=repo.path)
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    return base if head == base else None
+
+
+def setup_at_base(
+    repo: RepoConfig, worktree_root: Path, timeout_s: float, shared_uv_cache: bool
+) -> tuple[int | None, str, str]:
+    git("fetch", "-q", "origin", repo.base_branch, cwd=repo.path)
+    sha = git("rev-parse", f"origin/{repo.base_branch}", cwd=repo.path)
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    root = worktree_root.resolve()
+    # A fresh name each run: a killed canary leaves its directory, and reap_worktrees does not
+    # know this prefix.
+    path = Path(tempfile.mkdtemp(prefix=".canary-", dir=root))
+    path.rmdir()
+    git("worktree", "add", "-q", "--detach", str(path), sha, cwd=repo.path)
+    try:
+        if not (path / "setup").exists():
+            return 0, "no ./setup", sha
+        cache = root / (".uv-cache" if shared_uv_cache else ".uv-cache-canary")
+        code, out = _run_setup(path, cache, timeout_s, keep_cache=shared_uv_cache)
+        # The poller marks a setup that leaves files git sees, so passing one here would lift a
+        # hold the next issue sets again.
+        added = _status(path) if code == 0 else []
+        if added:
+            return (
+                1,
+                "./setup left files git sees; gitignore them:\n" + "\n".join(added[:_LISTED]),
+                sha,
+            )
+        return code, out, sha
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(path)],
+            cwd=repo.path,
+            capture_output=True,
+            check=False,
+        )
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _run_setup(
