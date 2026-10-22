@@ -73,7 +73,7 @@ func (s *hostScript) Confirm(title string, _ bool) (bool, error) {
 	return v, nil
 }
 
-func (s *hostScript) Secret(string, string) (string, error) {
+func (s *hostScript) Secret(string, string, ...string) (string, error) {
 	if len(s.secrets) == 0 {
 		return "", s.err
 	}

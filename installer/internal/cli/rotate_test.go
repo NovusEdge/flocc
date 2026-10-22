@@ -143,8 +143,8 @@ type cancelAtSecret struct {
 	n, at  int
 }
 
-func (c *cancelAtSecret) Secret(title, help string) (string, error) {
-	v, err := c.hostScript.Secret(title, help)
+func (c *cancelAtSecret) Secret(title, help string, facts ...string) (string, error) {
+	v, err := c.hostScript.Secret(title, help, facts...)
 	if c.n++; c.n == c.at {
 		c.cancel()
 	}

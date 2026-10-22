@@ -5,8 +5,8 @@ import "charm.land/huh/v2"
 // Prompts adapts a Session to the prompt shapes keys and cli already use.
 type Prompts struct{ S Session }
 
-func (p Prompts) Secret(title, help string) (string, error) {
-	return p.S.Secret(Question{Title: title, Help: help})
+func (p Prompts) Secret(title, help string, facts ...string) (string, error) {
+	return p.S.Secret(Question{Title: title, Help: help, Facts: facts})
 }
 
 func (p Prompts) Confirm(title string, def bool) (bool, error) {

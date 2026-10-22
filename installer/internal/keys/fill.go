@@ -20,7 +20,9 @@ import (
 
 type Prompt interface {
 	// Secret reads a paste with echo off; "" when it is left empty.
-	Secret(title, help string) (string, error)
+	// Secret shows facts with the question in every renderer; the full-screen modal covers the rows
+	// they came from.
+	Secret(title, help string, facts ...string) (string, error)
 	Confirm(title string, def bool) (bool, error)
 }
 
@@ -112,12 +114,11 @@ func store(e Env, s Slot, v string) error {
 // paste.
 func askChecked(ctx context.Context, e Env, m Mapped, s Slot, help string) (v string, ok bool, err error) {
 	link, page := Page(s, m)
-	e.UI.Note(s.Title(), page+"\n"+link)
 	e.Open(link)
 	raw := ""
 	for {
 		if raw == "" {
-			if raw, err = e.Prompt.Secret(s.Title(), help); err != nil {
+			if raw, err = e.Prompt.Secret(s.Title(), help, page, link); err != nil {
 				return "", false, err
 			}
 			if strings.TrimSpace(raw) == "" {

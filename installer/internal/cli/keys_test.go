@@ -72,9 +72,9 @@ type askedSecrets struct {
 	titles []string
 }
 
-func (a *askedSecrets) Secret(title, help string) (string, error) {
+func (a *askedSecrets) Secret(title, help string, facts ...string) (string, error) {
 	a.titles = append(a.titles, title)
-	return a.hostScript.Secret(title, help)
+	return a.hostScript.Secret(title, help, facts...)
 }
 
 func TestKeysOffersTheTailscaleClientEvenWhenTheRequiredKeysAreStored(t *testing.T) {

@@ -38,9 +38,11 @@ type script struct {
 	t        *testing.T
 	secrets  []string
 	confirms []bool
+	facts    [][]string // what each Secret was shown with
 }
 
-func (s *script) Secret(string, string) (string, error) {
+func (s *script) Secret(_, _ string, facts ...string) (string, error) {
+	s.facts = append(s.facts, facts)
 	if len(s.secrets) == 0 {
 		return "", nil
 	}
@@ -217,6 +219,20 @@ func TestARefusedPasteEndsItsRowSkippedAndTheSessionStaysClean(t *testing.T) {
 	}
 }
 
+// The full-screen modal covers the rows, so the page's steps and its link go with the question.
+func TestThePasteIsAskedWithTheStepsAndTheLinkAsFacts(t *testing.T) {
+	p := &script{secrets: []string{"lin_api_k"}}
+	f := newFixture(t, nil, nil, p)
+	f.env.LinearAPI = linServer(t, "viewer-ok.http").URL + "/graphql"
+	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Linear}); err != nil {
+		t.Fatal(err)
+	}
+	link, page := Page(Linear, Mapped{})
+	if len(p.facts) != 1 || len(p.facts[0]) != 2 || p.facts[0][0] != page || p.facts[0][1] != link {
+		t.Fatalf("facts %q, want the page and the link", p.facts)
+	}
+}
+
 func tailscaleServer(t *testing.T, status int) *httptest.Server {
 	t.Helper()
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,14 +248,15 @@ func tailscaleServer(t *testing.T, status int) *httptest.Server {
 }
 
 func TestTheTailscaleSlotIsOptionalAndAnEmptyPasteSkipsIt(t *testing.T) {
-	f := newFixture(t, nil, nil, &script{})
+	p := &script{}
+	f := newFixture(t, nil, nil, p)
 	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Tailscale}); err != nil {
 		t.Fatal(err)
 	}
 	if f.store.m[Tailscale] != "" || f.env.UI.Failed() {
 		t.Fatalf("%v", f.store.m)
 	}
-	if page := f.text(); !strings.Contains(page, "https://login.tailscale.com/admin/settings/oauth") ||
+	if page := strings.Join(p.facts[0], "\n");!strings.Contains(page, "https://login.tailscale.com/admin/settings/oauth") ||
 		!strings.Contains(page, "Auth keys (write) and Devices core (write)") || !strings.Contains(page, "tag:flocc-host") {
 		t.Fatal(page)
 	}
