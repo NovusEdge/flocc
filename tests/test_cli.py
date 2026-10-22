@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from flocc import canary, ledger
+from flocc import canary, gate, ledger
 from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.grants import Grants, set_block
@@ -310,6 +310,61 @@ def test_gate_answered_logs_the_answer(tmp_path, monkeypatch):
     assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
     [line] = (tmp_path / "answers.jsonl").read_text().splitlines()
     assert json.loads(line)["run"] == "impl@1" and json.loads(line)["questions"] == ["Q?"]
+
+
+TEST_PATH = "gateway/tests/test_nf321_neutral_names.py"
+AMEND_Q = f"Amend {TEST_PATH} to use the neutral names?"
+
+
+def answer(state, run, question=AMEND_Q):
+    gate.note_answer(
+        state,
+        {
+            "tool_input": {"questions": [{"question": question}]},
+            "tool_response": {"answers": {question: "Yes"}},
+        },
+        run,
+        1.0,
+    )
+
+
+def amend(monkeypatch, tmp_path, *paths, question="Amend"):
+    gate_env(monkeypatch, tmp_path, "impl")
+    return main(["tests-amended", *paths, "--question", question])
+
+
+def test_tests_amended_records_the_path_with_question_and_response(tmp_path, monkeypatch, capsys):
+    answer(tmp_path, "impl@1")
+    assert amend(monkeypatch, tmp_path, TEST_PATH) == 0
+    assert "recorded 1 amended test file" in capsys.readouterr().out
+    entry = json.loads((tmp_path / "tests-amended.json").read_text())[TEST_PATH]
+    assert entry["question"] == AMEND_Q and entry["response"] == {"answers": {AMEND_Q: "Yes"}}
+    other = "gateway/tests/test_other.py"
+    answer(tmp_path, "impl@1", f"Amend {other} too?")
+    assert amend(monkeypatch, tmp_path, other, question="too") == 0
+    assert set(json.loads((tmp_path / "tests-amended.json").read_text())) == {TEST_PATH, other}
+
+
+def test_tests_amended_matches_on_the_basename(tmp_path, monkeypatch):
+    answer(tmp_path, "impl@1", "Amend test_nf321_neutral_names.py?")
+    assert amend(monkeypatch, tmp_path, TEST_PATH) == 0
+
+
+@pytest.mark.parametrize(
+    ("run", "question", "path"),
+    [
+        ("impl@1", "Something else", TEST_PATH),
+        ("impl@1", "Amend", "gateway/tests/test_unrelated.py"),
+        ("impl@0", "Amend", TEST_PATH),
+    ],
+)
+def test_tests_amended_refuses_without_a_matching_answer(
+    tmp_path, monkeypatch, capsys, run, question, path
+):
+    answer(tmp_path, run)
+    assert amend(monkeypatch, tmp_path, path, question=question) == 2
+    assert "tests-amended:" in capsys.readouterr().err
+    assert not (tmp_path / "tests-amended.json").exists()
 
 
 def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):

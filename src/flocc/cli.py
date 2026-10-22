@@ -150,6 +150,49 @@ def _shared_paths(args, repo: str) -> tuple[str, ...]:
     return cfg.repos[repo].shared_paths if repo in cfg.repos else ()
 
 
+def cmd_tests_amended(args) -> int:
+    state = _state_dir()
+    match = next(
+        (
+            (q, entry)
+            for entry in reversed(gate.answers(state, os.environ.get("FLOCC_RUN")))
+            for q in entry.get("questions", [])
+            if args.question in q
+        ),
+        None,
+    )
+    if match is None:
+        print(
+            f'tests-amended: no answered question of this run contains "{args.question}";'
+            " ask the owner with AskUserQuestion first",
+            file=sys.stderr,
+        )
+        return 2
+    question, entry = match
+    unnamed = [p for p in args.paths if p not in question and PurePosixPath(p).name not in question]
+    if unnamed:
+        print(
+            f"tests-amended: the question does not name {', '.join(unnamed)}: {question}",
+            file=sys.stderr,
+        )
+        return 2
+    path = state / gate.AMENDED
+    try:
+        recorded = json.loads(path.read_text())
+    except (OSError, ValueError):
+        recorded = {}
+    if not isinstance(recorded, dict):
+        recorded = {}
+    for p in args.paths:
+        recorded[p] = {"question": question, "response": entry.get("response")}
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(recorded))
+    os.replace(tmp, path)
+    n = len(args.paths)
+    print(f"recorded {n} amended test file{'s' * (n != 1)}")
+    return 0
+
+
 def cmd_claim(args) -> int:
     key = _state_dir().name
     for glob in args.globs:
@@ -701,6 +744,7 @@ COMMANDS = {
     "escalate": cmd_escalate,
     "hook": cmd_hook,
     "claim": cmd_claim,
+    "tests-amended": cmd_tests_amended,
     "context": cmd_context,
     "gate": cmd_gate,
     "idle": cmd_idle,
@@ -758,6 +802,11 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("message_file", nargs="?", help="commit message file (commit-msg)")
     claim = add("claim", "Claim file globs for this issue")
     claim.add_argument("globs", nargs="+", help="file globs to claim")
+    amended = add(
+        "tests-amended", "Record tester files the owner approved changing, from an answered question"
+    )
+    amended.add_argument("paths", nargs="+", help="repo-relative paths of the amended tester files")
+    amended.add_argument("--question", required=True, help="words from the answered question")
     add("context", "Print the issue's claims and context")
     gate = add("gate", "Hook: allow or refuse a subagent or workflow launch, track questions")
     which = gate.add_mutually_exclusive_group()
