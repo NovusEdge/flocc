@@ -230,7 +230,7 @@ func (u oldUser) askFacts() []string {
 
 // polls reports whether a process of an old install may still be taking Linear issues.
 func polls(args string) bool {
-	return strings.Contains(args, "claude") || strings.Contains(args, "linear-agents run") || strings.Contains(args, "flocc run")
+	return strings.Contains(args, "claude") || strings.Contains(args, steps.OldName+" run") || strings.Contains(args, "flocc run")
 }
 
 // setupFailures are the status failures setup repairs; the login is step 6's.
