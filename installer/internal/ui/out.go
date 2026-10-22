@@ -42,27 +42,12 @@ func (o Out) Fail(s string) string { return o.paint("31", s) }
 func (o Out) Warn(s string) string { return o.paint("33", s) }
 func (o Out) Bold(s string) string { return o.paint("1", s) }
 
-const (
-	indent     = "  "
-	nextIndent = indent + indent
-)
+const indent = "  "
 
 func same(s string) string { return s }
 
 // Line writes a status line two spaces in; each line of a multi-line text is indented.
 func (o Out) Line(format string, a ...any) { o.write(indent, same, fmt.Sprintf(format, a...)) }
-
-// WarnLine is Line in yellow, for a note the owner should read: something not stored, not
-// checked or left for them to do.
-func (o Out) WarnLine(format string, a ...any) { o.write(indent, o.Warn, fmt.Sprintf(format, a...)) }
-
-// FailLine writes a FAIL line and, under it, the next step in bold, two spaces further in.
-func (o Out) FailLine(what, next string) {
-	o.write(indent, same, o.Fail("FAIL")+"  "+what)
-	if next != "" {
-		o.write(nextIndent, o.Bold, next)
-	}
-}
 
 // SplitNext cuts the next step off an error text: what follows the last "; run ", as in
 // "Linear rejected the key; run flocc keys rotate linear".

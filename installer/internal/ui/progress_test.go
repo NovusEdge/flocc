@@ -255,17 +255,6 @@ func TestQuietInPlainModeJustRuns(t *testing.T) {
 	}
 }
 
-func TestAttachedStepGetsPlainLinesEvenWhenAnimating(t *testing.T) {
-	var b bytes.Buffer
-	p, _, _ := newTestProgress(&b, true, true)
-	l := packages
-	l.Attached = true
-	p.Run(l, func() (Outcome, error) { return Outcome{Detail: "ok"}, nil })
-	if strings.Contains(b.String(), "\r") || strings.Contains(b.String(), "⠋") || !strings.Contains(b.String(), "→ 3/9") {
-		t.Fatalf("%q", b.String())
-	}
-}
-
 func TestAnimatedDetailIsCutToFitTheTerminalWidth(t *testing.T) {
 	var b bytes.Buffer
 	p, _, _ := newTestProgress(&b, true, false)

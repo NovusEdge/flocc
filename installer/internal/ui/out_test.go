@@ -44,9 +44,8 @@ func TestPlainOutIndentsAndEmitsNoEscapes(t *testing.T) {
 	var b bytes.Buffer
 	o := Out{W: &b}
 	o.Line("%s    Linear key: Ada", o.OK("ok"))
-	o.WarnLine("Created NF-1,\npin it")
-	o.FailLine("Linear: 401", "run flocc keys rotate linear")
-	want := "  ok    Linear key: Ada\n  Created NF-1,\n  pin it\n  FAIL  Linear: 401\n    run flocc keys rotate linear\n"
+	o.Line("Created NF-1,\npin it")
+	want := "  ok    Linear key: Ada\n  Created NF-1,\n  pin it\n"
 	if b.String() != want {
 		t.Fatalf("got %q, want %q", b.String(), want)
 	}
@@ -56,12 +55,9 @@ func TestColoredOutUsesTheSixteenANSIColors(t *testing.T) {
 	var b bytes.Buffer
 	o := Out{W: &b, Color: true}
 	o.Line("%s    k", o.OK("ok"))
-	o.WarnLine("unknown")
-	o.FailLine("bad", "run it again")
+	o.Line("%s    bad", o.Fail("FAIL"))
 	want := "  \x1b[32mok\x1b[0m    k\n" +
-		"  \x1b[33munknown\x1b[0m\n" +
-		"  \x1b[31mFAIL\x1b[0m  bad\n" +
-		"    \x1b[1mrun it again\x1b[0m\n"
+		"  \x1b[31mFAIL\x1b[0m    bad\n"
 	if b.String() != want {
 		t.Fatalf("got %q, want %q", b.String(), want)
 	}

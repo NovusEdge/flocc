@@ -220,7 +220,7 @@ func openSession(ctx context.Context, d *deps, name string, rest []string) {
 		if handoffOnly(name, rest) {
 			out = d.err
 		}
-		d.ui = ui.Open(ctx, sessionMode(d, name, rest), out, in,"flocc "+strings.Join(rest[:min(len(rest), 2)], " "))
+		d.ui = ui.Open(ctx, sessionMode(d, name, rest), out, in, "flocc "+strings.Join(rest[:min(len(rest), 2)], " "))
 	}
 	if d.prompt == nil {
 		d.prompt = sessionPrompt{ui.Prompts{S: d.ui}}
