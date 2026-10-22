@@ -11,7 +11,7 @@ flocc host create [--cpus 4] [--memory 8] [--disk 40] <machine> <name>
 ## Requirements
 
 - On the machine, your account needs `incus-admin` membership or passwordless sudo for Incus.
-- Passwordless sudo is also needed when firewalld or Docker runs there. Create runs every root command as `sudo -n` and stops with instructions rather than wait for a password.
+- When firewalld or Docker runs there, create builds `flocc-setup`, stages it and runs the firewall and Docker steps as root in one `ssh -t ... sudo`. Sudo asks for your password once per run, and not at all with passwordless sudo. A password needs a terminal. A run stopped in the pass leaves `/tmp/flocc-create.XXXXXX/setup.log` on the machine.
 - The desktop must be on the tailnet.
 - Run create inside the flocc checkout, since its ship step ships that commit. Create checks this before it touches the machine.
 
@@ -22,6 +22,8 @@ Create checks each step before changing anything, so running the same command ag
 1. Checks that Incus has the managed bridge `incusbr0`, a root pool with room for the disk, and the memory free. Otherwise it stops with the commands to run. It never sets Incus up itself. The commands carry `sudo` when your account reaches Incus through sudo rather than `incus-admin`.
 2. Scopes firewalld, when it runs. See [What create changes on the machine](#what-create-changes-on-the-machine).
 3. Lets the VM through Docker's forward drop, when Docker runs, or is enabled or socket-activated while stopped.
+
+   Steps 2 and 3 run together in one root pass, shown as the row "Root pass" with a Firewalld row and a Docker row drawn from its report once sudo finishes. A machine with neither firewalld nor Docker skips the pass and its password.
 4. Checks that no tailnet node already has `<name>`, launches `images:debian/13` as a VM with `boot.autostart=true`, and waits for an IPv4 address and outbound HTTPS.
 5. Joins the VM to the tailnet with Tailscale SSH, tagged `tag:flocc-host`. See [Tailnet](../tailnet.md).
 6. Waits until the desktop's tailnet lists the node. It runs `flocc host add <name> --ssh root@<name>` unless `hosts/<name>.toml` exists, then `flocc ship -H <name>` and `flocc login -H <name>`.

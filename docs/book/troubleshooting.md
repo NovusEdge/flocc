@@ -64,6 +64,8 @@ A failed `./setup` or a worktree that is not clean after `./setup` fails the sta
 | Symptom | Fix |
 |---|---|
 | Create stops with commands to run | Incus lacks `incusbr0`, a root pool with room, or free memory. Run the printed commands, then create again. It never sets Incus up itself |
+| `sudo on <machine> asks for a password; run create in a terminal` | Run create in a terminal, or give the account passwordless sudo |
+| `the root pass failed: ... its log is /tmp/flocc-create.XXXXXX/setup.log` | Read that log on the machine, fix what it names, then run create again |
 | The VM has no HTTPS | Check the firewalld and Docker rules in [Create a host](setup/host-create.md#what-create-changes-on-the-machine), then run create again |
 | Create names a Docker bridge and its zone | Bind it with `sudo firewall-cmd --zone=docker --change-interface=<bridge>`, or restart Docker when nothing depends on it, then run create again |
 | Create stops on firewalld's iptables backend, or Docker's nftables backend | Set `FirewallBackend=nftables` in `/etc/firewalld/firewalld.conf` and restart firewalld. Docker's own nftables firewall backend has no `DOCKER-USER` chain and is not supported |

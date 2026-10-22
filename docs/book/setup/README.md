@@ -32,7 +32,7 @@ flocc setup        # inside the flocc checkout
 | Cardinal | One machine: the saved one, else the first host's | Status ok: nothing. Failing: setup. A `cardinal` user without a saved file: asks to adopt, default no. No cardinal: asks, default yes |
 | Logins | Each host's and cardinal's login | `full` is done and `unknown` is shown. Anything else runs `flocc login` or `flocc cardinal login` with the pool account you give |
 
-Host create needs passwordless sudo on the machine. A machine whose sudo asks for a password can still hold cardinal and run the cleanup: the removal and cardinal's root work share one `ssh -t`, so sudo asks once.
+Host create runs its firewalld and Docker steps as root in one `ssh -t ... sudo`, so a machine whose sudo asks for a password works from a terminal, and sudo asks once. Cardinal's removal and root work share one `ssh -t` the same way.
 
 Which machine a host is on is `machine` in its host file. Setup asks once for a host that lacks it. `none` is allowed for a host that is on no machine of yours, and `daytona` is refused.
 
