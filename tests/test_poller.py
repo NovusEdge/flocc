@@ -164,6 +164,20 @@ def test_rerun_ignores_files_from_the_previous_claim(rt):
     assert not (d / "done.json").exists()
 
 
+def test_a_resume_at_the_implementer_keeps_the_amended_tests_record(rt, monkeypatch):
+    ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
+    monkeypatch.setattr(
+        "flocc.poller.contains",
+        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+    )
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir()
+    (d / "tests-amended.json").write_text('{"t.py": {"reason": "r"}}')
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert (d / "tests-amended.json").exists()
+
+
 def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
