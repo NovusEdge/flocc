@@ -155,7 +155,11 @@ const maxPage = 250
 // IssuesByKey returns the issues among keys that Linear knows, one query per maxPage keys. Keys
 // that are not TEAM-NUMBER are skipped and repeats are asked once; an unknown key is simply absent.
 func (c *Client) IssuesByKey(ctx context.Context, keys []string) ([]Issue, error) {
-	var or []map[string]any
+	type ref struct {
+		team string
+		n    int
+	}
+	var refs []ref
 	seen := map[string]bool{}
 	for _, k := range keys {
 		if seen[k] {
@@ -170,16 +174,30 @@ func (c *Client) IssuesByKey(ctx context.Context, keys []string) ([]Issue, error
 		if err != nil {
 			continue
 		}
-		or = append(or, map[string]any{"team": map[string]any{"key": map[string]any{"eq": m[1]}}, "number": map[string]any{"eq": n}})
-	}
-	if len(or) == 0 {
-		return nil, nil
+		refs = append(refs, ref{m[1], n})
 	}
 	var issues []Issue
-	for chunk := range slices.Chunk(or, maxPage) {
+	for chunk := range slices.Chunk(refs, maxPage) {
+		// Linear ORs the fields of one object inside "or" as well, so {team, number} there matches
+		// every issue of the team: each team's pair goes through "and".
+		var teams []string
+		nums := map[string][]int{}
+		for _, r := range chunk {
+			if nums[r.team] == nil {
+				teams = append(teams, r.team)
+			}
+			nums[r.team] = append(nums[r.team], r.n)
+		}
+		or := make([]map[string]any, len(teams))
+		for i, t := range teams {
+			or[i] = map[string]any{"and": []map[string]any{
+				{"team": map[string]any{"key": map[string]any{"eq": t}}},
+				{"number": map[string]any{"in": nums[t]}},
+			}}
+		}
 		var out struct{ Issues struct{ Nodes []issueNode } }
 		err := c.do(ctx, `query($filter: IssueFilter!, $n: Int!) { issues(filter: $filter, first: $n) { nodes { `+issueFields+` } } }`,
-			map[string]any{"filter": map[string]any{"or": chunk}, "n": len(chunk)}, &out)
+			map[string]any{"filter": map[string]any{"or": or}, "n": len(chunk)}, &out)
 		if err != nil {
 			return nil, err
 		}

@@ -225,7 +225,7 @@ func TestIssuesByKeyAsksOnceByTeamAndNumber(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	c := &Client{URL: srv.URL, Key: "k", HTTP: srv.Client()}
-	got, err := c.IssuesByKey(context.Background(), []string{"NF-240", "not a key", "NF-241"})
+	got, err := c.IssuesByKey(context.Background(), []string{"NF-240", "not a key", "AB-7", "NF-241"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,11 +244,11 @@ func TestIssuesByKeyAsksOnceByTeamAndNumber(t *testing.T) {
 	if err := json.Unmarshal([]byte(bodies[0]), &req); err != nil {
 		t.Fatal(err)
 	}
-	const filter = `{"or":[{"team":{"key":{"eq":"NF"}},"number":{"eq":240}},{"team":{"key":{"eq":"NF"}},"number":{"eq":241}}]}`
+	const filter = `{"or":[{"and":[{"team":{"key":{"eq":"NF"}}},{"number":{"in":[240,241]}}]},{"and":[{"team":{"key":{"eq":"AB"}}},{"number":{"in":[7]}}]}]}`
 	var a, b any
 	json.Unmarshal(req.Variables.Filter, &a)
 	json.Unmarshal([]byte(filter), &b)
-	if !reflect.DeepEqual(a, b) || req.Variables.N != 2 {
+	if !reflect.DeepEqual(a, b) || req.Variables.N != 3 {
 		t.Errorf("filter %s first %d", req.Variables.Filter, req.Variables.N)
 	}
 }
