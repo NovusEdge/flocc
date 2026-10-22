@@ -59,6 +59,15 @@ func TestRootSkipsThePassWithoutFirewalldOrDocker(t *testing.T) {
 	}
 }
 
+func TestRootFailsClosedWhenSSHFailsDuringItsCheck(t *testing.T) {
+	m := host.NewFake().On("systemctl is-active --quiet firewalld.service", 255, "")
+	e, _ := testEnv(m)
+	err := RunSteps(context.Background(), e, []Step{Root{}})
+	if err == nil || !strings.Contains(err.Error(), "cannot reach laptop over ssh") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestRootRefusesAPasswordSudoWithoutATerminal(t *testing.T) {
 	m := host.NewFake().On("systemctl is-active --quiet firewalld.service", 0, "")
 	e, _ := testEnv(m)
