@@ -345,10 +345,11 @@ host that stopped half-made. In order, it:
 5. joins the VM to the tailnet with Tailscale SSH, tagged `tag:flocc-host`. With the Tailscale
    OAuth client stored, create mints a one-off key (pre-approved, tagged, valid 10 minutes) and
    runs `tailscale up` with it on stdin, with no terminal step. Without the client it asks for a
-   pasted one-off key, or falls back to the QR code or link login, still with
-   `--advertise-tags=tag:flocc-host`; a pasted key reaches the VM on stdin and is neither stored
-   nor logged. If the policy does not define the tag, this step fails and names the Tailnet section
-   of `flocc setup`. A VM already
+   pasted one-off key, or falls back to the QR code or link login. It adds
+   `--advertise-tags=tag:flocc-host` only when another node on the tailnet already carries the tag,
+   which shows the policy defines it; otherwise the VM joins untagged. A pasted key reaches the VM
+   on stdin and is neither stored nor logged. If the policy does not define the tag, this step fails
+   and names the Tailnet section of `flocc setup`. A VM already
    logged in is renamed and given SSH instead of logging in again; the control server confirms the
    new name within 15 seconds or create stops, naming the stale node to remove;
 6. waits until this desktop's tailnet lists the node, runs `flocc host add <name> --ssh
@@ -477,7 +478,10 @@ it. flocc never writes the tailnet policy; it generates one for you to paste and
    https://login.tailscale.com/admin/machines.
 
 Without the OAuth client everything still works: hosts join with the login link and are tagged by
-hand, and setup lists the missing client under "still yours to do".
+hand, and setup lists the missing client under "still yours to do". When no node on the tailnet
+carries the tag yet, setup also writes a policy to `~/.cache/flocc/tailnet-policy.json` for you to
+paste; once a host is tagged, later creates advertise the tag themselves. Run `flocc keys` to
+store the client later.
 
 The scopes and what a leaked copy on the desktop allows:
 

@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
@@ -218,7 +220,27 @@ func (e *Env) waiting(what string, left time.Duration) {
 	}
 }
 
-type tsNode struct{ HostName, DNSName string }
+type tsNode struct {
+	HostName, DNSName string
+	Tags              []string
+}
+
+// tagInUse reports whether a node this desktop sees carries the host tag.
+func tagInUse(ctx context.Context, e *Env) bool {
+	out, err := host.Must(ctx, e.Local, cmd("tailscale", "status", "--json"))
+	if err != nil {
+		return false
+	}
+	var st struct {
+		Self *tsNode
+		Peer map[string]*tsNode
+	}
+	if json.Unmarshal([]byte(out), &st) != nil {
+		return false
+	}
+	return slices.ContainsFunc(append([]*tsNode{st.Self}, slices.Collect(maps.Values(st.Peer))...),
+		func(n *tsNode) bool { return n != nil && slices.Contains(n.Tags, tailnet.Tag) })
+}
 
 func (n *tsNode) named(name string) bool {
 	if n == nil {

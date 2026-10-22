@@ -66,6 +66,9 @@ func (w *wizard) tailnet() {
 	}
 	w.end(st, rowDone, "Tailnet nodes", "read from this desktop")
 	passed := ok && w.policy(api, devices)
+	if !ok {
+		w.policyToPaste(devices)
+	}
 	if w.stopped {
 		return
 	}
@@ -141,6 +144,26 @@ func (w *wizard) policy(api tailnetAPI, devices []tailnet.Device) bool {
 	return false
 }
 
+// policyToPaste is the no-client case: nothing can read the owner's policy, so setup writes the
+// one for a tailnet that has nothing else and asks for the paste. A node already carrying the tag
+// shows the policy defines it, and that policy is left alone.
+func (w *wizard) policyToPaste(devices []tailnet.Device) {
+	if slices.ContainsFunc(devices, func(d tailnet.Device) bool { return slices.Contains(d.Tags, tailnet.Tag) }) {
+		return
+	}
+	owner := ""
+	if len(devices) > 0 {
+		owner = devices[0].Owner
+	}
+	st := w.d.ui.Step("Policy")
+	if err := writePolicy(filepath.Join(w.d.home, ".cache", "flocc", "tailnet-policy.json"), tailnet.Generate(owner, devices)); err != nil {
+		w.failAt(st, "Policy", err)
+		return
+	}
+	w.end(st, rowSkipped, "Policy", "no client to read it; a policy to paste is in ~/.cache/flocc/tailnet-policy.json")
+	w.d.ui.Todo("Tailnet policy: paste ~/.cache/flocc/tailnet-policy.json at " + policyURL + " (it replaces the policy there; with rules of your own, add only its tag:flocc-host parts), then tag each host at " + machinesURL)
+}
+
 func writePolicy(path string, merged []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -172,7 +195,7 @@ func (w *wizard) tagHosts(api tailnetAPI, canTag bool, devices []tailnet.Device)
 		case slices.Contains(dev.Tags, tailnet.Tag):
 			w.row(rowDone, name, "tagged")
 		case !canTag:
-			w.row(rowPending, name, h.Name+" is not tagged "+tailnet.Tag+"; tag it at "+machinesURL+" once the policy above passes")
+			w.row(rowPending, name, h.Name+" is not tagged "+tailnet.Tag+"; tag it at "+machinesURL+" once the policy allows it")
 		default:
 			st := w.d.ui.Step(name)
 			st.Detail("tagging")

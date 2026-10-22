@@ -127,8 +127,13 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 		return tailnetTaken(name)
 	}
 	// --ssh on the first up: once RunSSH is on, up refuses to run without it. up refuses a later run
-	// that leaves out a non-default flag it was given before, so every run names the tag.
-	up := []string{"exec", name, "--", "tailscale", "up", "--ssh", "--hostname=" + name, "--advertise-tags=" + tailnet.Tag}
+	// that leaves out a non-default flag it was given before, so a node that has the tag keeps naming it.
+	up := []string{"exec", name, "--", "tailscale", "up", "--ssh", "--hostname=" + name}
+	// Advertising a tag the policy does not define makes up fail, and without the OAuth client
+	// nothing here has read the policy. A tag already on a node of this tailnet shows it is defined.
+	if e.Tailnet != nil || slices.Contains(ts.tags, tailnet.Tag) || tagInUse(ctx, e) {
+		up = append(up, "--advertise-tags="+tailnet.Tag)
+	}
 	if ts.state == "Stopped" {
 		// tailscale down keeps the login, so up rejoins as the same node without a key. Attached,
 		// in case the control server asks for a login after all.

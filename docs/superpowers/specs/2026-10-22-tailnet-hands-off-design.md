@@ -28,7 +28,7 @@ what is missing.
 | Credential | A Tailscale OAuth client the owner creates once in the admin console, with scopes `auth_keys` and `devices:core` limited to `tag:flocc-host`, and `policy_file:read`. Stored in the desktop keyring as a new key slot. |
 | No policy write | flocc never writes the policy. The owner pastes it once; setup generates it and checks it. |
 | Tag | `tag:flocc-host` on every host. The owner's laptop and desktop stay user-owned. |
-| Without the client | Setup still works: create uses the QR login with `--advertise-tags`, and untagged hosts get a pending row with the console link. |
+| Without the client | Setup still works: create uses the QR login, with `--advertise-tags` only once a node on the tailnet already carries the tag (nothing else shows the policy defines it); setup writes the generated policy to paste, and untagged hosts get a pending row with the console link. |
 
 Rejected: a published Tailscale app with a consent flow (Tailscale's OAuth apps are alpha and
 "do not support users from other tailnets"; there is no app directory); a `policy_file` write

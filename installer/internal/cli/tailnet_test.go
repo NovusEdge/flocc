@@ -91,6 +91,36 @@ func TestSetupTailnetWithoutAClientIsSkippedWithItsPageAsATodo(t *testing.T) {
 	}
 }
 
+func TestSetupTailnetWithoutAClientWritesThePolicyToPasteWhenNoNodeHasTheTag(t *testing.T) {
+	var l opsLog
+	d, _, p := setupDeps(t, nil)
+	ops := tailnetOps(&l, nil, false)
+	ops.tailnetClient = func() (tailnetAPI, bool) { return nil, false }
+	runSetup(context.Background(), d, ops)
+	path := filepath.Join(d.home, ".cache", "flocc", "tailnet-policy.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, err := tailnet.Check([]byte(strings.TrimPrefix(string(b), tailnet.Preamble))); err != nil || len(m) != 0 {
+		t.Errorf("the file misses %q (%v):\n%s", []string(m), err, b)
+	}
+	if td := strings.Join(todos(p), "\n"); !strings.Contains(td, "~/.cache/flocc/tailnet-policy.json") || !strings.Contains(td, policyURL) {
+		t.Errorf("todos %q do not ask for the paste", td)
+	}
+}
+
+func TestSetupTailnetWithoutAClientLeavesAPolicyAloneWhenANodeHasTheTag(t *testing.T) {
+	var l opsLog
+	d, _, _ := setupDeps(t, nil)
+	ops := tailnetOps(&l, nil, true)
+	ops.tailnetClient = func() (tailnetAPI, bool) { return nil, false }
+	runSetup(context.Background(), d, ops)
+	if _, err := os.Stat(filepath.Join(d.home, ".cache", "flocc", "tailnet-policy.json")); err == nil {
+		t.Error("wrote a policy over one that already defines the tag")
+	}
+}
+
 func TestSetupTailnetAsksForTheClientOnTheFirstSetup(t *testing.T) {
 	var l opsLog
 	d, _, _ := setupDeps(t, nil)

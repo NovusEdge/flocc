@@ -21,9 +21,41 @@ const (
 	prefsInVM = "incus exec flocc-a -- tailscale debug prefs"
 	hasTS     = "incus exec flocc-a -- sh -c command -v tailscale && systemctl is-active --quiet tailscaled"
 	installTS = "incus exec flocc-a -- sh -c dpkg --configure -a && curl -fsSL https://tailscale.com/install.sh | sh && systemctl enable --now tailscaled"
-	upQR      = "incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --advertise-tags=tag:flocc-host --qr"
-	upKey     = "incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --advertise-tags=tag:flocc-host --auth-key=file:/dev/stdin"
+	upQR      = "incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --qr"
+	upKey     = "incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --auth-key=file:/dev/stdin"
+	upTagKey  = "incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --advertise-tags=tag:flocc-host --auth-key=file:/dev/stdin"
+	upTagQR   = "incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --advertise-tags=tag:flocc-host --qr"
 )
+
+// tsTagged is a tailnet where another host already carries the tag, so the policy defines it.
+const tsTagged = `{"Self":{"HostName":"desk","DNSName":"desk.tail1.ts.net."},
+ "Peer":{"nodekey:zz":{"HostName":"flocc-b","DNSName":"flocc-b.tail1.ts.net.","Tags":["tag:flocc-host"]}}}`
+
+func TestTailnetWithoutAClientAdvertisesNoTagUntilTheTailnetUsesIt(t *testing.T) {
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`)
+	e, _ := testEnv(f)
+	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
+	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.Calls {
+		if strings.Contains(c, "--advertise-tags") {
+			t.Fatalf("advertised the tag: %s", c)
+		}
+	}
+}
+
+func TestTailnetWithoutAClientAdvertisesTheTagOnceAnotherNodeCarriesIt(t *testing.T) {
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`)
+	e, _ := testEnv(f)
+	e.Local = host.NewFake().On("tailscale status --json", 0, tsTagged)
+	if err := (Tailnet{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("interactive: " + upTagQR) {
+		t.Fatalf("%v", f.Calls)
+	}
+}
 
 func joined(dns string) *host.Fake {
 	return host.NewFake().
@@ -104,7 +136,7 @@ const tsWithVM = `{"Self":{"HostName":"desk","DNSName":"desk.tail1.ts.net."},
  "Peer":{"nodekey:aa":{"HostName":"flocc-a","DNSName":"flocc-a.tail1.ts.net."}}}`
 
 func TestTailnetRejoinsAStoppedVMAsItself(t *testing.T) {
-	up := "interactive: incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a --advertise-tags=tag:flocc-host"
+	up := "interactive: incus exec flocc-a -- tailscale up --ssh --hostname=flocc-a"
 	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"Stopped","Self":{"PublicKey":"nodekey:aa"}}`)
 	e, u := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsWithVM)
@@ -353,7 +385,7 @@ func (m *minter) TaggedKey(_ context.Context, tag string, ttl time.Duration) (st
 const mintedKey = "tskey-auth-k1-MINTED"
 
 func TestMintedKeyJoinsTaggedOnStdinWithoutAskingOrAnExpiryTodo(t *testing.T) {
-	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upKey, 0, "")
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upTagKey, 0, "")
 	e, u := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
 	m := &minter{key: mintedKey}
@@ -364,7 +396,7 @@ func TestMintedKeyJoinsTaggedOnStdinWithoutAskingOrAnExpiryTodo(t *testing.T) {
 	if m.tag != "tag:flocc-host" || m.ttl != 10*time.Minute || m.callCount != 1 {
 		t.Errorf("minted %+v", m)
 	}
-	if got := f.Stdins[upKey]; got != mintedKey {
+	if got := f.Stdins[upTagKey]; got != mintedKey {
 		t.Errorf("stdin %q (%v)", got, f.Calls)
 	}
 	for _, c := range f.Calls {
@@ -382,7 +414,7 @@ func TestMintedKeyJoinsTaggedOnStdinWithoutAskingOrAnExpiryTodo(t *testing.T) {
 }
 
 func TestMintedKeyIsRedactedFromTheLogBeforeItIsUsed(t *testing.T) {
-	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upKey, 0, "")
+	f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).On(upTagKey, 0, "")
 	e, _ := testEnv(f)
 	e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
 	var logged bytes.Buffer
@@ -445,9 +477,9 @@ func TestMintedKeyRefusedForTheTagNamesTheSetupSection(t *testing.T) {
 func TestUpRefusingTheTagNamesTheSetupSection(t *testing.T) {
 	for name, withClient := range map[string]bool{"minted": true, "pasted": false} {
 		f := host.NewFake().On(hasTS, 0, "").On(tsInVM, 0, `{"BackendState":"NeedsLogin"}`).
-			On(upKey, 1, "requested tags [tag:flocc-host] are invalid or not permitted")
+			On(upTagKey, 1, "requested tags [tag:flocc-host] are invalid or not permitted")
 		e, u := testEnv(f)
-		e.Local = host.NewFake().On("tailscale status --json", 0, tsEmpty)
+		e.Local = host.NewFake().On("tailscale status --json", 0, tsTagged)
 		u.key = "tskey-auth-k1-PASTED"
 		if withClient {
 			e.Tailnet = &minter{key: mintedKey}
