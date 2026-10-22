@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import sys
@@ -37,6 +38,10 @@ _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
 CHECK_OUTPUT = "check-output.log"
 QUESTION_WAIT_S = 7200
+PANE = "pane.json"
+STALL_ESCALATED = "stall-escalated"
+STALL_LINES = 60
+STALL_TAIL = 12
 PUBLISH_TRIES = 3
 POST_TRIES = 3
 _VERDICT = re.compile(
@@ -108,7 +113,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | No
     # After everything above that can raise. The previous session's markers would be taken for
     # the new one's, and its context reading would ask the new session to hand off at once.
     markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
-    for leftover in (*_MARKERS, "status.json", "compacted"):
+    for leftover in (*_MARKERS, "status.json", "compacted", PANE, STALL_ESCALATED):
         (d / leftover).unlink(missing_ok=True)
     clear_question(d)
     clear_idle(d)
@@ -391,6 +396,65 @@ def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
     escalated.write_text(str(at))
 
 
+def _check_stall(rt, claim: Claim, d: Path, name: str) -> None:
+    # A session mid-turn redraws its pane every second (spinner, elapsed time, streamed output),
+    # so a pane that stays the same across ticks is waiting on a dialog no hook reports. Ended
+    # turns and open questions have their own checks. flocc's status line is left out: it
+    # rewrites on cache expiry and rate-limit resets while the session sits still. Background
+    # agents' tool calls clear `idle`, and a turn cut off by a usage limit writes no `idle` and
+    # sits still until the reset, so both are left alone too.
+    if (d / "idle").exists() or (d / "asking").exists():
+        return
+    if running_agents(d, run_id(claim.phase, claim.started_at), claim.phase):
+        return
+    u = latest_usage(rt.cfg.state_root, rt.now())
+    if u is not None and max(u.five_hour_pct, u.weekly_pct) >= 100:
+        return
+    own = f"{claim.issue_key} · ctx"
+    rows = [
+        r
+        for r in rt.sessions.capture(name, STALL_LINES).splitlines()
+        if r.strip() and not r.strip().startswith(own)
+    ]
+    if not rows:
+        return
+    digest = hashlib.sha256("\n".join(rows).encode()).hexdigest()
+    pane = d / PANE
+    try:
+        seen = json.loads(pane.read_text())
+        same, since = seen["hash"] == digest, float(seen["since"])
+    except (OSError, ValueError, KeyError, TypeError):
+        same, since = False, rt.now()
+    if not same:
+        pane.write_text(json.dumps({"hash": digest, "since": rt.now()}))
+        return
+    escalated = d / STALL_ESCALATED
+    if rt.now() - since < rt.cfg.stall_escalate_s or (
+        escalated.exists() and escalated.read_text() == str(since)
+    ):
+        return
+    tail = "\n".join(
+        "".join(c if c.isprintable() else " " for c in r).rstrip() for r in rows[-STALL_TAIL:]
+    )
+    minutes = int((rt.now() - since) / 60)
+    key = claim.issue_key
+    esc = scoped(
+        Escalation(
+            2,
+            "stalled",
+            f"{name} has shown the same screen for {minutes} min in the middle of a turn,"
+            f" most likely a dialog waiting for an answer:\n```\n{tail}\n```",
+            f"See it with flocc peek {key} and answer with flocc press {key} <keys>"
+            f" (e.g. flocc press {key} Down Enter), or release it with"
+            f" flocc release --keep-worktree {key}",
+            waiting=True,
+        ),
+        key,
+    )
+    rt.notifier.send(esc, rt.linear.issue(key), None)
+    escalated.write_text(str(since))
+
+
 def supervise(rt, claim: Claim) -> None:
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
@@ -451,3 +515,4 @@ def supervise(rt, claim: Claim) -> None:
         requested.touch()
     _check_question(rt, claim, d, name)
     _check_idle(rt, claim, d, name)
+    _check_stall(rt, claim, d, name)

@@ -2,6 +2,8 @@ import io
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from flocc.cli import build_parser, main
 from flocc.permission import LOG, handle, load_entries, report
 
@@ -62,6 +64,41 @@ def test_an_ordinary_prompt_is_not_a_model_switch(tmp_path):
     assert not (tmp_path / "NF-1" / "asking").exists()
 
 
+def test_a_permission_prompt_is_denied_with_a_reason_and_logged(tmp_path):
+    payload = {
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "Bash",
+        "tool_input": {"command": "grep -n x .docket/ledger.jsonl"},
+    }
+    out = handle(payload, tmp_path / "NF-1", "test", "test@1", 5.0)
+    decision = out["hookSpecificOutput"]["decision"]
+    assert out["hookSpecificOutput"]["hookEventName"] == "PermissionRequest"
+    assert decision["behavior"] == "deny" and "Nobody is at this session" in decision["message"]
+    (line,) = lines(tmp_path / "NF-1")
+    assert (line["decision"], line["decided_by"], line["rule"]) == ("deny", "flocc", "unattended")
+
+
+@pytest.mark.parametrize(
+    ("phase", "route"),
+    [
+        ("impl", "AskUserQuestion"),
+        ("fix", "AskUserQuestion"),
+        ("test", "--tier 2 --waiting"),
+        ("review", "--tier 2 --waiting"),
+    ],
+)
+def test_the_deny_names_the_way_this_session_reaches_the_owner(tmp_path, phase, route):
+    payload = {**DENIED, "hook_event_name": "PermissionRequest"}
+    out = handle(payload, tmp_path / "NF-1", phase, f"{phase}@1", 5.0)
+    assert route in out["hookSpecificOutput"]["decision"]["message"]
+
+
+def test_a_question_dialog_is_left_for_the_owner(tmp_path):
+    payload = {**MODEL_SWITCH, "tool_input": {"questions": [{"question": "A or B?"}]}}
+    assert handle(payload, tmp_path / "NF-1", "impl", "impl@1", 5.0) is None
+    assert lines(tmp_path / "NF-1")[0]["decision"] is None
+
+
 def test_a_payload_without_an_object_input_is_still_logged(tmp_path):
     payload = {"hook_event_name": "PermissionRequest", "tool_name": "WebFetch", "tool_input": "x"}
     handle(payload, tmp_path / "NF-1", "impl", "impl@1", 5.0)
@@ -82,12 +119,21 @@ def hook_env(monkeypatch, state, phase="impl"):
     monkeypatch.setenv("FLOCC_RUN", f"{phase}@1")
 
 
-def test_the_permission_command_logs_and_makes_no_decision(tmp_path, monkeypatch, capsys):
+def test_the_permission_command_logs_a_block_and_makes_no_decision(tmp_path, monkeypatch, capsys):
     hook_env(monkeypatch, tmp_path / "NF-1")
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(DENIED)))
     assert main(["permission"]) == 0
     assert capsys.readouterr().out == ""
     assert len(lines(tmp_path / "NF-1")) == 1
+
+
+def test_the_permission_command_prints_the_deny_for_a_prompt(tmp_path, monkeypatch, capsys):
+    hook_env(monkeypatch, tmp_path / "NF-1")
+    prompt = {**DENIED, "hook_event_name": "PermissionRequest"}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(prompt)))
+    assert main(["permission"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["decision"]["behavior"] == "deny"
 
 
 def test_the_permission_command_never_blocks(tmp_path, monkeypatch, capsys):

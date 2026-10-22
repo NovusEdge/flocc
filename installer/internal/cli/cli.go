@@ -48,6 +48,11 @@ Host commands run on the host as the service user:
   flocc [-H <name>] <command> [args...]   e.g. flocc -H flocc-nimble doctor, flocc release NF-12
   Without -H: $FLOCC_HOST, then the only host, then the host holding the issue named.
   -H all runs status, doctor or logs on every host.
+  flocc peek NF-12                   what the session's screen shows now
+  flocc press NF-12 Down Enter       answer a dialog it is stuck on
+  flocc say NF-12 <message>          type into the session and press Enter
+
+Off a terminal, flocc with no command prints the status of every host.
 `
 
 type deps struct {
@@ -183,18 +188,14 @@ func (d *deps) dashOK() bool {
 	return ui.ModeFor(d.mode, d.getenv, true, ui.ModeFull) != ui.ModePlain
 }
 
-// bare is flocc with no command: the dashboard on a terminal, else the usage.
+// bare is flocc with no command and no hosts, or on a terminal: the usage or the dashboard.
 func bare(ctx context.Context, d *deps) int {
 	if len(listHosts(d)) == 0 {
 		fmt.Fprint(d.err, usage)
 		fmt.Fprintln(d.err, "No hosts yet; run flocc setup.")
 		return 2
 	}
-	if d.dashOK() {
-		return d.dash(ctx)
-	}
-	fmt.Fprint(d.err, usage)
-	return 2
+	return d.dash(ctx)
 }
 
 // notes is where the key store reports a keyring wait or a file mode it fixed: a note on the
@@ -287,7 +288,15 @@ func run(ctx context.Context, d *deps, args []string) (code int) {
 		return 2
 	}
 	if len(rest) == 0 {
-		return bare(ctx, d)
+		if len(listHosts(d)) == 0 || d.dashOK() {
+			return bare(ctx, d)
+		}
+		// Off a terminal the caller is a script or an agent asking how the fleet is doing; the
+		// usage told it nothing.
+		rest = []string{"status"}
+		if name == "" {
+			name = "all"
+		}
 	}
 	switch rest[0] {
 	case "help", "-h", "--help":
