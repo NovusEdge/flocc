@@ -14,7 +14,8 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
-	"charm.land/lipgloss/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 const tailLines = 3
@@ -67,11 +68,18 @@ type inlineModel struct {
 	interrupt   func()
 	printing    int // Printlns issued and not yet printed
 	closing     *closeMsg
+	th          theme.Theme
+	formDark    *bool // what an open form reads; see themeIn
+	hold        handoffHold
 }
 
 func newInlineModel(now func() time.Time) inlineModel {
+	th := withDark(theme.FromEnv(os.Getenv, true), true)
 	return inlineModel{
-		spinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Yellow))),
+		spinner:   th.Spinner(),
+		th:        th,
+		formDark:  new(true),
+		hold:      newHandoffHold(now()),
 		now:       now,
 		interrupt: interruptSelf,
 	}
@@ -85,20 +93,42 @@ func interruptSelf() {
 	}
 }
 
-func (m inlineModel) Init() tea.Cmd { return m.spinner.Tick }
+func (m inlineModel) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, tea.RequestBackgroundColor, replyTimer())
+}
 
 func (m inlineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	start, consumed := m.hold.step(msg, m.now())
+	var next tea.Model = m
+	var cmd tea.Cmd
+	if !consumed {
+		next, cmd = m.update(msg)
+	}
+	if start != nil {
+		cmd = tea.Batch(cmd, inlineHandoff(*start))
+	}
+	return next, cmd
+}
+
+func inlineHandoff(msg handoffMsg) tea.Cmd {
+	run := tea.ExecProcess(msg.cmd, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
+	if b := handoffBanner(msg.why); b != "" {
+		return tea.Sequence(tea.Println(b), run)
+	}
+	return run
+}
+
+func (m inlineModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		m.th = withDark(m.th, msg.IsDark())
+		m.spinner.Style = m.th.Accent
+		*m.formDark = m.th.Dark
+		return m.toForm(msg) // a select caches its rendered options until it sees an update
 	case drawMsg:
 		return m.draw(msg.e)
 	case promptMsg:
 		return m.openPrompt(msg)
-	case handoffMsg:
-		run := tea.ExecProcess(msg.cmd, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
-		if b := handoffBanner(msg.why); b != "" {
-			return m, tea.Sequence(tea.Println(b), run)
-		}
-		return m, run
 	case handoffDone:
 		msg.reply <- msg.err
 		return m, nil
@@ -166,7 +196,7 @@ func (m inlineModel) draw(e Event) (tea.Model, tea.Cmd) {
 		if i := m.find(e.ID); i >= 0 {
 			m.steps = append(append([]liveStep(nil), m.steps[:i]...), m.steps[i+1:]...)
 		}
-		cmd := m.print(RowText(e, nameWidth, true))
+		cmd := m.print(ThemedRow(e, nameWidth, m.th))
 		return m, cmd
 	}
 	return m, nil
@@ -212,15 +242,16 @@ func (m *inlineModel) print(text string) tea.Cmd {
 func groupText(title string) string { return "\n" + Out{Color: true}.Bold(title) }
 
 func (m inlineModel) openPrompt(msg promptMsg) (tea.Model, tea.Cmd) {
-	m.form, m.result = formFor(msg.req)
+	m.form, m.result = formFor(m.formDark, msg.req)
 	m.reply = msg.reply
 	return m, m.form.Init()
 }
 
-// formFor embeds the request as a huh form; result reads the answer once the form completes.
-func formFor(r PromptReq) (*huh.Form, func() any) {
+// formFor embeds the request as a huh form drawn for the given background; result reads the
+// answer once the form completes.
+func formFor(dark *bool, r PromptReq) (*huh.Form, func() any) {
 	if r.Kind == PForm {
-		return r.Form.WithTheme(huh.ThemeFunc(Theme)), func() any { return nil }
+		return r.Form.WithTheme(themeIn(dark)), func() any { return nil }
 	}
 	desc := strings.Join(append(append([]string(nil), r.Q.Facts...), r.Q.Help), "\n")
 	desc = strings.Trim(desc, "\n")
@@ -250,7 +281,7 @@ func formFor(r PromptReq) (*huh.Form, func() any) {
 		f = in
 		result = func() any { return s }
 	}
-	return Form(huh.NewGroup(f)), result
+	return formIn(dark, huh.NewGroup(f)), result
 }
 
 // toForm gives the open form every message it has not been handed already, and closes it when
@@ -280,7 +311,6 @@ func (m inlineModel) View() tea.View {
 		width = 80
 	}
 	var b strings.Builder
-	out := Out{Color: true}
 	for _, s := range m.steps {
 		detail := s.detail
 		if s.total > 0 {
@@ -292,7 +322,7 @@ func (m inlineModel) View() tea.View {
 		line := strings.TrimRight(fmt.Sprintf("%s%s %-*s %s", indent, m.spinner.View(), nameWidth, s.name, detail), " ")
 		b.WriteString(line + suffix + "\n")
 		for _, l := range s.lines {
-			b.WriteString(out.paint("2", cut(strings.Repeat(" ", 6)+l, width-2)) + "\n")
+			b.WriteString(m.th.Dim.Render(cut(strings.Repeat(" ", 6)+l, width-2)) + "\n")
 		}
 	}
 	if m.form != nil {
@@ -372,7 +402,9 @@ func NewInline(out io.Writer, in io.Reader) Renderer { return newInline(out, in)
 func newInline(out io.Writer, in io.Reader, opts ...tea.ProgramOption) Renderer {
 	r := &inline{done: make(chan struct{})}
 	opts = append([]tea.ProgramOption{tea.WithOutput(out), tea.WithInput(in), tea.WithoutSignalHandler()}, opts...)
-	r.p = tea.NewProgram(newInlineModel(time.Now), opts...)
+	m := newInlineModel(time.Now)
+	m.hold.in = in
+	r.p = tea.NewProgram(m, opts...)
 	r.q = newSendQueue(r.p, r.done)
 	go func() {
 		defer close(r.done)

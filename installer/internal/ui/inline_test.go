@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image/color"
 	"io"
 	"os/exec"
 	"strings"
@@ -8,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 var fixedNow = func() time.Time { return time.Unix(0, 0) }
@@ -39,6 +43,76 @@ func TestInlineLiveAndEnded(t *testing.T) {
 	}
 }
 
+func upMark(dark bool) string { return theme.New(dark).Up.Render("✓") }
+
+func TestInlineAsksTheBackgroundAndSwitchesPalette(t *testing.T) {
+	m := newInlineModel(fixedNow)
+	m.th = theme.New(true)
+	asked := false
+	if batch, ok := m.Init()().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if c != nil && c() == tea.RequestBackgroundColor() {
+				asked = true
+			}
+		}
+	}
+	if !asked {
+		t.Error("Init does not request the background colour")
+	}
+	m, _ = update(m, promptMsg{req: PromptReq{Kind: PConfirm, Q: Question{Title: "x?"}}, reply: make(chan promptReply, 1)})
+	m, _ = update(m, step("a", "one", Done, "ok"))
+	m, _ = update(m, tea.BackgroundColorMsg{Color: color.White})
+	m, _ = update(m, step("b", "two", Done, "ok"))
+	if !strings.Contains(m.queue[0], upMark(true)) || !strings.Contains(m.queue[1], upMark(false)) {
+		t.Errorf("rows did not switch from dark to light: %q", m.queue)
+	}
+}
+
+func TestInlineSpinnerIsAccent(t *testing.T) {
+	m := newInlineModel(fixedNow)
+	m.th = theme.New(true)
+	m, _ = update(m, tea.BackgroundColorMsg{Color: color.Black})
+	m, _ = update(m, step("s", "Packages", Running, ""))
+	if want := theme.New(true).Accent.Render(spinner.MiniDot.Frames[0]); !strings.Contains(m.View().Content, want) {
+		t.Errorf("spinner not in accent: %q", m.View().Content)
+	}
+}
+
+func TestInlineTailLinesAreDim(t *testing.T) {
+	m := newInlineModel(fixedNow)
+	m.th = theme.New(true)
+	m, _ = update(m, tea.WindowSizeMsg{Width: 60, Height: 10})
+	m, _ = update(m, step("s", "Packages", Running, ""))
+	m, _ = update(m, drawMsg{Event{Kind: KLine, ID: "s", Text: "tail"}})
+	if !strings.Contains(m.View().Content, m.th.Dim.Render(strings.Repeat(" ", 6)+"tail")) {
+		t.Errorf("tail not dim: %q", m.View().Content)
+	}
+}
+
+func TestInlineFormFollowsTheBackground(t *testing.T) {
+	accent := func(dark bool) string { return strings.Split(theme.New(dark).Accent.Render("x"), "x")[0] }
+	open := func(bg color.Color) inlineModel {
+		m := newInlineModel(fixedNow)
+		m.th = theme.New(true)
+		if bg != nil {
+			m, _ = update(m, tea.BackgroundColorMsg{Color: bg})
+		}
+		m, _ = update(m, promptMsg{req: PromptReq{Kind: PChoose, Q: Question{Title: "pick"}, Options: []string{"a", "b"}}, reply: make(chan promptReply, 1)})
+		return m
+	}
+	if v := open(color.White).View().Content; !strings.Contains(v, accent(false)) || strings.Contains(v, accent(true)) {
+		t.Errorf("form opened on a light terminal is not light: %q", v)
+	}
+	if v := open(nil).View().Content; !strings.Contains(v, accent(true)) || strings.Contains(v, accent(false)) {
+		t.Errorf("form opened on a dark terminal is not dark: %q", v)
+	}
+	m := open(nil)
+	m, _ = update(m, tea.BackgroundColorMsg{Color: color.White})
+	if v := m.View().Content; !strings.Contains(v, accent(false)) || strings.Contains(v, accent(true)) {
+		t.Errorf("open form kept the dark palette after a white background: %q", v)
+	}
+}
+
 func TestInlineQueuesRowsWhilePromptOpen(t *testing.T) {
 	m := newInlineModel(fixedNow)
 	reply := make(chan promptReply, 1)
@@ -63,6 +137,8 @@ func TestInlineCutsToWidth(t *testing.T) {
 
 func TestInlineHandoffReturnsCmd(t *testing.T) {
 	m := newInlineModel(fixedNow)
+	m, _ = update(m, kbReply)
+	m, _ = update(m, bgReply)
 	_, cmd := update(m, handoffMsg{why: "login", cmd: exec.Command("true"), reply: make(chan error, 1)})
 	if cmd == nil {
 		t.Fatal("no cmd for a handoff")

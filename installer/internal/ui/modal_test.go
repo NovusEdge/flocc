@@ -1,10 +1,14 @@
 package ui
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 // drain feeds the messages cmd produces back into the model, a few levels deep.
@@ -52,7 +56,7 @@ func TestModalPromptOverDimmedFrame(t *testing.T) {
 	if box < 8 || box > 20 {
 		t.Errorf("box starts at row %d, want it centred", box)
 	}
-	for _, i := range []int{0, 1, 29} {
+	for _, i := range []int{1, 2, 28} {
 		if !strings.Contains(lines[i], "\x1b[2m") {
 			t.Errorf("row %d is not faint: %q", i, lines[i])
 		}
@@ -62,6 +66,40 @@ func TestModalPromptOverDimmedFrame(t *testing.T) {
 	}
 	if !m.View().AltScreen {
 		t.Error("modal view lost the alt screen")
+	}
+}
+
+func TestModalIsAnAccentPaneWithKeys(t *testing.T) {
+	m := themed(keysAndHosts(sized(100, 30)))
+	m, _ = updateFull(m, promptMsg{req: PromptReq{Kind: PConfirm, Q: Question{Title: "Adopt flocc-1?"}}, reply: make(chan promptReply, 1)})
+	lines := strings.Split(m.View().Content, "\n")
+	plain := strings.Split(plainView(m), "\n")
+	top, bottom := -1, -1
+	for i, l := range plain {
+		if strings.Contains(l, "╭") {
+			top = i // the last one: the modal sits over the panes
+		}
+	}
+	for i := max(top, 0); i < len(plain) && bottom < 0; i++ {
+		if strings.Contains(plain[i], "╰") {
+			bottom = i
+		}
+	}
+	if top < 0 || bottom < 0 {
+		t.Fatalf("no box:\n%s", plainView(m))
+	}
+	r, g, b, _ := theme.For(true).Accent.RGBA()
+	// The compositor merges attributes into the sequence, so match the colour parameters only.
+	accent := regexp.MustCompile(fmt.Sprintf(`38;2;%d;%d;%d[;0-9]*m╭`, r>>8, g>>8, b>>8))
+	if !accent.MatchString(lines[top]) {
+		t.Errorf("modal border is not drawn in the accent: %q", lines[top])
+	}
+	help := false
+	for _, l := range plain[top:bottom] {
+		help = help || strings.Contains(l, "submit")
+	}
+	if !help {
+		t.Errorf("the form's help line is not inside the box:\n%s", plainView(m))
 	}
 }
 

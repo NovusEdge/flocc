@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 func env(kv ...string) func(string) string {
@@ -88,19 +90,23 @@ func TestScriptedStatusIsIndentedAndColoredOnlyWhenAsked(t *testing.T) {
 	}
 }
 
-func TestThemeHasNoMagentaOrHex(t *testing.T) {
-	th := Theme(true)
-	for name, s := range map[string]lipgloss.Style{
-		"focused button": th.Focused.FocusedButton,
-		"blurred button": th.Blurred.FocusedButton,
-		"cursor":         th.Focused.TextInput.Cursor,
-	} {
-		fg, bg := s.GetForeground(), s.GetBackground()
-		if fg == lipgloss.Magenta || bg == lipgloss.Magenta {
-			t.Errorf("%s uses magenta", name)
+func TestFormThemeTakesTheSharedAccent(t *testing.T) {
+	for _, dark := range []bool{true, false} {
+		th := Theme(dark)
+		want := theme.For(dark).Accent
+		for name, s := range map[string]lipgloss.Style{
+			"focused button": th.Focused.FocusedButton,
+			"blurred button": th.Blurred.FocusedButton,
+		} {
+			if s.GetBackground() != want {
+				t.Errorf("dark=%v %s: background %v, want the accent %v", dark, name, s.GetBackground(), want)
+			}
 		}
-	}
-	if th.Focused.FocusedButton.GetBackground() != lipgloss.Cyan {
-		t.Error("the accent is not ANSI cyan")
+		if th.Focused.TextInput.Cursor.GetForeground() != want || th.Focused.Base.GetBorderTopForeground() != want {
+			t.Errorf("dark=%v: cursor or border is not the accent", dark)
+		}
+		if got := SpinnerTheme(dark).Spinner.GetForeground(); got != want {
+			t.Errorf("dark=%v: spinner %v, want %v", dark, got, want)
+		}
 	}
 }

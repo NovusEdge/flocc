@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 // Out writes the desktop's status lines: indented two spaces under the command's first line, in
@@ -25,9 +27,10 @@ func ColorFor(w io.Writer) bool {
 	return ok && colorOK(term.IsTerminal(int(f.Fd())), os.Getenv)
 }
 
-// colorOK follows no-color.org: any non-empty NO_COLOR turns colour off.
+// colorOK is a terminal whose environment allows colour; theme.FromEnv holds the env rule
+// (no-color.org: any non-empty NO_COLOR, and TERM=dumb, turn colour off).
 func colorOK(isTerminal bool, getenv func(string) string) bool {
-	return isTerminal && getenv("NO_COLOR") == "" && getenv("TERM") != "dumb"
+	return isTerminal && theme.FromEnv(getenv, true).Color
 }
 
 func (o Out) paint(code, s string) string {
