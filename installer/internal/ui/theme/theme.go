@@ -60,7 +60,7 @@ func For(isDark bool) Palette {
 type Theme struct {
 	Color, Dark                      bool
 	Accent, Up, Down, Warn, Err, Dim lipgloss.Style
-	Bold, Title, Sel, Off            lipgloss.Style // Title and Sel: bold accent; Off: down + faint
+	Bold, Title, Sel, Off            lipgloss.Style
 }
 
 func New(isDark bool) Theme {
@@ -134,6 +134,7 @@ func Screen(body string, w, h int) string {
 
 func (t Theme) TooSmall(w, h int) string {
 	msg := "terminal too small: " + strconv.Itoa(w) + "×" + strconv.Itoa(h) + " · needs " + strconv.Itoa(MinW) + "×" + strconv.Itoa(MinH)
+	msg = ansi.Truncate(msg, max(w, 1), "")
 	lines := make([]string, max(h, 1))
 	lines[(len(lines)-1)/2] = strings.Repeat(" ", max((w-lipgloss.Width(msg))/2, 0)) + t.Warn.Render(msg)
 	return strings.Join(lines, "\n")

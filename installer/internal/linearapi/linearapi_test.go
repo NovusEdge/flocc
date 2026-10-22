@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -249,6 +250,35 @@ func TestIssuesByKeyAsksOnceByTeamAndNumber(t *testing.T) {
 	json.Unmarshal([]byte(filter), &b)
 	if !reflect.DeepEqual(a, b) || req.Variables.N != 2 {
 		t.Errorf("filter %s first %d", req.Variables.Filter, req.Variables.N)
+	}
+}
+
+func TestIssuesByKeyCollapsesDuplicatesAndChunks(t *testing.T) {
+	var firsts []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Variables struct{ N int } }
+		json.NewDecoder(r.Body).Decode(&req)
+		firsts = append(firsts, req.Variables.N)
+		w.Write([]byte(`{"data":{"issues":{"nodes":[]}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{URL: srv.URL, Key: "k", HTTP: srv.Client()}
+	if _, err := c.IssuesByKey(context.Background(), []string{"NF-1", "NF-1", "NF-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(firsts, []int{2}) {
+		t.Fatalf("duplicates: first %v", firsts)
+	}
+	firsts = nil
+	var keys []string
+	for i := 1; i <= 251; i++ {
+		keys = append(keys, "NF-"+strconv.Itoa(i))
+	}
+	if _, err := c.IssuesByKey(context.Background(), keys); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(firsts, []int{250, 1}) {
+		t.Fatalf("chunks: first %v", firsts)
 	}
 }
 

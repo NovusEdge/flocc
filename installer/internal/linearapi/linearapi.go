@@ -149,11 +149,19 @@ const issueFields = "id identifier title url state { type }"
 
 var issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
 
-// IssuesByKey returns the issues among keys that Linear knows, in one query. Keys that are not
-// TEAM-NUMBER are skipped; an unknown key is simply absent.
+// maxPage is Linear's cap on a connection's first argument.
+const maxPage = 250
+
+// IssuesByKey returns the issues among keys that Linear knows, one query per maxPage keys. Keys
+// that are not TEAM-NUMBER are skipped and repeats are asked once; an unknown key is simply absent.
 func (c *Client) IssuesByKey(ctx context.Context, keys []string) ([]Issue, error) {
 	var or []map[string]any
+	seen := map[string]bool{}
 	for _, k := range keys {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
 		m := issueKey.FindStringSubmatch(k)
 		if m == nil {
 			continue
@@ -167,15 +175,17 @@ func (c *Client) IssuesByKey(ctx context.Context, keys []string) ([]Issue, error
 	if len(or) == 0 {
 		return nil, nil
 	}
-	var out struct{ Issues struct{ Nodes []issueNode } }
-	err := c.do(ctx, `query($filter: IssueFilter!, $n: Int!) { issues(filter: $filter, first: $n) { nodes { `+issueFields+` } } }`,
-		map[string]any{"filter": map[string]any{"or": or}, "n": len(or)}, &out)
-	if err != nil {
-		return nil, err
-	}
-	issues := make([]Issue, len(out.Issues.Nodes))
-	for i, n := range out.Issues.Nodes {
-		issues[i] = n.issue()
+	var issues []Issue
+	for chunk := range slices.Chunk(or, maxPage) {
+		var out struct{ Issues struct{ Nodes []issueNode } }
+		err := c.do(ctx, `query($filter: IssueFilter!, $n: Int!) { issues(filter: $filter, first: $n) { nodes { `+issueFields+` } } }`,
+			map[string]any{"filter": map[string]any{"or": chunk}, "n": len(chunk)}, &out)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range out.Issues.Nodes {
+			issues = append(issues, n.issue())
+		}
 	}
 	return issues, nil
 }

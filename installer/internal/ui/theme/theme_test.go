@@ -80,6 +80,25 @@ func TestPaneDropsHintThenCutsTitle(t *testing.T) {
 	}
 }
 
+func TestPaneNarrowAndNewlinesKeepTheBorder(t *testing.T) {
+	for _, w := range []int{2, 3, 4, 5} {
+		got := themetest.Strip(New(true).Pane("title", "hint", "body", w, 3))
+		for _, l := range strings.Split(got, "\n") {
+			if lipgloss.Width(l) != w {
+				t.Errorf("w=%d: line %q is %d wide", w, l, lipgloss.Width(l))
+			}
+		}
+	}
+	got := themetest.Strip(New(true).Pane("a\nb", "c\nd", "x", 30, 3))
+	lines := strings.Split(got, "\n")
+	if len(lines) != 3 || lipgloss.Width(lines[0]) != 30 || !strings.Contains(lines[0], "a b") {
+		t.Errorf("pane:\n%s", got)
+	}
+	if one := strings.Split(New(true).Pane("t", "", "x", 20, 1), "\n"); len(one) != 2 {
+		t.Errorf("h=1 drew %d lines", len(one))
+	}
+}
+
 func TestPaneSizesToBodyAndCutsLongLines(t *testing.T) {
 	got := themetest.Strip(New(true).Pane("t", "", "a\tb\n"+strings.Repeat("x", 100), 20, 0))
 	lines := strings.Split(got, "\n")
@@ -148,6 +167,15 @@ func TestScreenAndTooSmall(t *testing.T) {
 	small := themetest.Strip(New(true).TooSmall(59, 19))
 	if strings.Count(small, "\n") != 18 || !strings.Contains(small, "terminal too small: 59×19 · needs 60×20") {
 		t.Errorf("too small:\n%s", small)
+	}
+	narrow := strings.Split(themetest.Strip(New(true).TooSmall(20, 5)), "\n")
+	if len(narrow) != 5 {
+		t.Fatalf("width 20 gave %d lines", len(narrow))
+	}
+	for _, l := range narrow {
+		if lipgloss.Width(l) > 20 {
+			t.Errorf("line %q is %d wide", l, lipgloss.Width(l))
+		}
 	}
 }
 

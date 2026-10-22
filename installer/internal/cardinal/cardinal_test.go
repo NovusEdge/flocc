@@ -270,10 +270,17 @@ func TestStatusTableIsTheTableDrawStatusDraws(t *testing.T) {
 	}
 	rec := &ui.Recorder{}
 	DrawStatus(ui.New(rec), st)
+	var tables []ui.Event
 	for _, e := range rec.Events {
-		if e.Kind == ui.KTable && !reflect.DeepEqual(*e.Table, tb) {
-			t.Errorf("DrawStatus drew %+v, StatusTable gave %+v", *e.Table, tb)
+		if e.Kind == ui.KTable {
+			tables = append(tables, e)
 		}
+	}
+	if len(tables) != 1 {
+		t.Fatalf("DrawStatus drew %d tables, want 1", len(tables))
+	}
+	if !reflect.DeepEqual(*tables[0].Table, tb) {
+		t.Errorf("DrawStatus drew %+v, StatusTable gave %+v", *tables[0].Table, tb)
 	}
 }
 

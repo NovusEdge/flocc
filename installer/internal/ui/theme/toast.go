@@ -38,8 +38,8 @@ func (ts *Toasts) Expire(msg ToastExpired) {
 
 func (ts Toasts) Text() string { return ts.text }
 
-// Toast overlays the box on screen, replacing what is under it so no line
-// moves or changes width.
+// Toast overlays the box on screen, replacing what is under it. The compositor
+// trims trailing spaces, so a line's rendered width can shrink.
 func (t Theme) Toast(screen string, ts Toasts, w int) string {
 	if ts.text == "" {
 		return screen

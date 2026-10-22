@@ -434,9 +434,6 @@ func Age(s float64) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-// The *Fact functions give a status cell's text and severity; the *Cell functions render them for
-// the flocc status table, and the dashboard draws the facts in its own colours.
-
 func PctFact(v, max float64) (string, Sev) {
 	s := SevWarn
 	if max <= 0 || v < max {
@@ -459,7 +456,7 @@ func TickFact(rep *Report) (string, Sev) {
 	case t.Exit == nil:
 		return fmt.Sprintf("%s ago, running", Age(*t.AgeS)), SevPlain
 	case *t.Exit != "0":
-		return fmt.Sprintf("%s ago, exit %s", Age(*t.AgeS), *t.Exit), SevBad
+		return fmt.Sprintf("%s ago, exit %s", Age(*t.AgeS), saved.Sanitize(*t.Exit)), SevBad
 	case stale:
 		return fmt.Sprintf("%s ago, ok", Age(*t.AgeS)), SevWarn
 	}
@@ -492,7 +489,7 @@ func LoginFact(rep *Report) (string, Sev) {
 	case *rep.ClaudeLogin == "unknown":
 		return "unknown", SevWarn
 	}
-	return *rep.ClaudeLogin, SevBad
+	return saved.Sanitize(*rep.ClaudeLogin), SevBad
 }
 
 func loginCell(rep *Report) string { return cell(LoginFact(rep)) }
@@ -769,14 +766,13 @@ func (s *Source) Run(ctx context.Context, h FleetHost, args []string) (host.Resu
 	if err != nil {
 		return host.Result{}, err
 	}
-	dest.Opts = append(slices.Clone(dest.Opts), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
-	res, err := s.run.Run(ctx, sshNoTTY(dest, asServiceUser(FloccLine(args))))
+	dest.Opts = append(slices.Clone(dest.Opts), "-o", "ConnectTimeout=10")
+	res, err := Capture(ctx, s.run, dest, FloccLine(args), nil)
 	// As in fetch: only ssh failing says the token may be revoked.
 	if err != nil || res.Code == 255 {
 		s.cache.forget(h)
 	}
-	res.Stdout, res.Stderr = scrub(res.Stdout, dest.Token), scrub(res.Stderr, dest.Token)
-	return res, scrubErr(err, dest.Token)
+	return res, err
 }
 
 // runFleet draws the fleet once.

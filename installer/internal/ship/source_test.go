@@ -2,11 +2,27 @@ package ship
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
 )
+
+func TestFactsSanitizeHostStrings(t *testing.T) {
+	var rep Report
+	if err := json.Unmarshal([]byte(`{"last_tick":{"exit":"1\u001b[31m","age_s":5},"claude_login":"x\u001b[2Jy"}`), &rep); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := TickFact(&rep)
+	if strings.Contains(text, "\x1b") {
+		t.Errorf("tick %q", text)
+	}
+	text, _ = LoginFact(&rep)
+	if strings.Contains(text, "\x1b") {
+		t.Errorf("login %q", text)
+	}
+}
 
 func TestSourceRunUsesTheCachedDestAndScrubs(t *testing.T) {
 	const token = "SECRETTOKEN"
