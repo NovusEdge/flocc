@@ -231,11 +231,85 @@ def test_review_done_posts_the_comment_and_finishes_the_claim(rt):
     assert not rt.notifier.sent and (d / "review.md").exists()
 
 
-def test_review_verdict_changes_requested(rt):
-    review_session(rt, "## Critical\n- a.py:2 wrong\n\nVerdict: changes requested\n")
+CHANGES = "## Critical\n- a.py:2 wrong\n\nVerdict: changes requested\n"
+
+
+def test_second_changes_requested_review_ends_the_claim(rt):
+    review_session(rt, CHANGES)
+    ledger.meta_set(rt.con, "review_fix:NF-1", "1")
     done(rt, "review")
     supervise(rt, current(rt))
     assert rt.linear.comments[-1] == "Review: changes requested — https://pr/1"
+    assert current(rt).state == "done"
+
+
+def test_changes_requested_starts_one_fix_round_on_the_review(rt):
+    review_session(rt, CHANGES)
+    ledger.update_claim(rt.con, "NF-1", fix_attempts=2)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    c = current(rt)
+    assert (c.state, c.phase, c.fix_attempts, c.restarts) == ("running", "fix", 0, 0)
+    name, argv = rt.sessions.started[-1]
+    assert name == "NF-1" and any("a.py:2 wrong" in a and "Needs the owner" in a for a in argv)
+    assert "fix round" in rt.linear.comments[-1]
+    assert "Review: changes requested — https://pr/1" in rt.linear.comments[-1]
+    assert ledger.meta_get(rt.con, "review_fix:NF-1") == "1"
+    assert not (state_dir(rt.cfg, "NF-1") / "done.json").exists()
+    assert len(rt.pr_comments) == 1
+
+
+def test_fix_round_ends_in_a_second_review_posted_again(rt):
+    review_session(rt, CHANGES)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Fixed a.\n\nNeeds the owner: run AC-8 against the real server.")
+    supervise(rt, current(rt))
+    assert current(rt).phase == "review"
+    d = state_dir(rt.cfg, "NF-1")
+    assert "Your earlier review" in (d / "review-input.md").read_text()
+    assert "a.py:2 wrong" in (d / "review-input.md").read_text()
+    (d / "review.md").write_text(CHANGES)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert len(rt.pr_comments) == 2
+    assert current(rt).state == "done"
+    last = rt.linear.comments[-1]
+    assert last.startswith("Review: changes requested — https://pr/1")
+    assert "Needs the owner: run AC-8 against the real server." in last
+
+
+def test_changes_requested_after_a_fix_round_without_owner_items_adds_nothing(rt):
+    review_session(rt, CHANGES)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Fixed everything.")
+    supervise(rt, current(rt))
+    (state_dir(rt.cfg, "NF-1") / "review.md").write_text(CHANGES)
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert rt.linear.comments[-1] == "Review: changes requested — https://pr/1"
+
+
+def test_no_fix_round_when_usage_is_over_the_limit(rt):
+    d = review_session(rt, CHANGES)
+    over = {"used_percentage": 95.0, "resets_at": 4_000_000_000}
+    write_status(d, {"rate_limits": {"five_hour": over, "seven_day": over}})
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and current(rt).phase == "review"
+    assert rt.linear.comments[-1] == "Review: changes requested — https://pr/1"
+
+
+def test_fix_round_that_cannot_start_ends_the_claim(rt):
+    review_session(rt, CHANGES)
+    rt.cfg.agent_gh_token_file.write_text("")
+    done(rt, "review")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done"
+    assert rt.linear.comments[-1].startswith("Review: changes requested")
 
 
 def test_review_without_a_verdict_line_says_so(rt):

@@ -360,6 +360,9 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     # handoff-ready before the new session wrote its own. Kept for the owner.
     if (d / "handoff.md").exists():
         (d / "handoff.md").replace(d / "handoff.prev.md")
+    # A fresh claim gets its own review fix round.
+    ledger.meta_set(rt.con, f"review_fix:{issue.key}", "")
+    (d / "owner-items.md").unlink(missing_ok=True)
     # A previous claim's grants, scratchpads, compaction and question belong to that run; the
     # agent block's grants are written again at launch.
     for stale in (

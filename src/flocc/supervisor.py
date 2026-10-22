@@ -39,6 +39,7 @@ _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
 CHECK_OUTPUT = "check-output.log"
+OWNER_ITEMS = "owner-items.md"
 QUESTION_WAIT_S = 7200
 PANE = "pane.json"
 STALL_ESCALATED = "stall-escalated"
@@ -197,14 +198,18 @@ def _pr_url(rt, claim: Claim) -> str:
     return path.read_text().strip() if path.exists() else "unknown"
 
 
+def _over_usage_limit(rt) -> bool:
+    usage = latest_usage(rt.cfg.state_root, rt.now())
+    return usage is not None and (
+        usage.five_hour_pct >= rt.cfg.five_hour_max_pct or usage.weekly_pct >= rt.cfg.weekly_max_pct
+    )
+
+
 def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> None:
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
     start = rt.now()
-    usage = latest_usage(rt.cfg.state_root, rt.now())
-    if usage is not None and (
-        usage.five_hour_pct >= rt.cfg.five_hour_max_pct or usage.weekly_pct >= rt.cfg.weekly_max_pct
-    ):
+    if _over_usage_limit(rt):
         (d / "pr-url").write_text(url)
         ledger.add_digest(rt.con, key, f"review skipped, usage over the limit; PR: {url}", rt.now())
         ledger.update_claim(rt.con, key, state="done")
@@ -212,11 +217,17 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
     try:
         (d / "pr-url").write_text(url)
         (d / "pr.diff").write_text(rt.review_diff(claim) + "\n")
+        earlier = ""
+        if ledger.meta_get(rt.con, f"review_fix:{key}") and (d / "review.md").exists():
+            earlier = (
+                "\n## Your earlier review\n\nA fix round followed it. Judge the diff against these"
+                f" findings.\n\n{(d / 'review.md').read_text().strip()}\n"
+            )
         (d / "review.md").unlink(missing_ok=True)
         (d / "review-input.md").write_text(
             f"# Review {key}: {title}\n\nPR: {url}\n\nThe diff is in {d / 'pr.diff'}.\n\n"
             f"## Issue description, including the acceptance criteria\n\n{description}\n"
-            f"{amended_section(read_amended(d))}\n"
+            f"{amended_section(read_amended(d))}\n{earlier}"
         )
         launch(rt, claim, "review", started_at=start)
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
@@ -255,12 +266,62 @@ def _finish_review(rt, claim: Claim) -> None:
     matches = _VERDICT.findall(text)
     verdict = matches[-1].lower() if matches else "no verdict"
     line = f"Review: {verdict} — {url}"
+    if verdict == "changes requested":
+        if not ledger.meta_get(rt.con, f"review_fix:{key}"):
+            # Cleared first: the second review's comment must post again.
+            ledger.meta_set(rt.con, posted, "")
+            if _start_review_fix(rt, claim, text):
+                _comment_or_digest(
+                    rt, claim, f"{line}\n\nA fix round started; a second review follows."
+                )
+                return
+        else:
+            owner = _owner_items(rt, claim)
+            if owner:
+                line += f"\n\n{owner}"
+    _comment_or_digest(rt, claim, line)
+    ledger.meta_set(rt.con, posted, "")
+    ledger.update_claim(rt.con, key, state="done")
+
+
+def _comment_or_digest(rt, claim: Claim, line: str) -> None:
     try:
         rt.linear.comment(claim.issue_id, line)
     except LinearError:
-        ledger.add_digest(rt.con, key, line, rt.now())
-    ledger.meta_set(rt.con, posted, "")
-    ledger.update_claim(rt.con, key, state="done")
+        ledger.add_digest(rt.con, claim.issue_key, line, rt.now())
+
+
+def _owner_items(rt, claim: Claim) -> str:
+    path = state_dir(rt.cfg, claim.issue_key) / OWNER_ITEMS
+    return path.read_text().strip() if path.exists() else ""
+
+
+def _start_review_fix(rt, claim: Claim, review: str) -> bool:
+    """One fix session on the review's findings; False when it is skipped or cannot start."""
+    key = claim.issue_key
+    if _over_usage_limit(rt):
+        return False
+    extra = (
+        f"The reviewer asked for changes:\n\n{review.strip()}\n\n"
+        "Fix what the review asks that is agent work. For what needs the owner (a manual run, a"
+        " product decision, a question for the lead), make no change and list it in your"
+        ' `flocc done` summary under a line that starts with "Needs the owner". Then finish as'
+        " usual."
+    )
+    d = state_dir(rt.cfg, key)
+    start = rt.now()
+    # Set before the launch: a tick that dies after it must not start a second round.
+    ledger.meta_set(rt.con, f"review_fix:{key}", "1")
+    (d / OWNER_ITEMS).unlink(missing_ok=True)
+    try:
+        (d / FIX_CONTEXT).write_text(extra)
+        launch(rt, claim, "fix", extra=extra, started_at=start)
+    except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
+        print(f"{key}: review fix not started: {exc}", file=sys.stderr)
+        ledger.add_digest(rt.con, key, f"review fix not started ({exc})", rt.now())
+        return False
+    ledger.update_claim(rt.con, key, phase="fix", fix_attempts=0, restarts=0, started_at=start)
+    return True
 
 
 def _finish_phase(rt, claim: Claim, summary: str) -> None:
@@ -288,6 +349,11 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=start
         )
         return
+    if claim.phase == "fix" and ledger.meta_get(rt.con, f"review_fix:{key}"):
+        # Kept apart from later check-fix summaries, which would overwrite it.
+        at = summary.lower().find("needs the owner")
+        if at >= 0:
+            (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[at:])
     issue = rt.linear.issue(key)
     try:
         result = rt.publish_fn(claim, issue.title, summary)
