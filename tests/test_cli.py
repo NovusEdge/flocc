@@ -298,6 +298,20 @@ def test_gate_records_and_clears_a_question(tmp_path, monkeypatch):
     assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
 
 
+def test_gate_answered_logs_the_answer(tmp_path, monkeypatch):
+    gate_env(monkeypatch, tmp_path, "impl")
+    q = {
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [{"question": "Q?"}]},
+        "tool_response": {"answers": {"Q?": "Yes"}},
+    }
+    (tmp_path / "asking").write_text("{}")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
+    assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
+    [line] = (tmp_path / "answers.jsonl").read_text().splitlines()
+    assert json.loads(line)["run"] == "impl@1" and json.loads(line)["questions"] == ["Q?"]
+
+
 def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
     gate_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))

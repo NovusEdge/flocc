@@ -7,12 +7,15 @@ from pathlib import Path
 import pytest
 
 from flocc.gate import (
+    ANSWERS,
     BUDGETS,
     LOG,
     Budget,
+    answers,
     clear_question,
     decide,
     launches_used,
+    note_answer,
     note_idle,
     note_question,
     record_session,
@@ -321,6 +324,33 @@ def test_processes_racing_for_the_last_slot(tmp_path):
     with ProcessPoolExecutor(max_workers=8, mp_context=ctx) as pool:
         results = list(pool.map(_race, [str(tmp_path)] * 8))
     assert results.count(True) == 1
+
+
+ANSWERED = {
+    "tool_name": "AskUserQuestion",
+    "tool_input": {"questions": [{"question": "Amend test_x.py to use input_schema?"}]},
+    "tool_response": {"answers": {"Amend test_x.py to use input_schema?": "Yes"}},
+}
+
+
+def test_note_answer_appends_the_question_and_response(tmp_path):
+    note_answer(tmp_path, ANSWERED, "impl@1", 5.0)
+    [line] = (tmp_path / ANSWERS).read_text().splitlines()
+    assert json.loads(line) == {
+        "at": 5.0,
+        "run": "impl@1",
+        "questions": ["Amend test_x.py to use input_schema?"],
+        "response": ANSWERED["tool_response"],
+    }
+
+
+def test_answers_keeps_one_run_and_skips_a_torn_line(tmp_path):
+    note_answer(tmp_path, ANSWERED, "impl@0", 1.0)
+    note_answer(tmp_path, ANSWERED, "impl@1", 2.0)
+    with (tmp_path / ANSWERS).open("a") as f:
+        f.write('{"at": 3, "run": "impl@1", "ques')
+    assert [a["at"] for a in answers(tmp_path, "impl@1")] == [2.0]
+    assert answers(tmp_path / "missing", "impl@1") == []
 
 
 def test_question_marker(tmp_path):

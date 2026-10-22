@@ -37,6 +37,8 @@ CATALOGUE = frozenset(a for b in BUDGETS.values() for a in b.agents)
 GRANTABLE = frozenset({"not-allowed", "launches", "workflow"})
 LAUNCH_GRANTS_ENV = "FLOCC_LAUNCH_GRANTS"
 LOG = "launches.jsonl"
+ANSWERS = "answers.jsonl"
+AMENDED = "tests-amended.json"
 
 
 @dataclass(frozen=True)
@@ -255,6 +257,40 @@ def note_question(state: Path, payload: dict, now: float) -> None:
     tmp = state / "asking.tmp"
     tmp.write_text(json.dumps({"at": now, "question": text}))
     os.replace(tmp, state / "asking")
+
+
+def note_answer(state: Path, payload: dict, run: str | None, now: float) -> None:
+    questions = (payload.get("tool_input") or {}).get("questions") or []
+    line = {
+        "at": now,
+        "run": run,
+        "questions": [str(q.get("question", "")) for q in questions if isinstance(q, dict)],
+        # Stored as received: the shape is Claude Code's and may change.
+        "response": payload.get("tool_response"),
+    }
+    state.mkdir(parents=True, exist_ok=True)
+    # One O_APPEND write per line, as permission.record does.
+    fd = os.open(state / ANSWERS, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, (json.dumps(line) + "\n").encode())
+    finally:
+        os.close(fd)
+
+
+def answers(state: Path, run: str | None) -> list[dict]:
+    try:
+        lines = (state / ANSWERS).read_text().splitlines()
+    except FileNotFoundError:
+        return []
+    out = []
+    for text in lines:
+        try:
+            entry = json.loads(text)
+        except ValueError:
+            continue  # a hook killed mid-write leaves a torn last line
+        if isinstance(entry, dict) and entry.get("run") == run:
+            out.append(entry)
+    return out
 
 
 def clear_question(state: Path) -> None:
