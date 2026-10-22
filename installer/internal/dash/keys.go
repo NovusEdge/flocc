@@ -1,9 +1,8 @@
 package dash
 
 import (
+	kb "charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-
-	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // execDone arrives when a handoff's child has exited; the dashboard polls again at once.
@@ -13,34 +12,53 @@ type execDone struct {
 }
 
 func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	m.notice = ""
 	k := msg.String()
-	switch k {
-	case "q", "ctrl+c":
+	if k == "ctrl+c" {
 		return m, tea.Quit
+	}
+	if m.ask != nil {
+		a := m.ask
+		m.ask = nil
+		if k == "y" {
+			return m, a.yes()
+		}
+		return m, nil
+	}
+	switch k {
 	case "?":
 		m.showKeys = !m.showKeys
+		return m, nil
+	}
+	return m.fleetKey(k)
+}
+
+func (m *Model) fleetKey(k string) (tea.Model, tea.Cmd) {
+	switch k {
+	case "q":
+		return m, tea.Quit
 	case "up", "k":
 		m.move(-1)
 	case "down", "j":
 		m.move(1)
-	case "c":
-		return m, m.handoff("cardinal", "cardinal", "attach")
-	case "a", "l", "r":
-		r, ok := m.selected()
-		if !ok {
+	case "a", "r":
+		if !m.issueActs() {
 			return m, nil
 		}
-		switch k {
-		case "a":
+		r, _ := m.selected()
+		if k == "a" {
 			return m, m.handoff("attach "+r.claim.Issue, "-H", r.host, "attach", r.claim.Issue)
-		case "l":
-			return m, m.handoff("logs "+r.claim.Issue, "-H", r.host, "logs", r.claim.Issue)
 		}
-		m.confirm, m.confirmN = ui.NewConfirm("Release "+r.claim.Issue+"?", "Its session ends and it goes back to Todo.", "Release", "Keep"), r
-		return m, m.confirm.Init()
+		m.ask = &ask{text: "release " + r.claim.Issue + "? y/N", yes: func() tea.Cmd {
+			return m.handoff("release "+r.claim.Issue, "-H", r.host, "release", r.claim.Issue)
+		}}
 	}
 	return m, nil
+}
+
+// issueActs holds when a and r have an issue to act on.
+func (m *Model) issueActs() bool {
+	_, ok := m.selected()
+	return ok
 }
 
 func (m *Model) move(by int) {
@@ -48,8 +66,30 @@ func (m *Model) move(by int) {
 	m.remember()
 }
 
+// bar is the current screen's short bindings; a key that does nothing here is dimmed, not hidden.
+func (m *Model) bar() []kb.Binding {
+	t := m.th
+	return []kb.Binding{
+		t.Key(true, "↑↓", "select", "up", "down"),
+		t.Key(m.issueActs(), "a", "attach"),
+		t.Key(m.issueActs(), "r", "release"),
+		t.Key(true, "?", "keys"),
+		t.Key(true, "q", "quit"),
+	}
+}
+
+// fullKeys are the "?" groups.
+func (m *Model) fullKeys() [][]kb.Binding {
+	t := m.th
+	return [][]kb.Binding{
+		{t.Key(true, "↑↓", "select", "up", "down")},
+		{t.Key(m.issueActs(), "a", "attach"), t.Key(m.issueActs(), "r", "release")},
+		{t.Key(true, "?", "keys"), t.Key(true, "q", "quit")},
+	}
+}
+
 // handoff gives the terminal to a child flocc and polls again when it returns. what names the
-// child in the error line.
+// child in the error toast.
 func (m *Model) handoff(what string, args ...string) tea.Cmd {
 	return tea.ExecProcess(m.command(args...), func(err error) tea.Msg { return execDone{what, err} })
 }
