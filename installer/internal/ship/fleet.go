@@ -320,21 +320,21 @@ func cardinalTable(rows []CardinalRow) (ui.Table, []string) {
 		user, machine := r.Saved.User, saved.HostPart(r.Saved.Machine)
 		remedy := "flocc cardinal status --user " + user
 		if r.Status == nil {
-			d := cell("-", dim)
-			add(user, machine, cell("unreachable", bad), d, d, d)
+			d := cell("-", SevDim)
+			add(user, machine, cell("unreachable", SevBad), d, d, d)
 			failures = append(failures, fmt.Sprintf("cardinal %s: %s; %s", user, saved.Sanitize(r.Err), remedy))
 			continue
 		}
 		st := r.Status
 		unit := saved.Sanitize(st.Unit)
 		if st.Unit != "active" {
-			unit = cell(unit, bad)
+			unit = cell(unit, SevBad)
 		}
 		login := saved.Sanitize(st.Login)
 		if st.Login != "full" {
-			login = cell(login, bad)
+			login = cell(login, SevBad)
 		}
-		session, turn := cell("-", dim), cell("-", dim)
+		session, turn := cell("-", SevDim), cell("-", SevDim)
 		if st.SessionAgeS != nil {
 			session = Age(*st.SessionAgeS)
 		}
@@ -402,23 +402,24 @@ func hostSteps(s ui.Session) *tracker {
 	}
 }
 
-type severity int
+// Sev is how a fact reads: the table colours it, the dashboard maps it onto its theme.
+type Sev int
 
 const (
-	plain severity = iota
-	dim
-	warn
-	bad
+	SevPlain Sev = iota
+	SevDim
+	SevWarn
+	SevBad
 )
 
-var sevStyle = map[severity]lipgloss.Style{
-	plain: lipgloss.NewStyle(),
-	dim:   lipgloss.NewStyle().Faint(true),
-	warn:  lipgloss.NewStyle().Foreground(lipgloss.Yellow),
-	bad:   lipgloss.NewStyle().Foreground(lipgloss.Red),
+var sevStyle = map[Sev]lipgloss.Style{
+	SevPlain: lipgloss.NewStyle(),
+	SevDim:   lipgloss.NewStyle().Faint(true),
+	SevWarn:  lipgloss.NewStyle().Foreground(lipgloss.Yellow),
+	SevBad:   lipgloss.NewStyle().Foreground(lipgloss.Red),
 }
 
-func cell(text string, s severity) string { return sevStyle[s].Render(text) }
+func cell(text string, s Sev) string { return sevStyle[s].Render(text) }
 
 func Age(s float64) string {
 	d := time.Duration(s * float64(time.Second))
@@ -433,63 +434,74 @@ func Age(s float64) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-func pctCell(v, max float64) string {
-	s := warn
+// The *Fact functions give a status cell's text and severity; the *Cell functions render them for
+// the flocc status table, and the dashboard draws the facts in its own colours.
+
+func PctFact(v, max float64) (string, Sev) {
+	s := SevWarn
 	if max <= 0 || v < max {
-		s = plain
+		s = SevPlain
 	}
-	return cell(fmt.Sprintf("%.0f%%", v), s)
+	return fmt.Sprintf("%.0f%%", v), s
 }
 
-func tickCell(rep *Report) string {
+func pctCell(v, max float64) string { return cell(PctFact(v, max)) }
+
+func TickFact(rep *Report) (string, Sev) {
 	t := rep.LastTick
 	if t == nil || t.AgeS == nil {
-		return cell("-", dim)
+		return "-", SevDim
 	}
 	stale := time.Duration(*t.AgeS*float64(time.Second)) > staleTick
 	switch {
 	case t.Exit == nil && stale:
-		return cell(fmt.Sprintf("%s ago, still running", Age(*t.AgeS)), warn)
+		return fmt.Sprintf("%s ago, still running", Age(*t.AgeS)), SevWarn
 	case t.Exit == nil:
-		return fmt.Sprintf("%s ago, running", Age(*t.AgeS))
+		return fmt.Sprintf("%s ago, running", Age(*t.AgeS)), SevPlain
 	case *t.Exit != "0":
-		return cell(fmt.Sprintf("%s ago, exit %s", Age(*t.AgeS), *t.Exit), bad)
+		return fmt.Sprintf("%s ago, exit %s", Age(*t.AgeS), *t.Exit), SevBad
 	case stale:
-		return cell(fmt.Sprintf("%s ago, ok", Age(*t.AgeS)), warn)
+		return fmt.Sprintf("%s ago, ok", Age(*t.AgeS)), SevWarn
 	}
-	return fmt.Sprintf("%s ago, ok", Age(*t.AgeS))
+	return fmt.Sprintf("%s ago, ok", Age(*t.AgeS)), SevPlain
 }
 
-func diskCell(rep *Report) string {
+func tickCell(rep *Report) string { return cell(TickFact(rep)) }
+
+func DiskFact(rep *Report) (string, Sev) {
 	if rep.Disk == nil || rep.Disk.TotalBytes == 0 {
-		return cell("-", dim)
+		return "-", SevDim
 	}
 	text := fmt.Sprintf("%.1f GiB", float64(rep.Disk.FreeBytes)/(1<<30))
 	if float64(rep.Disk.FreeBytes)/float64(rep.Disk.TotalBytes) < lowDisk {
-		return cell(text, bad)
+		return text, SevBad
 	}
-	return text
+	return text, SevPlain
 }
 
-// loginCell is bad unless the login is full: only a claude.ai login opens Remote Control.
+func diskCell(rep *Report) string { return cell(DiskFact(rep)) }
+
+// LoginFact is bad unless the login is full: only a claude.ai login opens Remote Control.
 // "unknown" is a host that could not read its login, which is no evidence of a lapse.
-func loginCell(rep *Report) string {
+func LoginFact(rep *Report) (string, Sev) {
 	switch {
 	case rep.ClaudeLogin == nil:
-		return cell("-", dim)
+		return "-", SevDim
 	case *rep.ClaudeLogin == "full":
-		return "full"
+		return "full", SevPlain
 	case *rep.ClaudeLogin == "unknown":
-		return cell("unknown", warn)
+		return "unknown", SevWarn
 	}
-	return cell(*rep.ClaudeLogin, bad)
+	return *rep.ClaudeLogin, SevBad
 }
 
-// tokensCell shows the GitHub token that expires first, with the host's own clock from the
+func loginCell(rep *Report) string { return cell(LoginFact(rep)) }
+
+// TokensFact shows the GitHub token that expires first, with the host's own clock from the
 // report, at the tick's thresholds: a digest line under 14 days, a page under 3.
-func tokensCell(rep *Report) string {
+func TokensFact(rep *Report) (string, Sev) {
 	if len(rep.TokenExpiry) == 0 {
-		return cell("-", dim)
+		return "-", SevDim
 	}
 	soonest, days := "", math.MaxFloat64
 	for _, name := range []string{"agent", "publish"} {
@@ -497,7 +509,7 @@ func tokensCell(rep *Report) string {
 		switch {
 		case !ok || v == "never":
 		case v == "rejected":
-			return cell(name+" rejected", bad)
+			return name + " rejected", SevBad
 		default:
 			at, err := strconv.ParseFloat(v, 64)
 			if d := (at - rep.Now) / 86400; err == nil && d < days {
@@ -506,21 +518,23 @@ func tokensCell(rep *Report) string {
 		}
 	}
 	if soonest == "" {
-		return "never"
+		return "never", SevPlain
 	}
 	text := fmt.Sprintf("%s %dd", soonest, int(days))
 	switch {
 	case days < 3:
-		return cell(text, bad)
+		return text, SevBad
 	case days < 14:
-		return cell(text, warn)
+		return text, SevWarn
 	}
-	return text
+	return text, SevPlain
 }
+
+func tokensCell(rep *Report) string { return cell(TokensFact(rep)) }
 
 func costCell(h FleetHost) string {
 	if !h.Daytona || h.State != "started" || h.CPU == 0 && h.MemGiB == 0 {
-		return cell("-", dim)
+		return cell("-", SevDim)
 	}
 	return fmt.Sprintf("~$%.3f", estimateHourly(h.CPU, h.MemGiB, h.DiskGiB))
 }
@@ -528,7 +542,7 @@ func costCell(h FleetHost) string {
 func newTable(headers ...string) *table.Table {
 	return table.New().
 		Border(lipgloss.NormalBorder()).
-		BorderStyle(sevStyle[dim]).
+		BorderStyle(sevStyle[SevDim]).
 		Headers(headers...).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if row == table.HeaderRow {
@@ -549,12 +563,12 @@ func fleetTables(rows []Row, cards []CardinalRow) (tables []ui.Table, failures [
 		name := r.Name
 		if r.Report == nil {
 			state := r.State
-			sev := dim
+			sev := SevDim
 			if state == "" || state == "started" {
-				state, sev = "unreachable", bad
+				state, sev = "unreachable", SevBad
 				failures = append(failures, fmt.Sprintf("%s: %s", name, saved.Sanitize(r.Err)))
 			}
-			d := cell("-", dim)
+			d := cell("-", SevDim)
 			hosts.Rows = append(hosts.Rows, []string{name, cell(state, sev), d, d, d, d, d, d, d, d, costCell(r.FleetHost)})
 			continue
 		}
@@ -564,7 +578,7 @@ func fleetTables(rows []Row, cards []CardinalRow) (tables []ui.Table, failures [
 			state = "up"
 		}
 		if rep.V == 0 {
-			state = cell("behind", warn)
+			state = cell("behind", SevWarn)
 		}
 		running := 0
 		for _, c := range rep.Claims {
@@ -575,26 +589,26 @@ func fleetTables(rows []Row, cards []CardinalRow) (tables []ui.Table, failures [
 		if rep.LedgerError != "" {
 			failures = append(failures, fmt.Sprintf("%s: ledger unreadable: %s", name, saved.Sanitize(rep.LedgerError)))
 		}
-		five, week := cell("-", dim), cell("-", dim)
+		five, week := cell("-", SevDim), cell("-", SevDim)
 		if rep.Usage != nil {
 			five = pctCell(rep.Usage.FiveHourPct, rep.FiveHourMaxPct)
 			week = pctCell(rep.Usage.WeeklyPct, rep.WeeklyMaxPct)
 		}
 		hosts.Rows = append(hosts.Rows, []string{name, state, rep.Mode, tickCell(rep), fmt.Sprintf("%d/%d", running, rep.SessionCap), five, week, diskCell(rep), loginCell(rep), tokensCell(rep), costCell(r.FleetHost)})
 		for _, c := range rep.Claims {
-			ctxPct := cell("-", dim)
+			ctxPct := cell("-", SevDim)
 			if c.ContextPct != nil {
 				ctxPct = fmt.Sprintf("%.0f%%", *c.ContextPct)
 			}
 			// The supervisor kills a blocked claim's session on purpose, so only a running
 			// claim with a dead session is wrong.
-			tmux := cell("-", dim)
+			tmux := cell("-", SevDim)
 			switch {
 			case c.State != "running":
 			case c.TmuxAlive:
 				tmux = "yes"
 			default:
-				tmux = cell("no", bad)
+				tmux = cell("no", SevBad)
 			}
 			claims.Rows = append(claims.Rows, []string{name, c.Issue, c.Phase, c.State, Age(c.StartedAge), ctxPct, tmux})
 		}
@@ -687,11 +701,12 @@ type Source struct {
 	daytonaConfig, hostsDir, cardinalDir string
 	client                               *http.Client
 	cache                                *destCache
+	run                                  host.Runner
 }
 
 func newSource(daytonaConfig, hostsDir, cardinalDir string) *Source {
 	s := &Source{daytonaConfig: daytonaConfig, hostsDir: hostsDir, cardinalDir: cardinalDir,
-		client: &http.Client{Timeout: 30 * time.Second}}
+		client: &http.Client{Timeout: 30 * time.Second}, run: host.Exec{}}
 	s.cache = newDestCache(func(ctx context.Context, h FleetHost) (Dest, error) {
 		auth, err := loadDaytona(daytonaConfig)
 		if err != nil {
@@ -716,7 +731,7 @@ func (s *Source) Discover(ctx context.Context) ([]FleetHost, []string) {
 // Status is flocc status --json on one host. A host that is not started has neither a report nor
 // an error from fetch, so its state becomes the error.
 func (s *Source) Status(ctx context.Context, h FleetHost) (*Report, error) {
-	row := fetch(ctx, host.Exec{}, s.cache, h)
+	row := fetch(ctx, s.run, s.cache, h)
 	switch {
 	case row.Report != nil:
 		return row.Report, nil
@@ -729,7 +744,39 @@ func (s *Source) Status(ctx context.Context, h FleetHost) (*Report, error) {
 // Cardinals runs the quick status of every saved install that is not removed.
 func (s *Source) Cardinals(ctx context.Context) ([]CardinalRow, []string) {
 	list, notes := discoverCardinals(s.cardinalDir)
-	return collectCardinals(ctx, host.Exec{}, s.cache.sshOpts, list), notes
+	return collectCardinals(ctx, s.run, s.cache.sshOpts, list), notes
+}
+
+// DoctorReport is flocc doctor --json; V is 0 from a host that predates it.
+type DoctorReport struct {
+	V      int           `json:"v"`
+	Checks []DoctorCheck `json:"checks"`
+}
+
+type DoctorCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Warn   bool   `json:"warn"`
+	Detail string `json:"detail"`
+}
+
+// Run runs the host CLI with args on h as the service user, without a terminal, within
+// hostTimeout. stdout and stderr come back scrubbed of h's token.
+func (s *Source) Run(ctx context.Context, h FleetHost, args []string) (host.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, hostTimeout)
+	defer cancel()
+	dest, err := s.cache.resolve(ctx, h)
+	if err != nil {
+		return host.Result{}, err
+	}
+	dest.Opts = append(slices.Clone(dest.Opts), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
+	res, err := s.run.Run(ctx, sshNoTTY(dest, asServiceUser(FloccLine(args))))
+	// As in fetch: only ssh failing says the token may be revoked.
+	if err != nil || res.Code == 255 {
+		s.cache.forget(h)
+	}
+	res.Stdout, res.Stderr = scrub(res.Stdout, dest.Token), scrub(res.Stderr, dest.Token)
+	return res, scrubErr(err, dest.Token)
 }
 
 // runFleet draws the fleet once.
@@ -741,10 +788,10 @@ func runFleet(ctx context.Context, s ui.Session, daytonaConfig, hostsDir, cardin
 	var cards []CardinalRow
 	done := make(chan struct{})
 	go func() {
-		cards = collectCardinals(ctx, host.Exec{}, src.cache.sshOpts, cardList)
+		cards = collectCardinals(ctx, src.run, src.cache.sshOpts, cardList)
 		close(done)
 	}()
-	rows := collect(ctx, host.Exec{}, src.cache, found, hostSteps(s))
+	rows := collect(ctx, src.run, src.cache, found, hostSteps(s))
 	<-done
 	if ctx.Err() != nil {
 		return exitInterrupted
