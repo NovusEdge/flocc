@@ -69,6 +69,13 @@ failure the poller already sees answers the same question for free.
   flocc-nimble had go 1.27.1 installed under mise with no global version, which is the
   "No version is set for shim: go" failure.
 
+- A host-file `docker = true` makes a root step, Docker, install `docker.io` on apt hosts,
+  enable the daemon, and add the service user to the `docker` group. kairos's check uses
+  testcontainers; on 2026-10-22 NF-321's check failed twice on the missing Docker socket, because
+  flocc-nimble had no Docker. The group is root-equivalent on the VM, which the owner accepts
+  because host VMs are disposable, and it reaches sessions after the service user's systemd
+  manager restarts.
+
 ### 3. Two fix rounds before a block
 
 `check_failed` launches a fix session while `fix_attempts < cfg.fix_rounds` (default 2, today
