@@ -79,7 +79,10 @@ def restart_timed_out(rt) -> None:
         key = claim.issue_key
         once = f"timeout_restart:{key}"
         wt = Path(claim.worktree)
-        if claim.state != "timed_out" or claim.base_sha is None or not wt.exists():
+        # A tester's commits were never remembered, so a rerun from "test" would find none.
+        if claim.state != "timed_out" or claim.phase not in ("impl", "fix"):
+            continue
+        if claim.base_sha is None or not wt.exists():
             continue
         if ledger.meta_get(rt.con, once):
             continue
