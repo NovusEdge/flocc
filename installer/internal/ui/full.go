@@ -96,11 +96,13 @@ type fullModel struct {
 	interrupt   func()
 	th          theme.Theme
 	formDark    *bool // what an open form reads; see themeIn
+	hold        handoffHold
 }
 
 func newFullModel(now func() time.Time, version string) fullModel {
 	th := withDark(theme.FromEnv(os.Getenv, true), true)
 	return fullModel{
+		hold:      newHandoffHold(now()),
 		cur:       -1,
 		steps:     map[string]*fullStep{},
 		version:   version,
@@ -134,10 +136,27 @@ func buildVersion() string {
 }
 
 func (m fullModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, tea.RequestBackgroundColor)
+	return tea.Batch(m.spinner.Tick, tea.RequestBackgroundColor, replyTimer())
 }
 
 func (m fullModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	start, consumed := m.hold.step(msg, m.now())
+	var next tea.Model = m
+	var cmd tea.Cmd
+	if !consumed {
+		next, cmd = m.update(msg)
+	}
+	if start != nil {
+		cmd = tea.Batch(cmd, fullHandoff(*start))
+	}
+	return next, cmd
+}
+
+func fullHandoff(msg handoffMsg) tea.Cmd {
+	return tea.Exec(&bannerCmd{cmd: msg.cmd, why: msg.why}, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
+}
+
+func (m fullModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
 		m.th = withDark(m.th, msg.IsDark())
@@ -152,8 +171,6 @@ func (m fullModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.form, m.result = formFor(m.formDark, msg.req)
 		m.reply, m.stopping = msg.reply, false
 		return m, m.form.Init()
-	case handoffMsg:
-		return m, tea.Exec(&bannerCmd{cmd: msg.cmd, why: msg.why}, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
 	case handoffDone:
 		msg.reply <- msg.err
 		return m, nil
@@ -645,6 +662,7 @@ func newFullWith(out io.Writer, in io.Reader, title string, inner func(io.Writer
 	r := &full{out: out, in: in, done: make(chan struct{}), newInner: inner}
 	m := newFullModel(time.Now, buildVersion())
 	m.title = title
+	m.hold.in = in
 	r.th = m.th
 	opts = append([]tea.ProgramOption{tea.WithOutput(out), tea.WithInput(in), tea.WithoutSignalHandler()}, opts...)
 	r.p = tea.NewProgram(m, opts...)

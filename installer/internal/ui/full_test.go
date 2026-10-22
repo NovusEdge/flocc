@@ -348,6 +348,8 @@ func TestBannerCmdPrintsWhyBeforeOutput(t *testing.T) {
 
 func TestFullHandoffUsesBanner(t *testing.T) {
 	m := sized(100, 30)
+	m, _ = updateFull(m, kbReply)
+	m, _ = updateFull(m, bgReply)
 	_, cmd := updateFull(m, handoffMsg{why: "log in", cmd: exec.Command("true"), reply: make(chan error, 1)})
 	if cmd == nil {
 		t.Fatal("no cmd for a handoff")

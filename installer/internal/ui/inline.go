@@ -70,6 +70,7 @@ type inlineModel struct {
 	closing     *closeMsg
 	th          theme.Theme
 	formDark    *bool // what an open form reads; see themeIn
+	hold        handoffHold
 }
 
 func newInlineModel(now func() time.Time) inlineModel {
@@ -78,6 +79,7 @@ func newInlineModel(now func() time.Time) inlineModel {
 		spinner:   th.Spinner(),
 		th:        th,
 		formDark:  new(true),
+		hold:      newHandoffHold(now()),
 		now:       now,
 		interrupt: interruptSelf,
 	}
@@ -92,10 +94,31 @@ func interruptSelf() {
 }
 
 func (m inlineModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, tea.RequestBackgroundColor)
+	return tea.Batch(m.spinner.Tick, tea.RequestBackgroundColor, replyTimer())
 }
 
 func (m inlineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	start, consumed := m.hold.step(msg, m.now())
+	var next tea.Model = m
+	var cmd tea.Cmd
+	if !consumed {
+		next, cmd = m.update(msg)
+	}
+	if start != nil {
+		cmd = tea.Batch(cmd, inlineHandoff(*start))
+	}
+	return next, cmd
+}
+
+func inlineHandoff(msg handoffMsg) tea.Cmd {
+	run := tea.ExecProcess(msg.cmd, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
+	if b := handoffBanner(msg.why); b != "" {
+		return tea.Sequence(tea.Println(b), run)
+	}
+	return run
+}
+
+func (m inlineModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.BackgroundColorMsg:
 		m.th = withDark(m.th, msg.IsDark())
@@ -106,12 +129,6 @@ func (m inlineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.draw(msg.e)
 	case promptMsg:
 		return m.openPrompt(msg)
-	case handoffMsg:
-		run := tea.ExecProcess(msg.cmd, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
-		if b := handoffBanner(msg.why); b != "" {
-			return m, tea.Sequence(tea.Println(b), run)
-		}
-		return m, run
 	case handoffDone:
 		msg.reply <- msg.err
 		return m, nil
@@ -385,7 +402,9 @@ func NewInline(out io.Writer, in io.Reader) Renderer { return newInline(out, in)
 func newInline(out io.Writer, in io.Reader, opts ...tea.ProgramOption) Renderer {
 	r := &inline{done: make(chan struct{})}
 	opts = append([]tea.ProgramOption{tea.WithOutput(out), tea.WithInput(in), tea.WithoutSignalHandler()}, opts...)
-	r.p = tea.NewProgram(newInlineModel(time.Now), opts...)
+	m := newInlineModel(time.Now)
+	m.hold.in = in
+	r.p = tea.NewProgram(m, opts...)
 	r.q = newSendQueue(r.p, r.done)
 	go func() {
 		defer close(r.done)

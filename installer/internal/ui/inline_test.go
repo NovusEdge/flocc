@@ -137,6 +137,8 @@ func TestInlineCutsToWidth(t *testing.T) {
 
 func TestInlineHandoffReturnsCmd(t *testing.T) {
 	m := newInlineModel(fixedNow)
+	m, _ = update(m, kbReply)
+	m, _ = update(m, bgReply)
 	_, cmd := update(m, handoffMsg{why: "login", cmd: exec.Command("true"), reply: make(chan error, 1)})
 	if cmd == nil {
 		t.Fatal("no cmd for a handoff")
