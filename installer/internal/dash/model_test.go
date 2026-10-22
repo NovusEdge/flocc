@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -87,10 +88,20 @@ func (f *fakeSource) Run(_ context.Context, h ship.FleetHost, args []string) (ho
 	defer f.mu.Unlock()
 	k := strings.Join(args, " ")
 	f.calls = append(f.calls, h.Name+": "+k)
-	if r, ok := f.answers[k]; ok {
+	if r, ok := f.answers[norm(k)]; ok {
 		return r, nil
 	}
 	return host.Result{Code: 1, Stderr: "no scripted answer for " + k}, nil
+}
+
+var lastN = regexp.MustCompile(` -n (\d+)$`)
+
+// norm makes a screen's row count irrelevant to a scripted answer, except the pager's 2000.
+func norm(k string) string {
+	if m := lastN.FindStringSubmatch(k); m != nil && m[1] != "2000" {
+		return lastN.ReplaceAllString(k, " -n *")
+	}
+	return k
 }
 
 func (f *fakeSource) answer(args string, r host.Result) {
@@ -99,7 +110,7 @@ func (f *fakeSource) answer(args string, r host.Result) {
 	if f.answers == nil {
 		f.answers = map[string]host.Result{}
 	}
-	f.answers[args] = r
+	f.answers[norm(args)] = r
 }
 
 func (f *fakeSource) ran() []string {
@@ -125,6 +136,8 @@ func newModel(t *testing.T) (*Model, *[][]string) {
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	return m, &ran
 }
+
+func sizeMsg(sz [2]int) tea.WindowSizeMsg { return tea.WindowSizeMsg{Width: sz[0], Height: sz[1]} }
 
 func text(m *Model) string { return themetest.Strip(m.View().Content) }
 

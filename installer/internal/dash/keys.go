@@ -18,6 +18,7 @@ type editKind int
 const (
 	notEditing editKind = iota
 	filterEdit
+	searchEdit // the pager's
 )
 
 // key sends a key to the first of: the open question, the text being typed, the screen.
@@ -41,22 +42,35 @@ func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.showKeys = !m.showKeys
 		return m, nil
 	}
+	switch m.screen {
+	case issueScreen:
+		return m.issueKey(k)
+	case pagerScreen:
+		return m.pagerKey(k)
+	}
 	return m.fleetKey(k)
 }
 
 // edit takes a key into the text being typed: enter keeps it, esc drops it.
 func (m *Model) edit(msg tea.KeyPressMsg) tea.Cmd {
-	switch k := msg.String(); k {
+	field := &m.filter
+	if m.editing == searchEdit {
+		field = &m.pager.search
+	}
+	switch msg.String() {
 	case "enter":
+		if m.editing == searchEdit {
+			m.pager.find(false)
+		}
 		m.editing = notEditing
 	case "esc":
-		m.filter, m.editing = "", notEditing
+		*field, m.editing = "", notEditing
 	case "backspace":
-		if r := []rune(m.filter); len(r) > 0 {
-			m.filter = string(r[:len(r)-1])
+		if r := []rune(*field); len(r) > 0 {
+			*field = string(r[:len(r)-1])
 		}
 	default:
-		m.filter += msg.Text
+		*field += msg.Text
 	}
 	m.reselect()
 	return nil
@@ -140,6 +154,12 @@ func (m *Model) move(by int) {
 
 // bar is the current screen's short bindings; a key that does nothing here is dimmed, not hidden.
 func (m *Model) bar() []kb.Binding {
+	switch m.screen {
+	case issueScreen:
+		return m.issueBar()
+	case pagerScreen:
+		return m.pagerBar()
+	}
 	t := m.th
 	return []kb.Binding{
 		t.Key(true, "↑↓", "select", "up", "down"),
@@ -155,6 +175,9 @@ func (m *Model) bar() []kb.Binding {
 
 // fullKeys are the "?" groups.
 func (m *Model) fullKeys() [][]kb.Binding {
+	if m.screen != fleetScreen {
+		return [][]kb.Binding{m.bar()}
+	}
 	t := m.th
 	return [][]kb.Binding{
 		{t.Key(true, "↑↓", "select", "up", "down"), t.Key(true, "tab", "hosts/issues"), t.Key(m.opens(), "→", "open", "right")},

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -47,9 +46,6 @@ func (m *Model) visible() []row {
 	}
 	return out
 }
-
-// open moves into the focused row's detail screen.
-func (m *Model) open() tea.Cmd { return nil }
 
 func stateGlyph(th theme.Theme, spin string, state string) string {
 	switch state {

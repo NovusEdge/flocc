@@ -123,6 +123,11 @@ type Model struct {
 	cardSel int
 	filter  string
 	editing editKind
+
+	outGen int       // bumped on entering or leaving a screen with output; a message of another gen is dropped
+	out    outputMsg // the open screen's output pane
+	cur    [2]string // host and issue of the open detail screen; the host alone for the host screen
+	pager  pagerState
 }
 
 func New(ctx context.Context, o Options) *Model {
@@ -169,7 +174,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		m.sizePager()
 		return m, nil
+	case outputMsg:
+		if msg.gen != m.outGen {
+			return m, nil
+		}
+		return m, m.gotOutput(msg)
+	case outputTick:
+		if msg.gen != m.outGen {
+			return m, nil
+		}
+		return m, m.refresh()
 	case tea.BackgroundColorMsg:
 		m.th = m.th.WithDark(msg.IsDark())
 		m.spin.Style = m.th.Accent
@@ -286,6 +302,12 @@ func (m *Model) View() tea.View {
 }
 
 func (m *Model) body() string {
+	switch m.screen {
+	case issueScreen:
+		return m.issueView()
+	case pagerScreen:
+		return m.pagerView()
+	}
 	return m.fleetView()
 }
 

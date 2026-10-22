@@ -59,6 +59,10 @@ func (m *Model) statusLine() string {
 		return m.th.Warn.Render(m.ask.text)
 	case m.editing == filterEdit:
 		return "/" + m.filter + "▏"
+	case m.editing == searchEdit:
+		return "/" + m.pager.search + "▏"
+	case m.screen == pagerScreen && m.pager.note != "":
+		return m.th.Dim.Render(m.pager.note)
 	case m.titleNote != "":
 		return m.th.Dim.Render(m.titleNote)
 	case len(m.notes) > 0:
