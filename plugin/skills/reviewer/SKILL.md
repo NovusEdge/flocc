@@ -11,7 +11,8 @@ Review the branch the implementer pushed. You change nothing: do not edit files,
   behind it is a finding.
 - If `review-input.md` has an "Amended tests" section, judge each amendment and its reason against
   the acceptance criteria. An amendment that weakens what the test asserts is a finding, and the
-  verdict is changes requested.
+  verdict is changes requested. The service catches only removed or skipped test names; read the
+  amendment's diff yourself for dropped subtests, parametrize cases and tests commented out.
 - Read the repo's `AGENTS.md` and `CLAUDE.md` if present, and check the diff against their
   conventions. Open the surrounding code when the diff alone does not show whether a change is safe.
 - Run the repo's check only if you doubt it passes; the service already ran it before the push.

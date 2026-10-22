@@ -73,24 +73,35 @@ def amended_section(amended: dict[str, dict] | None) -> str:
     return f"\n\n## Amended tests\n\nThe implementer changed these tester files, with these reasons:\n\n{lines}"
 
 
-_DEFINES_TEST = re.compile(r"^\s*((async\s+)?def test_|(test|it|describe)(\.\w+)?\(|func Test)")
-_SKIPS_TEST = re.compile(r"pytest\.mark\.skip|pytest\.skip\(|xfail|\.skip\(|\.only\(|t\.Skip\(")
+_TEST_NAME = re.compile(
+    r"^\s*(?:(?:async\s+)?def (test_\w*)|func (Test\w*)"
+    r"|(?:test|it|describe)(?:\.\w+)*\(\s*(['\"`])(.+?)\3)"
+)
+_SKIPS_TEST = re.compile(
+    r"pytest\.mark\.skip|pytest\.skip\(|pytest\.importorskip\(|xfail|skipIf|skipUnless"
+    r"|self\.skipTest\(|\.skip\(|\.only\(|\.todo\(|t\.Skip\(|t\.Skipf\(|t\.SkipNow\("
+)
+
+
+def _test_names(lines: list[str]) -> set[str]:
+    return {m[1] or m[2] or m[4] for line in lines if (m := _TEST_NAME.match(line))}
 
 
 def weakens_test(wt: Path, since: str, path: str) -> str | None:
-    """Why the change to a tester's file since `since` drops or disables a test, if it does."""
+    """Why the change to a tester's file since `since` drops or disables a test, if it does.
+
+    Not covered: subtests, parametrize cases and a test wrapped in a comment; the reviewer reads
+    the amendment diff for those."""
     diff = git("diff", "-U0", f"{since}..HEAD", "--", path, cwd=wt)
     removed = [x[1:] for x in diff.splitlines() if x.startswith("-") and not x.startswith("---")]
     added = [x[1:] for x in diff.splitlines() if x.startswith("+") and not x.startswith("+++")]
-
-    def count(rx, lines):
-        return sum(bool(rx.search(line)) for line in lines)
-
-    # Counts, not presence: a renamed or re-signed test removes one definition and adds one.
-    if count(_DEFINES_TEST, removed) > count(_DEFINES_TEST, added):
-        return "removes a test"
-    if count(_SKIPS_TEST, added) > count(_SKIPS_TEST, removed):
+    skips = lambda lines: sum(bool(_SKIPS_TEST.search(line)) for line in lines)  # noqa: E731
+    # First: a skip wrapper such as it.skipIf(c)('a') hides the name, which would read as removal.
+    if skips(added) > skips(removed):
         return "skips a test"
+    # Names, not counts: a test renamed in place leaves the counts level and still loses a test.
+    if _test_names(removed) - _test_names(added):
+        return "removes a test"
     return None
 
 
