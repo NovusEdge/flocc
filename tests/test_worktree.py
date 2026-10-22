@@ -12,10 +12,13 @@ from flocc.worktree import (
     contains,
     free_disk_gb,
     git,
+    head_at_base,
     install_hook,
+    origin_base,
     prepare_worktree,
     recover_tests,
     run_bounded,
+    setup_at_base,
 )
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -481,3 +484,42 @@ def test_claim_cli(tmp_path, monkeypatch, capsys):
     assert "NF-4" in capsys.readouterr().err
     mine = ledger.get_claim(con, "NF-3")
     assert mine and mine.paths == ["docs/*.md"]
+
+
+def test_head_at_base_names_the_base_only_for_an_untouched_checkout(origin, tmp_path):
+    repo = RepoConfig(origin)
+    path, _, base = prepare_worktree(repo, tmp_path / "wt", "NF-3")
+    assert head_at_base(repo, path) == base
+    _commit(path, "b.txt")
+    assert head_at_base(repo, path) is None
+    assert head_at_base(repo, tmp_path / "wt" / "NF-404") is None
+
+
+def test_origin_base_fetches_a_new_commit_and_survives_a_dead_remote(origin, tmp_path):
+    repo = RepoConfig(origin)
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", "-q", tmp_path / "origin.git", other], check=True, capture_output=True
+    )
+    for k, v in (("user.name", "t"), ("user.email", "t@t")):
+        git("config", k, v, cwd=other)
+    _commit(other, "c.txt")
+    git("push", "-q", "origin", "main", cwd=other)
+    assert origin_base(repo) == git("rev-parse", "HEAD", cwd=other)
+    git("remote", "set-url", "origin", str(tmp_path / "gone.git"), cwd=origin)
+    assert origin_base(repo) is None
+
+
+@pytest.mark.parametrize("body, code", [("exit 0", 0), ("exit 3", 3)])
+def test_setup_at_base_runs_setup_on_a_throwaway_checkout(origin, tmp_path, body, code):
+    push_setup(origin, body)
+    got, _, sha = setup_at_base(RepoConfig(origin), tmp_path / "wt", 30, False)
+    assert got == code and sha == git("rev-parse", "origin/main", cwd=origin)
+    assert "canary" not in git("worktree", "list", cwd=origin)
+    assert list((tmp_path / "wt").iterdir()) == []
+
+
+def test_setup_at_base_reports_a_timeout(origin, tmp_path):
+    push_setup(origin, "sleep 30")
+    code, _, _ = setup_at_base(RepoConfig(origin), tmp_path / "wt", 0.5, False)
+    assert code is None

@@ -456,6 +456,46 @@ def cmd_release(args) -> int:
     return 0
 
 
+def cmd_canary(args) -> int:
+    from flocc import canary, worktree
+    from flocc.tick import tick_lock
+
+    cfg, _ = _config(args)
+    if args.repo not in cfg.repos:
+        print(
+            f"canary: no repo {args.repo} in the config ({', '.join(cfg.repos)})", file=sys.stderr
+        )
+        return 2
+    # ./setup runs under the tick lock, as the poller's does, so the two never share a cache.
+    with tick_lock(cfg.tick_lock) as held:
+        if not held:
+            print("canary: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        con = ledger.connect(cfg.ledger_path)
+        try:
+            code, out, sha = worktree.setup_at_base(
+                cfg.repos[args.repo], cfg.worktree_root, cfg.setup_timeout_s, cfg.shared_uv_cache
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            why = getattr(exc, "stderr", None) or exc
+            print(f"canary: {args.repo}'s base was not checked out: {why}", file=sys.stderr)
+            return 1
+        if code == 0:
+            canary.clear(con, args.repo)
+            print(
+                f"canary: ./setup passes on {args.repo} at {sha[:9]}; its issues are no longer held"
+            )
+            return 0
+        canary.mark(con, args.repo, sha, time.time(), out)
+        what = "timed out" if code is None else f"exited {code}"
+        print(
+            f"canary: ./setup {what} on {args.repo} at {sha[:9]}; its issues stay held\n"
+            f"{out[-canary.OUTPUT_CHARS :]}",
+            file=sys.stderr,
+        )
+        return 1
+
+
 def cmd_doctor(args) -> int:
     from flocc.doctor import doctor_json, run_doctor
 
@@ -607,6 +647,7 @@ COMMANDS = {
     "tick": cmd_tick,
     "run": cmd_run,
     "release": cmd_release,
+    "canary": cmd_canary,
     "doctor": cmd_doctor,
     "status": cmd_status,
     "logs": cmd_logs,
@@ -674,6 +715,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="approve the tester's files as they stand on the branch (keeps the worktree)",
     )
+    can = add(
+        "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
+    )
+    can.add_argument("repo", help="repo name from the config")
     doctor = add("doctor", "Check config and host setup")
     doctor.add_argument("--json", action="store_true", help="print the checks as JSON")
     status = add("status", "Show claims, last tick, usage and disk")
