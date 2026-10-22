@@ -66,3 +66,33 @@ func TestMappedJoinsTheHostsTeamsReposAndDigests(t *testing.T) {
 		t.Fatalf("%+v", m)
 	}
 }
+
+type askedSecrets struct {
+	*hostScript
+	titles []string
+}
+
+func (a *askedSecrets) Secret(title, help string) (string, error) {
+	a.titles = append(a.titles, title)
+	return a.hostScript.Secret(title, help)
+}
+
+func TestKeysOffersTheTailscaleClientEvenWhenTheRequiredKeysAreStored(t *testing.T) {
+	d, _, _ := testDeps(t)
+	writeSecrets(t, d.home, allKeys)
+	d.store = func() keys.Store { return keys.Open(d.home, io.Discard) }
+	d.http = &http.Client{Transport: failingTransport{}}
+	d.open = func(string) {}
+	p := &askedSecrets{hostScript: &hostScript{t: t}}
+	d.prompt = p
+	run(context.Background(), d, []string{"keys"})
+	if len(p.titles) != 1 || p.titles[0] != keys.Tailscale.Title() {
+		t.Fatalf("asked %q, want only the Tailscale client", p.titles)
+	}
+}
+
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, io.ErrUnexpectedEOF
+}

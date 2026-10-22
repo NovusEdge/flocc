@@ -48,7 +48,7 @@ func (w *wizard) tailnet() {
 	} else {
 		link, page := keys.Page(keys.Tailscale, keys.Mapped{})
 		w.end(st, rowSkipped, "Client", "no OAuth client; hosts join with a browser login")
-		w.d.ui.Todo("Tailscale OAuth client, to join hosts tagged without a browser login: " + page + " " + link)
+		w.d.ui.Todo("Tailscale OAuth client, to join hosts tagged without a browser login: " + page + " " + link + "; then run flocc keys")
 	}
 	if w.stopped {
 		return

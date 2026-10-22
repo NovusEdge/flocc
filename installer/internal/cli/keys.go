@@ -70,7 +70,7 @@ func keysCmd(ctx context.Context, d *deps, args []string) int {
 	switch {
 	case len(args) == 0:
 		e := keysEnv(d)
-		if err := keys.Fill(ctx, e, m, keys.Slots); err != nil {
+		if err := keys.Fill(ctx, e, m, append(slices.Clone(keys.Slots), keys.Tailscale)); err != nil {
 			d.ui.Step("Fill keys").Fail(err)
 			d.ui.Todo("run flocc keys again to go on")
 			return 1
