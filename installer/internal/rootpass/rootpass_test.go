@@ -3,15 +3,39 @@ package rootpass
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 var opts = []string{"-o", "ControlMaster=auto"}
+
+func TestBuildRefusesACheckoutOlderThanThisFlocc(t *testing.T) {
+	defer func(f func() string) { selfRevision = f }(selfRevision)
+	selfRevision = func() string { return "abc1234def" }
+	check := "git merge-base --is-ancestor abc1234def HEAD"
+	f := host.NewFake().On(check, 1, "").On("git rev-parse --short HEAD", 0, "9f8e7d6\n")
+	_, err := Build(context.Background(), f, ui.New(&ui.Recorder{}), "/src", "amd64", "flocc-setup")
+	if err == nil || !strings.Contains(err.Error(), "built from abc1234") || !strings.Contains(err.Error(), "/src is at 9f8e7d6") {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(f.Calls, func(c string) bool { return strings.HasPrefix(c, "go build") }) {
+		t.Fatalf("built anyway: %v", f.Calls)
+	}
+	f = host.NewFake().On(check, 0, "")
+	dir, err := Build(context.Background(), f, ui.New(&ui.Recorder{}), "/src", "amd64", "flocc-setup")
+	if dir != "" {
+		defer os.RemoveAll(dir)
+	}
+	if !slices.ContainsFunc(f.Calls, func(c string) bool { return strings.HasPrefix(c, "go build") }) {
+		t.Fatalf("%v %v", err, f.Calls)
+	}
+}
 
 func pass(prefix string) Pass {
 	return Pass{Machine: "laptop", Opts: opts, Prefix: prefix, Files: []string{"/bin/x/flocc-setup"},

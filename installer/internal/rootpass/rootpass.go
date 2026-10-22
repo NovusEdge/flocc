@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
@@ -30,9 +31,42 @@ func SSH(opts []string, tty bool, dest, remote string) host.Cmd {
 	return host.Cmd{Name: "ssh", Args: append(args, dest, remote)}
 }
 
+// selfRevision is the commit this flocc was built from; empty without VCS stamps, as under go test.
+var selfRevision = func() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" {
+				return s.Value
+			}
+		}
+	}
+	return ""
+}
+
+// checkoutHasSelf stops a build from a checkout that lacks the commit this flocc came from: its
+// flocc-setup could miss phases this flocc calls, which shows only after the sudo password.
+func checkoutHasSelf(ctx context.Context, r host.Runner, root string) error {
+	rev := selfRevision()
+	if rev == "" {
+		return nil
+	}
+	res, err := r.Run(ctx, host.Cmd{Name: "git", Dir: root, Args: []string{"merge-base", "--is-ancestor", rev, "HEAD"}})
+	// 1 is "not an ancestor", 128 "no such commit here"; anything else leaves the build to go on.
+	if err != nil || (res.Code != 1 && res.Code != 128) {
+		return nil
+	}
+	head, _ := host.Must(ctx, r, host.Cmd{Name: "git", Dir: root, Args: []string{"rev-parse", "--short", "HEAD"}})
+	return fmt.Errorf("this flocc was built from %s, but the checkout at %s is at %s, which lacks it; run this from a checkout that has %s, or go install ./installer/cmd/flocc in this one",
+		rev[:min(7, len(rev))], root, strings.TrimSpace(head), rev[:min(7, len(rev))])
+}
+
 // Build makes ./installer/cmd/<name> for linux/arch from the checkout at root, one step per
 // binary, into a new temporary directory the caller removes.
 func Build(ctx context.Context, r host.Runner, s ui.Session, root, arch string, names ...string) (string, error) {
+	if err := checkoutHasSelf(ctx, r, root); err != nil {
+		s.Step("Build " + strings.Join(names, ", ")).Fail(err)
+		return "", err
+	}
 	dir, err := os.MkdirTemp("", "flocc-rootpass-")
 	if err != nil {
 		return "", err
