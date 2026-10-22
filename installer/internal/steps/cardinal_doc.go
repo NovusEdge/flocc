@@ -48,10 +48,12 @@ type CardinalReport struct {
 	Error     string       `json:"error,omitempty"`
 }
 
-func (r CardinalReport) Line() string {
+func (r CardinalReport) JSON() string {
 	b, _ := json.Marshal(r)
-	return CardinalMarker + string(b)
+	return string(b)
 }
+
+func (r CardinalReport) Line() string { return CardinalMarker + r.JSON() }
 
 func ParseCardinalLine(line string) (CardinalReport, bool) {
 	var r CardinalReport

@@ -220,7 +220,7 @@ func lockWithoutSessions(ctx context.Context, e *Env, lock func(string) (func(),
 		unlock()
 		if !asked {
 			q := fmt.Sprintf("%s running: %s. Running sessions rewrite ~/.claude.json and could drop the Remote Control consent. Wait for them to end?",
-				plural(len(live), "session"), strings.Join(live, ", "))
+				Plural(len(live), "session"), strings.Join(live, ", "))
 			wait, err := e.UI.Confirm(q, true)
 			if err != nil {
 				return nil, err

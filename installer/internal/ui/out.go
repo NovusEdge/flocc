@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 // Out writes the desktop's status lines: indented two spaces under the command's first line, in
@@ -17,9 +19,6 @@ type Out struct {
 	Color bool
 }
 
-// ColorEnv is the variable the desktop sets on flocc-setup to ask for coloured step lines.
-const ColorEnv = "FLOCC_COLOR"
-
 // NewOut colours when w is a terminal, NO_COLOR is unset and TERM is not dumb.
 func NewOut(w io.Writer) Out { return Out{W: w, Color: ColorFor(w)} }
 
@@ -28,9 +27,10 @@ func ColorFor(w io.Writer) bool {
 	return ok && colorOK(term.IsTerminal(int(f.Fd())), os.Getenv)
 }
 
-// colorOK follows no-color.org: any non-empty NO_COLOR turns colour off.
+// colorOK is a terminal whose environment allows colour; theme.FromEnv holds the env rule
+// (no-color.org: any non-empty NO_COLOR, and TERM=dumb, turn colour off).
 func colorOK(isTerminal bool, getenv func(string) string) bool {
-	return isTerminal && getenv("NO_COLOR") == "" && getenv("TERM") != "dumb"
+	return isTerminal && theme.FromEnv(getenv, true).Color
 }
 
 func (o Out) paint(code, s string) string {
@@ -45,27 +45,12 @@ func (o Out) Fail(s string) string { return o.paint("31", s) }
 func (o Out) Warn(s string) string { return o.paint("33", s) }
 func (o Out) Bold(s string) string { return o.paint("1", s) }
 
-const (
-	indent     = "  "
-	nextIndent = indent + indent
-)
+const indent = "  "
 
 func same(s string) string { return s }
 
 // Line writes a status line two spaces in; each line of a multi-line text is indented.
 func (o Out) Line(format string, a ...any) { o.write(indent, same, fmt.Sprintf(format, a...)) }
-
-// WarnLine is Line in yellow, for a note the owner should read: something not stored, not
-// checked or left for them to do.
-func (o Out) WarnLine(format string, a ...any) { o.write(indent, o.Warn, fmt.Sprintf(format, a...)) }
-
-// FailLine writes a FAIL line and, under it, the next step in bold, two spaces further in.
-func (o Out) FailLine(what, next string) {
-	o.write(indent, same, o.Fail("FAIL")+"  "+what)
-	if next != "" {
-		o.write(nextIndent, o.Bold, next)
-	}
-}
 
 // SplitNext cuts the next step off an error text: what follows the last "; run ", as in
 // "Linear rejected the key; run flocc keys rotate linear".

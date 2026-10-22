@@ -1,7 +1,10 @@
-package create
+package steps
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,7 +38,7 @@ func laptopFw() fwState {
 
 // onFirewall answers readFirewall's queries from s, as the runtime or the permanent configuration.
 func onFirewall(f *host.Fake, permanent bool, s fwState) {
-	q := "sudo -n firewall-cmd "
+	q := "firewall-cmd "
 	if permanent {
 		q += "--permanent "
 	}
@@ -78,8 +81,8 @@ func fwMachine(runtime, permanent fwState) *host.Fake {
 	f := host.NewFake().
 		On("systemctl is-active --quiet firewalld.service", 0, "").
 		On("ip -j route show default", 0, `[{"dst":"default","gateway":"192.168.1.1","dev":"wlan0","protocol":"dhcp"}]`).
-		On("sudo -n firewall-cmd --get-zone-of-interface=wlan0", 0, "public\n").
-		On("sudo -n firewall-cmd --get-default-zone", 0, "public\n")
+		On("firewall-cmd --get-zone-of-interface=wlan0", 0, "public\n").
+		On("firewall-cmd --get-default-zone", 0, "public\n")
 	onFirewall(f, false, runtime)
 	onFirewall(f, true, permanent)
 	return f
@@ -170,8 +173,7 @@ func TestFwWithoutDockerHasNoDockerPolicy(t *testing.T) {
 
 func TestFirewalldSkippedWhenNotRunning(t *testing.T) {
 	f := host.NewFake().On("systemctl is-active --quiet firewalld.service", 3, "inactive\n")
-	e, _ := testEnv(f)
-	e.sudo = false
+	e := testEnv(t, f)
 	ok, detail, err := Firewalld{}.Check(context.Background(), e)
 	if !ok || err != nil || !strings.Contains(detail, "firewalld not running") {
 		t.Fatalf("%v %q %v", ok, detail, err)
@@ -181,26 +183,9 @@ func TestFirewalldSkippedWhenNotRunning(t *testing.T) {
 	}
 }
 
-func TestFirewalldNeedsPasswordlessSudo(t *testing.T) {
-	f := fwMachine(laptopFw(), laptopFw())
-	e, _ := testEnv(f)
-	e.sudo = false
-	if _, _, err := (Firewalld{}).Check(context.Background(), e); err == nil || !strings.Contains(err.Error(), "passwordless sudo") {
-		t.Fatal(err)
-	}
-	if err := (Firewalld{}).Apply(context.Background(), e); err == nil || !strings.Contains(err.Error(), "passwordless sudo") {
-		t.Fatal(err)
-	}
-	for _, c := range f.Calls {
-		if strings.Contains(c, "firewall-cmd") {
-			t.Errorf("ran before stopping: %s", c)
-		}
-	}
-}
-
 func TestFirewalldCheckPassesWithoutWriting(t *testing.T) {
 	f := fwMachine(wantFw("public"), wantFw("public"))
-	e, _ := testEnv(f)
+	e := testEnv(t, f)
 	ok, detail, err := Firewalld{}.Check(context.Background(), e)
 	if !ok || err != nil || !strings.Contains(detail, "forwarded only to zone public") {
 		t.Fatalf("%v %q %v", ok, detail, err)
@@ -215,9 +200,8 @@ func TestFirewalldCheckPassesWithoutWriting(t *testing.T) {
 func TestFirewalldDetailSaysWhenTailscaleSharesTheUplinkZone(t *testing.T) {
 	f := fwMachine(wantFw("public"), wantFw("public")).
 		On("ip link show dev tailscale0", 0, "").
-		On("sudo -n firewall-cmd --get-zone-of-interface=tailscale0", 0, "public\n")
-	e, _ := testEnv(f)
-	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
+		On("firewall-cmd --get-zone-of-interface=tailscale0", 0, "public\n")
+	ok, detail, _ := Firewalld{}.Check(context.Background(), testEnv(t, f))
 	if !ok || !strings.Contains(detail, "tailscale0 is in the same zone") {
 		t.Fatalf("%v %q", ok, detail)
 	}
@@ -227,9 +211,8 @@ func TestFirewalldDetailSaysWhenTailscaleSharesTheUplinkZone(t *testing.T) {
 func TestFirewalldDetailSaysWhenAnUnboundTailscaleFallsInTheUplinkZone(t *testing.T) {
 	f := fwMachine(wantFw("public"), wantFw("public")).
 		On("ip link show dev tailscale0", 0, "").
-		On("sudo -n firewall-cmd --get-zone-of-interface=tailscale0", 2, "no zone\n")
-	e, _ := testEnv(f)
-	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
+		On("firewall-cmd --get-zone-of-interface=tailscale0", 2, "no zone\n")
+	ok, detail, _ := Firewalld{}.Check(context.Background(), testEnv(t, f))
 	if !ok || !strings.Contains(detail, "tailscale0 is in the same zone") {
 		t.Fatalf("%v %q", ok, detail)
 	}
@@ -239,9 +222,8 @@ func TestFirewalldDetailSaysWhenAnUnboundTailscaleFallsInTheUplinkZone(t *testin
 func TestFirewalldDetailIsQuietWithoutTailscale(t *testing.T) {
 	f := fwMachine(wantFw("public"), wantFw("public")).
 		On("ip link show dev tailscale0", 1, "").
-		On("sudo -n firewall-cmd --get-zone-of-interface=tailscale0", 2, "no zone\n")
-	e, _ := testEnv(f)
-	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
+		On("firewall-cmd --get-zone-of-interface=tailscale0", 2, "no zone\n")
+	ok, detail, _ := Firewalld{}.Check(context.Background(), testEnv(t, f))
 	if !ok || strings.Contains(detail, "tailscale0") {
 		t.Fatalf("%v %q", ok, detail)
 	}
@@ -260,12 +242,23 @@ func TestFwBackend(t *testing.T) {
 	}
 }
 
+// writeFile puts content at path under the env's Root.
+func writeFile(t *testing.T, e *Env, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(e.Path(filepath.Dir(path)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.Path(path), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // With the iptables backend firewalld's rules sit behind Docker's DOCKER-USER ACCEPT for
 // incusbr0, so flocc-no-docker would never see the VM's traffic.
 func TestFirewalldStopsOnTheIptablesBackend(t *testing.T) {
-	f := fwMachine(laptopFw(), laptopFw()).
-		On("sudo -n cat /etc/firewalld/firewalld.conf", 0, "DefaultZone=public\nFirewallBackend=iptables\n")
-	e, _ := testEnv(f)
+	f := fwMachine(laptopFw(), laptopFw())
+	e := testEnv(t, f)
+	writeFile(t, e, firewalldConf, "DefaultZone=public\nFirewallBackend=iptables\n")
 	ok, detail, err := Firewalld{}.Check(context.Background(), e)
 	if ok || err != nil || !strings.Contains(detail, "iptables backend") {
 		t.Fatalf("%v %q %v", ok, detail, err)
@@ -292,9 +285,9 @@ func fwDockerMachine(docker0, br string) *host.Fake {
 		On("ip -j link show type bridge", 0, bridgesJSON)
 	for dev, z := range map[string]string{"docker0": docker0, "br-0123456789ab": br} {
 		if z == "" {
-			f.On("sudo -n firewall-cmd --get-zone-of-interface="+dev, 2, "no zone\n")
+			f.On("firewall-cmd --get-zone-of-interface="+dev, 2, "no zone\n")
 		} else {
-			f.On("sudo -n firewall-cmd --get-zone-of-interface="+dev, 0, z+"\n")
+			f.On("firewall-cmd --get-zone-of-interface="+dev, 0, z+"\n")
 		}
 	}
 	return f
@@ -302,12 +295,11 @@ func fwDockerMachine(docker0, br string) *host.Fake {
 
 func TestFirewalldPassesWithDockersBridgesInItsZone(t *testing.T) {
 	f := fwDockerMachine("docker", "docker")
-	e, _ := testEnv(f)
-	ok, detail, err := Firewalld{}.Check(context.Background(), e)
+	ok, detail, err := Firewalld{}.Check(context.Background(), testEnv(t, f))
 	if !ok || err != nil {
 		t.Fatalf("%v %q %v", ok, detail, err)
 	}
-	if f.Ran("sudo -n firewall-cmd --get-zone-of-interface=br-lan") {
+	if f.Ran("firewall-cmd --get-zone-of-interface=br-lan") {
 		t.Fatalf("read a bridge that is not Docker's: %v", f.Calls)
 	}
 }
@@ -316,8 +308,7 @@ func TestFirewalldPassesWithDockersBridgesInItsZone(t *testing.T) {
 // uplink's zone, is open to the VM through flocc-incus-out.
 func TestFirewalldCatchesADockerBridgeOutsideDockersZone(t *testing.T) {
 	for _, z := range []string{"public", ""} {
-		e, _ := testEnv(fwDockerMachine("docker", z))
-		ok, detail, err := Firewalld{}.Check(context.Background(), e)
+		ok, detail, err := Firewalld{}.Check(context.Background(), testEnv(t, fwDockerMachine("docker", z)))
 		if ok || err != nil || !strings.Contains(detail, "Docker's bridge br-0123456789ab is in zone public, so flocc-no-docker does not cover it") ||
 			!strings.Contains(detail, "firewall-cmd --zone=docker --change-interface=br-0123456789ab") {
 			t.Fatalf("%q: %v %q %v", z, ok, detail, err)
@@ -329,8 +320,7 @@ func TestFirewalldCatchesADockerBridgeOutsideDockersZone(t *testing.T) {
 func TestFirewalldIgnoresBridgesWhileDockerIsStopped(t *testing.T) {
 	f := fwDockerMachine("public", "public").
 		On("systemctl is-active --quiet docker.service", 3, "inactive\n")
-	e, _ := testEnv(f)
-	if ok, detail, err := (Firewalld{}).Check(context.Background(), e); !ok || err != nil {
+	if ok, detail, err := (Firewalld{}).Check(context.Background(), testEnv(t, f)); !ok || err != nil {
 		t.Fatalf("%v %q %v", ok, detail, err)
 	}
 }
@@ -338,10 +328,10 @@ func TestFirewalldIgnoresBridgesWhileDockerIsStopped(t *testing.T) {
 // A reload unbinds Docker's bridges until Docker, told over D-Bus, binds them again.
 func TestFirewalldApplyWaitsForDockerToRebindItsBridges(t *testing.T) {
 	f := fwDockerMachine("docker", "docker").
-		On("sudo -n firewall-cmd --reload", 0, "success\n").
-		OnSeq("sudo -n firewall-cmd --get-zone-of-interface=docker0",
+		On("firewall-cmd --reload", 0, "success\n").
+		OnSeq("firewall-cmd --get-zone-of-interface=docker0",
 			host.Result{Code: 2, Stdout: "no zone\n"}, host.Result{Code: 2, Stdout: "no zone\n"}, host.Result{Stdout: "docker\n"})
-	e, _ := testEnv(f)
+	e := testEnv(t, f)
 	sleeps := 0
 	e.Sleep = func(time.Duration) { sleeps++ }
 	if err := (Firewalld{}).Apply(context.Background(), e); err != nil {
@@ -356,6 +346,28 @@ func TestFirewalldApplyWaitsForDockerToRebindItsBridges(t *testing.T) {
 	dockerUntouched(t, f.Calls)
 }
 
+// ctxRunner fails every command once ctx has ended, as host.Exec does; host.Fake ignores ctx.
+type ctxRunner struct{ *host.Fake }
+
+func (r ctxRunner) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return host.Result{}, err
+	}
+	return r.Fake.Run(ctx, c)
+}
+
+func TestFirewalldApplyStopsWaitingWhenCancelled(t *testing.T) {
+	// docker0 stays out of zone docker, so the rebind wait would run all its tries.
+	f := fwDockerMachine("public", "docker").On("firewall-cmd --reload", 0, "success\n")
+	e := testEnv(t, f)
+	e.Run = ctxRunner{f}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.Sleep = func(time.Duration) { cancel() }
+	if err := (Firewalld{}).Apply(ctx, e); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
 // Docker's zone is in the runtime configuration only: the permanent check must still want
 // flocc-no-docker, or the two checks would disagree and no write could satisfy both.
 func TestFirewalldWantsNoDockerWhenOnlyTheRuntimeHasDockersZone(t *testing.T) {
@@ -363,8 +375,7 @@ func TestFirewalldWantsNoDockerWhenOnlyTheRuntimeHasDockersZone(t *testing.T) {
 	perm.Zones = []string{"flocc-incus", "public", "trusted"}
 	perm.Policies = []string{"allow-host-ipv6", "flocc-incus-out"}
 	perm.NoDockerIn, perm.NoDockerEg, perm.NoDockerTarget, perm.NoDockerPriority = nil, nil, "", 0
-	e, _ := testEnv(fwMachine(wantFw("public"), perm))
-	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
+	ok, detail, _ := Firewalld{}.Check(context.Background(), testEnv(t, fwMachine(wantFw("public"), perm)))
 	if ok || !strings.HasPrefix(detail, "permanent: ") || !strings.Contains(detail, "flocc-no-docker") {
 		t.Fatalf("%v %q", ok, detail)
 	}
@@ -373,8 +384,7 @@ func TestFirewalldWantsNoDockerWhenOnlyTheRuntimeHasDockersZone(t *testing.T) {
 func TestFirewalldCheckCatchesAStaleRuntime(t *testing.T) {
 	runtime := wantFw("public")
 	runtime.BridgeZone = "trusted"
-	e, _ := testEnv(fwMachine(runtime, wantFw("public")))
-	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
+	ok, detail, _ := Firewalld{}.Check(context.Background(), testEnv(t, fwMachine(runtime, wantFw("public"))))
 	if ok || !strings.HasPrefix(detail, "runtime: incusbr0 is in zone \"trusted\"") {
 		t.Fatalf("%v %q", ok, detail)
 	}
@@ -382,41 +392,35 @@ func TestFirewalldCheckCatchesAStaleRuntime(t *testing.T) {
 
 func TestFirewalldApplyWritesPermanentThenReloadsOnce(t *testing.T) {
 	f := fwMachine(laptopFw(), laptopFw()).
-		On("sudo -n firewall-cmd --reload", 0, "success\n")
+		On("firewall-cmd --reload", 0, "success\n")
 	for _, args := range fwFixes(laptopFw(), "public") {
-		f.On("sudo -n firewall-cmd "+strings.Join(args, " "), 0, "success\n")
+		f.On("firewall-cmd "+strings.Join(args, " "), 0, "success\n")
 	}
-	e, _ := testEnv(f)
-	if err := (Firewalld{}).Apply(context.Background(), e); err != nil {
+	if err := (Firewalld{}).Apply(context.Background(), testEnv(t, f)); err != nil {
 		t.Fatal(err)
 	}
 	reloads := 0
 	for _, c := range f.Calls {
-		if c == "sudo -n firewall-cmd --reload" {
+		if c == "firewall-cmd --reload" {
 			reloads++
 		}
 	}
-	if reloads != 1 || f.Calls[len(f.Calls)-1] != "sudo -n firewall-cmd --reload" {
+	if reloads != 1 || f.Calls[len(f.Calls)-1] != "firewall-cmd --reload" {
 		t.Fatalf("%v", f.Calls)
 	}
-	if !f.Ran("sudo -n firewall-cmd --permanent --zone=flocc-incus --change-interface=incusbr0") {
+	if !f.Ran("firewall-cmd --permanent --zone=flocc-incus --change-interface=incusbr0") {
 		t.Fatalf("%v", f.Calls)
 	}
 	dockerUntouched(t, f.Calls)
-	for _, c := range rootCalls(f.Calls) {
-		if !strings.HasPrefix(c, "sudo -n ") {
-			t.Errorf("not sudo -n: %s", c)
-		}
-	}
 }
 
 // The machine was set up while its uplink was in zone home; wlan0 is now in public.
 func TestFirewalldRepointsTheForwardPolicyWhenTheUplinkChangesZone(t *testing.T) {
 	f := fwMachine(wantFw("home"), wantFw("home")).
-		On("sudo -n firewall-cmd --permanent --policy=flocc-incus-out --remove-egress-zone=home", 0, "success\n").
-		On("sudo -n firewall-cmd --permanent --policy=flocc-incus-out --add-egress-zone=public", 0, "success\n").
-		On("sudo -n firewall-cmd --reload", 0, "success\n")
-	e, _ := testEnv(f)
+		On("firewall-cmd --permanent --policy=flocc-incus-out --remove-egress-zone=home", 0, "success\n").
+		On("firewall-cmd --permanent --policy=flocc-incus-out --add-egress-zone=public", 0, "success\n").
+		On("firewall-cmd --reload", 0, "success\n")
+	e := testEnv(t, f)
 	ok, detail, _ := Firewalld{}.Check(context.Background(), e)
 	if ok || !strings.Contains(detail, "policy flocc-incus-out does not forward flocc-incus to public") {
 		t.Fatalf("%v %q", ok, detail)
@@ -424,8 +428,8 @@ func TestFirewalldRepointsTheForwardPolicyWhenTheUplinkChangesZone(t *testing.T)
 	if err := (Firewalld{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran("sudo -n firewall-cmd --permanent --policy=flocc-incus-out --remove-egress-zone=home") ||
-		f.Calls[len(f.Calls)-1] != "sudo -n firewall-cmd --reload" {
+	if !f.Ran("firewall-cmd --permanent --policy=flocc-incus-out --remove-egress-zone=home") ||
+		f.Calls[len(f.Calls)-1] != "firewall-cmd --reload" {
 		t.Fatalf("%v", f.Calls)
 	}
 }
@@ -433,17 +437,34 @@ func TestFirewalldRepointsTheForwardPolicyWhenTheUplinkChangesZone(t *testing.T)
 func TestUplinkZoneFallsBackToTheDefaultZone(t *testing.T) {
 	f := host.NewFake().
 		On("ip -j route show default", 0, `[{"dev":"enp0s31f6"}]`).
-		On("sudo -n firewall-cmd --get-zone-of-interface=enp0s31f6", 2, "no zone\n").
-		On("sudo -n firewall-cmd --get-default-zone", 0, "home\n")
-	e, _ := testEnv(f)
-	if z, err := uplinkZone(context.Background(), e); err != nil || z != "home" {
+		On("firewall-cmd --get-zone-of-interface=enp0s31f6", 2, "no zone\n").
+		On("firewall-cmd --get-default-zone", 0, "home\n")
+	if z, err := uplinkZone(context.Background(), testEnv(t, f)); err != nil || z != "home" {
 		t.Fatalf("%q %v", z, err)
 	}
 }
 
 func TestUplinkZoneNeedsADefaultRoute(t *testing.T) {
-	e, _ := testEnv(host.NewFake().On("ip -j route show default", 0, "[]"))
+	e := testEnv(t, host.NewFake().On("ip -j route show default", 0, "[]"))
 	if _, err := uplinkZone(context.Background(), e); err == nil || !strings.Contains(err.Error(), "no default route") {
 		t.Fatal(err)
+	}
+}
+
+func TestCreateRootIdleOnlyWithoutFirewalldAndDocker(t *testing.T) {
+	idle := host.NewFake() // a key with no response exits 127, so every systemctl query fails
+	if ok, detail := CreateRootIdle(context.Background(), testEnv(t, idle)); !ok ||
+		!strings.Contains(detail, "firewalld not running") || !strings.Contains(detail, "Docker not running") {
+		t.Fatalf("idle = %v %q", ok, detail)
+	}
+	for _, unit := range []string{
+		"systemctl is-active --quiet firewalld.service",
+		"systemctl is-active --quiet docker.service",
+		"systemctl is-enabled --quiet docker.service",
+		"systemctl is-active --quiet docker.socket",
+	} {
+		if ok, _ := CreateRootIdle(context.Background(), testEnv(t, host.NewFake().On(unit, 0, ""))); ok {
+			t.Fatalf("idle with %s", unit)
+		}
 	}
 }

@@ -7,17 +7,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 const (
-	Bridge = "incusbr0"
+	Bridge = steps.IncusBridge
 	Image  = "images:debian/13"
 )
 
@@ -27,11 +30,6 @@ type Spec struct {
 	CPUs      int
 	MemoryGiB int
 	DiskGiB   int
-}
-
-// Prompter is the one question create asks; ui.Huh satisfies it.
-type Prompter interface {
-	Secret(id, title, help string) (string, error)
 }
 
 // RedactLog is the writer behind the run's log. A secret that only becomes known mid-run, such as
@@ -63,25 +61,34 @@ func (l *RedactLog) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
+// KeyMinter mints the one-off tagged auth key a host joins the tailnet with; *tailnet.Client is one.
+type KeyMinter interface {
+	TaggedKey(ctx context.Context, tag string, ttl time.Duration) (string, error)
+}
+
 type Env struct {
 	M     host.Runner // runs on the machine
 	Local host.Runner // runs on this desktop
-	UI    Prompter
-	Out   io.Writer
+	UI    ui.Session
 	Log   *RedactLog // the log host.Exec writes to; Add registers a secret before it is used
 	Spec  Spec
 	Sleep func(time.Duration)
 	TTY   bool // stdin is a terminal, where ship.Connect can open the machine's master
+	// Tailnet is nil without a stored OAuth client; the VM then logs in by QR code.
+	Tailnet KeyMinter
+	// Checkout is the flocc checkout flocc-setup is built from.
+	Checkout func() (string, error)
 
-	prog      *ui.Progress
-	stepTotal int  // steps in the last RunSteps, which the Snapshot line aligns its counter column to
-	sudo      bool // sudo -n works on the machine
-	incusSudo bool // the account is not in incus-admin, so incus goes through sudo
+	step      *ui.Step // the step RunSteps is applying, for the waits inside it
+	sudo      bool     // sudo -n works on the machine
+	incusSudo bool     // the account is not in incus-admin, so incus goes through sudo
+	rootDone  string   // the root pass's detail once it ran
 }
 
 func cmd(name string, args ...string) host.Cmd { return host.Cmd{Name: name, Args: args} }
 
-// root runs c as root. Most commands are captured with no terminal, so sudo must never prompt.
+// root runs c as root for incus. Most commands are captured with no terminal, so sudo must never
+// prompt.
 func (e *Env) root(c host.Cmd) host.Cmd {
 	c.Args = append([]string{"-n", c.Name}, c.Args...)
 	c.Name = "sudo"
@@ -131,13 +138,11 @@ func (e *Env) Probe(ctx context.Context) error {
 	return nil
 }
 
-// Preconditions reports what the machine allows before anything changes there: whether sudo
-// works without a password, which create's firewall and Docker steps need even to check, and
-// whether incus runs as an administrator (nil), else the fix. m runs commands on the machine.
-func Preconditions(ctx context.Context, m host.Runner, machine string) (sudo bool, incus error) {
+// Preconditions reports whether incus runs as an administrator on the machine (nil), else the fix.
+// m runs commands on the machine.
+func Preconditions(ctx context.Context, m host.Runner, machine string) error {
 	e := &Env{M: m, Spec: Spec{Machine: machine}}
-	incus = e.Probe(ctx)
-	return e.sudo, incus
+	return e.Probe(ctx)
 }
 
 // regroup says how a new group reaches create's commands: the shared master logged in before the
@@ -151,14 +156,6 @@ func regroup(machine string, opts []string) string {
 	return "then log in again"
 }
 
-// needRoot stops a step that reads or changes the machine's firewall, which only root can.
-func (e *Env) needRoot(what string) error {
-	if e.sudo {
-		return nil
-	}
-	return fmt.Errorf("%s on %s needs root, and sudo there asks for a password, which create cannot type. Give your account passwordless sudo on %s (a file in /etc/sudoers.d/ written with visudo), then run create again", what, e.Spec.Machine, e.Spec.Machine)
-}
-
 type Step interface {
 	Name() string
 	// Check reports whether the step's outcome already holds. It never changes the machine.
@@ -168,60 +165,77 @@ type Step interface {
 
 // RunSteps checks each step just before it would run: a later step's check needs the earlier
 // steps' outcome, such as the VM existing.
-//
-// The steps are numbered by position, done or not, because which of them run is known only as
-// each is reached. An applied step shows a live line unless it is Attached.
 func RunSteps(ctx context.Context, e *Env, steps []Step) error {
-	p := e.progress()
-	e.stepTotal = len(steps)
-	for i, s := range steps {
+	for _, s := range steps {
+		st := e.UI.Step(s.Name())
+		st.Detail("checking")
 		done, detail, err := s.Check(ctx, e)
 		if err != nil {
-			return fmt.Errorf("%s: %w", s.Name(), err)
+			return failStep(st, fmt.Errorf("%s: %w", s.Name(), err))
 		}
-		l := ui.Line{N: i + 1, Total: len(steps), Name: s.Name(), Detail: detail, Attached: attachedStep(s)}
 		if done {
-			p.Done(l)
+			st.Done(detail)
 			continue
 		}
-		err = p.Run(l, func() (ui.Outcome, error) {
-			if err := s.Apply(ctx, e); err != nil {
-				return ui.Outcome{}, fmt.Errorf("%s: %w", s.Name(), err)
-			}
-			done, detail, err := s.Check(ctx, e)
-			if err != nil {
-				return ui.Outcome{}, fmt.Errorf("%s: %w", s.Name(), err)
-			}
-			if !done {
-				return ui.Outcome{}, fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
-			}
-			return ui.Outcome{Detail: detail}, nil
-		})
+		st.Detail("applying")
+		e.step = st
+		detail, err = e.apply(ctx, s)
+		e.step = nil
 		if err != nil {
-			return err
+			return failStep(st, err)
 		}
+		st.Done(detail)
 	}
 	return nil
 }
 
-// attachedStep reports whether the step reads the terminal or draws on it, as a step that shows
-// a QR code or asks for a key does: a live line under that would be redrawn into it.
-func attachedStep(s Step) bool {
-	a, ok := s.(interface{ Attached() bool })
-	return ok && a.Attached()
-}
-
-func (e *Env) progress() *ui.Progress {
-	if e.prog == nil {
-		e.prog = ui.NewProgress(e.Out)
-		e.prog.NameWidth = 10
+func (e *Env) apply(ctx context.Context, s Step) (string, error) {
+	if err := s.Apply(ctx, e); err != nil {
+		return "", fmt.Errorf("%s: %w", s.Name(), err)
 	}
-	return e.prog
+	done, detail, err := s.Check(ctx, e)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", s.Name(), err)
+	}
+	if !done {
+		return "", fmt.Errorf("%s: applied, but the check still fails: %s", s.Name(), detail)
+	}
+	return detail, nil
 }
 
-func (e *Env) o() ui.Out { return ui.NewOut(e.Out) }
+func failStep(st *ui.Step, err error) error {
+	st.Fail(err)
+	return err
+}
 
-type tsNode struct{ HostName, DNSName string }
+// waiting shows the countdown of a poll loop on the step being applied.
+func (e *Env) waiting(what string, left time.Duration) {
+	if e.step != nil {
+		e.step.Detail(fmt.Sprintf("%s, %ds left", what, int(left/time.Second)))
+	}
+}
+
+type tsNode struct {
+	HostName, DNSName string
+	Tags              []string
+}
+
+// tagInUse reports whether a node this desktop sees carries the host tag.
+func tagInUse(ctx context.Context, e *Env) bool {
+	out, err := host.Must(ctx, e.Local, cmd("tailscale", "status", "--json"))
+	if err != nil {
+		return false
+	}
+	var st struct {
+		Self *tsNode
+		Peer map[string]*tsNode
+	}
+	if json.Unmarshal([]byte(out), &st) != nil {
+		return false
+	}
+	return slices.ContainsFunc(append([]*tsNode{st.Self}, slices.Collect(maps.Values(st.Peer))...),
+		func(n *tsNode) bool { return n != nil && slices.Contains(n.Tags, tailnet.Tag) })
+}
 
 func (n *tsNode) named(name string) bool {
 	if n == nil {

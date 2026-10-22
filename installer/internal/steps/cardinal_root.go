@@ -17,17 +17,18 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
-var cardinalStageName = regexp.MustCompile(`^/tmp/flocc-cardinal\.[A-Za-z0-9]{6,}$`)
+var rootStageName = regexp.MustCompile(`^/tmp/flocc-(cardinal|create)\.[A-Za-z0-9]{6,}$`)
 
-// ValidCardinalStage reports whether dir is a name mktemp -d /tmp/flocc-cardinal.XXXXXX gives.
-func ValidCardinalStage(dir string) bool { return cardinalStageName.MatchString(dir) }
+// ValidRootStage reports whether dir is a name mktemp -d /tmp/flocc-cardinal.XXXXXX or
+// /tmp/flocc-create.XXXXXX gives.
+func ValidRootStage(dir string) bool { return rootStageName.MatchString(dir) }
 
-// CheckCardinalStage refuses a stage the root pass cannot trust. The owner's mktemp made it, so
+// CheckRootStage refuses a stage the root pass cannot trust. The owner's mktemp made it, so
 // anything not owned by SUDO_UID, a symlink or a looser mode means someone else had a hand in it.
 // files are the ones the pass reads from it.
-func CheckCardinalStage(dir string, sudoUID int, files ...string) error {
-	if !ValidCardinalStage(dir) {
-		return fmt.Errorf("the root pass runs from a /tmp/flocc-cardinal.XXXXXX stage, not %s", dir)
+func CheckRootStage(dir string, sudoUID int, files ...string) error {
+	if !ValidRootStage(dir) {
+		return fmt.Errorf("the root pass runs from a /tmp/flocc-cardinal.XXXXXX or /tmp/flocc-create.XXXXXX stage, not %s", dir)
 	}
 	owned := func(p string, wantDir bool) error {
 		st, err := os.Lstat(p)

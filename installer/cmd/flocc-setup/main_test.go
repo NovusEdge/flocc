@@ -42,38 +42,6 @@ func TestHandoffArgs(t *testing.T) {
 	}
 }
 
-// The service phase starts through sudo -i, which drops the environment, so the request for
-// colour and the desktop's width cross that hop as flags of the same binary.
-func TestColorArgsCarryTheWidthOnlyWithColour(t *testing.T) {
-	for _, c := range []struct {
-		color bool
-		cols  int
-		want  []string
-	}{
-		{false, 0, nil},
-		{false, 97, nil},
-		{true, 0, []string{"--color"}},
-		{true, 97, []string{"--color", "--cols", "97"}},
-	} {
-		if got := colorArgs(c.color, c.cols); !slices.Equal(got, c.want) {
-			t.Errorf("colorArgs(%v, %d) = %v, want %v", c.color, c.cols, got, c.want)
-		}
-	}
-}
-
-func TestColumnsPrefersTheFlagThenTheEnvironment(t *testing.T) {
-	env := func(v string) func(string) string { return func(string) string { return v } }
-	for _, c := range []struct {
-		flag int
-		env  string
-		want int
-	}{{40, "97", 40}, {0, "97", 97}, {0, "", 0}, {0, "wide", 0}, {0, "-3", 0}} {
-		if got := columns(c.flag, env(c.env)); got != c.want {
-			t.Errorf("columns(%d, %q) = %d, want %d", c.flag, c.env, got, c.want)
-		}
-	}
-}
-
 func fillStage(t *testing.T, names ...string) string {
 	t.Helper()
 	stage := t.TempDir()
@@ -385,5 +353,46 @@ func TestCheckStage(t *testing.T) {
 		if checkStage(d) == nil {
 			t.Errorf("%q: want refusal", d)
 		}
+	}
+}
+
+type fakeStep struct{ name string }
+
+func (f fakeStep) Name() string { return f.name }
+func (f fakeStep) Check(context.Context, *steps.Env) (bool, string, error) {
+	return false, "to do", nil
+}
+func (f fakeStep) Apply(context.Context, *steps.Env) error { return nil }
+
+func TestEventsRunDrawsTheStepsAndSendsTheSummaryAsData(t *testing.T) {
+	var out, errOut bytes.Buffer
+	env := finishEnv(t, loginFailLine)
+	env.UI = &ui.Events{Scripted: ui.Scripted{A: env.Answers, Out: &out}, W: &out}
+	if err := steps.RunAll(context.Background(), env, []steps.Step{fakeStep{"One"}, fakeStep{"Two"}}); err == nil {
+		t.Fatal("the fake step's check never passes; want the applied-but-still-failing error")
+	}
+	if code := finish(context.Background(), env, nil, true, &out, &errOut, "/tmp/setup.log"); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), steps.SummaryMarker) {
+		t.Fatalf("escape or marker line in %q", out.String())
+	}
+	rec := &ui.Recorder{}
+	r := ui.Replay(ui.New(rec), "", "")
+	r.Write(out.Bytes())
+	r.Close()
+	var names []string
+	for _, row := range rec.Rows() {
+		names = append(names, row.Name)
+	}
+	if !slices.Equal(names, []string{"One"}) {
+		t.Errorf("rows %q", names)
+	}
+	data, ok := r.Data("summary")
+	if !ok {
+		t.Fatalf("no summary data in %q", out.String())
+	}
+	if s, ok := steps.ParseSummaryLine(steps.SummaryMarker + data); !ok || !s.LoginPending {
+		t.Errorf("summary %q", data)
 	}
 }

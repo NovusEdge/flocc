@@ -4,6 +4,57 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## 0.9.0 (2026-10-22)
+
+The desktop CLI shows what it is doing, and hosts join the tailnet tagged without a browser login.
+
+- Every desktop command writes through one session of steps, drawn full-screen, inline or plain.
+  `setup`, `host create`, `ship`, `login` and `cardinal setup|login` open full-screen on a
+  terminal: a rail of sections, the running step's output, prompts as a modal. Choose with
+  `--full`, `--inline`, `--plain` or `FLOCC_UI`; a pipe, `NO_COLOR` or `TERM=dumb` is always plain.
+  Rows now appear as each step ends, including during `setup`, `ship` staging, builds and tailnet
+  waits.
+- `flocc-setup --events` streams steps as JSON lines and `ship` replays them into the desktop's
+  session, in place of the raw host output and the two summary marker lines. `status --json` adds
+  recent activity per issue and cardinal's status.
+- Bare `flocc`, or `flocc status --watch` on a terminal, opens a dashboard of every host and
+  issue, polled every 10 seconds. `a` attaches, `r` releases after a confirmation. `-H all doctor`
+  and `logs` are drawn by the desktop.
+- Every desktop screen shares one palette, which follows the terminal's light or dark background,
+  one rounded pane style and one key bar that dims keys doing nothing on the current row. The
+  full-screen commands draw their sections and steps as two panes, stacked below 100 columns, and
+  switch to inline below 60×20.
+- The dashboard opens an issue, a host or cardinal into a screen of its own: an issue's live tmux
+  pane or the log lines naming it, a host's facts, doctor checks and log tail, and a pager with
+  search and follow. Issues show their Linear titles. `/` filters, errors show as toasts, and
+  release asks on the line above the key bar.
+- Hosts gain `flocc peek <issue>`, the tail of an issue's live session, and `flocc logs --issue
+  <key>`, only the log lines that name it.
+- A terminal handoff waits for the terminal's answers to the program's startup queries, so they no
+  longer appear as `^[[?1u` in a `host create` ssh login.
+- `flocc cardinal login` and `cardinal attach --write` warn that Ctrl-D twice ends cardinal's
+  session.
+- `flocc setup` has a Tailnet section. The Tailscale OAuth client is a new optional key slot;
+  with it, setup checks the tailnet policy and prints a merged policy to paste (it never writes
+  one), and tags each host's node. `host create` mints a one-off tagged key and joins with no QR
+  login; without the client it joins with `--advertise-tags=tag:flocc-host`.
+- `host create` runs its firewalld and Docker steps as root in one `sudo` on the machine, so a
+  password on sudo is asked once instead of stopping create; the setup wizard no longer refuses
+  such a machine.
+  create stops before the build when the checkout lacks the commit the desktop flocc was built
+  from, and the first ssh to the machine gives up after 10 seconds.
+- `flocc keys` and `flocc setup`, run in a flocc checkout, take each key from the shell's
+  environment or the checkout's `.env` (`FLOCC_LINEAR_API_KEY`, `FLOCC_GITHUB_AGENT_TOKEN`,
+  `FLOCC_GITHUB_PUBLISH_TOKEN`, `FLOCC_NTFY_TOPIC`, `FLOCC_TAILSCALE_OAUTH_SECRET`) and check it
+  as a paste. `.env.example` lists them, and setup makes `.env` from it when missing.
+- A pasted key shows as dots, then as its kind, last four characters and length. The Tailscale
+  client secret alone is enough. Key pages open in the browser without a QR code.
+- `flocc cardinal status` connects on the terminal first, so a Tailscale SSH check shows its link
+  at once instead of reading as an unreachable machine.
+- The docs are a GitBook book in `docs/book/`; `docs/vm-setup.md` points into it.
+- Not confirmed against the live Tailscale API: the error text for a tag the policy lacks, and
+  tagging a user-owned node through the API.
+
 ## 0.8.0 (2026-10-21)
 
 `flocc cardinal`, the always-on assistant's setup command, and `flocc setup`, one command for the whole setup.

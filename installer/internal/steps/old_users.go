@@ -11,9 +11,12 @@ import (
 	"time"
 )
 
+// OldName is flocc's name before the rename, for its service user and its run command.
+const OldName = "linear-agents"
+
 // OldUsers are the service users earlier flocc versions made. flocc setup offers to remove one it
 // finds; the root pass removes no other name. A later rename adds its old name here.
-var OldUsers = []string{"linear-agents"}
+var OldUsers = []string{OldName}
 
 var uidMinLine = regexp.MustCompile(`(?m)^\s*UID_MIN\s+(\d+)`)
 

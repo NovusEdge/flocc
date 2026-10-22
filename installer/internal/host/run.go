@@ -21,6 +21,10 @@ type Cmd struct {
 	Stdin io.Reader
 	// Stdout replaces the terminal in Interactive; Run always captures.
 	Stdout io.Writer
+	// Why is shown before the terminal goes to the command: "" uses the command line, "-" shows nothing.
+	Why string
+	// Attach hands off even with Stdin and Stdout set, because the far end draws on this terminal.
+	Attach bool
 }
 
 func (c Cmd) String() string { return strings.Join(append([]string{c.Name}, c.Args...), " ") }
@@ -39,7 +43,16 @@ type Runner interface {
 	Interactive(ctx context.Context, c Cmd) error
 }
 
-type Exec struct{ Log io.Writer }
+// Terminal is what owns the terminal while flocc draws on it: the ui session. host does not import
+// ui; ui.Session satisfies this.
+type Terminal interface {
+	Handoff(why string, c *exec.Cmd) error
+}
+
+type Exec struct {
+	Log  io.Writer
+	Term Terminal // nil runs Interactive commands directly
+}
 
 func (e Exec) log() io.Writer {
 	if e.Log == nil {
@@ -83,6 +96,17 @@ func (e Exec) Run(ctx context.Context, c Cmd) (Result, error) {
 
 func (e Exec) Interactive(ctx context.Context, c Cmd) error {
 	cmd := e.command(ctx, c)
+	fmt.Fprintf(e.log(), "$ %s (interactive)\n", c)
+	if e.Term != nil && (c.Attach || c.Stdin == nil || c.Stdout == nil) {
+		// Nil streams are filled with the terminal by tea.ExecProcess, which keeps the ones set.
+		cmd.Stdin, cmd.Stdout = c.Stdin, c.Stdout
+		// Never the argument vector: an ssh to a Daytona sandbox carries its token there.
+		why := c.Why
+		if why == "" {
+			why = c.Name
+		}
+		return e.Term.Handoff(why, cmd)
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if c.Stdin != nil {
 		cmd.Stdin = c.Stdin
@@ -90,7 +114,14 @@ func (e Exec) Interactive(ctx context.Context, c Cmd) error {
 	if c.Stdout != nil {
 		cmd.Stdout = c.Stdout
 	}
-	fmt.Fprintf(e.log(), "$ %s (interactive)\n", c)
+	// Under a session the terminal is not ours to write on. A caller that reads stdout (the wire
+	// replay) also gets what the far end says on stderr, which is where flocc-setup reports errors.
+	if e.Term != nil {
+		cmd.Stderr = e.log()
+		if c.Stdout != nil {
+			cmd.Stderr = c.Stdout
+		}
+	}
 	return cmd.Run()
 }
 

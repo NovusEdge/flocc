@@ -29,7 +29,7 @@ func (r Remote) wrap(c host.Cmd, tty bool) host.Cmd {
 	for _, a := range c.Args {
 		words = append(words, quote(a))
 	}
-	return host.Cmd{Name: "ssh", Args: append(args, r.Target, strings.Join(words, " ")), Stdin: c.Stdin}
+	return host.Cmd{Name: "ssh", Args: append(args, r.Target, strings.Join(words, " ")), Stdin: c.Stdin, Why: c.Why}
 }
 
 func (r Remote) Run(ctx context.Context, c host.Cmd) (host.Result, error) {

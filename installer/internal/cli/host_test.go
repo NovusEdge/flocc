@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -23,6 +22,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // hostScript ticks every repo offered, picks the first team and pastes secrets in order. With
@@ -35,10 +35,21 @@ type hostScript struct {
 	err       error
 	confirms  []bool
 	teamAsked bool
-	notes     []string
+	rec       *ui.Recorder // what the session drew
 }
 
-func (s *hostScript) Note(title, _ string) { s.notes = append(s.notes, title) }
+func (s *hostScript) Note(string, string) {}
+
+// texts is each event of kind k, as the text a person would read.
+func (s *hostScript) texts(k ui.Kind) []string {
+	var out []string
+	for _, e := range s.rec.Events {
+		if e.Kind == k {
+			out = append(out, e.Name+" "+e.Text)
+		}
+	}
+	return out
+}
 
 func (s *hostScript) Ask(title, _ string) (string, error) {
 	s.t.Helper()
@@ -62,7 +73,7 @@ func (s *hostScript) Confirm(title string, _ bool) (bool, error) {
 	return v, nil
 }
 
-func (s *hostScript) Secret(string, string) (string, error) {
+func (s *hostScript) Secret(string, string, ...string) (string, error) {
 	if len(s.secrets) == 0 {
 		return "", s.err
 	}
@@ -225,7 +236,8 @@ func addDeps(t *testing.T, secrets string) (*deps, *fakeLinear, *hostScript) {
 	ls := httptest.NewServer(lin)
 	t.Cleanup(ls.Close)
 	writeSecrets(t, d.home, secrets)
-	p := &hostScript{t: t}
+	p := &hostScript{t: t, rec: &ui.Recorder{}}
+	d.ui = ui.New(p.rec)
 	d.store = func() keys.Store { return keys.Open(d.home, io.Discard) }
 	d.prompt = p
 	d.http = http.DefaultClient
@@ -233,7 +245,7 @@ func addDeps(t *testing.T, secrets string) (*deps, *fakeLinear, *hostScript) {
 	ntfy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(ntfy.Close)
 	d.ntfyBase, d.newTopic = ntfy.URL, func() string { return "flocc-t" }
-	d.open, d.qr = func(string) {}, func(string) {}
+	d.open = func(string) {}
 	return d, lin, p
 }
 
@@ -270,6 +282,47 @@ func TestHostAddMakesTheDigestAndLabelsOnce(t *testing.T) {
 	}
 	if hostFile(d, "h1") != filepath.Join(d.home, ".config/flocc/hosts/h1.toml") {
 		t.Fatal(hostFile(d, "h1"))
+	}
+}
+
+func TestHostAddShowsEachCallAsAStepWithItsOwnOutcome(t *testing.T) {
+	d, _, p := addDeps(t, allKeys)
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range p.rec.Rows() {
+		got = append(got, r.Name+"="+string(r.State))
+	}
+	want := []string{"Host file=done", "Keys=done", "Repos=done", "Linear team=done", "Issues=done", "Labels=done", "Save host=done",
+		"Check Linear API key=done", "Check GitHub agent token (read-only)=done", "Check GitHub publish token=done", "Check ntfy topic=done", "Keys=done"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("%q", got)
+	}
+	var running []string
+	for _, e := range p.rec.Events {
+		if e.Kind == ui.KStep && e.State == ui.Running && e.Name == "Labels" {
+			running = append(running, e.Detail)
+		}
+	}
+	if !slices.Contains(running, "creating label claude") {
+		t.Fatalf("%q", running)
+	}
+}
+
+func TestHostAddFailsTheStepThatFailed(t *testing.T) {
+	d, lin, p := addDeps(t, allKeys)
+	lin.issueErr = "Rate limit exceeded"
+	h1 := hosts.Host{Name: "h1", SSH: "root@h1", Answers: answers.Answers{TeamKey: "NF", DigestIssue: "NF-186"}}
+	if err := hosts.Save(hosts.Dir(d.home), h1); err != nil {
+		t.Fatal(err)
+	}
+	if err := hostAdd(context.Background(), d, "h1", "", ""); err == nil {
+		t.Fatal("no error")
+	}
+	rows := p.rec.Rows()
+	if last := rows[len(rows)-1]; last.Name != "Issues" || last.State != ui.Failed || !strings.Contains(last.Err, "Rate limit") {
+		t.Fatalf("%+v", rows)
 	}
 }
 
@@ -316,7 +369,7 @@ func TestHostAddSaysWhyItPassedOverAnotherHostsDigest(t *testing.T) {
 		{"gone", "", "Not using flocc-nimble's digest NF-186: Linear has no such issue."},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			d, lin, _ := addDeps(t, allKeys)
+			d, lin, p := addDeps(t, allKeys)
 			if c.state != "" {
 				lin.issues["NF-186"] = "digest"
 				lin.states = map[string]string{"NF-186": c.state}
@@ -328,9 +381,9 @@ func TestHostAddSaysWhyItPassedOverAnotherHostsDigest(t *testing.T) {
 			if err := hostAdd(context.Background(), d, "flocc-trial", "", ""); err != nil {
 				t.Fatal(err)
 			}
-			out := d.out.(*bytes.Buffer).String()
-			if !strings.Contains(out, "  "+c.want+"\n") || !strings.Contains(out, ", the digest issue; pin it in Linear.\n") || lin.issueCreates != 1 {
-				t.Fatalf("%q", out)
+			notes, todos := strings.Join(p.texts(ui.KNote), "\n"), strings.Join(p.texts(ui.KTodo), "\n")
+			if !strings.Contains(notes, c.want) || !strings.Contains(todos, ", the digest issue; pin it in Linear.") || lin.issueCreates != 1 {
+				t.Fatalf("notes %q todos %q", notes, todos)
 			}
 		})
 	}
@@ -422,11 +475,20 @@ func TestHostAddSendsAKeyGitHubOrLinearRejectsToRotate(t *testing.T) {
 	}
 }
 
-func TestHostAddSaysWhichKeyMissesTheNewRepo(t *testing.T) {
+func TestHostAddSaysWhichKeyMissesTheNewRepoOnce(t *testing.T) {
 	d, _, _ := addDeps(t, strings.Replace(allKeys, "github_pat_publish", "github_pat_weak", 1))
+	rec := &ui.Recorder{}
+	d.ui = ui.New(rec)
 	err := hostAdd(context.Background(), d, "h1", "", "")
-	if err == nil || !strings.Contains(err.Error(), "o/a: the token cannot push") || !strings.Contains(err.Error(), "the token stays the same") {
-		t.Fatal(err)
+	if err == nil || strings.Contains(err.Error(), "o/a:") {
+		t.Fatalf("the error repeats the check row: %v", err)
+	}
+	var shown int
+	for _, r := range rec.Rows() {
+		shown += strings.Count(r.Err+"\n"+r.Detail, "o/a: the token cannot push")
+	}
+	if text := sessionText(rec); shown != 1 || strings.Count(text, "the token stays the same") != 1 {
+		t.Fatalf("shown %d times:\n%s", shown, text)
 	}
 	loadHost(t, d, "h1") // saved even though a key does not cover it yet
 }
@@ -466,6 +528,7 @@ func TestHostImportCopiesTheHostsAnswersAndKeepsItsTopic(t *testing.T) {
 // The next ship sends the desktop's topic, so the phone would stop hearing from the host.
 func TestHostImportSaysWhenTheDesktopsTopicWillReplaceTheHosts(t *testing.T) {
 	d, _, _ := importDeps(t)
+	p := d.prompt.(*hostScript)
 	writeSecrets(t, d.home, "ntfy_topic = 'flocc-desk'\n")
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code != 0 {
 		t.Fatalf("exit %d", code)
@@ -473,9 +536,9 @@ func TestHostImportSaysWhenTheDesktopsTopicWillReplaceTheHosts(t *testing.T) {
 	if topic, _ := d.store().Get(keys.Ntfy); topic != "flocc-desk" {
 		t.Fatalf("topic %q", topic)
 	}
-	want := "The desktop's ntfy topic differs from h1's; the next ship moves h1 to the desktop's (https://ntfy.sh/flocc-desk).\n"
-	if out := d.out.(*bytes.Buffer).String(); !strings.Contains(out, want) {
-		t.Fatal(out)
+	want := "The desktop's ntfy topic differs from h1's; the next ship moves h1 to the desktop's (https://ntfy.sh/flocc-desk)."
+	if got := p.texts(ui.KTodo); len(got) != 1 || !strings.Contains(got[0], want) {
+		t.Fatal(got)
 	}
 }
 
@@ -507,8 +570,9 @@ func TestHostImportNamesTheHostItCouldNotReach(t *testing.T) {
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code == 0 {
 		t.Fatal("exit 0")
 	}
-	if errs := d.err.(*bytes.Buffer).String(); !strings.Contains(errs, "could not reach h1") || len(f.captured()) != 0 {
-		t.Fatalf("%s %v", errs, f.captured())
+	rows := d.prompt.(*hostScript).rec.Rows()
+	if len(rows) != 1 || rows[0].Name != "Connect" || rows[0].State != ui.Failed || !strings.Contains(rows[0].Err, "could not reach h1") || len(f.captured()) != 0 {
+		t.Fatalf("%+v %v", rows, f.captured())
 	}
 }
 
@@ -516,6 +580,8 @@ func TestHostImportNamesTheHostItCouldNotReach(t *testing.T) {
 // checks as a paste, and one that fails them is left for flocc keys.
 func TestHostImportTakesTheHostsKeysThroughThePasteChecks(t *testing.T) {
 	d, f, lin := importDeps(t)
+	rec := &ui.Recorder{}
+	d.ui = ui.New(rec)
 	f.files[".config/flocc/linear.key"] = "lin_api_k\n"
 	f.files[".config/flocc/gh-agent.token"] = "github_pat_agent\n"
 	f.files[".config/flocc/gh-publish.token"] = "github_pat_weak\n"
@@ -535,8 +601,8 @@ func TestHostImportTakesTheHostsKeysThroughThePasteChecks(t *testing.T) {
 	if lin.updates != 1 {
 		t.Fatalf("the Linear key's write probe ran %d times", lin.updates)
 	}
-	out := d.out.(*bytes.Buffer).String()
-	if !strings.Contains(out, "Took the GitHub agent token (read-only) from h1") || !strings.Contains(out, "o/a: the token cannot push") {
+	out := sessionText(rec)
+	if row(rec, "Check GitHub agent token (read-only) from h1").State != ui.Done || !strings.Contains(out, "o/a: the token cannot push") {
 		t.Fatal(out)
 	}
 	// Only the host has the publish token's value, and editing it on GitHub keeps the value.
@@ -584,9 +650,11 @@ func TestHostImportStopsWhenTheHostDropsBeforeAKeyIsRead(t *testing.T) {
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code == 0 {
 		t.Fatal("exit 0")
 	}
-	errs := d.err.(*bytes.Buffer).String()
-	if !strings.Contains(errs, "could not reach h1 (ssh: connect to host h1 port 22: Connection timed out); run flocc host import again") {
-		t.Fatal(errs)
+	rows := d.prompt.(*hostScript).rec.Rows()
+	last := rows[len(rows)-1]
+	if last.Name != "Keys" || last.State != ui.Failed ||
+		!strings.Contains(last.Err, "could not reach h1 (ssh: connect to host h1 port 22: Connection timed out); run flocc host import again") {
+		t.Fatalf("%+v", rows)
 	}
 	if v, _ := d.store().Get(keys.Linear); v != "" {
 		t.Fatalf("linear %q", v)
@@ -602,13 +670,15 @@ func TestHostImportRechecksAKeyLinearCouldNotCheck(t *testing.T) {
 	f.files[".config/flocc/linear.key"] = "lin_api_k\n"
 	p := d.prompt.(*hostScript)
 	p.confirms = []bool{true, false}
+	rec := &ui.Recorder{}
+	d.ui = ui.New(rec)
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	if v, _ := d.store().Get(keys.Linear); v != "" {
 		t.Fatalf("stored unchecked: %q", v)
 	}
-	out := d.out.(*bytes.Buffer).String()
+	out := sessionText(rec)
 	if len(p.confirms) != 0 || strings.Count(out, "Rate limit exceeded") != 2 || strings.Contains(out, "new one") {
 		t.Fatalf("confirms left %v\n%s", p.confirms, out)
 	}

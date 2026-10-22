@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 set -eu
 cd "$(dirname "$0")"
+if [ ! -e .env ] && [ -f .env.example ]; then
+  (umask 077 && cp .env.example .env)
+  echo "made .env from .env.example; put your keys there and flocc setup takes them"
+fi
 if ! command -v mise >/dev/null 2>&1; then
   curl -fsSL https://mise.run | sh
 fi

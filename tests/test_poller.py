@@ -104,6 +104,8 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
         git_head=lambda p: "sha0",
         review_diff=lambda c: "",
         comment_pr=lambda c, u, b: None,
+        # The real check reads tmp_path's filesystem, and a nearly full /tmp holds every issue.
+        free_disk_gb=lambda path: 100.0,
     )
 
 

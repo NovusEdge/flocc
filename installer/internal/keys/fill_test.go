@@ -1,7 +1,6 @@
 package keys
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/replay"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // logStore keeps keys in memory and logs each Set into the fixture's event list, beside the
@@ -38,9 +38,11 @@ type script struct {
 	t        *testing.T
 	secrets  []string
 	confirms []bool
+	facts    [][]string // what each Secret was shown with
 }
 
-func (s *script) Secret(string, string) (string, error) {
+func (s *script) Secret(_, _ string, facts ...string) (string, error) {
+	s.facts = append(s.facts, facts)
 	if len(s.secrets) == 0 {
 		return "", nil
 	}
@@ -63,15 +65,34 @@ type fixture struct {
 	env    Env
 	store  logStore
 	events []string
-	out    bytes.Buffer
-	qr     []string
+	rec    *ui.Recorder
 	mu     sync.Mutex
 	pushes []*http.Request
 }
 
+// text is every word the session was sent: notes, rows, details and errors.
+func (f *fixture) text() string {
+	var b strings.Builder
+	for _, e := range f.rec.Events {
+		b.WriteString(e.Name + " " + e.Detail + " " + e.Err + " " + e.Text + "\n")
+	}
+	return b.String()
+}
+
+// row is the last event of the step named name, or a zero Event.
+func (f *fixture) row(name string) ui.Event {
+	var got ui.Event
+	for _, e := range f.rec.Rows() {
+		if e.Name == name {
+			got = e
+		}
+	}
+	return got
+}
+
 func newFixture(t *testing.T, gh, lin *replay.Server, p *script) *fixture {
 	t.Helper()
-	f := &fixture{}
+	f := &fixture{rec: &ui.Recorder{}}
 	p.t = t
 	f.store = logStore{m: map[Slot]string{}, events: &f.events}
 	ntfy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -80,9 +101,8 @@ func newFixture(t *testing.T, gh, lin *replay.Server, p *script) *fixture {
 		f.mu.Unlock()
 	}))
 	t.Cleanup(ntfy.Close)
-	f.env = Env{Store: f.store, Prompt: p, Out: &f.out, HTTP: http.DefaultClient, NtfyBase: ntfy.URL,
+	f.env = Env{Store: f.store, Prompt: p, UI: ui.New(f.rec), HTTP: http.DefaultClient, NtfyBase: ntfy.URL,
 		Open:     func(u string) { f.events = append(f.events, "open "+u) },
-		QR:       func(s string) { f.qr = append(f.qr, s) },
 		NewTopic: func() string { return "flocc-test" }}
 	if gh != nil {
 		f.env.GitHubAPI = gh.URL
@@ -132,9 +152,204 @@ func TestFillAsksForEachKeyInOrderAndStoresIt(t *testing.T) {
 		t.Fatalf("%v", f.store.m)
 	}
 	for _, secret := range []string{"lin_api_k", "github_pat_agent", "github_pat_publish"} {
-		if strings.Contains(f.out.String(), secret) {
+		if strings.Contains(f.text(), secret) {
 			t.Errorf("%s printed", secret)
 		}
+	}
+}
+
+func TestFillAsksThroughTheUISession(t *testing.T) {
+	rec := &ui.Recorder{Answers: []any{"lin_api_k", "github_pat_agent", "github_pat_publish", true}}
+	f := newFixture(t, ghServer(t, userOK), linServer(t, "viewer-ok.http"), &script{})
+	f.env.Prompt = ui.Prompts{S: ui.New(rec)}
+	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Asked) != 4 || rec.Asked[0].Kind != ui.PSecret || rec.Asked[3].Kind != ui.PConfirm {
+		t.Fatalf("%+v", rec.Asked)
+	}
+}
+
+func TestEachLiveCheckIsAStepWithItsOwnDetail(t *testing.T) {
+	f := newFixture(t, ghServer(t, userOK), linServer(t, "viewer-ok.http"),
+		&script{secrets: []string{"lin_api_k", "github_pat_agent", "github_pat_publish"}, confirms: []bool{true}})
+	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil {
+		t.Fatal(err)
+	}
+	asking := map[string]string{}
+	for _, e := range f.rec.Events {
+		if e.Kind == ui.KStep && e.State == ui.Running && e.Detail != "" {
+			asking[e.Name] = e.Detail
+		}
+	}
+	want := map[string]string{"Check Linear API key": "asking Linear", "Check GitHub agent token (read-only)": "asking GitHub",
+		"Check GitHub publish token": "asking GitHub", "Check ntfy topic": "sending a test push"}
+	for name, detail := range want {
+		if asking[name] != detail {
+			t.Errorf("%s: %q", name, asking[name])
+		}
+	}
+	if r := f.row("Store Linear API key"); r.State != ui.Done || r.Detail != "in memory" {
+		t.Errorf("%+v", r)
+	}
+	for _, e := range f.rec.Events {
+		for _, secret := range []string{"lin_api_k", "github_pat_agent"} {
+			if strings.Contains(e.Name+e.Detail+e.Err+e.Text, secret) {
+				t.Errorf("%s reached an event: %+v", secret, e)
+			}
+		}
+	}
+}
+
+// A refused paste is asked for again, so its row must not fail the session.
+func TestARefusedPasteEndsItsRowSkippedAndTheSessionStaysClean(t *testing.T) {
+	f := newFixture(t, nil, nil, &script{secrets: []string{"github_pat_x", "lin_api_k"}})
+	f.env.LinearAPI = linServer(t, "viewer-ok.http").URL + "/graphql"
+	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Linear}); err != nil {
+		t.Fatal(err)
+	}
+	var states []ui.State
+	for _, r := range f.rec.Rows() {
+		if r.Name == "Check Linear API key" {
+			states = append(states, r.State)
+		}
+	}
+	if len(states) != 2 || states[0] != ui.Skipped || states[1] != ui.Done || f.env.UI.Failed() {
+		t.Fatalf("%v", states)
+	}
+}
+
+// The full-screen modal covers the rows, so the page's steps and its link go with the question.
+func TestThePasteIsAskedWithTheStepsAndTheLinkAsFacts(t *testing.T) {
+	p := &script{secrets: []string{"lin_api_k"}}
+	f := newFixture(t, nil, nil, p)
+	f.env.LinearAPI = linServer(t, "viewer-ok.http").URL + "/graphql"
+	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Linear}); err != nil {
+		t.Fatal(err)
+	}
+	link, page := Page(Linear, Mapped{})
+	if len(p.facts) != 1 || len(p.facts[0]) != 2 || p.facts[0][0] != page || p.facts[0][1] != link {
+		t.Fatalf("facts %q, want the page and the link", p.facts)
+	}
+}
+
+func tailscaleServer(t *testing.T, status int) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		// Like Tailscale's, it ignores client_id.
+		sec := r.Form.Get("client_secret")
+		if r.URL.Path != "/api/v2/oauth/token" || sec != "ksecret" && sec != "tskey-client-kid-0123456789QRST" {
+			status = http.StatusUnauthorized
+		}
+		w.WriteHeader(status)
+		w.Write([]byte(`{"access_token":"t","expires_in":3600}`))
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func TestTheTailscaleSlotIsOptionalAndAnEmptyPasteSkipsIt(t *testing.T) {
+	p := &script{}
+	f := newFixture(t, nil, nil, p)
+	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Tailscale}); err != nil {
+		t.Fatal(err)
+	}
+	if f.store.m[Tailscale] != "" || f.env.UI.Failed() {
+		t.Fatalf("%v", f.store.m)
+	}
+	if page := strings.Join(p.facts[0], "\n"); !strings.Contains(page, "https://login.tailscale.com/admin/settings/oauth") ||
+		!strings.Contains(page, "Auth keys (write) and Devices core (write)") || !strings.Contains(page, "tag:flocc-host") {
+		t.Fatal(page)
+	}
+}
+
+func TestTheTailscaleClientIsCheckedByAskingForAToken(t *testing.T) {
+	ts := tailscaleServer(t, http.StatusOK)
+	f := newFixture(t, nil, nil, &script{secrets: []string{"kid", "tskey-client-kid-0123456789QRST"}})
+	f.env.TailscaleAPI = ts.URL
+	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Tailscale}); err != nil {
+		t.Fatal(err)
+	}
+	if f.store.m[Tailscale] != "tskey-client-kid-0123456789QRST" {
+		t.Fatalf("%v", f.store.m)
+	}
+	if r := f.row("Check Tailscale OAuth client"); r.State != ui.Done || r.Detail != "token ok" {
+		t.Errorf("%+v", f.rec.Rows())
+	}
+	if !strings.Contains(f.text(), "starts with tskey-client-") {
+		t.Errorf("a paste that is not a client secret was not refused:\n%s", f.text())
+	}
+	if strings.Contains(f.text(), "0123456789") {
+		t.Error("the secret reached an event")
+	}
+}
+
+func TestEachPasteIsShownMasked(t *testing.T) {
+	ts := tailscaleServer(t, http.StatusOK)
+	f := newFixture(t, nil, nil, &script{secrets: []string{"hunter2", "kid:tskey-client-kid-0123456789QRST"}})
+	f.env.TailscaleAPI = ts.URL
+	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Tailscale}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"pasted 7 characters, no known prefix", "pasted tskey-client-…QRST, 31 characters"} {
+		if !strings.Contains(f.text(), want) {
+			t.Errorf("no %q in:\n%s", want, f.text())
+		}
+	}
+	if strings.Contains(f.text(), "hunter2") {
+		t.Error("a paste reached an event")
+	}
+}
+
+func TestTailscaleRefusingTheClientIsNamedAndNothingIsStored(t *testing.T) {
+	ts := tailscaleServer(t, http.StatusUnauthorized)
+	f := newFixture(t, nil, nil, &script{secrets: []string{"kid:ksecret", ""}})
+	f.env.TailscaleAPI = ts.URL
+	if err := Fill(context.Background(), f.env, Mapped{}, []Slot{Tailscale}); err != nil {
+		t.Fatal(err)
+	}
+	if f.store.m[Tailscale] != "" || !strings.Contains(f.text(), "Tailscale refused the client; make a new one") {
+		t.Fatalf("%v\n%s", f.store.m, f.text())
+	}
+}
+
+func TestTailscaleOutageLeavesTheClientUnchecked(t *testing.T) {
+	ts := tailscaleServer(t, http.StatusBadGateway)
+	f := newFixture(t, nil, nil, &script{secrets: []string{"kid:ksecret"}, confirms: []bool{false}})
+	f.env.TailscaleAPI = ts.URL
+	err := Fill(context.Background(), f.env, Mapped{}, []Slot{Tailscale})
+	if err == nil || !strings.Contains(err.Error(), "could not check Tailscale") || f.store.m[Tailscale] != "" {
+		t.Fatal(err, f.store.m)
+	}
+}
+
+func TestFillWithTheRequiredSlotsNeverAsksForTailscale(t *testing.T) {
+	f := newFixture(t, nil, nil, &script{})
+	f.store.m[Linear], f.store.m[Agent], f.store.m[Publish], f.store.m[Ntfy] = "lin_api_k", "github_pat_a", "github_pat_p", "t"
+	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil || len(f.rec.Asked) != 0 {
+		t.Fatalf("%v %+v", err, f.rec.Asked)
+	}
+}
+
+func TestCheckFailsTheRowOfEachProblemAndChecksAStoredTailscaleClient(t *testing.T) {
+	ts := tailscaleServer(t, http.StatusUnauthorized)
+	gh := ghServer(t, replay.Route{Method: "GET", Path: "/user", File: "bad-credentials.http"})
+	f := newFixture(t, gh, linServer(t, "bad-key.http"), &script{})
+	f.env.TailscaleAPI = ts.URL
+	f.store.m[Linear], f.store.m[Agent], f.store.m[Publish], f.store.m[Tailscale] = "lin_api_k", "github_pat_a", "github_pat_p", "kid:ksecret"
+	got := Check(context.Background(), f.env, onlyA)
+	if len(got) != 5 || !strings.HasSuffix(got[3], "Tailscale refused the client; make a new one") {
+		t.Fatalf("%q", got)
+	}
+	if r := f.row("Check Linear API key"); r.State != ui.Failed || strings.Contains(r.Err, "; run ") {
+		t.Errorf("%+v", r)
+	}
+	if r := f.row("Check ntfy topic"); r.State != ui.Failed || r.Err != "missing" {
+		t.Errorf("%+v", r)
+	}
+	if !f.env.UI.Failed() {
+		t.Error("session not failed")
 	}
 }
 
@@ -145,8 +360,8 @@ func TestAKeyInTheWrongSlotIsRefusedBeforeAnyRequest(t *testing.T) {
 	if err := Fill(context.Background(), f.env, Mapped{}, Slots); !errors.Is(err, ErrStopped) {
 		t.Fatal(err)
 	}
-	if f.store.m[Agent] != "github_pat_agent" || f.store.m[Publish] != "" || !strings.Contains(f.out.String(), "that is a Linear API key") {
-		t.Fatalf("%v\n%s", f.store.m, f.out.String())
+	if f.store.m[Agent] != "github_pat_agent" || f.store.m[Publish] != "" || !strings.Contains(f.text(), "that is a Linear API key") {
+		t.Fatalf("%v\n%s", f.store.m, f.text())
 	}
 	for _, r := range gh.Requests {
 		if r.Auth != "Bearer github_pat_agent" {
@@ -160,8 +375,8 @@ func TestAPasteIsTrimmedAndNameEqualsValueIsRefused(t *testing.T) {
 	f := newFixture(t, gh, nil, &script{secrets: []string{"AGENT_TOKEN=github_pat_a", "  github_pat_a \n"}})
 	f.store.m[Linear] = "lin_api_k"
 	Fill(context.Background(), f.env, Mapped{}, Slots)
-	if f.store.m[Agent] != "github_pat_a" || !strings.Contains(f.out.String(), "NAME=value") {
-		t.Fatalf("%q\n%s", f.store.m[Agent], f.out.String())
+	if f.store.m[Agent] != "github_pat_a" || !strings.Contains(f.text(), "NAME=value") {
+		t.Fatalf("%q\n%s", f.store.m[Agent], f.text())
 	}
 	// The refused paste never reached GitHub: every request carries the trimmed value.
 	if len(gh.Requests) == 0 {
@@ -181,9 +396,9 @@ func TestAnAgentTokenThatCanPushIsRefusedAndAskedForAgain(t *testing.T) {
 	f := newFixture(t, gh, nil, &script{secrets: []string{"github_pat_push", "github_pat_read"}})
 	f.store.m[Linear] = "lin_api_k"
 	Fill(context.Background(), f.env, onlyA, Slots)
-	if f.store.m[Agent] != "github_pat_read" || !strings.Contains(f.out.String(), "o/a: the token can push") ||
-		!strings.Contains(f.out.String(), "paste it again") {
-		t.Fatalf("%q\n%s", f.store.m[Agent], f.out.String())
+	if f.store.m[Agent] != "github_pat_read" || !strings.Contains(f.text(), "o/a: the token can push") ||
+		!strings.Contains(f.text(), "paste it again") {
+		t.Fatalf("%q\n%s", f.store.m[Agent], f.text())
 	}
 }
 
@@ -216,8 +431,8 @@ func TestALinearOutageRechecksTheSamePasteAndStoresNothing(t *testing.T) {
 	if err == nil || errors.Is(err, ErrStopped) || !strings.Contains(err.Error(), "could not check Linear") {
 		t.Fatal(err)
 	}
-	if f.store.m[Linear] != "" || len(p.secrets) != 1 || strings.Contains(f.out.String(), "paste it again") {
-		t.Fatalf("%v %q\n%s", f.store.m, p.secrets, f.out.String())
+	if f.store.m[Linear] != "" || len(p.secrets) != 1 || strings.Contains(f.text(), "paste it again") {
+		t.Fatalf("%v %q\n%s", f.store.m, p.secrets, f.text())
 	}
 	if len(lin.Requests) != 2 || lin.Requests[1].Auth != "lin_api_k" {
 		t.Fatalf("%+v", lin.Requests)
@@ -255,8 +470,17 @@ func TestNtfyShowsTheAppLinkAndResendsUntilThePushArrives(t *testing.T) {
 	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.qr) != 1 || f.qr[0] != "ntfy://ntfy.sh/flocc-test?display=flocc" || !strings.Contains(f.out.String(), "https://ntfy.sh/flocc-test") {
-		t.Fatalf("%q\n%s", f.qr, f.out.String())
+	var note ui.Event
+	for _, e := range f.rec.Events {
+		if e.Kind == ui.KNote && e.Name == "ntfy topic" {
+			note = e
+		}
+	}
+	if !strings.Contains(note.Text, "https://ntfy.sh/flocc-test") || !strings.Contains(note.Text, "█") || strings.Contains(note.Text, "\r") {
+		t.Fatalf("%q", note.Text)
+	}
+	if f.row("Check ntfy topic").State != ui.Done || len(f.rec.Todos) != 0 {
+		t.Fatalf("%+v %v", f.rec.Rows(), f.rec.Todos)
 	}
 	if len(f.pushes) != 2 || f.pushes[0].URL.Path != "/flocc-test" || f.pushes[0].Header.Get("Priority") != "5" || f.pushes[0].Header.Get("Title") != "flocc" {
 		t.Fatalf("%d pushes", len(f.pushes))

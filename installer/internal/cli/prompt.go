@@ -1,10 +1,6 @@
 package cli
 
 import (
-	"errors"
-	"fmt"
-	"os"
-
 	"charm.land/huh/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
@@ -25,56 +21,22 @@ type prompter interface {
 	Choose(title string, options []string) (int, error)
 }
 
-type huhPrompt struct{ keys.Huh }
+// sessionPrompt asks through the ui session, whose renderer answers ui.ErrNoTerminal on a piped
+// stdin instead of letting huh pick a default.
+type sessionPrompt struct{ ui.Prompts }
 
-var errNoTerminal = errors.New("flocc asks you to choose here; run it in a terminal")
-
-func (p huhPrompt) Repos(a *answers.Answers, found []answers.Repo, defaults func(string) (string, bool)) error {
-	if !p.IsTerminal() {
-		return errNoTerminal
-	}
-	return ui.RepoForm(a, found, defaults)
+func (p sessionPrompt) Repos(a *answers.Answers, found []answers.Repo, defaults func(string) (string, bool)) error {
+	return ui.RepoForm(p.S.Form, a, found, defaults)
 }
 
-func (p huhPrompt) Team(teams []linearapi.Team) (linearapi.Team, error) {
-	if !p.IsTerminal() {
-		return linearapi.Team{}, errNoTerminal
-	}
+func (p sessionPrompt) Team(teams []linearapi.Team) (linearapi.Team, error) {
 	opts := make([]huh.Option[int], len(teams))
 	for i, t := range teams {
 		opts[i] = huh.NewOption(t.Key+"  "+t.Name, i)
 	}
 	var i int
-	err := ui.Form(huh.NewGroup(huh.NewSelect[int]().Title("Linear team for this host").Options(opts...).Value(&i))).Run()
-	return teams[i], err
-}
-
-func (p huhPrompt) Ask(title, help string) (string, error) {
-	if !p.IsTerminal() {
-		return "", errNoTerminal
+	if err := p.S.Form(ui.Form(huh.NewGroup(huh.NewSelect[int]().Title("Linear team for this host").Options(opts...).Value(&i)))); err != nil {
+		return linearapi.Team{}, err
 	}
-	var v string
-	err := ui.Form(huh.NewGroup(huh.NewInput().Title(title).Description(help).Value(&v))).Run()
-	return v, err
-}
-
-func (p huhPrompt) Choose(title string, options []string) (int, error) {
-	if !p.IsTerminal() {
-		return 0, errNoTerminal
-	}
-	opts := make([]huh.Option[int], len(options))
-	for i, o := range options {
-		opts[i] = huh.NewOption(o, i)
-	}
-	var i int
-	err := ui.Form(huh.NewGroup(huh.NewSelect[int]().Title(title).Options(opts...).Value(&i))).Run()
-	return i, err
-}
-
-func (p huhPrompt) Note(title, body string) {
-	if !p.IsTerminal() {
-		fmt.Fprintf(os.Stderr, "\n%s\n%s\n", title, body)
-		return
-	}
-	ui.NewHuh().Note(title, body)
+	return teams[i], nil
 }

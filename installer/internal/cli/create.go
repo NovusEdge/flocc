@@ -6,13 +6,45 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 )
+
+// hostCreate is flocc host create after "host create". The steps of the run, and the failure of
+// any of them, are rows of the session.
+func hostCreate(ctx context.Context, d *deps, args []string) int {
+	spec, err := create.ParseArgs(args)
+	if err != nil {
+		fmt.Fprintln(d.err, "flocc host create:", err)
+		return 2
+	}
+	inst := hostInstaller{d: d}
+	if err := create.Check(spec, inst); err != nil {
+		d.ui.Step("Check").Fail(err)
+		return 1
+	}
+	if err := create.Run(ctx, spec, inst, d.ui, d.tty); err != nil {
+		d.ui.Todo("Run the same command again to continue.")
+		return 1
+	}
+	return 0
+}
 
 // hostInstaller gives host create the desktop verbs it runs once the VM is on the tailnet.
 type hostInstaller struct{ d *deps }
 
 func (h hostInstaller) Ready() error { return needCheckout(h.d) }
+
+func (h hostInstaller) RepoRoot() (string, error) { return h.d.repoRoot() }
+
+// Tailnet is the stored OAuth client, or nil (not a nil *tailnet.Client in the interface) without
+// one, which sends the VM through the QR login.
+func (h hostInstaller) Tailnet() create.KeyMinter {
+	if c := tailnetClientOf(h.d); c != nil {
+		return c
+	}
+	return nil
+}
 
 func (h hostInstaller) HostKnown(name, ssh string) (bool, error) {
 	got, err := hosts.Load(hosts.Dir(h.d.home), name)

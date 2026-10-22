@@ -1,0 +1,14 @@
+{
+	"groups": {"group:eng": ["owner@example.com", "dev@example.com"]},
+	"tagOwners": {"tag:db": ["group:eng"]},
+	"hosts": {"db1": "100.64.0.9", "laptop": "100.64.0.1"},
+	"acls": [
+		{"action": "accept", "src": ["group:eng"], "dst": ["tag:db:5432"]}
+	],
+	"ssh": [
+		{"action": "check", "src": ["group:eng"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot"]}
+	],
+	"tests": [
+		{"src": "group:eng", "accept": ["tag:db:5432"]}
+	]
+}

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
 func env(kv ...string) func(string) string {
@@ -44,9 +46,8 @@ func TestPlainOutIndentsAndEmitsNoEscapes(t *testing.T) {
 	var b bytes.Buffer
 	o := Out{W: &b}
 	o.Line("%s    Linear key: Ada", o.OK("ok"))
-	o.WarnLine("Created NF-1,\npin it")
-	o.FailLine("Linear: 401", "run flocc keys rotate linear")
-	want := "  ok    Linear key: Ada\n  Created NF-1,\n  pin it\n  FAIL  Linear: 401\n    run flocc keys rotate linear\n"
+	o.Line("Created NF-1,\npin it")
+	want := "  ok    Linear key: Ada\n  Created NF-1,\n  pin it\n"
 	if b.String() != want {
 		t.Fatalf("got %q, want %q", b.String(), want)
 	}
@@ -56,12 +57,9 @@ func TestColoredOutUsesTheSixteenANSIColors(t *testing.T) {
 	var b bytes.Buffer
 	o := Out{W: &b, Color: true}
 	o.Line("%s    k", o.OK("ok"))
-	o.WarnLine("unknown")
-	o.FailLine("bad", "run it again")
+	o.Line("%s    bad", o.Fail("FAIL"))
 	want := "  \x1b[32mok\x1b[0m    k\n" +
-		"  \x1b[33munknown\x1b[0m\n" +
-		"  \x1b[31mFAIL\x1b[0m  bad\n" +
-		"    \x1b[1mrun it again\x1b[0m\n"
+		"  \x1b[31mFAIL\x1b[0m    bad\n"
 	if b.String() != want {
 		t.Fatalf("got %q, want %q", b.String(), want)
 	}
@@ -92,19 +90,23 @@ func TestScriptedStatusIsIndentedAndColoredOnlyWhenAsked(t *testing.T) {
 	}
 }
 
-func TestThemeHasNoMagentaOrHex(t *testing.T) {
-	th := Theme(true)
-	for name, s := range map[string]lipgloss.Style{
-		"focused button": th.Focused.FocusedButton,
-		"blurred button": th.Blurred.FocusedButton,
-		"cursor":         th.Focused.TextInput.Cursor,
-	} {
-		fg, bg := s.GetForeground(), s.GetBackground()
-		if fg == lipgloss.Magenta || bg == lipgloss.Magenta {
-			t.Errorf("%s uses magenta", name)
+func TestFormThemeTakesTheSharedAccent(t *testing.T) {
+	for _, dark := range []bool{true, false} {
+		th := Theme(dark)
+		want := theme.For(dark).Accent
+		for name, s := range map[string]lipgloss.Style{
+			"focused button": th.Focused.FocusedButton,
+			"blurred button": th.Blurred.FocusedButton,
+		} {
+			if s.GetBackground() != want {
+				t.Errorf("dark=%v %s: background %v, want the accent %v", dark, name, s.GetBackground(), want)
+			}
 		}
-	}
-	if th.Focused.FocusedButton.GetBackground() != lipgloss.Cyan {
-		t.Error("the accent is not ANSI cyan")
+		if th.Focused.TextInput.Cursor.GetForeground() != want || th.Focused.Base.GetBorderTopForeground() != want {
+			t.Errorf("dark=%v: cursor or border is not the accent", dark)
+		}
+		if got := SpinnerTheme(dark).Spinner.GetForeground(); got != want {
+			t.Errorf("dark=%v: spinner %v, want %v", dark, got, want)
+		}
 	}
 }

@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,7 +37,7 @@ type Viewer struct {
 	Teams       []Team
 }
 
-type Issue struct{ ID, Key, Title, StateType string }
+type Issue struct{ ID, Key, Title, StateType, URL string }
 
 func (i Issue) Open() bool { return i.StateType != "completed" && i.StateType != "canceled" }
 
@@ -135,15 +137,76 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, out 
 }
 
 type issueNode struct {
-	ID, Identifier, Title string
-	State                 struct{ Type string }
+	ID, Identifier, Title, URL string
+	State                      struct{ Type string }
 }
 
 func (n issueNode) issue() Issue {
-	return Issue{ID: n.ID, Key: n.Identifier, Title: n.Title, StateType: n.State.Type}
+	return Issue{ID: n.ID, Key: n.Identifier, Title: n.Title, StateType: n.State.Type, URL: n.URL}
 }
 
-const issueFields = "id identifier title state { type }"
+const issueFields = "id identifier title url state { type }"
+
+var issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
+
+// maxPage is Linear's cap on a connection's first argument.
+const maxPage = 250
+
+// IssuesByKey returns the issues among keys that Linear knows, one query per maxPage keys. Keys
+// that are not TEAM-NUMBER are skipped and repeats are asked once; an unknown key is simply absent.
+func (c *Client) IssuesByKey(ctx context.Context, keys []string) ([]Issue, error) {
+	type ref struct {
+		team string
+		n    int
+	}
+	var refs []ref
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		m := issueKey.FindStringSubmatch(k)
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(m[2])
+		if err != nil {
+			continue
+		}
+		refs = append(refs, ref{m[1], n})
+	}
+	var issues []Issue
+	for chunk := range slices.Chunk(refs, maxPage) {
+		// Linear ORs the fields of one object inside "or" as well, so {team, number} there matches
+		// every issue of the team: each team's pair goes through "and".
+		var teams []string
+		nums := map[string][]int{}
+		for _, r := range chunk {
+			if nums[r.team] == nil {
+				teams = append(teams, r.team)
+			}
+			nums[r.team] = append(nums[r.team], r.n)
+		}
+		or := make([]map[string]any, len(teams))
+		for i, t := range teams {
+			or[i] = map[string]any{"and": []map[string]any{
+				{"team": map[string]any{"key": map[string]any{"eq": t}}},
+				{"number": map[string]any{"in": nums[t]}},
+			}}
+		}
+		var out struct{ Issues struct{ Nodes []issueNode } }
+		err := c.do(ctx, `query($filter: IssueFilter!, $n: Int!) { issues(filter: $filter, first: $n) { nodes { `+issueFields+` } } }`,
+			map[string]any{"filter": map[string]any{"or": or}, "n": len(chunk)}, &out)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range out.Issues.Nodes {
+			issues = append(issues, n.issue())
+		}
+	}
+	return issues, nil
+}
 
 func (c *Client) Viewer(ctx context.Context) (Viewer, error) {
 	var out struct {

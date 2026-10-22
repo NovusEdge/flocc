@@ -21,10 +21,18 @@ const (
 	Agent   Slot = "agent_token"
 	Publish Slot = "publish_token"
 	Ntfy    Slot = "ntfy_topic"
+
+	// Tailscale holds "id:secret" of an OAuth client. It is optional, so it is not in Slots: ship
+	// and the answers document would refuse a desktop that never made one.
+	Tailscale Slot = "tailscale_oauth"
 )
 
-// Slots is the fill order: the publish token's page opens only after the agent token passes.
+// Slots is the required keys in fill order: the publish token's page opens only after the agent
+// token passes.
 var Slots = []Slot{Linear, Agent, Publish, Ntfy}
+
+// fillOrder is Slots with the optional slot, which Fill asks for only when the caller names it.
+var fillOrder = []Slot{Linear, Agent, Publish, Tailscale, Ntfy}
 
 func (s Slot) Title() string {
 	switch s {
@@ -34,6 +42,8 @@ func (s Slot) Title() string {
 		return "GitHub agent token (read-only)"
 	case Publish:
 		return "GitHub publish token"
+	case Tailscale:
+		return "Tailscale OAuth client"
 	}
 	return "ntfy topic"
 }
@@ -61,13 +71,7 @@ var (
 func Open(home string, notify io.Writer) Store {
 	path := filepath.Join(home, ".config", "flocc", "secrets.toml")
 	if st, err := os.Stat(path); err == nil {
-		if p := st.Mode().Perm(); p&0o077 != 0 {
-			if err := os.Chmod(path, 0o600); err != nil {
-				fmt.Fprintf(notify, "%s is mode %o and could not be set to 600: %v\n", path, p, err)
-			} else {
-				fmt.Fprintf(notify, "%s was mode %o; set it to 600.\n", path, p)
-			}
-		}
+		restrictMode(path, st.Mode().Perm(), notify)
 		return fileStore{path: path}
 	}
 	err := probe(notify)
@@ -207,6 +211,41 @@ func CheckPrefix(s Slot, v string) error {
 		return errors.New("a Linear personal API key starts with lin_api_")
 	case (s == Agent || s == Publish) && !strings.HasPrefix(v, "github_pat_"):
 		return errors.New("a fine-grained GitHub token starts with github_pat_")
+	case s == Tailscale && !validClient(v):
+		return errors.New("paste the client secret, which starts with " + clientPrefix)
 	}
 	return nil
 }
+
+const clientPrefix = "tskey-client-"
+
+// SplitClient cuts a Tailscale paste into the OAuth client's ID and secret. The secret alone is
+// enough: the token endpoint ignores the ID, and tailscale up's own OAuth path sends a placeholder.
+// id:secret, the form flocc asked for first, still works.
+func SplitClient(v string) (id, secret string, ok bool) {
+	if strings.HasPrefix(v, clientPrefix) {
+		return "flocc", v, len(v) > len(clientPrefix)
+	}
+	id, secret, ok = strings.Cut(v, ":")
+	return id, secret, ok && id != "" && secret != ""
+}
+
+// knownPrefixes are the public parts of the keys flocc takes, which say what kind of key it is.
+var knownPrefixes = []string{"lin_api_", "github_pat_", clientPrefix, "ghp_", "gho_"}
+
+// Masked describes a pasted key without what makes it usable: its kind's public prefix, its last
+// four characters, and its length. A paste with no known prefix may be some other secret, such as
+// a password, so only its length is shown.
+func Masked(v string) string {
+	for _, p := range knownPrefixes {
+		if strings.HasPrefix(v, p) {
+			if len(v)-len(p) < 12 {
+				return fmt.Sprintf("%s…, %d characters", p, len(v))
+			}
+			return fmt.Sprintf("%s…%s, %d characters", p, v[len(v)-4:], len(v))
+		}
+	}
+	return fmt.Sprintf("%d characters, no known prefix", len(v))
+}
+
+func validClient(v string) bool { _, _, ok := SplitClient(v); return ok }

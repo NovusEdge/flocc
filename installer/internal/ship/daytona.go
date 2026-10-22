@@ -21,7 +21,7 @@ func Resolve(ctx context.Context, target string) (Dest, error) {
 		return Dest{}, err
 	}
 	home, _ := os.UserHomeDir()
-	d, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(os.Stderr))
+	d, err := resolveTarget(ctx, target, filepath.Join(home, ".config/daytona/config.json"), &http.Client{Timeout: 30 * time.Second}, realWaiter(io.Discard))
 	if err != nil {
 		return d, err
 	}

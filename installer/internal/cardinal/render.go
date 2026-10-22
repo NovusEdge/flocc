@@ -1,6 +1,7 @@
 package cardinal
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,13 +9,14 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-// RenderStatus prints a full cardinal-status report and returns the exit code. Every string came
-// from cardinal's binary, so each is sanitized.
-func RenderStatus(s steps.CardinalStatus) (string, int) {
-	var b strings.Builder
-	row := func(k, v string) { fmt.Fprintf(&b, "%-12s %s\n", k, saved.Sanitize(v)) }
+// StatusTable is the table of a full cardinal-status report. Every string came from cardinal's
+// binary, so each is sanitized.
+func StatusTable(s steps.CardinalStatus) ui.Table {
+	t := ui.Table{Title: "cardinal", Headers: []string{"item", "state"}}
+	row := func(k, v string) { t.Rows = append(t.Rows, []string{k, saved.Sanitize(v)}) }
 	row("unit", fmt.Sprintf("%s, %d restarts", s.Unit, s.Restarts))
 	if s.SessionAgeS != nil {
 		row("session", ship.Age(*s.SessionAgeS)+" old")
@@ -45,18 +47,25 @@ func RenderStatus(s steps.CardinalStatus) (string, int) {
 	if s.ClaudeVersion != "" {
 		row("claude", s.ClaudeVersion)
 	}
+	return t
+}
+
+// DrawStatus draws a full cardinal-status report and returns the exit code.
+func DrawStatus(u ui.Session, s steps.CardinalStatus) int {
+	u.Table(StatusTable(s))
 	fails := s.Failures()
 	for _, f := range fails {
-		fmt.Fprintf(&b, "FAIL  %s\n", saved.Sanitize(f))
+		what, fix, _ := strings.Cut(saved.Sanitize(f), ": ")
+		u.Step(what).Fail(errors.New(fix))
 	}
 	if len(fails) > 0 && s.Journal != "" {
-		fmt.Fprintf(&b, "\njournal:\n%s\n", saved.SanitizeBlock(s.Journal, 20))
+		u.Note("journal", saved.SanitizeBlock(s.Journal, 20))
 	}
 	if len(fails) > 0 && s.Pane != "" {
-		fmt.Fprintf(&b, "\npane:\n%s\n", saved.SanitizeBlock(s.Pane, 15))
+		u.Note("pane", saved.SanitizeBlock(s.Pane, 15))
 	}
 	if len(fails) > 0 {
-		return b.String(), 1
+		return 1
 	}
-	return b.String(), 0
+	return 0
 }

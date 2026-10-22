@@ -11,7 +11,7 @@ import (
 
 func (d *deps) cardinalDeps() cardinal.Deps {
 	mux, _ := ship.SSHMux()
-	return cardinal.Deps{Out: d.out, Err: d.err, Home: d.home, TTY: d.tty, Open: d.open,
+	return cardinal.Deps{UI: d.ui, Home: d.home, TTY: d.tty, Open: d.open,
 		RepoRoot: d.repoRoot, Tailnet: tailnetIPs, Mux: mux}
 }
 

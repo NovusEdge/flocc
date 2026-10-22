@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/tailnet"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 const (
@@ -14,24 +19,33 @@ const (
 	renameWait = 15
 	// settleWait is how many seconds Apply waits for the VM's tailscaled to finish starting.
 	settleWait = 15
+	// KeyTTL is how long a minted key lives; it is used within seconds of being minted.
+	KeyTTL = 10 * time.Minute
 )
+
+// errTagNotPermitted is the step's failure when the policy does not define the host tag.
+var errTagNotPermitted = errors.New("the tailnet policy lacks " + tailnet.Tag + "; run flocc setup (Tailnet section)")
 
 type tsVM struct {
 	state, dnsName string
 	key            string // the VM's node public key, the key this desktop's Peer map uses for it
 	ssh            bool
+	tags           []string
 }
 
 func (e *Env) vmTailscale(ctx context.Context) tsVM {
 	name := e.Spec.Name
 	var st struct {
 		BackendState string
-		Self         struct{ DNSName, PublicKey string }
+		Self         struct {
+			DNSName, PublicKey string
+			Tags               []string
+		}
 	}
 	var p struct{ RunSSH bool }
 	json.Unmarshal([]byte(e.out(ctx, e.incus("exec", name, "--", "tailscale", "status", "--json"))), &st)
 	json.Unmarshal([]byte(e.out(ctx, e.incus("exec", name, "--", "tailscale", "debug", "prefs"))), &p)
-	return tsVM{state: st.BackendState, dnsName: st.Self.DNSName, key: st.Self.PublicKey, ssh: p.RunSSH}
+	return tsVM{state: st.BackendState, dnsName: st.Self.DNSName, key: st.Self.PublicKey, ssh: p.RunSSH, tags: st.Self.Tags}
 }
 
 func starting(state string) bool { return state == "" || state == "NoState" || state == "Starting" }
@@ -39,10 +53,6 @@ func starting(state string) bool { return state == "" || state == "NoState" || s
 type Tailnet struct{}
 
 func (Tailnet) Name() string { return "Tailscale" }
-
-// Attached: Apply asks for the auth key in a form, opens the shared ssh master and runs tailscale
-// up attached, which shows a QR code or a login link.
-func (Tailnet) Attached() bool { return true }
 
 func (Tailnet) Check(ctx context.Context, e *Env) (bool, string, error) {
 	ts := e.vmTailscale(ctx)
@@ -82,6 +92,7 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 			}
 			return fmt.Errorf("tailscaled in the VM is still %s after %ds; check the VM's network, then run create again", ts.state, settleWait)
 		}
+		e.waiting("waiting for tailscaled in the VM", time.Duration(settleWait-i)*time.Second)
 		e.Sleep(time.Second)
 		ts = e.vmTailscale(ctx)
 	}
@@ -103,6 +114,7 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 				// set cannot take a name another node holds: the tailnet still has a stale node of this name.
 				return tailnetTaken(name)
 			}
+			e.waiting("waiting for the control server to confirm the name", time.Duration(renameWait-i)*time.Second)
 			e.Sleep(time.Second)
 		}
 	}
@@ -114,15 +126,26 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 	if taken {
 		return tailnetTaken(name)
 	}
-	// --ssh on the first up: once RunSSH is on, up refuses to run without it.
+	// --ssh on the first up: once RunSSH is on, up refuses to run without it. up refuses a later run
+	// that leaves out a non-default flag it was given before, so a node that has the tag keeps naming it.
 	up := []string{"exec", name, "--", "tailscale", "up", "--ssh", "--hostname=" + name}
+	// Advertising a tag the policy does not define makes up fail, and without the OAuth client
+	// nothing here has read the policy. A tag already on a node of this tailnet shows it is defined.
+	if e.Tailnet != nil || slices.Contains(ts.tags, tailnet.Tag) || tagInUse(ctx, e) {
+		up = append(up, "--advertise-tags="+tailnet.Tag)
+	}
 	if ts.state == "Stopped" {
 		// tailscale down keeps the login, so up rejoins as the same node without a key. Attached,
 		// in case the control server asks for a login after all.
-		return e.M.Interactive(ctx, e.incus(up...))
+		return e.M.Interactive(ctx, e.attached(up...))
 	}
-	key, err := e.UI.Secret("tailscale_auth_key", "Tailscale auth key for "+name+" (optional)",
-		"Paste a one-off auth key, or leave this empty to log in with the QR code or link that follows. The key is used once and not stored.")
+	if e.Tailnet != nil {
+		return e.joinWithMintedKey(ctx, up)
+	}
+	key, err := e.UI.Secret(ui.Question{
+		Title: "Tailscale auth key for " + name + " (optional)",
+		Help:  "Paste a one-off auth key, or leave this empty to log in with the QR code or link that follows. The key is used once and not stored.",
+	})
 	if err != nil {
 		return err
 	}
@@ -132,21 +155,61 @@ func (Tailnet) Apply(ctx context.Context, e *Env) error {
 		return err
 	}
 	if key = strings.TrimSpace(key); key == "" {
-		err = e.M.Interactive(ctx, e.incus(append(up, "--qr")...))
+		err = e.M.Interactive(ctx, e.attached(append(up, "--qr")...))
 	} else {
-		// Before the first command that can print it: the log gets tailscale's output as it comes.
-		e.Log.Add(key)
-		c := e.incus(append(up, "--auth-key=file:/dev/stdin")...)
-		c.Stdin = strings.NewReader(key)
-		if _, err = e.must(ctx, c); err != nil {
-			err = errors.New(strings.ReplaceAll(err.Error(), key, "<auth key>"))
-		}
+		err = e.upWithKey(ctx, up, key)
 	}
 	if err != nil {
+		return tagHint(err)
+	}
+	// A node that came up untagged keeps the key expiry of its owner.
+	if !slices.Contains(e.vmTailscale(ctx).tags, tailnet.Tag) {
+		e.UI.Todo("Tailscale key expiry: open https://login.tailscale.com/admin/machines, find " + name + " and choose Disable key expiry. An untagged node's key otherwise expires after 180 days.")
+	}
+	return nil
+}
+
+// joinWithMintedKey joins the VM tagged with a one-off key from the OAuth client, with no terminal.
+func (e *Env) joinWithMintedKey(ctx context.Context, up []string) error {
+	key, err := e.Tailnet.TaggedKey(ctx, tailnet.Tag, KeyTTL)
+	if errors.Is(err, tailnet.ErrTagNotPermitted) {
+		return errTagNotPermitted
+	}
+	if err != nil {
+		return fmt.Errorf("minting a tagged key: %w", err)
+	}
+	// Minting can take longer than ControlPersist, as a pasted key's prompt can.
+	if err := e.connect(ctx); err != nil {
 		return err
 	}
-	fmt.Fprintln(e.Out)
-	e.o().WarnLine("Tailscale key expiry: open https://login.tailscale.com/admin/machines, find %s and choose Disable key expiry. An untagged node's key otherwise expires after 180 days.", name)
-	fmt.Fprintln(e.Out)
+	return tagHint(e.upWithKey(ctx, up, key))
+}
+
+// upWithKey runs up with key on stdin, never in an argument. The key is registered with the log
+// before the first command that can print it, and scrubbed from the error.
+func (e *Env) upWithKey(ctx context.Context, up []string, key string) error {
+	e.Log.Add(key)
+	c := e.incus(append(up, "--auth-key=file:/dev/stdin")...)
+	c.Stdin = strings.NewReader(key)
+	if _, err := e.must(ctx, c); err != nil {
+		return errors.New(strings.ReplaceAll(err.Error(), key, "<auth key>"))
+	}
 	return nil
+}
+
+// tagHint turns tailscale's refusal of the tag into the step to take. tailscale up names the
+// rejected tags in its output; that text is not pinned down yet (see the tailnet spec).
+func tagHint(err error) error {
+	// The error carries the command line, which names --advertise-tags itself.
+	if err != nil && strings.Contains(strings.ReplaceAll(err.Error(), "--advertise-tags", ""), "tags") {
+		return errTagNotPermitted
+	}
+	return err
+}
+
+// attached is the incus command for a tailscale login that draws a QR code or link on the terminal.
+func (e *Env) attached(args ...string) host.Cmd {
+	c := e.incus(args...)
+	c.Why = "tailscale login in the VM"
+	return c
 }

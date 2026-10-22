@@ -101,6 +101,8 @@ type Secrets struct {
 	LinearKey    string `toml:"linear_key"`
 	AgentToken   string `toml:"agent_token"`
 	PublishToken string `toml:"publish_token"`
+	// A one-off tagged key the desktop minted, for a host that joins the tailnet in this run.
+	TailscaleAuthKey string `toml:"tailscale_auth_key,omitempty"`
 }
 
 // Values is every secret that is set, for redacting logs and output.
@@ -109,7 +111,7 @@ func (s *Secrets) Values() []string {
 		return nil
 	}
 	var v []string
-	for _, x := range []string{s.LinearKey, s.AgentToken, s.PublishToken} {
+	for _, x := range []string{s.LinearKey, s.AgentToken, s.PublishToken, s.TailscaleAuthKey} {
 		if x != "" {
 			v = append(v, x)
 		}
@@ -167,7 +169,7 @@ func Parse(b []byte) (*Answers, error) {
 		row, col := de.Position()
 		return nil, fmt.Errorf("answers: invalid TOML at line %d, column %d", row, col)
 	}
-	return nil, errors.New("answers: a value does not fit its field; check the types against the example in docs/vm-setup.md")
+	return nil, errors.New("answers: a value does not fit its field; check the types against the example in docs/book/setup/README.md")
 }
 
 func (a *Answers) Save(path string) error {

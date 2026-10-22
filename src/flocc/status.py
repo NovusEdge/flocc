@@ -105,6 +105,63 @@ def _read_ledger(path: Path) -> tuple[list[ledger.Claim], dict[str, str], str | 
         return [], {}, str(exc)
 
 
+# Matches `logs`; bounded so a status call stays inside the desktop's 20s budget.
+_ACTIVITY_LINES = 2000
+_ACTIVITY_KEPT = 5
+_JOURNAL_LINE = re.compile(r"^(\d+(?:\.\d+)?)\s+\S+\s+(?:[\w.@-]+\[\d+\]: )?(.*)$")
+
+
+def _recent_lines(cfg: Config, mode: str, run) -> list[tuple[int, str]]:
+    if mode == "systemd":
+        env = {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
+        argv = ["journalctl", "--user", "-u", "flocc", "-n", str(_ACTIVITY_LINES)]
+        out = run(
+            [*argv, "--no-pager", "-o", "short-unix"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+            check=False,
+        ).stdout
+        parsed = (_JOURNAL_LINE.match(line) for line in out.splitlines())
+        return [(int(float(m.group(1))), m.group(2)) for m in parsed if m]
+    log = cfg.state_root / "run.log"
+    # run.log lines carry no timestamp, so they all take the file's last write time.
+    try:
+        at = int(log.stat().st_mtime)
+        with log.open("rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - _LOG_TAIL))
+            tail = f.read().decode(errors="replace").splitlines()
+    except FileNotFoundError:
+        # A loop host writes run.log on its first tick; before that there is nothing to report.
+        return []
+    return [(at, line) for line in tail[-_ACTIVITY_LINES:]]
+
+
+def _naming(key: str) -> re.Pattern:
+    # Word-bounded: NF-24 must not match NF-240.
+    return re.compile(rf"\b{re.escape(key)}\b")
+
+
+def _activity(lines: list[tuple[int, str]], key: str) -> list[dict]:
+    named = _naming(key)
+    hits = [{"at": at, "text": text} for at, text in lines if named.search(text)]
+    return hits[-_ACTIVITY_KEPT:]
+
+
+def issue_lines(
+    cfg: Config, key: str, n: int, mode: str | None = None, run=subprocess.run
+) -> list[tuple[int, str]]:
+    named = _naming(key)
+    hits = [
+        (at, text)
+        for at, text in _recent_lines(cfg, mode or detect_mode(), run)
+        if named.search(text)
+    ]
+    return hits[-n:] if n > 0 else []
+
+
 def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
     state_dir = cfg.state_root / claim.issue_key
     status = usage.read_status(state_dir)
@@ -170,13 +227,23 @@ def collect(
         tick["age_s"] = max(0.0, now - tick["at"])
     latest = usage.latest_usage(cfg.state_root, now)
     claims, expiry, ledger_error = _read_ledger(cfg.ledger_path)
-    return {
+    rows = [_claim_row(cfg, c, sessions, now) for c in claims]
+    activity_error = None
+    if rows:
+        try:
+            lines = _recent_lines(cfg, mode, run)
+        except (OSError, subprocess.SubprocessError) as exc:
+            lines, activity_error = [], str(exc) or type(exc).__name__
+        for row in rows:
+            row["activity"] = _activity(lines, row["issue"])
+    report = {
+        "v": 1,
         "host": socket.gethostname(),
         "mode": mode,
         "now": now,
         "last_tick": tick,
         "session_cap": cfg.session_cap,
-        "claims": [_claim_row(cfg, c, sessions, now) for c in claims],
+        "claims": rows,
         "ledger_error": ledger_error,
         # The desktop's login takes this lock with flock while it runs.
         "tick_lock": str(cfg.tick_lock),
@@ -196,3 +263,6 @@ def collect(
         else claude_login(claude, run, _LOGIN_TIMEOUT) or "unknown",
         "token_expiry": expiry,
     }
+    if activity_error is not None:
+        report["activity_error"] = activity_error
+    return report

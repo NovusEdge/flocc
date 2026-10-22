@@ -108,7 +108,7 @@ func (VM) Apply(ctx context.Context, e *Env) error {
 			}
 		}
 	}
-	for range vmPolls {
+	for i := range vmPolls {
 		// A cancelled ctx makes every probe fail like "no address yet"; without this the loop would
 		// sleep out the full five minutes after Ctrl-C.
 		if err := ctx.Err(); err != nil {
@@ -117,6 +117,7 @@ func (VM) Apply(ctx context.Context, e *Env) error {
 		if e.ipv4(ctx) != "" && e.ok(ctx, e.incus("exec", name, "--", "true")) {
 			return nil
 		}
+		e.waiting("waiting for the VM's IPv4 address", time.Duration(vmPolls-i)*vmPoll)
 		e.Sleep(vmPoll)
 	}
 	return fmt.Errorf("%s has no IPv4 address after %s; see incus console %s --show-log", name, vmPoll*vmPolls, name)
@@ -137,7 +138,7 @@ func (Egress) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if !e.hasCurl(ctx) {
 		return false, "curl is not installed in the VM yet", nil
 	}
-	return false, "no HTTPS from the VM; see \"Making a host with flocc host create\" in docs/vm-setup.md", nil
+	return false, "no HTTPS from the VM; see \"What create changes on the machine\" in docs/book/setup/host-create.md", nil
 }
 
 func (Egress) Apply(ctx context.Context, e *Env) error {
@@ -149,7 +150,7 @@ func (Egress) Apply(ctx context.Context, e *Env) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				return fmt.Errorf("the VM cannot install curl, so it likely has no way out; see \"Making a host with flocc host create\" in docs/vm-setup.md: %w", err)
+				return fmt.Errorf("the VM cannot install curl, so it likely has no way out; see \"What create changes on the machine\" in docs/book/setup/host-create.md: %w", err)
 			}
 		}
 	}

@@ -167,6 +167,13 @@ class Sessions:
     def kill(self, name: str) -> None:
         self._tmux("kill-session", "-t", f"={name}", check=False)
 
+    def capture(self, name: str, lines: int) -> str:
+        # check=False: a session that exits mid-call reads as empty, which the caller maps to
+        # "no live session".
+        return self._tmux(
+            "capture-pane", "-p", "-J", "-t", f"={name}:", "-S", f"-{lines}", check=False
+        ).stdout
+
     def send(self, name: str, text: str) -> None:
         self._tmux("send-keys", "-t", f"={name}:", "-l", text)
         self._tmux("send-keys", "-t", f"={name}:", "Enter")

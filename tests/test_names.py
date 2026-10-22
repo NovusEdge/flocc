@@ -9,7 +9,15 @@ OLD = re.compile(
 # A dated doc keeps its file name, so a path naming one is not a use of the old name.
 DATED_DOC_PATH = re.compile(r"docs/[\w/.-]*?\d{4}-\d{2}-\d{2}-[\w.-]+")
 DATED = re.compile(r"\d{4}-\d{2}-\d{2}-")
-EXEMPT = {"CHANGELOG.md", "tests/test_names.py"}
+EXEMPT = {
+    "CHANGELOG.md",
+    "tests/test_names.py",
+    # flocc setup finds and removes the old service user, so these name it on purpose.
+    "installer/internal/steps/old_users.go",
+    "installer/internal/steps/old_users_test.go",
+    "installer/internal/cli/setup_test.go",
+    "installer/internal/cardinal/cardinal_test.go",
+}
 
 
 def _exempt(path: str) -> bool:

@@ -228,7 +228,7 @@ func CardinalHostRemove(ctx context.Context, e *Env, d HostDoc) (CardinalReport,
 	_, markerErr := os.Stat(e.Path(sshInstalled))
 	switch {
 	case len(left) > 0:
-		r.Notes = append(r.Notes, fmt.Sprintf("%s still used by another install; sshd left as it is", plural(len(left), "install record")))
+		r.Notes = append(r.Notes, fmt.Sprintf("%s still used by another install; sshd left as it is", Plural(len(left), "install record")))
 	case markerErr != nil:
 		r.Notes = append(r.Notes, "sshd was not installed by setup, so it keeps running with cardinal.conf")
 	default:

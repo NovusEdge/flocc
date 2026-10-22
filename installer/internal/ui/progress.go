@@ -22,9 +22,6 @@ const clearLine = "\r\x1b[K"
 type Line struct {
 	N, Total     int
 	Name, Detail string
-	// Attached marks a step that reads the terminal or draws on it (a form, a QR code, an attached
-	// ssh): it gets plain start and done lines even where other steps animate.
-	Attached bool
 }
 
 // Outcome is how a step ended well. Pending ends it in a yellow dot: the step did what it could
@@ -57,12 +54,6 @@ type liveLine struct {
 	l     Line
 	start time.Time
 	frame int
-}
-
-// NewProgress animates when w is a terminal, NO_COLOR is unset and TERM is not dumb.
-func NewProgress(w io.Writer) *Progress {
-	o := NewOut(w)
-	return &Progress{Out: o, Animate: o.Color}
 }
 
 func (p *Progress) now() time.Time {
@@ -163,7 +154,7 @@ func (p *Progress) Run(l Line, fn func() (Outcome, error)) error {
 	start := p.now()
 	var out Outcome
 	var err error
-	if p.Animate && !l.Attached {
+	if p.Animate {
 		out, err = p.spin(l, start, fn)
 	} else {
 		p.Quiet(func() { io.WriteString(p.Out.W, p.text("→", l, l.Detail, "")+"\n") })

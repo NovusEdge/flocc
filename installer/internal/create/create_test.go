@@ -6,36 +6,36 @@ import (
 	"errors"
 	"io"
 	"os/exec"
-	"path"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/NovusEdge/flocc/installer/internal/dockerguard"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-func TestPreconditionsReportSudoAndIncusApart(t *testing.T) {
+func TestPreconditionsReportIncus(t *testing.T) {
 	f := host.NewFake().On("sudo -n true", 1, "").On("id -nG", 0, "owner incus-admin\n").On("incus query /1.0", 0, "{}")
-	sudo, incus := Preconditions(context.Background(), f, "zer0-day-nimble")
-	if sudo || incus != nil {
-		t.Fatalf("sudo %v incus %v", sudo, incus)
+	if incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus != nil {
+		t.Fatalf("incus %v", incus)
 	}
 	f = host.NewFake().On("sudo -n true", 1, "").On("id -nG", 0, "owner\n")
-	if _, incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus == nil || !strings.Contains(incus.Error(), "incus-admin") {
+	if incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus == nil || !strings.Contains(incus.Error(), "incus-admin") {
 		t.Fatalf("incus %v", incus)
 	}
 }
 
+// fakeUI records the session and answers every question with key.
 type fakeUI struct {
+	ui.Recorder
 	key   string
-	asked int
 	onAsk func()
 }
 
-func (u *fakeUI) Secret(string, string, string) (string, error) {
-	u.asked++
+func (u *fakeUI) Prompt(p ui.PromptReq) (any, error) {
+	u.Asked = append(u.Asked, p)
 	if u.onAsk != nil {
 		u.onAsk()
 	}
@@ -44,13 +44,13 @@ func (u *fakeUI) Secret(string, string, string) (string, error) {
 
 // testEnv runs machine commands on m directly, without the ssh wrapper, so tests name the
 // commands as the machine sees them. With TTY, e.connect's attached ssh succeeds on any Fake.
-func testEnv(m *host.Fake) (*Env, *bytes.Buffer) {
-	var out bytes.Buffer
+func testEnv(m *host.Fake) (*Env, *fakeUI) {
+	u := &fakeUI{}
 	return &Env{
-		M: m, Local: host.NewFake(), UI: &fakeUI{}, Out: &out, Log: NewRedactLog(io.Discard),
+		M: m, Local: host.NewFake(), UI: ui.New(u), Log: NewRedactLog(io.Discard),
 		Spec:  Spec{Machine: "laptop", Name: "flocc-a", CPUs: 4, MemoryGiB: 8, DiskGiB: 40},
 		Sleep: func(time.Duration) {}, sudo: true, TTY: true,
-	}, &out
+	}, u
 }
 
 type recorder struct{ run, interactive []host.Cmd }
@@ -65,122 +65,8 @@ func (r *recorder) Interactive(_ context.Context, c host.Cmd) error {
 	return nil
 }
 
-func isDocker(unit string) bool {
-	return slices.Contains([]string{"docker", "docker.service", "docker.socket", "dockerd"}, unit)
-}
-
-// touchesDocker reports whether c could start, stop, reload or kill dockerd. It reads c as words,
-// so a verb or unit in any order among flags and other units counts, as does one behind sudo,
-// sh -c or a ; or &&.
-func touchesDocker(c string) bool {
-	c = strings.NewReplacer("'", " ", `"`, " ", "`", " ", "(", " ", ")", " ", "&", ";", "|", ";", "\n", ";").Replace(c)
-	for _, seg := range strings.Split(c, ";") {
-		f := strings.Fields(seg)
-		for i, w := range f {
-			var words []string // the arguments after w, without flags
-			for _, a := range f[i+1:] {
-				if !strings.HasPrefix(a, "-") {
-					words = append(words, a)
-				}
-			}
-			switch base := path.Base(w); {
-			case base == "systemctl":
-				readOnly := []string{"is-active", "is-enabled", "is-failed", "status", "show", "cat", "list-units", "list-unit-files"}
-				if len(words) > 0 && !slices.Contains(readOnly, words[0]) && slices.ContainsFunc(words[1:], isDocker) {
-					return true
-				}
-			case base == "service" || base == "invoke-rc.d":
-				if len(words) > 0 && isDocker(words[0]) && (len(words) < 2 || words[1] != "status") {
-					return true
-				}
-			case strings.HasSuffix(w, "init.d/docker"):
-				if len(words) == 0 || words[0] != "status" {
-					return true
-				}
-			case base == "kill" || base == "pkill" || base == "killall":
-				if slices.ContainsFunc(words, func(a string) bool { return isDocker(a) || strings.Contains(a, "dockerd") }) {
-					return true
-				}
-			case base == "dockerd":
-				if i == 0 || slices.Contains([]string{"sudo", "-n", "env", "exec", "nohup", "--", "-c"}, f[i-1]) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func TestTouchesDocker(t *testing.T) {
-	for _, c := range []string{
-		"sudo -n systemctl enable --now docker.service",
-		"sudo -n systemctl disable --now docker.service",
-		"sudo -n systemctl --no-block restart docker",
-		"sudo -n systemctl restart --no-block docker.service",
-		"sudo -n systemctl try-reload-or-restart docker",
-		"sudo -n systemctl reload-or-try-restart docker",
-		"sudo -n systemctl force-reload docker",
-		"sudo -n systemctl condrestart docker",
-		"sudo -n systemctl mask docker.socket",
-		"sudo -n /usr/bin/systemctl stop docker.socket",
-		"sudo -n systemctl restart flocc-docker-user.service docker.service",
-		"sh -c 'iptables -L && systemctl restart docker'",
-		"sudo -n /etc/init.d/docker restart",
-		"sudo -n service docker restart",
-		"sudo -n kill $(pidof dockerd)",
-		"sudo -n pkill dockerd",
-		"sudo -n pkill -f /usr/bin/dockerd",
-		"sudo -n killall dockerd",
-		"sudo -n dockerd",
-	} {
-		if !touchesDocker(c) {
-			t.Errorf("not caught: %s", c)
-		}
-	}
-	for _, c := range []string{
-		"systemctl is-active docker",
-		"systemctl is-active --quiet docker.service",
-		"systemctl is-enabled --quiet docker.service",
-		"systemctl show -p ActiveState docker.service",
-		"sudo -n systemctl daemon-reload",
-		"sudo -n systemctl enable --now flocc-docker-user.service",
-		"sudo -n systemctl restart flocc-docker-user.service",
-		"service docker status",
-		"pidof dockerd",
-		"After=docker.service",
-	} {
-		if touchesDocker(c) {
-			t.Errorf("wrongly caught: %s", c)
-		}
-	}
-}
-
 // dockerUntouched fails when any command could stop, start or reload dockerd.
-func dockerUntouched(t *testing.T, calls []string) {
-	t.Helper()
-	for _, c := range calls {
-		if touchesDocker(c) {
-			t.Errorf("touches Docker: %s", c)
-		}
-	}
-}
-
-// rootCalls lists the commands that need root: sudo, firewall-cmd, iptables, ip6tables, tee,
-// docker, and the systemctl verbs that change state. Each must be a sudo -n call.
-func rootCalls(calls []string) []string {
-	var r []string
-	for _, c := range calls {
-		f := strings.Fields(c)
-		switch {
-		case len(f) == 0:
-		case slices.Contains([]string{"sudo", "firewall-cmd", "iptables", "ip6tables", "tee", "docker"}, f[0]):
-			r = append(r, c)
-		case f[0] == "systemctl" && len(f) > 1 && slices.Contains([]string{"enable", "disable", "start", "stop", "restart", "daemon-reload"}, f[1]):
-			r = append(r, c)
-		}
-	}
-	return r
-}
+var dockerUntouched = dockerguard.Untouched
 
 // shWords has sh parse line into words, the way the remote login shell parses ssh's command.
 func shWords(t *testing.T, line string) []string {
@@ -296,17 +182,6 @@ func TestProbeSaysToCloseTheSharedConnectionAfterUsermod(t *testing.T) {
 	}
 }
 
-func TestNeedRootNamesTheFix(t *testing.T) {
-	e, _ := testEnv(host.NewFake())
-	if e.needRoot("x") != nil {
-		t.Fatal("sudo works, so root is available")
-	}
-	e.sudo = false
-	if err := e.needRoot("Reading firewalld"); err == nil || !strings.Contains(err.Error(), "passwordless sudo") {
-		t.Fatal(err)
-	}
-}
-
 func TestRedactLogHidesSecretsAddedAfterItsFirstWrite(t *testing.T) {
 	var b bytes.Buffer
 	l := NewRedactLog(&b)
@@ -344,47 +219,78 @@ func (s *fakeStep) Apply(context.Context, *Env) error {
 
 func TestRunStepsSkipsDoneStepsAndAppliesTheRest(t *testing.T) {
 	a, b := &fakeStep{name: "a", done: true}, &fakeStep{name: "b"}
-	e, out := testEnv(host.NewFake())
+	e, u := testEnv(host.NewFake())
 	if err := RunSteps(context.Background(), e, []Step{a, b}); err != nil {
 		t.Fatal(err)
 	}
 	if a.applied != 0 || b.applied != 1 {
 		t.Fatalf("a=%d b=%d", a.applied, b.applied)
 	}
-	if !strings.Contains(out.String(), "✓ 1/2 a ") || !strings.Contains(out.String(), "→ 2/2 b ") || !strings.Contains(out.String(), "✓ 2/2 b ") {
-		t.Fatal(out.String())
-	}
-	if strings.ContainsAny(out.String(), "\r\x1b") {
-		t.Fatalf("a buffer is not a terminal: %q", out.String())
+	rows := u.Rows()
+	if len(rows) != 2 || rows[0].Name != "a" || rows[0].State != ui.Done || rows[0].Detail != "detail a" ||
+		rows[1].Name != "b" || rows[1].State != ui.Done {
+		t.Fatalf("%+v", rows)
 	}
 }
 
-type qrStep struct{ fakeStep }
-
-func (*qrStep) Attached() bool { return true }
-
-func TestRunStepsGivesAnAttachedStepPlainLinesAndTheRestALiveLine(t *testing.T) {
-	e, out := testEnv(host.NewFake())
-	e.prog = &ui.Progress{Out: ui.Out{W: out, Color: true}, Animate: true, NameWidth: 10}
-	if err := RunSteps(context.Background(), e, []Step{&qrStep{fakeStep{name: "qr"}}, &fakeStep{name: "b"}}); err != nil {
+func TestRunStepsShowsAStepBeforeItsCheckReturns(t *testing.T) {
+	e, u := testEnv(host.NewFake())
+	s := &probeStep{fakeStep: fakeStep{name: "a"}, seen: func() int { return len(u.Events) }}
+	if err := RunSteps(context.Background(), e, []Step{s}); err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.SplitAfter(out.String(), "\n")
-	if len(lines) < 3 || strings.Contains(lines[0]+lines[1], "\r") || strings.Contains(lines[0]+lines[1], "⠋") {
-		t.Fatalf("the attached step got a live line: %q", out.String())
+	if s.atCheck == 0 || u.Events[0].State != ui.Running || u.Events[0].Name != "a" {
+		t.Fatalf("events at the first check: %d %+v", s.atCheck, u.Events)
 	}
-	if !strings.Contains(lines[2], "\r") {
-		t.Fatalf("the other step should animate: %q", lines[2])
+}
+
+type probeStep struct {
+	fakeStep
+	seen    func() int
+	atCheck int
+}
+
+func (s *probeStep) Check(ctx context.Context, e *Env) (bool, string, error) {
+	if s.atCheck == 0 {
+		s.atCheck = s.seen()
 	}
+	return s.fakeStep.Check(ctx, e)
 }
 
 func TestRunStepsStopsAtTheFirstFailure(t *testing.T) {
 	a, b := &fakeStep{name: "a", applyErr: errors.New("boom")}, &fakeStep{name: "b"}
-	e, _ := testEnv(host.NewFake())
+	e, u := testEnv(host.NewFake())
 	err := RunSteps(context.Background(), e, []Step{a, b})
 	if err == nil || err.Error() != "a: boom" || b.applied != 0 {
 		t.Fatalf("err=%v b=%d", err, b.applied)
 	}
+	if rows := u.Rows(); len(rows) != 1 || rows[0].State != ui.Failed || rows[0].Err != "a: boom" {
+		t.Fatalf("%+v", rows)
+	}
+}
+
+func TestEnvWaitingShowsTheCountdownOnTheStepBeingApplied(t *testing.T) {
+	e, u := testEnv(host.NewFake())
+	w := &waitStep{fakeStep: fakeStep{name: "w"}}
+	if err := RunSteps(context.Background(), e, []Step{w}); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ev := range u.Events {
+		if ev.State == ui.Running && strings.Contains(ev.Detail, "left") {
+			got = append(got, ev.Detail)
+		}
+	}
+	if !slices.Equal(got, []string{"waiting for x, 10s left"}) {
+		t.Fatalf("%q", got)
+	}
+}
+
+type waitStep struct{ fakeStep }
+
+func (s *waitStep) Apply(ctx context.Context, e *Env) error {
+	e.waiting("waiting for x", 10*time.Second)
+	return s.fakeStep.Apply(ctx, e)
 }
 
 func TestRunStepsFailsWhenTheCheckStillFails(t *testing.T) {

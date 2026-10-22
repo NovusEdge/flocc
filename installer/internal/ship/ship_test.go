@@ -1,7 +1,6 @@
 package ship
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,12 +16,13 @@ import (
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/identity"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 func TestShipErrorsDoNotLeakTheToken(t *testing.T) {
 	dest := Dest{SSH: "tok123@ssh.example.test", Token: "tok123"}
 	f := host.NewFake().On("ssh -O check tok123@ssh.example.test", 0, "").On("ssh tok123@ssh.example.test uname -m", 255, "")
-	_, err := ship(context.Background(), f, t.TempDir(), dest, shipOpts{})
+	_, err := ship(context.Background(), f, t.TempDir(), dest, shipOpts{UI: quietUI()})
 	if err == nil || strings.Contains(err.Error(), "tok123") || !strings.Contains(err.Error(), "<token>") {
 		t.Fatalf("%v", err)
 	}
@@ -40,7 +40,7 @@ func TestStageFilesArchivesPrivateMarketplaces(t *testing.T) {
 		On("git -C "+root+" bundle create "+dir+"/flocc.bundle HEAD", 0, "").
 		On("git -C /m/X archive --format=tar -o "+dir+"/mp-X.tar HEAD", 0, "").
 		On("git -C /m/X rev-parse HEAD", 0, "abc\n")
-	err := stageFiles(context.Background(), f, root, dir, "amd64", cfg, func(string) (bool, error) { return true, nil })
+	err := stageFiles(context.Background(), quietUI(), f, root, dir, "amd64", cfg, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestStageFilesBuildsTheInstallerForTheHostArch(t *testing.T) {
 		On("git -C "+root+" config user.email", 0, "ada@example.test\n").
 		On("go build -o "+dir+"/flocc-setup ./installer/cmd/flocc-setup", 0, "").
 		On("git -C "+root+" bundle create "+dir+"/flocc.bundle HEAD", 0, "")}
-	if err := stageFiles(context.Background(), f, root, dir, "arm64", cfg, func(string) (bool, error) { return false, nil }); err != nil {
+	if err := stageFiles(context.Background(), quietUI(), f, root, dir, "arm64", cfg, func(string) (bool, error) { return false, nil }); err != nil {
 		t.Fatal(err)
 	}
 	i := slices.IndexFunc(f.cmds, func(c host.Cmd) bool { return c.Name == "go" })
@@ -96,6 +96,8 @@ func TestStageFilesBuildsTheInstallerForTheHostArch(t *testing.T) {
 		t.Fatalf("built in %q, not the repo root", build.Dir)
 	}
 }
+
+func quietUI() ui.Session { return ui.New(&ui.Recorder{}) }
 
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()
@@ -335,7 +337,7 @@ func TestArchFor(t *testing.T) {
 
 func TestStageFilesFailsWithoutAnOwnerIdentity(t *testing.T) {
 	f := host.NewFake().On("git -C /r config user.name", 0, "\n").On("git -C /r config user.email", 0, "\n")
-	err := stageFiles(context.Background(), f, "/r", t.TempDir(), "amd64", t.TempDir(), nil)
+	err := stageFiles(context.Background(), quietUI(), f, "/r", t.TempDir(), "amd64", t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "user.name") {
 		t.Fatalf("%v", err)
 	}
@@ -375,7 +377,7 @@ func TestRemoteCmd(t *testing.T) {
 		interactive bool
 		want        string
 	}{
-		{false, "chmod 755 /tmp/flocc-setup/flocc-setup && sudo -n /tmp/flocc-setup/flocc-setup --answers -"},
+		{false, "chmod 755 /tmp/flocc-setup/flocc-setup && sudo -n /tmp/flocc-setup/flocc-setup --answers - --events"},
 		{true, "chmod 755 /tmp/flocc-setup/flocc-setup && sudo /tmp/flocc-setup/flocc-setup"},
 	} {
 		if got := remoteCmd(c.interactive); got != c.want {
@@ -384,83 +386,71 @@ func TestRemoteCmd(t *testing.T) {
 	}
 }
 
-// The staged flocc-setup comes from the checkout ship runs in, so it may be older than the
-// desktop: an unknown flag makes it exit 2, while an unknown environment variable is ignored.
-func TestColorIsRequestedThroughTheEnvironmentNotAFlag(t *testing.T) {
-	want := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo -n env FLOCC_COLOR=1 /tmp/flocc-setup/flocc-setup --answers -"
-	if got := remoteCmdWith(false, true, 0); got != want || strings.Contains(got, "--color") {
-		t.Fatalf("%q", got)
+// events is what a host run with --events writes: wire lines, and plain text from a command.
+func events(evs ...ui.Event) string {
+	var b strings.Builder
+	for _, e := range evs {
+		b.Write(ui.Encode(e))
 	}
-	if got := remoteCmdWith(true, true, 120); got != remoteCmd(true) {
-		t.Fatalf("interactive runs take no request: %q", got)
-	}
+	return b.String()
+}
+
+func TestShipDrawsTheHostsEventsUnderItsGroup(t *testing.T) {
+	rec := &ui.Recorder{}
+	run := "ssh -T root@h " + remoteCmd(false)
 	f := okSudo("root@h")
-	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard, Color: true}); err != nil {
+	f.OnInteractiveOut(run, events(
+		ui.Event{Kind: ui.KStep, ID: "h1", Name: "Packages", State: ui.Running},
+		ui.Event{Kind: ui.KStep, ID: "h1", Name: "Packages", State: ui.Done, Detail: "9 installed"},
+		ui.Event{Kind: ui.KNote, Name: "Heads up", Text: "swap is off"},
+	)+"stray line\n")
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: ui.New(rec), Target: "root@h", Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
-	if !f.Ran("interactive: ssh -T root@h " + want) {
-		t.Fatalf("calls %v", f.Calls)
-	}
-}
-
-// The host's stdout is a pipe, so only the desktop knows how wide its terminal is; a live line
-// wider than that wraps and leaves a row behind on every redraw. Like colour, the width goes in
-// the environment so that an older staged flocc-setup ignores it.
-func TestTheTerminalWidthTravelsWithTheColourRequestOnly(t *testing.T) {
-	want := "chmod 755 /tmp/flocc-setup/flocc-setup && sudo -n env FLOCC_COLOR=1 COLUMNS=97 /tmp/flocc-setup/flocc-setup --answers -"
-	if got := remoteCmdWith(false, true, 97); got != want || strings.Contains(got, "--cols") {
-		t.Fatalf("%q", got)
-	}
-	if got := remoteCmdWith(false, false, 97); got != remoteCmd(false) {
-		t.Fatalf("no colour, no width: %q", got)
-	}
-}
-
-func TestShipSendsTheWidthItWasGiven(t *testing.T) {
-	f := okSudo("root@h")
-	o := shipOpts{Out: io.Discard, Color: true, Cols: 97}
-	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, o); err != nil {
-		t.Fatal(err)
-	}
-	if !f.Ran("interactive: ssh -T root@h " + remoteCmdWith(false, true, 97)) {
-		t.Fatalf("calls %v", f.Calls)
-	}
-}
-
-// A dropped ssh or Ctrl-C leaves the stream on a frame with no newline; the error is printed
-// next and must not land on it.
-func TestShipEndsAStreamThatStoppedMidLineBeforeTheErrorIsPrinted(t *testing.T) {
-	for _, c := range []struct {
-		name  string
-		color bool
-		tail  string
-	}{{"animating", true, "\r\x1b[K"}, {"plain", false, "\n"}} {
-		t.Run(c.name, func(t *testing.T) {
-			f := okSudo("root@h")
-			run := "ssh -T root@h " + remoteCmdWith(false, c.color, 0)
-			f.OnInteractiveOut(run, "  \x1b[33m⠙\x1b[0m 3/9 Packages   0:41").OnInteractive(run, errors.New("exit status 255"))
-			var out bytes.Buffer
-			_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: &out, Color: c.color})
-			if err == nil {
-				t.Fatal("want the ssh error")
+	var group string
+	for i, e := range rec.Events {
+		if e.Kind == ui.KGroup && e.Name == "Host root@h" {
+			group = e.Name
+			rest := rec.Events[i+1:]
+			if len(rest) < 3 || rest[0].Name != "Packages" || rest[len(rest)-1].Text != "stray line" {
+				t.Errorf("events under the group: %+v", rest)
 			}
-			if !strings.HasSuffix(out.String(), "0:41"+c.tail) {
-				t.Fatalf("%q", out.String())
-			}
-		})
+		}
+	}
+	if group == "" {
+		t.Fatalf("no Host group: %+v", rec.Events)
+	}
+	last := rec.Rows()[len(rec.Rows())-1]
+	if last.Name != "Packages" || last.State != ui.Done || last.Detail != "9 installed" {
+		t.Errorf("%+v", last)
 	}
 }
 
-func TestShipLeavesAStreamThatEndedOnANewlineAlone(t *testing.T) {
+func TestShipRunsTheHostDirectlyNotAsAHandoff(t *testing.T) {
 	f := okSudo("root@h")
-	run := "ssh -T root@h " + remoteCmdWith(false, true, 0)
-	f.OnInteractiveOut(run, "  done\n")
-	var out bytes.Buffer
-	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: &out, Color: true}); err != nil {
+	var got []host.Cmd
+	r := &attachLog{stageOK: f, attached: &got, run: "ssh -T root@h " + remoteCmd(false)}
+	if _, err := ship(context.Background(), r, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Target: "root@h", Answers: []byte("x")}); err != nil {
 		t.Fatal(err)
 	}
-	if out.String() != "  done\n" {
-		t.Fatalf("%q", out.String())
+	if len(got) != 1 || got[0].Attach || got[0].Stdin == nil || got[0].Stdout == nil {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestShipFailsAStepTheStreamLeftRunning(t *testing.T) {
+	rec := &ui.Recorder{}
+	run := "ssh -T root@h " + remoteCmd(false)
+	f := okSudo("root@h")
+	f.OnInteractiveOut(run, events(ui.Event{Kind: ui.KStep, ID: "h1", Name: "Packages", State: ui.Running})).
+		OnInteractive(run, errors.New("exit status 255"))
+	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: ui.New(rec), Target: "root@h"})
+	if err == nil {
+		t.Fatal("want the ssh error")
+	}
+	rows := rec.Rows()
+	if got := rows[len(rows)-1]; got.Name != "Packages" || got.State != ui.Failed {
+		t.Fatalf("%+v", got)
 	}
 }
 
@@ -483,7 +473,7 @@ func TestShipSendsTheAnswersOnStdinWithoutATerminal(t *testing.T) {
 	doc := []byte("[secrets]\nlinear_key = \"lin_api_s3cret\"\n")
 	run := "ssh -T root@h " + remoteCmd(false)
 	f := okSudo("root@h")
-	if _, err := ship(context.Background(), f, root, Dest{SSH: "root@h"}, shipOpts{Answers: doc, Out: io.Discard}); err != nil {
+	if _, err := ship(context.Background(), f, root, Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Answers: doc, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if !f.Ran("interactive: "+run) || f.Stdins[run] != string(doc) {
@@ -500,7 +490,7 @@ func TestShipSendsTheAnswersOnStdinWithoutATerminal(t *testing.T) {
 // echoes the answers document back and never passes EOF.
 func TestNonInteractiveShipForbidsAPtyOnEverySudoAndSecretCall(t *testing.T) {
 	f := okSudo("root@h")
-	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard}); err != nil {
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	var checked int
@@ -530,7 +520,7 @@ func TestSSHNoTTYPutsDashTAfterTheOptions(t *testing.T) {
 func TestShipWithoutAnswersStillClosesStdin(t *testing.T) {
 	run := "ssh -T h " + remoteCmd(false)
 	f := okSudo("h")
-	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{Out: io.Discard}); err != nil {
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{UI: quietUI(), Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	if s, ok := f.Stdins[run]; !ok || s != "" {
@@ -543,7 +533,7 @@ func TestShipStopsBeforeStagingWithoutPasswordlessSudo(t *testing.T) {
 		On("ssh ada@h uname -m", 0, "x86_64\n").
 		On("ssh -T ada@h sudo -n true", 1, "").
 		On("ssh -T ada@h id -un", 0, "ada\n")}
-	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "ada@h"}, shipOpts{Out: io.Discard})
+	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "ada@h"}, shipOpts{UI: quietUI(), Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "give ada passwordless sudo, or use root") {
 		t.Fatalf("%v", err)
 	}
@@ -554,7 +544,7 @@ func TestShipStopsBeforeStagingWithoutPasswordlessSudo(t *testing.T) {
 
 func TestShipNamesAMissingSudo(t *testing.T) {
 	f := &stageOK{mastered("root@h").On("ssh root@h uname -m", 0, "x86_64\n").On("ssh -T root@h sudo -n true", 127, "")}
-	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard})
+	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "install sudo") {
 		t.Fatalf("%v", err)
 	}
@@ -565,15 +555,15 @@ func TestShipNamesAMissingSudo(t *testing.T) {
 func TestShipOpensTheConnectionOnTheTerminalBeforeItsFirstCapture(t *testing.T) {
 	f := okSudo("root@h")
 	f.Responses["ssh -O check root@h"] = host.Result{Code: 255}
-	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Target: "root@h", TTY: true, Out: io.Discard}); err != nil {
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Target: "root@h", TTY: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
-	warm := slices.Index(f.Calls, "interactive: ssh -T root@h true")
+	warm := slices.Index(f.Calls, "interactive: ssh -o ConnectTimeout=10 -T root@h true")
 	if uname := slices.Index(f.Calls, "ssh root@h uname -m"); warm < 0 || uname < warm {
 		t.Fatalf("%v", f.Calls)
 	}
-	f = &stageOK{host.NewFake().On("ssh -O check root@h", 255, "").OnInteractive("ssh -T root@h true", errors.New("exit status 255"))}
-	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Target: "root@h", TTY: true, Out: io.Discard})
+	f = &stageOK{host.NewFake().On("ssh -O check root@h", 255, "").OnInteractive("ssh -o ConnectTimeout=10 -T root@h true", errors.New("exit status 255"))}
+	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Target: "root@h", TTY: true, Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "could not reach root@h") || f.Ran("ssh root@h uname -m") {
 		t.Fatalf("%v %v", err, f.Calls)
 	}
@@ -581,7 +571,7 @@ func TestShipOpensTheConnectionOnTheTerminalBeforeItsFirstCapture(t *testing.T) 
 
 func TestShipInteractiveKeepsTheTerminal(t *testing.T) {
 	f := &stageOK{mastered("h").On("ssh h uname -m", 0, "x86_64\n")}
-	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{Interactive: true, Out: io.Discard}); err != nil {
+	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{UI: quietUI(), Interactive: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"interactive: ssh -t h " + resetStage, "interactive: ssh -t h " + remoteCmd(true)} {
@@ -596,13 +586,28 @@ func TestShipInteractiveKeepsTheTerminal(t *testing.T) {
 	}
 }
 
-func TestShipReturnsTheHostsSummaryAndDropsItsLine(t *testing.T) {
+func summaryEvent(sum Summary) string {
+	return events(ui.Event{Kind: ui.KData, Name: "summary", Text: sum.JSON()})
+}
+
+func TestShipReturnsTheHostsSummary(t *testing.T) {
 	want := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
 	run := "ssh -T root@h " + remoteCmd(false)
 	f := okSudo("root@h")
+	f.OnInteractiveOut(run, "setup chatter\n"+summaryEvent(want))
+	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Out: io.Discard})
+	if err != nil || got.Version != want.Version || !got.LoginPending {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestShipInteractiveReturnsTheSummaryLineAndDropsIt(t *testing.T) {
+	want := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
+	run := "ssh -t h " + remoteCmd(true)
+	f := &stageOK{mastered("h").On("ssh h uname -m", 0, "x86_64\n")}
 	f.OnInteractiveOut(run, "setup chatter\r\n\r\n"+want.Line()+"\r\n")
 	var out strings.Builder
-	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: &out})
+	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "h"}, shipOpts{UI: quietUI(), Interactive: true, Out: &out})
 	if err != nil || got.Version != want.Version || !got.LoginPending {
 		t.Fatalf("%+v %v", got, err)
 	}
@@ -614,25 +619,91 @@ func TestShipReturnsTheHostsSummaryAndDropsItsLine(t *testing.T) {
 func TestShipSummaryNamesTheTypedTargetNotTheTokenedDestination(t *testing.T) {
 	sum := Summary{Version: "flocc 0.4.0", Login: "none", LoginPending: true}
 	f := okSudo("tok123@gw")
-	f.OnInteractiveOut("ssh -T tok123@gw "+remoteCmd(false), sum.Line()+"\r\n")
+	f.OnInteractiveOut("ssh -T tok123@gw "+remoteCmd(false), summaryEvent(sum))
 	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "tok123@gw", Token: "tok123"},
-		shipOpts{Target: "daytona:box", Out: io.Discard})
+		shipOpts{UI: quietUI(), Target: "daytona:box", Out: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	got.Print(&out)
+	for _, e := range got.Rows() {
+		out.WriteString(e.Detail + "\n")
+	}
 	if !strings.Contains(out.String(), "flocc login -H daytona:box") || strings.Contains(out.String(), "tok123") || strings.Contains(out.String(), "<host>") {
 		t.Fatalf("%q", out.String())
 	}
+}
+
+// Everything staged before the host run is a finished step by then.
+func TestShipStagesAsStepsThenRunsTheHost(t *testing.T) {
+	rec := &ui.Recorder{}
+	f := okSudo("root@h")
+	run := "ssh -T root@h " + remoteCmd(false)
+	var got []host.Cmd
+	var rows []string
+	r := &attachLog{stageOK: f, rec: rec, attached: &got, rows: &rows, run: run}
+	if _, err := ship(context.Background(), r, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: ui.New(rec), Target: "root@h"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Connect", "Build flocc-setup", "Bundle", "Plugins", "Copy"}
+	if !slices.Equal(rows, want) {
+		t.Fatalf("steps done before the host run: %v", rows)
+	}
+	for _, e := range rec.Rows() {
+		if e.State != ui.Done {
+			t.Errorf("%+v", e)
+		}
+	}
+}
+
+// attachLog notes which steps had ended when the host run started.
+type attachLog struct {
+	*stageOK
+	rec      *ui.Recorder
+	attached *[]host.Cmd
+	rows     *[]string
+	run      string
+}
+
+func (a *attachLog) Interactive(ctx context.Context, c host.Cmd) error {
+	if c.String() == a.run {
+		*a.attached = append(*a.attached, c)
+		if a.rec != nil {
+			for _, e := range a.rec.Rows() {
+				*a.rows = append(*a.rows, e.Name)
+			}
+		}
+	}
+	return a.stageOK.Interactive(ctx, c)
+}
+
+func TestShipFailsTheStepThatFailed(t *testing.T) {
+	rec := &ui.Recorder{}
+	_, err := ship(context.Background(), failBuild{okSudo("root@h")}, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: ui.New(rec), Out: io.Discard})
+	if err == nil {
+		t.Fatal("want the build error")
+	}
+	rows := rec.Rows()
+	if got := rows[len(rows)-1]; got.Name != "Build flocc-setup" || got.State != ui.Failed {
+		t.Fatalf("%+v", rows)
+	}
+}
+
+type failBuild struct{ *stageOK }
+
+func (f failBuild) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
+	if c.Name == "go" {
+		return host.Result{Code: 1, Stderr: "boom"}, nil
+	}
+	return f.stageOK.Run(ctx, c)
 }
 
 func TestShipKeepsTheSummaryWhenTheHostExitsNonZero(t *testing.T) {
 	sum := Summary{Version: "flocc 0.4.0", Login: "full", Failed: []string{"FAIL  linear: 401"}}
 	run := "ssh -T root@h " + remoteCmd(false)
 	f := okSudo("root@h")
-	f.OnInteractiveOut(run, sum.Line()+"\n").OnInteractive(run, errors.New("exit status 1"))
-	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{Out: io.Discard})
+	f.OnInteractiveOut(run, summaryEvent(sum)).OnInteractive(run, errors.New("exit status 1"))
+	got, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Out: io.Discard})
 	if err == nil || !got.Failing() {
 		t.Fatalf("%+v %v", got, err)
 	}

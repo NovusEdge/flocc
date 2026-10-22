@@ -16,6 +16,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/qr"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 var emailRE = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$`)
@@ -24,7 +25,8 @@ var emailRE = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$`)
 // what the owner calls the host, for the login command the summary shows; empty means Target.
 type LoginOptions struct {
 	Target, Email, Name string
-	Out                 io.Writer // the host's output and the summary; nil is stdout
+	Out                 io.Writer // the host's output; nil is stdout
+	UI                  ui.Session
 }
 
 func ValidEmail(s string) bool { return emailRE.MatchString(s) }
@@ -48,7 +50,7 @@ func Login(ctx context.Context, o LoginOptions) error {
 	if o.Email != "" && !ValidEmail(o.Email) {
 		return usageError(fmt.Sprintf("%q is not an email address", o.Email))
 	}
-	r, dest, err := connect(ctx, o.Target)
+	r, dest, err := connect(ctx, o.Target, o.UI)
 	if err != nil {
 		return err
 	}
@@ -56,21 +58,25 @@ func Login(ctx context.Context, o LoginOptions) error {
 	if out == nil {
 		out = os.Stdout
 	}
-	return login(ctx, r, o.label(), dest, o.Email, out, OpenURL)
+	return login(ctx, o.UI, r, o.label(), dest, o.Email, out, OpenURL)
 }
 
 func (o LoginOptions) label() string { return cmp.Or(o.Name, o.Target) }
 
 // target is the name the owner typed, never dest.SSH, which holds the Daytona token.
-func login(ctx context.Context, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {
+func login(ctx context.Context, s ui.Session, r host.Runner, target string, dest Dest, addr string, out io.Writer, open func(url string)) error {
 	tap := newSummaryTap(&urlWatch{out: out, open: open, seen: map[string]bool{}})
 	c := sshCmd(dest, true, loginRemote(addr))
 	c.Stdout = tap
+	c.Why = "claude login on " + target
 	err := scrubErr(r.Interactive(ctx, c), dest.Token)
 	tap.Flush()
-	if s, ok := tap.Summary(); ok {
-		s.Target = target
-		s.Print(out)
+	if sum, ok := tap.Summary(); ok {
+		sum.Target = target
+		ui.Rows(s, sum.Rows())
+		for _, t := range sum.Todos() {
+			s.Todo(t)
+		}
 	}
 	return err
 }
@@ -118,6 +124,14 @@ func (u *urlWatch) Write(p []byte) (int, error) {
 // OpenURL opens u in the desktop's browser and prints it as a QR code for a phone. ssh -t holds
 // this terminal in raw mode; qr.Write ends its lines with \r\n for that.
 func OpenURL(u string) {
+	Browse(u)
+	if err := qr.Write(os.Stderr, u); err != nil {
+		fmt.Fprintf(os.Stderr, "\r\nno QR code: %v\r\n", err)
+	}
+}
+
+// Browse opens u in the desktop's browser and draws nothing, so a session on the terminal keeps it.
+func Browse(u string) {
 	opener := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		opener = "open"
@@ -125,20 +139,17 @@ func OpenURL(u string) {
 	if cmd := exec.Command(opener, u); cmd.Start() == nil {
 		go cmd.Wait()
 	}
-	if err := qr.Write(os.Stderr, u); err != nil {
-		fmt.Fprintf(os.Stderr, "\r\nno QR code: %v\r\n", err)
-	}
 }
 
 // ExitCode passes on the remote command's exit status; ssh killed by a signal reports -1. A
-// usageError exits 2.
-func ExitCode(err error, what string) int {
+// usageError exits 2. Any other error is handed to show, which draws it on the session.
+func ExitCode(err error, what string, show func(what string, err error)) int {
 	if err == nil {
 		return 0
 	}
 	var usage usageError
 	if errors.As(err, &usage) {
-		fmt.Fprintln(os.Stderr, what+":", usage)
+		show(what, usage)
 		return 2
 	}
 	var exit *exec.ExitError
@@ -148,7 +159,7 @@ func ExitCode(err error, what string) int {
 		}
 		return 255
 	}
-	fmt.Fprintln(os.Stderr, what+":", err)
+	show(what, err)
 	return 1
 }
 

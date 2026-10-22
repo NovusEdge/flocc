@@ -3,7 +3,6 @@
 package cardinal
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -24,13 +24,15 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
+	"github.com/NovusEdge/flocc/installer/internal/rootpass"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // Deps are the desktop's side effects, replaced in tests.
 type Deps struct {
-	Out, Err io.Writer
+	UI       ui.Session
 	Home     string
 	Run      host.Runner
 	TTY      bool
@@ -51,30 +53,18 @@ const (
 
 var hostStage = regexp.MustCompile(`^/tmp/flocc-cardinal-host\.[A-Za-z0-9]{6,}$`)
 
-func sshArgs(opts []string, tty bool, dest, remote string) host.Cmd {
-	args := append([]string{}, opts...)
-	if tty {
-		args = append(args, "-t")
-	} else {
-		// A RequestTTY in the owner's ssh config would otherwise give the pass a pty, which echoes
-		// its stdin and never passes EOF.
-		args = append(args, "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
-	}
-	return host.Cmd{Name: "ssh", Args: append(args, dest, remote)}
-}
-
 // owner runs remote as the owner on the machine.
 func (d Deps) owner(machine string, tty bool, remote string) host.Cmd {
-	return sshArgs(d.Mux, tty, machine, remote)
+	return rootpass.SSH(d.Mux, tty, machine, remote)
 }
 
 // user runs remote as the cardinal user, with forwarding pinned off.
 func (d Deps) user(s saved.Saved, tty bool, remote string) host.Cmd {
-	return sshArgs(append(append([]string{}, saved.Pinned...), d.Mux...), tty, s.Dest(), remote)
+	return rootpass.SSH(append(append([]string{}, saved.Pinned...), d.Mux...), tty, s.Dest(), remote)
 }
 
 func (d Deps) onHost(h hosts.Host, remote string) host.Cmd {
-	return sshArgs(d.Mux, false, h.SSH, remote)
+	return rootpass.SSH(d.Mux, false, h.SSH, remote)
 }
 
 func (d Deps) scp(opts []string, dest string, files ...string) host.Cmd {
@@ -82,47 +72,48 @@ func (d Deps) scp(opts []string, dest string, files ...string) host.Cmd {
 	return host.Cmd{Name: "scp", Args: append(args, dest)}
 }
 
-// report finds the pass's flocc-cardinal line in its output.
-func report(out string) (steps.CardinalReport, bool) {
-	var r steps.CardinalReport
-	found := false
-	sc := bufio.NewScanner(strings.NewReader(out))
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	for sc.Scan() {
-		if got, ok := steps.ParseCardinalLine(strings.TrimRight(sc.Text(), "\r")); ok {
-			r, found = got, true
-		}
-	}
-	return r, found
-}
-
 // passOutput is the pass's output without its report line, sanitized: cardinal can rewrite the
 // binaries the user pass and its units run.
-func passOutput(res host.Result, lines int) string {
+func passOutput(res host.Result, lines int) string { return passText(res.Out(), lines) }
+
+// passText is passOutput for output already in hand; wire lines were drawn as they came.
+func passText(out string, lines int) string {
 	var keep []string
-	for _, l := range strings.Split(res.Out(), "\n") {
-		if !strings.HasPrefix(l, steps.CardinalMarker) {
+	for _, l := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(l, steps.CardinalMarker) && !strings.HasPrefix(l, ui.WirePrefix) {
 			keep = append(keep, l)
 		}
 	}
 	return saved.SanitizeBlock(strings.TrimSpace(strings.Join(keep, "\n")), lines)
 }
 
-func (d Deps) printSteps(title string, r steps.CardinalReport) {
-	fmt.Fprintf(d.Out, "\n%s\n", title)
-	for _, s := range r.Steps {
-		mark := "✓"
-		switch {
-		case s.Pending:
-			mark = "…"
-		case !s.Done:
-			mark = "✗"
-		}
-		fmt.Fprintf(d.Out, "  %s %-16s %s\n", mark, saved.Sanitize(s.Name), saved.Sanitize(s.Detail))
+// streamPass runs c with its stdin and stdout set, so it is a direct run, and draws the events
+// it sends as they come. The report is the "cardinal" data event; steps and notes in it were
+// already drawn, so they are dropped. Output is the pass's other text, for errors.
+func (d Deps) streamPass(ctx context.Context, c host.Cmd) (r steps.CardinalReport, ok bool, output string, err error) {
+	var raw bytes.Buffer
+	rp := ui.Replay(d.UI, "", "")
+	c.Stdout = io.MultiWriter(rp, &raw)
+	err = d.Run.Interactive(ctx, c)
+	rp.Close()
+	output = passText(raw.String(), 20)
+	if text, found := rp.Data("cardinal"); found && json.Unmarshal([]byte(text), &r) == nil {
+		ok = true
+		r.Steps, r.Notes = nil, nil
 	}
-	for _, n := range r.Notes {
-		fmt.Fprintf(d.Out, "  · %s\n", saved.Sanitize(n))
+	return r, ok, output, err
+}
+
+// exitText names how a pass that sent no report ended.
+func exitText(err error) string {
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return "exit 0"
+	case errors.As(err, &exit):
+		return fmt.Sprintf("exit %d", exit.ExitCode())
 	}
+	return saved.Sanitize(err.Error())
 }
 
 // build makes flocc and flocc-setup for the machine's architecture, from the checkout this runs in.
@@ -131,19 +122,8 @@ func (d Deps) build(ctx context.Context, arch string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("flocc cardinal builds from the flocc checkout it runs in; cd into it: %w", err)
 	}
-	dir, err := os.MkdirTemp("", "flocc-cardinal-")
-	if err != nil {
-		return "", err
-	}
-	for _, b := range []string{"flocc", "flocc-setup"} {
-		if _, err := host.Must(ctx, d.Run, host.Cmd{Name: "go", Dir: root,
-			Args: []string{"build", "-o", filepath.Join(dir, b), "./installer/cmd/" + b},
-			Env:  []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + arch}}); err != nil {
-			os.RemoveAll(dir)
-			return "", err
-		}
-	}
-	return dir, nil
+	d.UI.Group("Build")
+	return rootpass.Build(ctx, d.Run, d.UI, root, arch, "flocc", "flocc-setup")
 }
 
 // inScope is one host cardinal will reach: its desktop host file and its bridge address.
@@ -248,16 +228,12 @@ func (d Deps) hostPass(ctx context.Context, h hosts.Host, bin, phase string, doc
 		return steps.CardinalReport{}, err
 	}
 	body, _ := json.Marshal(doc)
-	c := d.onHost(h, "chmod 755 "+dir+"/flocc-setup && "+dir+"/flocc-setup --phase "+phase+" --answers -; rc=$?; rm -rf "+dir+"; exit $rc")
+	c := d.onHost(h, "chmod 755 "+dir+"/flocc-setup && "+dir+"/flocc-setup --phase "+phase+" --answers - --events; rc=$?; rm -rf "+dir+"; exit $rc")
 	c.Stdin = bytes.NewReader(body)
-	res, err := d.Run.Run(ctx, c)
-	if err != nil {
-		return steps.CardinalReport{}, err
-	}
-	r, ok := report(res.Stdout)
+	r, ok, out, err := d.streamPass(ctx, c)
 	switch {
 	case !ok:
-		return r, fmt.Errorf("%s: the host pass ended without a report (exit %d):\n%s", h.Name, res.Code, passOutput(res, 20))
+		return r, fmt.Errorf("%s: the host pass ended without a report (%s):\n%s", h.Name, exitText(err), out)
 	case r.Error != "":
 		return r, fmt.Errorf("%s: %s", h.Name, saved.Sanitize(r.Error))
 	}
@@ -286,9 +262,9 @@ func (d Deps) refreshKnownHost(ctx context.Context, h hosts.Host, hostKey string
 	if err != nil {
 		return err
 	}
-	check := sshArgs([]string{"-o", "ControlPath=none"}, false, h.SSH, "true")
+	check := rootpass.SSH([]string{"-o", "ControlPath=none"}, false, h.SSH, "true")
 	if res, err := d.Run.Run(ctx, check); err == nil && res.Code == 0 {
-		fmt.Fprintf(d.Out, "  · %s's host key changed with the sshd install; this desktop's known_hosts now holds the new one\n", h.Name)
+		d.UI.Step("Host key").Skip(h.Name + "'s host key changed with the sshd install; this desktop's known_hosts now holds the new one")
 		return nil
 	}
 	host.Must(ctx, d.Run, host.Cmd{Name: "ssh-keygen", Args: []string{"-R", name}})
@@ -353,21 +329,9 @@ func rootCalls(user, why string, o SetupOptions) []rootCall {
 	return calls
 }
 
-// rootPass runs a setup's or purge's sudo calls from a stage only the owner's mktemp could have
-// made, on one line in one ssh -t: sudo's ticket for that terminal covers every call after the
-// first, so the owner types one password. A failed call stops the ones after it. The stage goes
-// after a success and stays, with its log, after a failure.
 func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey string, calls []rootCall) error {
 	if !d.TTY {
 		return errors.New("the machine's sudo asks for a password; run this in a terminal")
-	}
-	dir, err := host.Must(ctx, d.Run, d.owner(s.Machine, false, "mktemp -d /tmp/flocc-cardinal.XXXXXX"))
-	dir = strings.TrimSpace(dir)
-	if err != nil {
-		return err
-	}
-	if !steps.ValidCardinalStage(dir) {
-		return fmt.Errorf("mktemp on %s returned %q", s.Machine, dir)
 	}
 	files := []string{filepath.Join(bin, "flocc-setup")}
 	if desktopKey != "" {
@@ -377,25 +341,16 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey strin
 		}
 		files = append(files, pub)
 	}
-	if _, err := host.Must(ctx, d.Run, d.scp(d.Mux, s.Machine+":"+dir+"/", files...)); err != nil {
-		return err
-	}
-	remote := "chmod 755 " + dir + "/flocc-setup"
-	for _, c := range calls {
-		remote += " && sudo " + dir + "/flocc-setup --phase " + c.Phase + " --user " + c.User
+	argv := make([][]string, len(calls))
+	for i, c := range calls {
+		argv[i] = []string{"--phase", c.Phase, "--user", c.User}
 		if c.Adopt {
-			remote += " --adopt"
+			argv[i] = append(argv[i], "--adopt")
 		}
 	}
-	remote += " && rm -rf " + dir
-	var reports []steps.CardinalReport
-	tap := reportTap(d.Out, &reports)
-	c := d.owner(s.Machine, true, remote)
-	c.Stdout = tap
-	err = d.Run.Interactive(ctx, c)
-	tap.Flush()
+	reports, err := rootpass.Run(ctx, d.Run, rootpass.Pass{Machine: s.Machine, Opts: d.Mux, Prefix: "/tmp/flocc-cardinal",
+		Files: files, Calls: argv, Why: "root pass: sudo on " + s.Machine + " asks for your password"})
 	// Each call prints one report, in order, so the i-th report is the i-th call's.
-	var why string
 	for i, r := range reports {
 		title := "Root pass"
 		if i < len(calls) && calls[i].Phase == "cardinal-purge" {
@@ -405,28 +360,11 @@ func (d Deps) rootPass(ctx context.Context, s saved.Saved, bin, desktopKey strin
 			}
 		}
 		if len(r.Steps) > 0 || len(r.Notes) > 0 {
-			d.printSteps(title, r)
-		}
-		if r.Error != "" {
-			why = saved.Sanitize(r.Error) + "; "
+			d.UI.Group(title)
+			ui.Rows(d.UI, rootpass.Events(r))
 		}
 	}
-	if err != nil {
-		return fmt.Errorf("the root pass failed: %sits log is %s/setup.log on %s: %w", why, dir, s.Machine, err)
-	}
-	return nil
-}
-
-// reportTap passes a pass's output through as it comes, prompts included, and keeps each
-// flocc-cardinal line in rs for printSteps.
-func reportTap(out io.Writer, rs *[]steps.CardinalReport) *ship.LineTap {
-	return &ship.LineTap{Out: out, Marker: steps.CardinalMarker, Take: func(line string) bool {
-		got, ok := steps.ParseCardinalLine(line)
-		if ok {
-			*rs = append(*rs, got)
-		}
-		return ok
-	}}
+	return err
 }
 
 // userPass stages the binaries in the user's home over the user's own ssh and runs the pass.
@@ -444,19 +382,26 @@ func (d Deps) userPass(ctx context.Context, s saved.Saved, bin string, doc steps
 		return steps.CardinalReport{}, err
 	}
 	body, _ := json.Marshal(doc)
-	c := d.user(s, false, "chmod 755 ~/"+userStage+"/flocc ~/"+userStage+"/flocc-setup && ~/"+userStage+"/flocc-setup --phase cardinal --answers -")
+	c := d.user(s, false, "chmod 755 ~/"+userStage+"/flocc ~/"+userStage+"/flocc-setup && ~/"+userStage+"/flocc-setup --phase cardinal --answers - --events")
 	c.Stdin = bytes.NewReader(body)
-	res, err := d.Run.Run(ctx, c)
-	if err != nil {
-		return steps.CardinalReport{}, err
-	}
-	r, ok := report(res.Stdout)
+	r, ok, out, err := d.streamPass(ctx, c)
 	switch {
 	case !ok:
-		return r, fmt.Errorf("the user pass ended without a report (exit %d):\n%s", res.Code, passOutput(res, 20))
+		return r, fmt.Errorf("the user pass ended without a report (%s):\n%s", exitText(err), out)
 	case r.Error != "":
-		return r, fmt.Errorf("user pass: %s\n%s", saved.Sanitize(r.Error), passOutput(res, 20))
+		return r, fmt.Errorf("user pass: %s\n%s", saved.Sanitize(r.Error), out)
 	}
+	return r, nil
+}
+
+func (d Deps) userStep(ctx context.Context, s saved.Saved, bin string, doc steps.CardinalDoc) (steps.CardinalReport, error) {
+	st := d.UI.Step("User pass")
+	r, err := d.userPass(ctx, s, bin, doc)
+	if err != nil {
+		st.Fail(err)
+		return r, err
+	}
+	st.Done(s.Dest())
 	return r, nil
 }
 

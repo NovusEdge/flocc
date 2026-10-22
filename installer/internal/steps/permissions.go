@@ -43,7 +43,7 @@ func (p Permissions) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return false, "the host file has no [permissions]; the host's copy goes", nil
 	case bytes.Equal(got, want):
 		perms := e.Answers.Permissions
-		return true, fmt.Sprintf("%s, %s", plural(len(perms.Allow), "allow rule"), plural(len(perms.Environment), "environment line")), nil
+		return true, fmt.Sprintf("%s, %s", Plural(len(perms.Allow), "allow rule"), Plural(len(perms.Environment), "environment line")), nil
 	}
 	return false, "differs from the host file", nil
 }

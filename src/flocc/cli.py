@@ -457,9 +457,11 @@ def cmd_release(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from flocc.doctor import run_doctor
+    from flocc.doctor import doctor_json, run_doctor
 
     cfg, path = _config(args)
+    if args.json:
+        return doctor_json(cfg, path)
     print(f"ok    config: {path}")
     return run_doctor(cfg)
 
@@ -507,10 +509,44 @@ def cmd_status(args) -> int:
     return 0
 
 
-def cmd_logs(args) -> int:
-    from flocc.status import detect_mode
+def cmd_peek(args) -> int:
+    from flocc.sessions import Sessions, session_name
+    from flocc.status import _read_ledger
 
     cfg, _ = _config(args)
+    claims, _, _ = _read_ledger(cfg.ledger_path)
+    claim = next((c for c in claims if c.issue_key == args.key), None)
+    sessions = Sessions()
+    name = session_name(claim.issue_key, claim.phase) if claim else None
+    # Blank rows below the prompt count toward the capture, so ask for more than N.
+    text = sessions.capture(name, max(args.lines, 1) + 200) if name and sessions.alive(name) else ""
+    rows = text.rstrip().splitlines()
+    if not rows:
+        print(f"peek: no live session for {args.key}", file=sys.stderr)
+        return 3
+    for row in rows[-max(args.lines, 1) :]:
+        print("".join(c if c.isprintable() else " " for c in row))
+    return 0
+
+
+def cmd_logs(args) -> int:
+    from flocc.status import detect_mode, issue_lines
+
+    cfg, _ = _config(args)
+    if args.issue:
+        if args.follow:
+            print("--issue does not follow; drop -f", file=sys.stderr)
+            return 2
+        mode = detect_mode()
+        try:
+            hits = issue_lines(cfg, args.issue, args.lines, mode, subprocess.run)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"logs: {exc}", file=sys.stderr)
+            return 1
+        for at, text in hits:
+            stamp = f"{time.strftime('%H:%M:%S', time.localtime(at))} " if mode == "systemd" else ""
+            print(stamp + text)
+        return 0
     follow = ["-f"] if args.follow else []
     lines = ["-n", str(args.lines)]
     if detect_mode() == "systemd":
@@ -574,6 +610,7 @@ COMMANDS = {
     "doctor": cmd_doctor,
     "status": cmd_status,
     "logs": cmd_logs,
+    "peek": cmd_peek,
     "permissions": cmd_permissions,
     "attach": cmd_attach,
 }
@@ -637,12 +674,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="approve the tester's files as they stand on the branch (keeps the worktree)",
     )
-    add("doctor", "Check config and host setup")
+    doctor = add("doctor", "Check config and host setup")
+    doctor.add_argument("--json", action="store_true", help="print the checks as JSON")
     status = add("status", "Show claims, last tick, usage and disk")
     status.add_argument("--json", action="store_true", help="print the raw report as JSON")
     logs = add("logs", "Print the service log: the journal on systemd hosts, run.log otherwise")
     logs.add_argument("-n", dest="lines", type=int, default=100, help="lines to print")
     logs.add_argument("-f", "--follow", action="store_true", help="keep printing new lines")
+    logs.add_argument("--issue", metavar="KEY", help="only the lines that name this issue")
+    peek = add("peek", "Print the tail of an issue's live session")
+    peek.add_argument("key", help="issue key, e.g. NF-12")
+    peek.add_argument("-n", dest="lines", type=int, default=40, help="lines to print")
     perms = add("permissions", "Summarise the auto-mode blocks and prompts sessions met")
     perms.add_argument("action", choices=["report"], help="what to show")
     perms.add_argument("--days", type=int, default=7, help="how many days back")

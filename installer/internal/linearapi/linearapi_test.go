@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -210,5 +212,80 @@ func TestAnIssueLinearDoesNotHaveIsErrNotFound(t *testing.T) {
 	c := &Client{URL: s.URL + "/graphql", Key: "lin_api_test", HTTP: s.Client()}
 	if _, err := c.Issue(context.Background(), "NF-9999"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
+	}
+}
+
+func TestIssuesByKeyAsksOnceByTeamAndNumber(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b bytes.Buffer
+		b.ReadFrom(r.Body)
+		bodies = append(bodies, b.String())
+		w.Write([]byte(`{"data":{"issues":{"nodes":[{"identifier":"NF-240","title":"Fix the poller tick","url":"https://linear.app/x/issue/NF-240","id":"u","state":{"type":"started"}}]}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{URL: srv.URL, Key: "k", HTTP: srv.Client()}
+	got, err := c.IssuesByKey(context.Background(), []string{"NF-240", "not a key", "AB-7", "NF-241"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != "NF-240" || got[0].Title != "Fix the poller tick" || got[0].URL != "https://linear.app/x/issue/NF-240" || got[0].StateType != "started" {
+		t.Fatalf("%+v", got)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("%d requests", len(bodies))
+	}
+	var req struct {
+		Variables struct {
+			Filter json.RawMessage
+			N      int
+		}
+	}
+	if err := json.Unmarshal([]byte(bodies[0]), &req); err != nil {
+		t.Fatal(err)
+	}
+	const filter = `{"or":[{"and":[{"team":{"key":{"eq":"NF"}}},{"number":{"in":[240,241]}}]},{"and":[{"team":{"key":{"eq":"AB"}}},{"number":{"in":[7]}}]}]}`
+	var a, b any
+	json.Unmarshal(req.Variables.Filter, &a)
+	json.Unmarshal([]byte(filter), &b)
+	if !reflect.DeepEqual(a, b) || req.Variables.N != 3 {
+		t.Errorf("filter %s first %d", req.Variables.Filter, req.Variables.N)
+	}
+}
+
+func TestIssuesByKeyCollapsesDuplicatesAndChunks(t *testing.T) {
+	var firsts []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Variables struct{ N int } }
+		json.NewDecoder(r.Body).Decode(&req)
+		firsts = append(firsts, req.Variables.N)
+		w.Write([]byte(`{"data":{"issues":{"nodes":[]}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{URL: srv.URL, Key: "k", HTTP: srv.Client()}
+	if _, err := c.IssuesByKey(context.Background(), []string{"NF-1", "NF-1", "NF-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(firsts, []int{2}) {
+		t.Fatalf("duplicates: first %v", firsts)
+	}
+	firsts = nil
+	var keys []string
+	for i := 1; i <= 251; i++ {
+		keys = append(keys, "NF-"+strconv.Itoa(i))
+	}
+	if _, err := c.IssuesByKey(context.Background(), keys); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(firsts, []int{250, 1}) {
+		t.Fatalf("chunks: first %v", firsts)
+	}
+}
+
+func TestIssuesByKeyWithNoUsableKeyAsksNothing(t *testing.T) {
+	c := &Client{URL: "http://127.0.0.1:0", Key: "k", HTTP: &http.Client{}}
+	got, err := c.IssuesByKey(context.Background(), []string{"nf-1", "NF-", "x"})
+	if got != nil || err != nil {
+		t.Fatalf("%v %v", got, err)
 	}
 }

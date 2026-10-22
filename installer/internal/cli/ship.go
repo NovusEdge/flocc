@@ -10,9 +10,12 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/tailnet"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 func shipCmd(ctx context.Context, d *deps, name string, args []string) int {
@@ -23,7 +26,7 @@ func shipCmd(ctx context.Context, d *deps, name string, args []string) int {
 		fmt.Fprintln(d.err, "usage: flocc ship -H <name> [--interactive]")
 		return 2
 	}
-	return ship.ExitCode(shipWith(ctx, d, name, *interactive), "ship")
+	return ship.ExitCode(shipWith(ctx, d, name, *interactive), "ship", d.showErr)
 }
 
 // shipHost ships without a terminal on the host; Part 3's host create calls it. A run whose only
@@ -47,16 +50,19 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 		if err := keys.Fill(ctx, keysEnv(d), mapped(listHosts(d)), keys.Slots); err != nil {
 			return err
 		}
-		doc, err := answersDoc(d.store(), h)
+		doc, err := answersDoc(d.store(), h, daytonaKey(ctx, d, h))
 		if err != nil {
 			return err
 		}
 		in = bytes.NewReader(doc)
 	}
-	s, err := d.doShip(ctx, ship.Options{Target: h.Target(), Interactive: interactive, TTY: d.tty, Out: d.out}, in)
+	s, err := d.doShip(ctx, ship.Options{Target: h.Target(), Interactive: interactive, TTY: d.tty, Out: d.out, UI: d.ui}, in)
 	// The host cannot know the name the desktop calls it, which the remedy lines use.
 	s.Target = h.Name
-	s.Print(d.out)
+	ui.Rows(d.ui, s.Rows())
+	for _, t := range s.Todos() {
+		d.ui.Todo(t)
+	}
 	if err != nil {
 		return err
 	}
@@ -75,9 +81,28 @@ func needCheckout(d *deps) error {
 	return nil
 }
 
-// answersDoc is what ship sends on stdin: the host file's answers with the stored keys. Part
-// 2a's Ship redacts the document's secrets from its log.
-func answersDoc(st keys.Store, h hosts.Host) ([]byte, error) {
+// daytonaKey mints the tagged key a Daytona sandbox joins the tailnet with, as host create does for
+// a VM; it is "" for any other host and without a stored OAuth client. A sandbox that cannot get one
+// still ships, and joins by the login it always had.
+func daytonaKey(ctx context.Context, d *deps, h hosts.Host) string {
+	if h.Daytona == "" {
+		return ""
+	}
+	c := tailnetClientOf(d)
+	if c == nil {
+		return ""
+	}
+	key, err := c.TaggedKey(ctx, tailnet.Tag, create.KeyTTL)
+	if err != nil {
+		d.ui.Todo(h.Name + ": no tagged Tailscale key for the sandbox, so it joins by login: " + err.Error())
+		return ""
+	}
+	return key
+}
+
+// answersDoc is what ship sends on stdin: the host file's answers with the stored keys and, when
+// there is one, the one-off Tailscale key. Part 2a's Ship redacts the document's secrets from its log.
+func answersDoc(st keys.Store, h hosts.Host, tsKey string) ([]byte, error) {
 	v := map[keys.Slot]string{}
 	for _, s := range keys.Slots {
 		got, err := st.Get(s)
@@ -91,7 +116,7 @@ func answersDoc(st keys.Store, h hosts.Host) ([]byte, error) {
 	}
 	a := h.Answers
 	a.NtfyTopic = v[keys.Ntfy]
-	a.Secrets = &answers.Secrets{LinearKey: v[keys.Linear], AgentToken: v[keys.Agent], PublishToken: v[keys.Publish]}
+	a.Secrets = &answers.Secrets{LinearKey: v[keys.Linear], AgentToken: v[keys.Agent], PublishToken: v[keys.Publish], TailscaleAuthKey: tsKey}
 	return toml.Marshal(a)
 }
 
@@ -108,7 +133,7 @@ func loginCmd(ctx context.Context, d *deps, name string, args []string) int {
 		fmt.Fprintf(d.err, "flocc login: %q is not an email address\n", *email)
 		return 2
 	}
-	return ship.ExitCode(loginWith(ctx, d, name, *email), "login")
+	return ship.ExitCode(loginWith(ctx, d, name, *email), "login", d.showErr)
 }
 
 // loginHost is flocc login -H <name> with no --email; Part 3's host create calls it.
@@ -120,5 +145,5 @@ func loginWith(ctx context.Context, d *deps, name, email string) error {
 	if err != nil {
 		return err
 	}
-	return d.doLogin(ctx, ship.LoginOptions{Target: h.Target(), Name: h.Name, Email: email, Out: d.out})
+	return d.doLogin(ctx, ship.LoginOptions{Target: h.Target(), Name: h.Name, Email: email, Out: d.out, UI: d.ui})
 }

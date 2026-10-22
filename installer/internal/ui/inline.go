@@ -1,0 +1,459 @@
+package ui
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
+)
+
+const tailLines = 3
+
+type (
+	drawMsg   struct{ e Event }
+	promptMsg struct {
+		req   PromptReq
+		reply chan promptReply
+	}
+	promptReply struct {
+		v   any
+		err error
+	}
+	handoffMsg struct {
+		why   string
+		cmd   *exec.Cmd
+		reply chan error
+	}
+	handoffDone struct {
+		err   error
+		reply chan error
+	}
+	closeMsg struct{ todos []string }
+	// printedMsg follows each Println: Bubble Tea runs commands concurrently, so a Quit sent
+	// while one is in flight would drop the line.
+	printedMsg struct{}
+)
+
+type liveStep struct {
+	id, name, detail string
+	n, total         int
+	start            time.Time
+	lines            []string
+}
+
+// inlineModel keeps finished rows in the terminal's scrollback (tea.Println) and redraws only the
+// running steps, the tail of their output and an open form below them.
+type inlineModel struct {
+	steps       []liveStep
+	queue       []string // rows that ended while a form was open; printed once it closes
+	form        *huh.Form
+	result      func() any
+	reply       chan promptReply
+	spinner     spinner.Model
+	width       int
+	now         func() time.Time
+	log         string
+	interrupted bool
+	interrupt   func()
+	printing    int // Printlns issued and not yet printed
+	closing     *closeMsg
+	th          theme.Theme
+	formDark    *bool // what an open form reads; see themeIn
+	hold        handoffHold
+}
+
+func newInlineModel(now func() time.Time) inlineModel {
+	th := withDark(theme.FromEnv(os.Getenv, true), true)
+	return inlineModel{
+		spinner:   th.Spinner(),
+		th:        th,
+		formDark:  new(true),
+		hold:      newHandoffHold(now()),
+		now:       now,
+		interrupt: interruptSelf,
+	}
+}
+
+// interruptSelf stands in for the ctrl+c the terminal no longer turns into a signal while Bubble
+// Tea holds it in raw mode, so the signal.NotifyContext in cli.Main still cancels the run.
+func interruptSelf() {
+	if p, err := os.FindProcess(os.Getpid()); err == nil {
+		p.Signal(os.Interrupt)
+	}
+}
+
+func (m inlineModel) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, tea.RequestBackgroundColor, replyTimer())
+}
+
+func (m inlineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	start, consumed := m.hold.step(msg, m.now())
+	var next tea.Model = m
+	var cmd tea.Cmd
+	if !consumed {
+		next, cmd = m.update(msg)
+	}
+	if start != nil {
+		cmd = tea.Batch(cmd, inlineHandoff(*start))
+	}
+	return next, cmd
+}
+
+func inlineHandoff(msg handoffMsg) tea.Cmd {
+	run := tea.ExecProcess(msg.cmd, func(err error) tea.Msg { return handoffDone{err, msg.reply} })
+	if b := handoffBanner(msg.why); b != "" {
+		return tea.Sequence(tea.Println(b), run)
+	}
+	return run
+}
+
+func (m inlineModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		m.th = withDark(m.th, msg.IsDark())
+		m.spinner.Style = m.th.Accent
+		*m.formDark = m.th.Dark
+		next, cmd := m.toForm(msg) // a select caches its rendered options until it sees an update
+		return next.(inlineModel).afterReply(cmd)
+	case tea.KeyboardEnhancementsMsg:
+		next, cmd := m.toForm(msg)
+		return next.(inlineModel).afterReply(cmd)
+	case replyDeadline:
+		return m.closeIfIdle()
+	case drawMsg:
+		return m.draw(msg.e)
+	case promptMsg:
+		return m.openPrompt(msg)
+	case handoffDone:
+		msg.reply <- msg.err
+		return m, nil
+	case closeMsg:
+		m.closing = &msg
+		return m.closeIfIdle()
+	case printedMsg:
+		m.printing--
+		return m.closeIfIdle()
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+	case tea.KeyPressMsg:
+		if m.form == nil && msg.String() == "ctrl+c" {
+			m.interrupted = true
+			m.interrupt()
+			return m, nil
+		}
+	}
+	return m.toForm(msg)
+}
+
+// afterReply retries a close that was waiting for the terminal's replies.
+func (m inlineModel) afterReply(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	next, quit := m.closeIfIdle()
+	return next, tea.Batch(cmd, quit)
+}
+
+// closeIfIdle ends the program once a requested close has nothing left to print and the terminal
+// has answered the startup queries: a reply that lands after the program ends is typed at the
+// shell prompt.
+func (m inlineModel) closeIfIdle() (tea.Model, tea.Cmd) {
+	if m.closing == nil || m.printing > 0 || !m.hold.gate.ready(m.now()) {
+		return m, nil
+	}
+	if text := ThemedCloseText(m.closing.todos, m.log, m.th); text != "" {
+		return m, tea.Sequence(tea.Println(strings.TrimRight(text, "\n")), tea.Quit)
+	}
+	return m, tea.Quit
+}
+
+func (m inlineModel) draw(e Event) (tea.Model, tea.Cmd) {
+	switch e.Kind {
+	case KGroup:
+		cmd := m.print(groupText(e.Name))
+		return m, cmd
+	case KNote:
+		cmd := m.print(NoteText(e.Name, e.Text))
+		return m, cmd
+	case KTable:
+		if e.Table != nil {
+			cmd := m.print(TableText(*e.Table))
+			return m, cmd
+		}
+	case KLog:
+		m.log = e.Text
+	case KLine:
+		if i := m.find(e.ID); i >= 0 {
+			s := &m.steps[i]
+			s.lines = append(append([]string(nil), s.lines...), strings.TrimRight(e.Text, "\r\n"))
+			if len(s.lines) > tailLines {
+				s.lines = s.lines[len(s.lines)-tailLines:]
+			}
+		}
+	case KStep:
+		if e.State == Running {
+			m.live(e)
+			return m, nil
+		}
+		if i := m.find(e.ID); i >= 0 {
+			m.steps = append(append([]liveStep(nil), m.steps[:i]...), m.steps[i+1:]...)
+		}
+		cmd := m.print(ThemedRow(e, nameWidth, m.th))
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m *inlineModel) find(id string) int {
+	for i, s := range m.steps {
+		if s.id == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m *inlineModel) live(e Event) {
+	i := m.find(e.ID)
+	if i < 0 {
+		m.steps = append(m.steps[:len(m.steps):len(m.steps)], liveStep{id: e.ID, name: e.Name, start: m.now()})
+		i = len(m.steps) - 1
+	} else {
+		m.steps = append([]liveStep(nil), m.steps...)
+	}
+	s := &m.steps[i]
+	if e.Detail != "" {
+		s.detail = e.Detail
+	}
+	if e.Total > 0 {
+		s.n, s.total = e.N, e.Total
+	}
+}
+
+// print is a line for the scrollback; behind an open form it waits, so rows keep the order they
+// ended in and nothing prints between a question and its answer.
+func (m *inlineModel) print(text string) tea.Cmd {
+	if m.form != nil {
+		m.queue = append(m.queue, text)
+		return nil
+	}
+	m.printing++
+	return tea.Sequence(tea.Println(text), func() tea.Msg { return printedMsg{} })
+}
+
+func groupText(title string) string { return "\n" + Out{Color: true}.Bold(title) }
+
+func (m inlineModel) openPrompt(msg promptMsg) (tea.Model, tea.Cmd) {
+	m.form, m.result = formFor(m.formDark, msg.req)
+	m.reply = msg.reply
+	return m, m.form.Init()
+}
+
+// formFor embeds the request as a huh form drawn for the given background; result reads the
+// answer once the form completes.
+func formFor(dark *bool, r PromptReq) (*huh.Form, func() any) {
+	if r.Kind == PForm {
+		return r.Form.WithTheme(themeIn(dark)), func() any { return nil }
+	}
+	desc := strings.Join(append(append([]string(nil), r.Q.Facts...), r.Q.Help), "\n")
+	desc = strings.Trim(desc, "\n")
+	var (
+		f      huh.Field
+		result func() any
+	)
+	switch r.Kind {
+	case PConfirm:
+		b := r.Q.Default == "yes"
+		f = huh.NewConfirm().Title(r.Q.Title).Description(desc).Value(&b)
+		result = func() any { return b }
+	case PChoose:
+		var i int
+		opts := make([]huh.Option[int], len(r.Options))
+		for j, o := range r.Options {
+			opts[j] = huh.NewOption(o, j)
+		}
+		f = huh.NewSelect[int]().Title(r.Q.Title).Description(desc).Options(opts...).Value(&i)
+		result = func() any { return i }
+	default:
+		s := r.Q.Default
+		in := huh.NewInput().Title(r.Q.Title).Description(desc).Value(&s)
+		if r.Kind == PSecret {
+			in = in.EchoMode(huh.EchoModePassword)
+		}
+		f = in
+		result = func() any { return s }
+	}
+	return formIn(dark, huh.NewGroup(f)), result
+}
+
+// toForm gives the open form every message it has not been handed already, and closes it when
+// it ends.
+func (m inlineModel) toForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.form == nil {
+		return m, nil
+	}
+	cmd, reply, ended := advance(m.form, m.result, msg)
+	if !ended {
+		return m, cmd
+	}
+	m.reply <- reply
+	m.form, m.result, m.reply = nil, nil, nil
+	queued := m.queue
+	m.queue = nil
+	if len(queued) == 0 {
+		return m, cmd
+	}
+	m.printing++
+	return m, tea.Sequence(cmd, tea.Println(strings.Join(queued, "\n")), func() tea.Msg { return printedMsg{} })
+}
+
+func (m inlineModel) View() tea.View {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	var b strings.Builder
+	for _, s := range m.steps {
+		detail := s.detail
+		if s.total > 0 {
+			detail = strings.TrimSpace(fmt.Sprintf("%d/%d %s", s.n, s.total, detail))
+		}
+		suffix := "   " + clockFmt(m.now().Sub(s.start))
+		fixed := utf8.RuneCountInString(fmt.Sprintf("%s  %-*s %s", indent, nameWidth, s.name, suffix))
+		detail = cut(detail, max(width-2-fixed, 1))
+		line := strings.TrimRight(fmt.Sprintf("%s%s %-*s %s", indent, m.spinner.View(), nameWidth, s.name, detail), " ")
+		b.WriteString(line + suffix + "\n")
+		for _, l := range s.lines {
+			b.WriteString(m.th.Dim.Render(cut(strings.Repeat(" ", 6)+l, width-2)) + "\n")
+		}
+	}
+	if m.form != nil {
+		b.WriteString("\n" + m.form.View())
+	}
+	return tea.NewView(b.String())
+}
+
+// cut shortens s to n columns with an ellipsis. A line that wrapped would leave a copy of itself
+// behind on every redraw, and the last column is left empty because terminals differ on wrapping
+// there.
+func cut(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:max(n-1, 0)]) + "…"
+	}
+	return s
+}
+
+type inline struct {
+	p    *tea.Program
+	q    *sendQueue
+	done chan struct{}
+}
+
+// sendQueue delivers messages to a program in order from one goroutine. tea.ExecProcess runs the
+// child inside the program's loop, and Program.Send blocks until the loop takes the message, so a
+// Draw made while a child runs (often by its own output) must queue instead of waiting.
+type sendQueue struct {
+	p    *tea.Program
+	mu   sync.Mutex
+	msgs []tea.Msg
+	wake chan struct{}
+}
+
+func newSendQueue(p *tea.Program, done <-chan struct{}) *sendQueue {
+	q := &sendQueue{p: p, wake: make(chan struct{}, 1)}
+	go func() {
+		for {
+			select {
+			case <-q.wake:
+			case <-done:
+				return
+			}
+			for {
+				q.mu.Lock()
+				if len(q.msgs) == 0 {
+					q.mu.Unlock()
+					break
+				}
+				m := q.msgs[0]
+				q.msgs = q.msgs[1:]
+				q.mu.Unlock()
+				p.Send(m)
+			}
+		}
+	}()
+	return q
+}
+
+func (q *sendQueue) Send(m tea.Msg) {
+	q.mu.Lock()
+	q.msgs = append(q.msgs, m)
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+}
+
+var errInlineEnded = errors.New("the terminal display ended before the question was answered")
+
+// NewInline draws live steps under the scrollback on out and reads keys from in. The program
+// leaves signals alone: its ctrl+c arrives as a key, and the model re-sends it as SIGINT so the
+// run's own signal handling sees it.
+func NewInline(out io.Writer, in io.Reader) Renderer { return newInline(out, in) }
+
+func newInline(out io.Writer, in io.Reader, opts ...tea.ProgramOption) Renderer {
+	r := &inline{done: make(chan struct{})}
+	opts = append([]tea.ProgramOption{tea.WithOutput(out), tea.WithInput(in), tea.WithoutSignalHandler()}, opts...)
+	m := newInlineModel(time.Now)
+	m.hold.in = in
+	r.p = tea.NewProgram(m, opts...)
+	r.q = newSendQueue(r.p, r.done)
+	go func() {
+		defer close(r.done)
+		r.p.Run()
+		flushInput(in)
+	}()
+	return r
+}
+
+func (r *inline) Draw(e Event) { r.q.Send(drawMsg{e}) }
+
+func (r *inline) Prompt(p PromptReq) (any, error) {
+	reply := make(chan promptReply, 1)
+	r.q.Send(promptMsg{req: p, reply: reply})
+	select {
+	case a := <-reply:
+		return a.v, a.err
+	case <-r.done:
+		return nil, errInlineEnded
+	}
+}
+
+func (r *inline) Handoff(why string, c *exec.Cmd) error {
+	reply := make(chan error, 1)
+	r.q.Send(handoffMsg{why: why, cmd: c, reply: reply})
+	select {
+	case err := <-reply:
+		return err
+	case <-r.done:
+		return errInlineEnded
+	}
+}
+
+func (r *inline) Close(todos []string) int {
+	r.q.Send(closeMsg{todos})
+	<-r.done
+	return 0
+}

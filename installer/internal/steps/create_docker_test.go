@@ -1,4 +1,4 @@
-package create
+package steps
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/NovusEdge/flocc/installer/internal/dockerguard"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
@@ -29,6 +30,9 @@ const (
 
 var wantRules = []string{ruleForward, ruleAcceptIn, ruleAcceptBack}
 
+// dockerUntouched fails when any command could stop, start or reload dockerd.
+var dockerUntouched = dockerguard.Untouched
+
 // listRules is iptables -S DOCKER-USER for a chain holding rules, top first.
 func listRules(rules ...string) string {
 	s := "-N DOCKER-USER\n"
@@ -41,26 +45,28 @@ func listRules(rules ...string) string {
 // dockerMachine has Docker 28 or newer running with the given daemon.json and, when installed,
 // the unit and all three iptables rules in order. ip6tables has no DOCKER-USER chain unless a
 // test adds one.
-func dockerMachine(daemon string, installed bool) *host.Fake {
+func dockerMachine(t *testing.T, daemon string, installed bool) (*host.Fake, *Env) {
+	t.Helper()
 	f := host.NewFake().
 		On("systemctl is-active --quiet docker.service", 0, "").
-		On("sudo -n cat "+daemonJSON, 0, daemon).
-		On("sudo -n iptables -w -L DOCKER-FORWARD -n", 0, "")
+		On("iptables -w -L DOCKER-FORWARD -n", 0, "")
+	e := testEnv(t, f)
+	writeFile(t, e, daemonJSON, daemon)
 	if installed {
-		f.On("sudo -n cat "+dockerUnitPath, 0, dockerUnit()).
-			On("systemctl is-enabled --quiet "+dockerUnitName, 0, "").
-			On("sudo -n iptables -w -S DOCKER-USER", 0, listRules(wantRules...))
+		writeFile(t, e, dockerUnitPath, dockerUnit())
+		f.On("systemctl is-enabled --quiet "+dockerUnitName, 0, "").
+			On("iptables -w -S DOCKER-USER", 0, listRules(wantRules...))
 		for _, r := range wantRules {
-			f.On("sudo -n iptables -w -C DOCKER-USER "+r, 0, "")
+			f.On("iptables -w -C DOCKER-USER "+r, 0, "")
 		}
 	}
-	return f
+	return f, e
 }
 
 func TestDockerChecksEveryRuleAndTheirOrder(t *testing.T) {
 	for _, r := range wantRules {
-		f := dockerMachine(daemonDefault, true).On("sudo -n iptables -w -C DOCKER-USER "+r, 1, "")
-		e, _ := testEnv(f)
+		f, e := dockerMachine(t, daemonDefault, true)
+		f.On("iptables -w -C DOCKER-USER "+r, 1, "")
 		if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || detail != "iptables DOCKER-USER lacks "+r {
 			t.Errorf("%v %q", ok, detail)
 		}
@@ -70,17 +76,16 @@ func TestDockerChecksEveryRuleAndTheirOrder(t *testing.T) {
 		{ruleAcceptIn, ruleForward, ruleAcceptBack},
 		{ruleAcceptIn, ruleAcceptBack, ruleForward},
 	} {
-		f := dockerMachine(daemonDefault, true).On("sudo -n iptables -w -S DOCKER-USER", 0, listRules(order...))
-		e, _ := testEnv(f)
+		f, e := dockerMachine(t, daemonDefault, true)
+		f.On("iptables -w -S DOCKER-USER", 0, listRules(order...))
 		if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || !strings.HasPrefix(detail, "iptables DOCKER-USER has "+ruleAcceptIn+" above "+ruleForward) {
 			t.Errorf("%q: %v %q", order, ok, detail)
 		}
 		dockerUntouched(t, f.Calls)
 	}
 	// The conntrack ACCEPT matches only traffic to the VM, so where it sits does not matter.
-	f := dockerMachine(daemonDefault, true).
-		On("sudo -n iptables -w -S DOCKER-USER", 0, listRules(ruleAcceptBack, ruleForward, ruleAcceptIn))
-	e, _ := testEnv(f)
+	f, e := dockerMachine(t, daemonDefault, true)
+	f.On("iptables -w -S DOCKER-USER", 0, listRules(ruleAcceptBack, ruleForward, ruleAcceptIn))
 	if ok, detail, _ := (Docker{}).Check(context.Background(), e); !ok {
 		t.Errorf("%q", detail)
 	}
@@ -89,57 +94,45 @@ func TestDockerChecksEveryRuleAndTheirOrder(t *testing.T) {
 // Before 28, Docker has no DOCKER-FORWARD chain, and the unit's jump to it cannot be inserted.
 func TestDockerNeedsDockerForward(t *testing.T) {
 	for _, tc := range []struct {
-		f    *host.Fake
+		on   func(*host.Fake)
 		want string
 	}{
-		{dockerMachine(daemonDefault, false).On("sudo -n iptables -w -L DOCKER-FORWARD -n", 1, ""),
+		{func(f *host.Fake) { f.On("iptables -w -L DOCKER-FORWARD -n", 1, "") },
 			"Docker 28 or newer is needed: DOCKER-FORWARD chain missing"},
-		{dockerMachine(daemonDefault, false).On("sudo -n ip6tables -w -L DOCKER-USER -n", 0, ""),
+		{func(f *host.Fake) { f.On("ip6tables -w -L DOCKER-USER -n", 0, "") },
 			"Docker 28 or newer is needed: ip6tables DOCKER-FORWARD chain missing"},
 	} {
-		e, _ := testEnv(tc.f)
+		f, e := dockerMachine(t, daemonDefault, false)
+		tc.on(f)
 		if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || detail != tc.want {
 			t.Errorf("%v %q", ok, detail)
 		}
 		if err := (Docker{}).Apply(context.Background(), e); err == nil || err.Error() != tc.want {
 			t.Errorf("%v", err)
 		}
-		if tc.f.Ran("sudo -n tee " + dockerUnitPath) {
+		if _, err := os.Stat(e.Path(dockerUnitPath)); err == nil {
 			t.Error("wrote the unit for a Docker without DOCKER-FORWARD")
 		}
-		dockerUntouched(t, tc.f.Calls)
+		dockerUntouched(t, f.Calls)
 	}
 }
 
 func TestDockerSkippedWhenNotRunning(t *testing.T) {
 	f := host.NewFake().On("systemctl is-active --quiet docker.service", 3, "inactive\n")
-	e, _ := testEnv(f)
-	e.sudo = false
-	if ok, detail, err := (Docker{}).Check(context.Background(), e); !ok || err != nil || detail != "Docker not running" {
+	if ok, detail, err := (Docker{}).Check(context.Background(), testEnv(t, f)); !ok || err != nil || detail != "Docker not running" {
 		t.Fatalf("%v %q %v", ok, detail, err)
-	}
-	dockerUntouched(t, f.Calls)
-}
-
-func TestDockerNeedsPasswordlessSudo(t *testing.T) {
-	f := dockerMachine(daemonDefault, false)
-	e, _ := testEnv(f)
-	e.sudo = false
-	if _, _, err := (Docker{}).Check(context.Background(), e); err == nil || !strings.Contains(err.Error(), "passwordless sudo") {
-		t.Fatal(err)
 	}
 	dockerUntouched(t, f.Calls)
 }
 
 func TestDockerInstalledPassesWithoutWriting(t *testing.T) {
-	f := dockerMachine(daemonDefault, true)
-	e, _ := testEnv(f)
+	f, e := dockerMachine(t, daemonDefault, true)
 	ok, detail, err := Docker{}.Check(context.Background(), e)
 	if !ok || err != nil || !strings.Contains(detail, "iptables backend") {
 		t.Fatalf("%v %q %v", ok, detail, err)
 	}
 	for _, c := range f.Calls {
-		if strings.Contains(c, "tee") || strings.Contains(c, "-I ") || strings.Contains(c, "systemctl enable") {
+		if strings.Contains(c, "-I ") || strings.Contains(c, "systemctl enable") {
 			t.Errorf("writes: %s", c)
 		}
 	}
@@ -147,22 +140,21 @@ func TestDockerInstalledPassesWithoutWriting(t *testing.T) {
 }
 
 func TestDockerChecksIPv6RulesWhereDockerMadeTheChain(t *testing.T) {
-	f := dockerMachine(daemonDefault, true).
-		On("sudo -n ip6tables -w -L DOCKER-USER -n", 0, "").
-		On("sudo -n ip6tables -w -L DOCKER-FORWARD -n", 0, "")
-	e, _ := testEnv(f)
+	f, e := dockerMachine(t, daemonDefault, true)
+	f.On("ip6tables -w -L DOCKER-USER -n", 0, "").
+		On("ip6tables -w -L DOCKER-FORWARD -n", 0, "")
 	ok, detail, _ := Docker{}.Check(context.Background(), e)
 	if ok || detail != "ip6tables DOCKER-USER lacks "+ruleForward {
 		t.Fatalf("%v %q", ok, detail)
 	}
 	for _, r := range wantRules {
-		f.On("sudo -n ip6tables -w -C DOCKER-USER "+r, 0, "")
+		f.On("ip6tables -w -C DOCKER-USER "+r, 0, "")
 	}
-	f.On("sudo -n ip6tables -w -S DOCKER-USER", 0, listRules(ruleAcceptIn, ruleForward, ruleAcceptBack))
+	f.On("ip6tables -w -S DOCKER-USER", 0, listRules(ruleAcceptIn, ruleForward, ruleAcceptBack))
 	if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || !strings.HasPrefix(detail, "ip6tables DOCKER-USER has ") {
 		t.Fatalf("%v %q", ok, detail)
 	}
-	f.On("sudo -n ip6tables -w -S DOCKER-USER", 0, listRules(wantRules...))
+	f.On("ip6tables -w -S DOCKER-USER", 0, listRules(wantRules...))
 	if ok, detail, _ := (Docker{}).Check(context.Background(), e); !ok {
 		t.Fatalf("%q", detail)
 	}
@@ -173,10 +165,9 @@ func TestDockerStoppedButEnabledStillGetsTheUnit(t *testing.T) {
 	f := host.NewFake().
 		On("systemctl is-active --quiet docker.service", 3, "").
 		On("systemctl is-enabled --quiet docker.service", 0, "").
-		On("sudo -n tee "+dockerUnitPath, 0, "").
-		On("sudo -n systemctl daemon-reload", 0, "").
-		On("sudo -n systemctl enable "+dockerUnitName, 0, "")
-	e, _ := testEnv(f)
+		On("systemctl daemon-reload", 0, "").
+		On("systemctl enable "+dockerUnitName, 0, "")
+	e := testEnv(t, f)
 	if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || !strings.Contains(detail, dockerUnitPath) {
 		t.Fatalf("%v %q", ok, detail)
 	}
@@ -185,7 +176,7 @@ func TestDockerStoppedButEnabledStillGetsTheUnit(t *testing.T) {
 	}
 	// Restarting the oneshot with Docker stopped would leave it active, and the start that follows
 	// would not run it again.
-	if f.Ran("sudo -n systemctl restart " + dockerUnitName) {
+	if f.Ran("systemctl restart " + dockerUnitName) {
 		t.Fatalf("%v", f.Calls)
 	}
 	dockerUntouched(t, f.Calls)
@@ -195,9 +186,9 @@ func TestDockerStoppedWithTheUnitEnabledPasses(t *testing.T) {
 	f := host.NewFake().
 		On("systemctl is-active --quiet docker.service", 3, "").
 		On("systemctl is-active --quiet docker.socket", 0, "").
-		On("sudo -n cat "+dockerUnitPath, 0, dockerUnit()).
 		On("systemctl is-enabled --quiet "+dockerUnitName, 0, "")
-	e, _ := testEnv(f)
+	e := testEnv(t, f)
+	writeFile(t, e, dockerUnitPath, dockerUnit())
 	ok, detail, _ := Docker{}.Check(context.Background(), e)
 	if !ok || !strings.Contains(detail, "next start") {
 		t.Fatalf("%v %q", ok, detail)
@@ -206,8 +197,7 @@ func TestDockerStoppedWithTheUnitEnabledPasses(t *testing.T) {
 }
 
 func TestDockerNftablesBackendStopsCreate(t *testing.T) {
-	f := dockerMachine(daemonNftables, false)
-	e, _ := testEnv(f)
+	f, e := dockerMachine(t, daemonNftables, false)
 	ok, detail, _ := Docker{}.Check(context.Background(), e)
 	if ok || !strings.Contains(detail, "nftables") {
 		t.Fatalf("%v %q", ok, detail)
@@ -216,53 +206,34 @@ func TestDockerNftablesBackendStopsCreate(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nftables") || !strings.Contains(err.Error(), "DOCKER-USER") {
 		t.Fatal(err)
 	}
-	if f.Ran("sudo -n tee " + dockerUnitPath) {
+	if _, err := os.Stat(e.Path(dockerUnitPath)); err == nil {
 		t.Fatal("wrote the unit for an nftables Docker")
 	}
 	dockerUntouched(t, f.Calls)
 }
 
 func TestDockerApplyInstallsTheUnitAndNeverRestartsDocker(t *testing.T) {
-	f := dockerMachine(daemonDefault, false).
-		On("sudo -n tee "+dockerUnitPath, 0, "").
-		On("sudo -n systemctl daemon-reload", 0, "").
-		On("sudo -n systemctl enable "+dockerUnitName, 0, "").
-		On("sudo -n systemctl restart "+dockerUnitName, 0, "")
-	e, _ := testEnv(f)
+	f, e := dockerMachine(t, daemonDefault, false)
+	f.On("systemctl daemon-reload", 0, "").
+		On("systemctl enable "+dockerUnitName, 0, "").
+		On("systemctl restart "+dockerUnitName, 0, "")
 	if err := (Docker{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
+	got, err := os.ReadFile(e.Path(dockerUnitPath))
+	if err != nil || string(got) != dockerUnit() {
+		t.Fatalf("unit %q (%v)", got, err)
+	}
+	if fi, _ := os.Stat(e.Path(dockerUnitPath)); fi.Mode().Perm() != 0o644 {
+		t.Fatalf("mode %v", fi.Mode())
+	}
 	want := []string{
-		"sudo -n tee " + dockerUnitPath,
-		"sudo -n systemctl daemon-reload",
-		"sudo -n systemctl enable " + dockerUnitName,
-		"sudo -n systemctl restart " + dockerUnitName,
+		"systemctl daemon-reload",
+		"systemctl enable " + dockerUnitName,
+		"systemctl restart " + dockerUnitName,
 	}
 	if got := f.Calls[len(f.Calls)-len(want):]; !slices.Equal(got, want) {
 		t.Fatalf("%q", f.Calls)
-	}
-	dockerUntouched(t, f.Calls)
-}
-
-func TestEveryRootCommandIsNonInteractive(t *testing.T) {
-	f := dockerMachine(daemonDefault, false)
-	e, _ := testEnv(f)
-	Docker{}.Check(context.Background(), e)
-	Docker{}.Apply(context.Background(), e)
-	for _, c := range rootCalls(f.Calls) {
-		if !strings.HasPrefix(c, "sudo -n ") {
-			t.Errorf("not sudo -n: %s", c)
-		}
-	}
-	dockerUntouched(t, f.Calls)
-}
-
-func TestDockerUnitIsWrittenFromStdin(t *testing.T) {
-	f := dockerMachine(daemonDefault, false).On("sudo -n tee "+dockerUnitPath, 0, "")
-	e, _ := testEnv(f)
-	Docker{}.Apply(context.Background(), e)
-	if got, ok := f.Stdins["sudo -n tee "+dockerUnitPath]; !ok || got != dockerUnit() {
-		t.Fatalf("stdin %q (%v)", got, f.Calls)
 	}
 	dockerUntouched(t, f.Calls)
 }
@@ -436,31 +407,11 @@ func TestDockerUnitKeepsTheRulesWhenDockerStops(t *testing.T) {
 	}
 }
 
-// daemon.json may be 0600, and tee under the owner's umask 077 leaves the unit 0600.
-func TestDockerReadsItsFilesAsRoot(t *testing.T) {
-	f := dockerMachine(daemonNftables, false).
-		On("cat "+daemonJSON, 1, "").
-		On("cat "+dockerUnitPath, 1, "")
-	e, _ := testEnv(f)
-	if ok, detail, _ := (Docker{}).Check(context.Background(), e); ok || !strings.Contains(detail, "nftables") {
-		t.Fatalf("%v %q", ok, detail)
-	}
-	f = dockerMachine(daemonDefault, true).On("cat "+dockerUnitPath, 1, "")
-	e, _ = testEnv(f)
-	if ok, detail, _ := (Docker{}).Check(context.Background(), e); !ok {
-		t.Fatalf("%q", detail)
-	}
-	for _, c := range f.Calls {
-		if strings.HasPrefix(c, "cat ") {
-			t.Errorf("read without sudo: %s", c)
-		}
-	}
-	dockerUntouched(t, f.Calls)
-}
-
 func TestDockerWithoutDaemonJSONUsesIptables(t *testing.T) {
-	f := dockerMachine(daemonDefault, true).On("sudo -n cat "+daemonJSON, 1, "")
-	e, _ := testEnv(f)
+	f, e := dockerMachine(t, daemonDefault, true)
+	if err := os.Remove(e.Path(daemonJSON)); err != nil {
+		t.Fatal(err)
+	}
 	if ok, detail, _ := (Docker{}).Check(context.Background(), e); !ok || !strings.Contains(detail, "iptables backend") {
 		t.Fatalf("%v %q", ok, detail)
 	}

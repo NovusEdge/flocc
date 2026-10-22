@@ -202,14 +202,6 @@ func TestWidthComesFromTheColumnsVariableWhenOutIsNotATerminal(t *testing.T) {
 	}
 }
 
-func TestScriptedPassesItsWidthOnToTheLiveLine(t *testing.T) {
-	var b bytes.Buffer
-	s := &Scripted{Out: &b, Color: true, Cols: 40}
-	if s.progress().Cols != 40 {
-		t.Fatal("Scripted.Cols is not used")
-	}
-}
-
 // segments splits animated output at each line clear: what is left is a frame, a line written by
 // the step, or the result line.
 func segments(s string) []string {
@@ -263,17 +255,6 @@ func TestQuietInPlainModeJustRuns(t *testing.T) {
 	}
 }
 
-func TestAttachedStepGetsPlainLinesEvenWhenAnimating(t *testing.T) {
-	var b bytes.Buffer
-	p, _, _ := newTestProgress(&b, true, true)
-	l := packages
-	l.Attached = true
-	p.Run(l, func() (Outcome, error) { return Outcome{Detail: "ok"}, nil })
-	if strings.Contains(b.String(), "\r") || strings.Contains(b.String(), "⠋") || !strings.Contains(b.String(), "→ 3/9") {
-		t.Fatalf("%q", b.String())
-	}
-}
-
 func TestAnimatedDetailIsCutToFitTheTerminalWidth(t *testing.T) {
 	var b bytes.Buffer
 	p, _, _ := newTestProgress(&b, true, false)
@@ -315,7 +296,7 @@ func TestClockAndDurationFormats(t *testing.T) {
 func TestScriptedNoteDuringAnAnimatedStepClearsTheFrameFirst(t *testing.T) {
 	var b bytes.Buffer
 	p, _, _ := newTestProgress(&b, true, false)
-	s := &Scripted{Out: &b, Prog: p}
+	s := &Scripted{Out: &b, prog: p}
 	s.Step(packages, func() (Outcome, error) {
 		s.Note("flocc doctor", "all fine")
 		return Outcome{Detail: "ok"}, nil
