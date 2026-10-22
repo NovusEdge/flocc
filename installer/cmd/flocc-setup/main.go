@@ -240,6 +240,9 @@ func run(args []string) int {
 	// so a table removed there must go from the host too.
 	if fromStdin {
 		a.Permissions = in.Permissions
+		a.Playwright = in.Playwright
+		a.Tools = in.Tools
+		a.Docker = in.Docker
 	}
 	var u ui.UI = ui.NewHuh()
 	if fromStdin {
