@@ -108,14 +108,19 @@ func (e Exec) Interactive(ctx context.Context, c Cmd) error {
 		return e.Term.Handoff(why, cmd)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if e.Term != nil {
-		cmd.Stderr = e.log()
-	}
 	if c.Stdin != nil {
 		cmd.Stdin = c.Stdin
 	}
 	if c.Stdout != nil {
 		cmd.Stdout = c.Stdout
+	}
+	// Under a session the terminal is not ours to write on. A caller that reads stdout (the wire
+	// replay) also gets what the far end says on stderr, which is where flocc-setup reports errors.
+	if e.Term != nil {
+		cmd.Stderr = e.log()
+		if c.Stdout != nil {
+			cmd.Stderr = c.Stdout
+		}
 	}
 	return cmd.Run()
 }

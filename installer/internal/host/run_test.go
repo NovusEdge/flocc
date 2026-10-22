@@ -51,6 +51,17 @@ func TestInteractiveRunsDirectlyWithBothStreamsSet(t *testing.T) {
 	}
 }
 
+func TestInteractiveDirectRunSendsStderrWhereStdoutGoes(t *testing.T) {
+	var out bytes.Buffer
+	c := Cmd{Name: "sh", Args: []string{"-c", "echo out; echo boom >&2"}, Stdin: strings.NewReader(""), Stdout: &out}
+	if err := (Exec{Term: &fakeTerm{}}).Interactive(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "out") || !strings.Contains(got, "boom") {
+		t.Fatalf("out = %q, want stdout and stderr", got)
+	}
+}
+
 func TestInteractiveAttachHandsOffEvenWithStreamsSet(t *testing.T) {
 	f := &fakeTerm{}
 	var out bytes.Buffer

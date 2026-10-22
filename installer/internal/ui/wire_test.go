@@ -109,6 +109,15 @@ func TestReplayCloseFailsARunningStepWithTheLastStrayLines(t *testing.T) {
 	}
 }
 
+func TestReplayCloseGivesACutOffStepAReason(t *testing.T) {
+	rec, r := replayed(string(Encode(Event{Kind: KStep, ID: "h1", Name: "Packages", State: Running})))
+	r.Close()
+	rows := rec.Rows()
+	if len(rows) != 1 || rows[0].State != Failed || rows[0].Err == "" {
+		t.Fatalf("%+v", rows)
+	}
+}
+
 func TestReplayKeepsTwoHostsStepsApart(t *testing.T) {
 	rec := &Recorder{}
 	s := New(rec)

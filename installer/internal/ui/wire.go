@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -87,7 +88,7 @@ func (r *Replayer) Close() error {
 	if len(r.running) == 0 {
 		return nil
 	}
-	err := errors.New(strings.Join(r.stray, "\n"))
+	err := errors.New(cmp.Or(strings.Join(r.stray, "\n"), "the host stream ended before this step finished"))
 	for _, id := range r.running {
 		r.steps[id].Fail(err)
 	}
