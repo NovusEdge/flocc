@@ -128,6 +128,10 @@ type Model struct {
 	out    outputMsg // the open screen's output pane
 	cur    [2]string // host and issue of the open detail screen; the host alone for the host screen
 	pager  pagerState
+
+	docGen     int // doctor runs started; an answer of another number is dropped
+	docRunning bool
+	doctor     doctorMsg
 }
 
 func New(ctx context.Context, o Options) *Model {
@@ -181,6 +185,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.gotOutput(msg)
+	case doctorMsg:
+		if msg.gen == m.docGen {
+			m.doctor, m.docRunning = msg, false
+		}
+		return m, nil
 	case outputTick:
 		if msg.gen != m.outGen {
 			return m, nil
@@ -305,6 +314,10 @@ func (m *Model) body() string {
 	switch m.screen {
 	case issueScreen:
 		return m.issueView()
+	case hostScreen:
+		return m.hostView()
+	case cardinalScreen:
+		return m.cardinalView()
 	case pagerScreen:
 		return m.pagerView()
 	}

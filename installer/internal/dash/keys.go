@@ -45,6 +45,10 @@ func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case issueScreen:
 		return m.issueKey(k)
+	case hostScreen:
+		return m.hostKey(k)
+	case cardinalScreen:
+		return m.cardinalKey(k)
 	case pagerScreen:
 		return m.pagerKey(k)
 	}
@@ -157,6 +161,10 @@ func (m *Model) bar() []kb.Binding {
 	switch m.screen {
 	case issueScreen:
 		return m.issueBar()
+	case hostScreen:
+		return m.hostBar()
+	case cardinalScreen:
+		return m.cardinalBar()
 	case pagerScreen:
 		return m.pagerBar()
 	}

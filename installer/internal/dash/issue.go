@@ -27,6 +27,12 @@ func (m *Model) open() tea.Cmd {
 			m.cur = [2]string{r.host, r.claim.Issue}
 			return m.enter(issueScreen)
 		}
+	case hostsPane:
+		return m.openHost()
+	case cardinalPane:
+		if len(m.cards) > 0 {
+			m.screen = cardinalScreen
+		}
 	}
 	return nil
 }
@@ -43,6 +49,10 @@ func (m *Model) curRow() (row, bool) {
 
 // outRows is how many lines the open screen's output pane shows.
 func (m *Model) outRows() int {
+	if m.screen == hostScreen {
+		_, topH, _ := m.hostSplit()
+		return max(m.bodyHeight()-topH-2, 1)
+	}
 	return max(m.bodyHeight()-factsH-2, 1)
 }
 
@@ -96,14 +106,14 @@ func (m *Model) issueView() string {
 		rows = m.issueFacts(r)
 	}
 	facts := m.th.Pane(title, "o open in Linear", strings.Join(rows, "\n"), iw, factsH)
-	return facts + "\n" + m.outputPane("L full screen", iw, m.bodyHeight()-factsH)
+	return facts + "\n" + m.outputPane("session", "L full screen", iw, m.bodyHeight()-factsH)
 }
 
 // outputPane is the output of the open screen, its last lines that fit, in a pane h rows tall.
-func (m *Model) outputPane(hint string, w, h int) string {
-	title := m.out.title
-	if title == "" {
-		title = "session"
+// title is what the pane is called until a fetch names its source.
+func (m *Model) outputPane(title, hint string, w, h int) string {
+	if m.out.title != "" && m.screen == issueScreen {
+		title = m.out.title
 	}
 	lines := m.out.lines
 	if len(lines) == 0 {
@@ -139,14 +149,14 @@ func (m *Model) issueFacts(r row) []string {
 		where += m.th.Dim.Render(" (stale)")
 	}
 	return []string{
-		m.label("phase", m.phaseLine(c)),
-		m.label("state", state),
-		m.label("session", fmt.Sprintf("%s%scontext %s%slaunches %d/%d", session, theme.Sep, ctx, theme.Sep, c.Launches, c.LaunchLimit)),
-		m.label("host", where),
+		m.label(7, "phase", m.phaseLine(c)),
+		m.label(7, "state", state),
+		m.label(7, "session", fmt.Sprintf("%s%scontext %s%slaunches %d/%d", session, theme.Sep, ctx, theme.Sep, c.Launches, c.LaunchLimit)),
+		m.label(7, "host", where),
 	}
 }
 
-func (m *Model) label(l, v string) string { return m.th.Dim.Render(fmt.Sprintf("%-7s", l)) + "  " + v }
+func (m *Model) label(w int, l, v string) string { return m.th.Dim.Render(pad(l, w)) + "  " + v }
 
 func (m *Model) phaseLine(c ship.Claim) string {
 	glyph := stateGlyph(m.th, m.spin.View(), c.State)
