@@ -309,5 +309,6 @@ def recover_tests(
 
 
 def changed_files(worktree: Path, a: str, b: str) -> set[str]:
-    out = git("diff", "--name-only", f"{a}..{b}", cwd=worktree)
+    # Without --no-renames a moved file shows only its new path, and the old one escapes the guard.
+    out = git("diff", "--name-only", "--no-renames", f"{a}..{b}", cwd=worktree)
     return {line for line in out.splitlines() if line}
