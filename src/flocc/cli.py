@@ -156,7 +156,9 @@ def cmd_tests_amended(args) -> int:
     state = _state_dir()
     claim = ledger.get_claim(_ledger(args), state.name)
     if claim is None or claim.base_sha is None or claim.tester_sha is None:
-        print(f"tests-amended: no live claim with a tester commit for {state.name}", file=sys.stderr)
+        print(
+            f"tests-amended: no live claim with a tester commit for {state.name}", file=sys.stderr
+        )
         return 1
     tester_files = changed_files(Path(claim.worktree), claim.base_sha, claim.tester_sha)
     foreign = [p for p in args.paths if p not in tester_files]

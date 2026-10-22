@@ -874,9 +874,7 @@ def timed_out(rt, monkeypatch, commit_times, state_type="started", key="NF-5"):
     wt = finished(rt, key, state="timed_out")
     ledger.update_claim(rt.con, key, base_sha="sha-base", started_at=1000.0)
     rt.linear.state_types = lambda keys: {k: state_type for k in keys}
-    monkeypatch.setattr(
-        "flocc.poller.git", lambda *a, cwd: "\n".join(str(t) for t in commit_times)
-    )
+    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: "\n".join(str(t) for t in commit_times))
     return wt
 
 

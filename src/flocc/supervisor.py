@@ -328,7 +328,12 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         start = rt.now()
         launch(rt, claim, "fix", extra=extra, started_at=start)
         ledger.update_claim(
-            rt.con, key, phase="fix", fix_attempts=claim.fix_attempts + 1, restarts=0, started_at=start
+            rt.con,
+            key,
+            phase="fix",
+            fix_attempts=claim.fix_attempts + 1,
+            restarts=0,
+            started_at=start,
         )
     elif result.status == "check_failed":
         if result.log:

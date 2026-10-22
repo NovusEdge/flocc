@@ -120,12 +120,28 @@ def test_amended_tests_pass_the_guard_and_reach_the_pr_body(origin, tmp_path):
 @pytest.mark.parametrize(
     ("before", "after", "why"),
     [
-        ("def test_a():\n    assert 1\n\ndef test_b():\n    assert 1\n", "def test_a():\n    assert 1\n", "removes a test"),
+        (
+            "def test_a():\n    assert 1\n\ndef test_b():\n    assert 1\n",
+            "def test_a():\n    assert 1\n",
+            "removes a test",
+        ),
         ("describe('a', () => {})\n", "", "removes a test"),
-        ("def test_a():\n    assert 1\n", "import pytest\n\n@pytest.mark.skip\ndef test_a():\n    assert 1\n", "skips a test"),
-        ("def test_a():\n    assert 1\n", "def test_a():\n    pytest.skip('later')\n", "skips a test"),
+        (
+            "def test_a():\n    assert 1\n",
+            "import pytest\n\n@pytest.mark.skip\ndef test_a():\n    assert 1\n",
+            "skips a test",
+        ),
+        (
+            "def test_a():\n    assert 1\n",
+            "def test_a():\n    pytest.skip('later')\n",
+            "skips a test",
+        ),
         ("it('a', () => {})\n", "it.only('a', () => {})\n", "skips a test"),
-        ("func TestA(t *testing.T) {}\n", "func TestA(t *testing.T) {\n\tt.Skip()\n}\n", "skips a test"),
+        (
+            "func TestA(t *testing.T) {}\n",
+            "func TestA(t *testing.T) {\n\tt.Skip()\n}\n",
+            "skips a test",
+        ),
     ],
 )
 def test_an_amendment_that_weakens_a_test_still_blocks(origin, tmp_path, before, after, why):
@@ -138,7 +154,9 @@ def test_an_amendment_that_weakens_a_test_still_blocks(origin, tmp_path, before,
     git("commit", "-qam", "weaken", cwd=path)
     amended = {"test_w.py": {"reason": "r"}}
     result = publish(claim, repo, "t", "s", token="t", runner=Gh(), amended=amended)
-    assert result.status == "tests_touched" and "test_w.py" in result.detail and why in result.detail
+    assert (
+        result.status == "tests_touched" and "test_w.py" in result.detail and why in result.detail
+    )
 
 
 def test_an_amendment_that_rewrites_a_test_passes(origin, tmp_path):

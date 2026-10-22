@@ -558,7 +558,9 @@ def test_an_open_question_holds_off_the_wall_clock(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
     rt.now = lambda: 100.0 + 3601
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text(json.dumps({"at": 100.0 + 3600, "question": "Q?"}))
+    (state_dir(rt.cfg, "NF-1") / "asking").write_text(
+        json.dumps({"at": 100.0 + 3600, "question": "Q?"})
+    )
     supervise(rt, current(rt))
     assert current(rt).state == "running" and "NF-1-test" not in rt.sessions.killed
     (state_dir(rt.cfg, "NF-1") / "asking").unlink()
