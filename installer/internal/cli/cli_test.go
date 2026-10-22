@@ -78,6 +78,20 @@ func TestStatusWatchOpensTheDashboardOnATerminalAndPrintsOnceOtherwise(t *testin
 	}
 }
 
+func TestAPanicInACommandClosesTheSessionBeforeItGoesOn(t *testing.T) {
+	d, f, _, _ := hostDeps(t, "a")
+	d.fleet = func(context.Context, ui.Session, []string) int { panic("boom") }
+	defer func() {
+		if recover() != "boom" {
+			t.Error("the panic was swallowed or changed")
+		}
+		if !f.rec.Closed {
+			t.Error("the session was left open: the terminal stays in the program's mode")
+		}
+	}()
+	run(context.Background(), d, []string{"-H", "all", "status", "--json"})
+}
+
 func TestHelpGoesToStdout(t *testing.T) {
 	for _, arg := range []string{"help", "-h", "--help"} {
 		d, out, _ := testDeps(t)
