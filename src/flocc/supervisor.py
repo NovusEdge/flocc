@@ -318,6 +318,10 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     start = rt.now()
     (d / OWNER_ITEMS).unlink(missing_ok=True)
     (d / FIX_CONTEXT).write_text(extra)
+    # The review's done.json goes first: left in place, a tick that dies before the launch would
+    # read it as the fix finishing and publish with no fix. Dying here instead relaunches the
+    # review, which costs a session but loses nothing.
+    (d / "done.json").unlink(missing_ok=True)
     # Both before the launch: a tick that dies after the session starts must find the claim in
     # the fix phase, not in review where it would start a reviewer beside the live fix.
     ledger.meta_set(rt.con, f"review_fix:{key}", "1")
