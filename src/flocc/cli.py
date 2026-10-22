@@ -509,6 +509,26 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_peek(args) -> int:
+    from flocc.sessions import Sessions, session_name
+    from flocc.status import _read_ledger
+
+    cfg, _ = _config(args)
+    claims, _, _ = _read_ledger(cfg.ledger_path)
+    claim = next((c for c in claims if c.issue_key == args.key), None)
+    sessions = Sessions()
+    name = session_name(claim.issue_key, claim.phase) if claim else None
+    # Blank rows below the prompt count toward the capture, so ask for more than N.
+    text = sessions.capture(name, max(args.lines, 1) + 200) if name and sessions.alive(name) else ""
+    rows = text.rstrip().splitlines()
+    if not rows:
+        print(f"peek: no live session for {args.key}", file=sys.stderr)
+        return 3
+    for row in rows[-max(args.lines, 1) :]:
+        print("".join(c if c.isprintable() else " " for c in row))
+    return 0
+
+
 def cmd_logs(args) -> int:
     from flocc.status import detect_mode
 
@@ -590,6 +610,7 @@ def _version() -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="flocc", description="Run Claude sessions on Linear issues."
+    "peek": cmd_peek,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
     parser.add_argument("--config", default=None, help="config file (default: standard path)")
@@ -660,6 +681,10 @@ DESKTOP_VERBS = ("ship", "login", "keys", "host")
 def _command(argv: list[str]) -> str | None:
     it = iter(argv)
     for arg in it:
+    logs.add_argument("--issue", metavar="KEY", help="only the lines that name this issue")
+    peek = add("peek", "Print the tail of an issue's live session")
+    peek.add_argument("key", help="issue key, e.g. NF-12")
+    peek.add_argument("-n", dest="lines", type=int, default=40, help="lines to print")
         if arg == "--config":
             next(it, None)
         elif not arg.startswith("-"):

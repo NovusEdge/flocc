@@ -524,3 +524,43 @@ def test_attach_is_read_only_on_the_service_socket(host_cfg):
     with pytest.raises(Exec) as exc:
         main(["--config", str(host_cfg), "attach", "NF-12-review"])
     assert exc.value.args[0] == ["tmux", "-L", "flocc", "attach", "-r", "-t", "NF-12-review"]
+
+
+def _peek_host(host_cfg, monkeypatch, pane, alive=True, claim=True):
+    from dataclasses import replace
+
+    cfg = load(host_cfg)
+    cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    if claim:
+        con = ledger.connect(cfg.ledger_path)
+        ledger.insert_claim(con, replace(make("NF-240"), phase="review"))
+    fake = FakeSessions(
+        alive_names={"NF-240-review"} if alive else set(), panes={"NF-240-review": pane}
+    )
+    monkeypatch.setattr("flocc.sessions.Sessions", lambda: fake)
+    return fake
+
+
+def test_peek_prints_the_session_tail(host_cfg, monkeypatch, capsys):
+    fake = _peek_host(host_cfg, monkeypatch, "one\ntwo\x1b[31m red\nthree\n\n\n  \n")
+    assert main(["--config", str(host_cfg), "peek", "NF-240", "-n", "2"]) == 0
+    assert capsys.readouterr().out == "two [31m red\nthree\n"
+    assert fake.captured == [("NF-240-review", 202)]
+
+
+def test_peek_exits_3_without_a_live_session(host_cfg, monkeypatch, capsys):
+    _peek_host(host_cfg, monkeypatch, "x", alive=False)
+    assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3
+    assert capsys.readouterr().err == "peek: no live session for NF-240\n"
+
+
+def test_peek_exits_3_without_a_claim(host_cfg, monkeypatch, capsys):
+    _peek_host(host_cfg, monkeypatch, "x", claim=False)
+    assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3
+    assert capsys.readouterr().err == "peek: no live session for NF-240\n"
+
+
+def test_peek_exits_3_when_the_session_dies_before_the_capture(host_cfg, monkeypatch, capsys):
+    fake = _peek_host(host_cfg, monkeypatch, "")
+    assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3
+    assert fake.captured
