@@ -16,14 +16,13 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-func TestPreconditionsReportSudoAndIncusApart(t *testing.T) {
+func TestPreconditionsReportIncus(t *testing.T) {
 	f := host.NewFake().On("sudo -n true", 1, "").On("id -nG", 0, "owner incus-admin\n").On("incus query /1.0", 0, "{}")
-	sudo, incus := Preconditions(context.Background(), f, "zer0-day-nimble")
-	if sudo || incus != nil {
-		t.Fatalf("sudo %v incus %v", sudo, incus)
+	if incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus != nil {
+		t.Fatalf("incus %v", incus)
 	}
 	f = host.NewFake().On("sudo -n true", 1, "").On("id -nG", 0, "owner\n")
-	if _, incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus == nil || !strings.Contains(incus.Error(), "incus-admin") {
+	if incus := Preconditions(context.Background(), f, "zer0-day-nimble"); incus == nil || !strings.Contains(incus.Error(), "incus-admin") {
 		t.Fatalf("incus %v", incus)
 	}
 }
@@ -166,23 +165,6 @@ func dockerUntouched(t *testing.T, calls []string) {
 	}
 }
 
-// rootCalls lists the commands that need root: sudo, firewall-cmd, iptables, ip6tables, tee,
-// docker, and the systemctl verbs that change state. Each must be a sudo -n call.
-func rootCalls(calls []string) []string {
-	var r []string
-	for _, c := range calls {
-		f := strings.Fields(c)
-		switch {
-		case len(f) == 0:
-		case slices.Contains([]string{"sudo", "firewall-cmd", "iptables", "ip6tables", "tee", "docker"}, f[0]):
-			r = append(r, c)
-		case f[0] == "systemctl" && len(f) > 1 && slices.Contains([]string{"enable", "disable", "start", "stop", "restart", "daemon-reload"}, f[1]):
-			r = append(r, c)
-		}
-	}
-	return r
-}
-
 // shWords has sh parse line into words, the way the remote login shell parses ssh's command.
 func shWords(t *testing.T, line string) []string {
 	t.Helper()
@@ -293,17 +275,6 @@ func TestProbeSaysToCloseTheSharedConnectionAfterUsermod(t *testing.T) {
 	}
 	e, _ := testEnv(host.NewFake())
 	if err := e.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), regroup("laptop", ControlOpts())) {
-		t.Fatal(err)
-	}
-}
-
-func TestNeedRootNamesTheFix(t *testing.T) {
-	e, _ := testEnv(host.NewFake())
-	if e.needRoot("x") != nil {
-		t.Fatal("sudo works, so root is available")
-	}
-	e.sudo = false
-	if err := e.needRoot("Reading firewalld"); err == nil || !strings.Contains(err.Error(), "passwordless sudo") {
 		t.Fatal(err)
 	}
 }

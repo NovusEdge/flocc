@@ -649,10 +649,6 @@ func (w *wizard) createHost(name string) bool {
 	case ms.Err != nil:
 		w.end(st, rowFailed, "host", ms.Err.Error())
 		return false
-	case !ms.Sudo:
-		w.end(st, rowFailed, "host", fmt.Sprintf("host create needs passwordless sudo on %s: its firewall and Docker steps run sudo -n even to check. "+
-			"Add a file in /etc/sudoers.d/ there with visudo, or add a host made another way", spec.Machine))
-		return false
 	case ms.Incus != nil:
 		w.end(st, rowFailed, "host", ms.Incus.Error())
 		return false

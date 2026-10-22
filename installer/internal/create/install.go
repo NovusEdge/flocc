@@ -21,6 +21,8 @@ import (
 type Installer interface {
 	// Ready fails when ship would, for a reason known before create changes the machine.
 	Ready() error
+	// RepoRoot is the flocc checkout this runs in.
+	RepoRoot() (string, error)
 	// HostKnown reports whether name has a host file, and fails when that file reaches the host
 	// some other way than ssh: skipping host add would then ship to that host, not the VM.
 	HostKnown(name, ssh string) (bool, error)
@@ -29,7 +31,7 @@ type Installer interface {
 	Login(ctx context.Context, name string) error
 }
 
-func Steps() []Step { return []Step{Incus{}, Firewalld{}, Docker{}, VM{}, Egress{}, Tailnet{}} }
+func Steps() []Step { return []Step{Incus{}, Root{}, VM{}, Egress{}, Tailnet{}} }
 
 func Create(ctx context.Context, e *Env, inst Installer, steps []Step) error {
 	st := e.UI.Step("Connect")
@@ -221,7 +223,7 @@ func Run(ctx context.Context, spec Spec, inst Installer, s ui.Session, tty bool)
 	// hang with nothing shown; BatchMode makes it fail instead.
 	opts := append([]string{"-o", "BatchMode=yes"}, ControlOpts()...)
 	e := &Env{M: Remote{R: run, Target: spec.Machine, Opts: opts}, Local: run,
-		UI: s, Log: log, Spec: spec, Sleep: time.Sleep, TTY: tty}
+		UI: s, Log: log, Spec: spec, Sleep: time.Sleep, TTY: tty, Checkout: inst.RepoRoot}
 	if t, ok := inst.(interface{ Tailnet() KeyMinter }); ok {
 		e.Tailnet = t.Tailnet()
 	}

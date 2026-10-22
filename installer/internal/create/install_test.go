@@ -29,6 +29,8 @@ func (f *fakeInst) Ready() error {
 	return f.readyErr
 }
 
+func (f *fakeInst) RepoRoot() (string, error) { return "/repo", nil }
+
 func (f *fakeInst) HostKnown(name, ssh string) (bool, error) {
 	f.calls = append(f.calls, "known "+name+" "+ssh)
 	return f.known, f.knownErr
@@ -316,7 +318,7 @@ func TestStepsRunInTheSpecsOrder(t *testing.T) {
 	for _, s := range Steps() {
 		names = append(names, s.Name())
 	}
-	if want := []string{"Incus", "Firewalld", "Docker", "VM", "Egress", "Tailscale"}; !slices.Equal(names, want) {
+	if want := []string{"Incus", "Root pass", "VM", "Egress", "Tailscale"}; !slices.Equal(names, want) {
 		t.Fatalf("%q", names)
 	}
 }
