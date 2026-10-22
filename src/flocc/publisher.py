@@ -95,9 +95,10 @@ def weakens_test(wt: Path, since: str, path: str) -> str | None:
     diff = git("diff", "-U0", f"{since}..HEAD", "--", path, cwd=wt)
     removed = [x[1:] for x in diff.splitlines() if x.startswith("-") and not x.startswith("---")]
     added = [x[1:] for x in diff.splitlines() if x.startswith("+") and not x.startswith("+++")]
-    skips = lambda lines: sum(bool(_SKIPS_TEST.search(line)) for line in lines)  # noqa: E731
     # First: a skip wrapper such as it.skipIf(c)('a') hides the name, which would read as removal.
-    if skips(added) > skips(removed):
+    if sum(map(bool, map(_SKIPS_TEST.search, added))) > sum(
+        map(bool, map(_SKIPS_TEST.search, removed))
+    ):
         return "skips a test"
     # Names, not counts: a test renamed in place leaves the counts level and still loses a test.
     if _test_names(removed) - _test_names(added):
