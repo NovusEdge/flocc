@@ -281,24 +281,13 @@ type hostOut struct {
 	code int
 }
 
-// doctorReport is flocc doctor --json; v is 0 or missing from a host that predates it.
-type doctorReport struct {
-	V      int `json:"v"`
-	Checks []struct {
-		Name   string `json:"name"`
-		OK     bool   `json:"ok"`
-		Warn   bool   `json:"warn"`
-		Detail string `json:"detail"`
-	} `json:"checks"`
-}
-
 func doctorOf(ctx context.Context, d *deps, h hosts.Host, dest ship.Dest, st *ui.Step) hostOut {
 	res, err := ship.Capture(ctx, d.run, dest, ship.FloccLine([]string{"doctor", "--json"}), nil)
 	if err != nil {
 		st.Fail(err)
 		return hostOut{code: 1}
 	}
-	var rep doctorReport
+	var rep ship.DoctorReport
 	if json.Unmarshal([]byte(res.Stdout), &rep) != nil || rep.V == 0 {
 		// An older flocc refuses the flag or ignores it; either way its text report is the answer.
 		return doctorText(ctx, d, h, dest, st)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -210,5 +211,51 @@ func TestAnIssueLinearDoesNotHaveIsErrNotFound(t *testing.T) {
 	c := &Client{URL: s.URL + "/graphql", Key: "lin_api_test", HTTP: s.Client()}
 	if _, err := c.Issue(context.Background(), "NF-9999"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
+	}
+}
+
+func TestIssuesByKeyAsksOnceByTeamAndNumber(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b bytes.Buffer
+		b.ReadFrom(r.Body)
+		bodies = append(bodies, b.String())
+		w.Write([]byte(`{"data":{"issues":{"nodes":[{"identifier":"NF-240","title":"Fix the poller tick","url":"https://linear.app/x/issue/NF-240","id":"u","state":{"type":"started"}}]}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{URL: srv.URL, Key: "k", HTTP: srv.Client()}
+	got, err := c.IssuesByKey(context.Background(), []string{"NF-240", "not a key", "NF-241"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != "NF-240" || got[0].Title != "Fix the poller tick" || got[0].URL != "https://linear.app/x/issue/NF-240" || got[0].StateType != "started" {
+		t.Fatalf("%+v", got)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("%d requests", len(bodies))
+	}
+	var req struct {
+		Variables struct {
+			Filter json.RawMessage
+			N      int
+		}
+	}
+	if err := json.Unmarshal([]byte(bodies[0]), &req); err != nil {
+		t.Fatal(err)
+	}
+	const filter = `{"or":[{"team":{"key":{"eq":"NF"}},"number":{"eq":240}},{"team":{"key":{"eq":"NF"}},"number":{"eq":241}}]}`
+	var a, b any
+	json.Unmarshal(req.Variables.Filter, &a)
+	json.Unmarshal([]byte(filter), &b)
+	if !reflect.DeepEqual(a, b) || req.Variables.N != 2 {
+		t.Errorf("filter %s first %d", req.Variables.Filter, req.Variables.N)
+	}
+}
+
+func TestIssuesByKeyWithNoUsableKeyAsksNothing(t *testing.T) {
+	c := &Client{URL: "http://127.0.0.1:0", Key: "k", HTTP: &http.Client{}}
+	got, err := c.IssuesByKey(context.Background(), []string{"nf-1", "NF-", "x"})
+	if got != nil || err != nil {
+		t.Fatalf("%v %v", got, err)
 	}
 }

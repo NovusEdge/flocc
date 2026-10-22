@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,7 +37,7 @@ type Viewer struct {
 	Teams       []Team
 }
 
-type Issue struct{ ID, Key, Title, StateType string }
+type Issue struct{ ID, Key, Title, StateType, URL string }
 
 func (i Issue) Open() bool { return i.StateType != "completed" && i.StateType != "canceled" }
 
@@ -135,15 +137,48 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, out 
 }
 
 type issueNode struct {
-	ID, Identifier, Title string
-	State                 struct{ Type string }
+	ID, Identifier, Title, URL string
+	State                      struct{ Type string }
 }
 
 func (n issueNode) issue() Issue {
-	return Issue{ID: n.ID, Key: n.Identifier, Title: n.Title, StateType: n.State.Type}
+	return Issue{ID: n.ID, Key: n.Identifier, Title: n.Title, StateType: n.State.Type, URL: n.URL}
 }
 
-const issueFields = "id identifier title state { type }"
+const issueFields = "id identifier title url state { type }"
+
+var issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
+
+// IssuesByKey returns the issues among keys that Linear knows, in one query. Keys that are not
+// TEAM-NUMBER are skipped; an unknown key is simply absent.
+func (c *Client) IssuesByKey(ctx context.Context, keys []string) ([]Issue, error) {
+	var or []map[string]any
+	for _, k := range keys {
+		m := issueKey.FindStringSubmatch(k)
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(m[2])
+		if err != nil {
+			continue
+		}
+		or = append(or, map[string]any{"team": map[string]any{"key": map[string]any{"eq": m[1]}}, "number": map[string]any{"eq": n}})
+	}
+	if len(or) == 0 {
+		return nil, nil
+	}
+	var out struct{ Issues struct{ Nodes []issueNode } }
+	err := c.do(ctx, `query($filter: IssueFilter!, $n: Int!) { issues(filter: $filter, first: $n) { nodes { `+issueFields+` } } }`,
+		map[string]any{"filter": map[string]any{"or": or}, "n": len(or)}, &out)
+	if err != nil {
+		return nil, err
+	}
+	issues := make([]Issue, len(out.Issues.Nodes))
+	for i, n := range out.Issues.Nodes {
+		issues[i] = n.issue()
+	}
+	return issues, nil
+}
 
 func (c *Client) Viewer(ctx context.Context) (Viewer, error) {
 	var out struct {
