@@ -31,31 +31,43 @@ Reviews did not stop anything: all six approved.
 
 ### 1. A repo whose main is broken does not take issues
 
-Ten stops came from a setup that would have failed on main too. Each one cost a claim, a
-worktree and a session before the owner heard of it.
+Ten stops came from a setup that would have failed on main too: a missing tool, a full disk, a
+setup past its timeout. `_start` already runs `./setup` before it claims anything, so a failure
+costs no session, but every ready issue of that repo runs `./setup` again on every tick, under the
+tick lock, and each gets its own tier-2 comment.
 
-- The tick runs a canary for a repo when the repo has had a claim in the last 14 days and its base
-  branch has moved since the last canary, at most once a day. The canary makes a worktree of the
-  base branch, runs `./setup` with the usual timeout, then the repo's `check`.
-- It runs only when no session is running on the host, so it never competes with work for the
-  disk, the CPU or the setup timeout.
-- A failure marks the repo `main-broken` in the ledger with the step and the last 40 lines of
-  output, and sends one tier-1 escalation naming the repo. Admission then holds the repo's issues
-  with a reason in `status`; it does not comment on each issue.
-- The next canary that passes clears the mark. `flocc canary <repo>` on the host runs one now, so
-  the owner can clear a mark after fixing main.
+- When `./setup` fails, or leaves files git sees, in a worktree whose HEAD is still
+  `origin/<base>`, the failure belongs to main or the host, not the issue. The poller marks the
+  repo broken in the ledger with the base SHA, the time and the last 1500 characters of output,
+  and sends one tier-1 escalation on the issue that hit it, saying the repo's issues are held.
+- Admission holds every issue of a marked repo, without running `./setup`, while
+  `origin/<base>` still has the marked SHA and the mark is under 24 hours old. The poller fetches
+  the base of a marked repo once per tick to tell. A new commit on main, or the 24 hours, lets the
+  next issue try again, and that try is the canary.
+- `flocc canary <repo>` on the host runs `./setup` on a detached worktree of `origin/<base>`,
+  removes it, and clears the mark when setup passes. It is for a fix made on the host, which
+  moves no commit.
+- A setup failure on an issue's own branch (a rerun with commits) is the issue's, and is handled
+  as today.
 
-Rejected: running the canary before every claim. It doubles setup time for every issue to catch
-a failure that happens a few times a week.
+Rejected: a scheduled canary of setup and check on main. It costs a setup and an e2e run per repo
+per day whether or not work is waiting, and runs under the tick lock for up to 45 minutes. The
+failure the poller already sees answers the same question for free.
 
 ### 2. The host carries what the repos' checks need
 
-- The Packages step installs Playwright's chromium dependencies and a base font set (the Debian
-  package list `npx playwright install-deps chromium` prints, frozen in the step), because a
-  service user cannot install them and e2e checks fail in milliseconds without them.
-- A host-file `[host] tools` list (default empty) names mise tools to install globally for the
-  service user, e.g. `go = "1.24"`, so a repo's mise shim resolves without its own `.mise.toml`
-  pin. `flocc doctor` reports each one.
+- A host-file `playwright = "<version>"` (default empty, off) makes a new root step, Browsers,
+  run `npx -y playwright@<version> install-deps chromium` on apt hosts. That installs the
+  system libraries and fonts chromium needs, which the service user cannot install, and without
+  which e2e checks fail in milliseconds. The step's check runs the same command with `--dry-run`,
+  which prints "Missing system dependencies (N):" and the packages, or nothing missing. Other
+  package managers get the detail "apt hosts only" and no change. flocc-nimble is Debian 13, the
+  repos pin 1.64.0, and on 2026-10-22 the dry run listed 31 missing packages, fonts among them.
+- A host-file `[tools]` table (default empty) names mise tools and versions to set globally for
+  the service user, e.g. `go = "1.27.1"`. A new service step, Tools, runs
+  `mise use -g <tool>@<version>` for each one `mise current` does not report. On 2026-10-22
+  flocc-nimble had go 1.27.1 installed under mise with no global version, which is the
+  "No version is set for shim: go" failure.
 
 ### 3. Two fix rounds before a block
 
