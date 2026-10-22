@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shlex
@@ -6,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from flocc.config import TRAILER, RepoConfig
+from flocc.gate import AMENDED
 from flocc.ledger import Claim
 from flocc.worktree import changed_files, git, run_bounded
 
@@ -56,6 +58,42 @@ def failure_excerpt(out: str, limit: int = _TAIL) -> str:
     return text if len(text) <= limit else text[: limit - 4] + "\n..."
 
 
+def read_amended(state: Path) -> dict[str, dict]:
+    try:
+        data = json.loads((state / AMENDED).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def amended_section(amended: dict[str, dict] | None) -> str:
+    if not amended:
+        return ""
+    lines = "\n".join(f"- `{path}`: {entry.get('reason', '')}" for path, entry in amended.items())
+    return f"\n\n## Amended tests\n\nThe implementer changed these tester files, with these reasons:\n\n{lines}"
+
+
+_DEFINES_TEST = re.compile(r"^\s*((async\s+)?def test_|(test|it|describe)(\.\w+)?\(|func Test)")
+_SKIPS_TEST = re.compile(r"pytest\.mark\.skip|pytest\.skip\(|xfail|\.skip\(|\.only\(|t\.Skip\(")
+
+
+def weakens_test(wt: Path, since: str, path: str) -> str | None:
+    """Why the change to a tester's file since `since` drops or disables a test, if it does."""
+    diff = git("diff", "-U0", f"{since}..HEAD", "--", path, cwd=wt)
+    removed = [x[1:] for x in diff.splitlines() if x.startswith("-") and not x.startswith("---")]
+    added = [x[1:] for x in diff.splitlines() if x.startswith("+") and not x.startswith("+++")]
+
+    def count(rx, lines):
+        return sum(bool(rx.search(line)) for line in lines)
+
+    # Counts, not presence: a renamed or re-signed test removes one definition and adds one.
+    if count(_DEFINES_TEST, removed) > count(_DEFINES_TEST, added):
+        return "removes a test"
+    if count(_SKIPS_TEST, added) > count(_SKIPS_TEST, removed):
+        return "skips a test"
+    return None
+
+
 def publish(
     claim: Claim,
     repo: RepoConfig,
@@ -66,14 +104,22 @@ def publish(
     check_timeout_s: float = 1800,
     trailer: bool = True,
     accepted_sha: str | None = None,
+    amended: dict[str, dict] | None = None,
 ) -> PublishResult:
     wt = Path(claim.worktree)
     if claim.base_sha is None or claim.tester_sha is None:
         raise ValueError(f"{claim.issue_key} has no recorded tester commit to guard")
     tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
-    touched = changed_files(wt, accepted_sha or claim.tester_sha, "HEAD") & tester_files
-    if touched:
-        return PublishResult("tests_touched", ", ".join(sorted(touched)))
+    since = accepted_sha or claim.tester_sha
+    touched = changed_files(wt, since, "HEAD") & tester_files
+    weakened = {}
+    for path in touched & set(amended or {}):
+        if why := weakens_test(wt, since, path):
+            weakened[path] = why
+    touched -= set(amended or {})
+    if touched or weakened:
+        parts = [*sorted(touched), *(f"{p} {why}" for p, why in sorted(weakened.items()))]
+        return PublishResult("tests_touched", ", ".join(parts))
     # Only commits are pushed, and the guard above compares commits only; a check on the working
     # tree would pass on files the PR leaves out.
     dirty = git("status", "--porcelain", cwd=wt)
@@ -159,7 +205,7 @@ def publish(
             "--title",
             f"{claim.issue_key}: {title}",
             "--body",
-            f"Fixes {claim.issue_key}\n\n{summary}",
+            f"Fixes {claim.issue_key}\n\n{summary}{amended_section(amended)}",
         ],
         cwd=wt,
         env=env,

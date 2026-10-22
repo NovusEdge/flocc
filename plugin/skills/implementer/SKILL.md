@@ -5,9 +5,11 @@ description: Use when you are the implementer or fixer session for a flocc issue
 
 Make the committed tests pass by implementing the behavior.
 
-- Do not edit, delete or skip any file the tester committed. The service rejects the run if you
-  do. If you believe a test is wrong, do not edit it: ask the owner (see the escalate skill), state
-  the test change you propose, and keep working only on parts that do not depend on that test.
+- Do not edit a file the tester committed unless one of its tests is wrong: it contradicts the
+  acceptance criteria or the real API. Then fix the test, run
+  `flocc tests-amended <path>... --reason "<why it was wrong>"`, and carry on; do not ask the
+  owner. Never delete or skip a test to make it pass: the service rejects the run if you do. Any
+  other change to a tester file also gets the run rejected.
 - Claim the files you will edit before editing them: `flocc claim '<path>'`. Claim files,
   not trees: `**` and any glob that matches a directory are refused, a `*` within one directory
   is fine. A rejected claim names the issue that holds it; message that session or escalate. A
@@ -31,8 +33,8 @@ Make the committed tests pass by implementing the behavior.
   otherwise; a workflow counts as one): one plan review,
   one implementer per task, one reviewer per wave, one fix and its re-review, plus any
   `code-mapper` launch and the `source-finder` / `source-reader` pair, which count too. If the plan
-  cannot fit, ask for more before building: escalate with `--cause grant:launches` and the number
-  you need, or ask the owner (implementer sessions can) for an `allow: launches N` comment.
+  does not fit, shrink it: merge small tasks or do them inline. Escalate only when the issue
+  itself is too large, and propose the split.
 - With four or more tasks, have `flocc:plan-reviewer` read the plan once before building,
   and fix what it finds. With fewer, check the plan against the acceptance criteria yourself.
 - Write each task's brief to `briefs/task-N.md` in your state directory: its requirements, the
@@ -42,7 +44,8 @@ Make the committed tests pass by implementing the behavior.
   in your state directory, and have one `flocc:wave-reviewer` review the wave.
 - Findings get one fix round per run, across all waves: the same `task-implementer` route, then
   one `flocc:fix-rereviewer` on the fix diff. A second round needs a `fix-rounds` grant;
-  without one, escalate the findings left after the first round.
+  without one, list the findings left after the first round in your `flocc done` summary and
+  finish; the service's reviewer reads the PR.
 - When you start `source-finder` or `source-reader`, put today's date in the task.
 - Do small work yourself: a change outside the plan's tasks that fits in a few lines is not a task.
 - While a wave runs, commit your own work with `flocc commit -m '<message>' -- <paths>`,
@@ -61,7 +64,7 @@ Make the committed tests pass by implementing the behavior.
 When the service starts you to fix a failed check, the plan, the plan review, waves and wave
 review do not apply. Fix the failure inline; if it is more than a few lines, write the brief to
 `briefs/fix.md` in your state directory and start one `flocc:task-implementer` on it. Then
-write its diff to `waves/fix.diff` and start one `flocc:fix-rereviewer` on that file; this
-is all the fix phase allows. Give `fix-rereviewer` the failed check output
-(`check-failure.md` in your state directory) as the single finding. Then run the check and finish
-with `flocc done`.
+write its diff to `waves/fix.diff` and start one `flocc:fix-rereviewer` on that file, giving it the
+failed check output (`check-failure.md` in your state directory) as the single finding; this
+is all the fix phase allows. When the fix is a few lines, skip the `fix-rereviewer`. Then run
+the check and finish with `flocc done`.

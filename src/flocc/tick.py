@@ -9,6 +9,7 @@ from pathlib import Path
 
 from flocc import ledger
 from flocc.config import Config, trailer_enabled
+from flocc.context import state_dir
 from flocc.escalation import Escalation, Notifier, ntfy_push
 from flocc.linear import Linear, LinearError, http_transport
 from flocc.poller import (
@@ -17,9 +18,10 @@ from flocc.poller import (
     maybe_digest,
     poll,
     reap_worktrees,
+    restart_timed_out,
     route_escalations,
 )
-from flocc.publisher import comment_on_pr, publish
+from flocc.publisher import comment_on_pr, publish, read_amended
 from flocc.runtime import Runtime
 from flocc.sessions import Sessions
 from flocc.supervisor import supervise
@@ -68,6 +70,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
             check_timeout_s=cfg.check_timeout_s,
             trailer=trailer_enabled(cfg, cfg.repos[claim.repo]),
             accepted_sha=ledger.accepted_tests(con, claim.issue_key),
+            amended=read_amended(state_dir(cfg, claim.issue_key)),
         )
 
     def review_diff(claim):
@@ -172,6 +175,8 @@ def tick(cfg: Config, config_path: Path) -> int:
                 )
         failed |= route_escalations(rt)
         failed |= forward_comments(rt)
+        # Before poll, which then picks the released issue up in this tick.
+        restart_timed_out(rt)
         # Before poll, so the space it frees counts toward this tick's admission.
         reap_worktrees(rt)
         # Before poll: a rerun's _start drops the old listing, which would orphan its pads.

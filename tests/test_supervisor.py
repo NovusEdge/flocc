@@ -147,6 +147,24 @@ def test_implementer_done_publishes_and_starts_the_review(rt):
     assert not (d / "done.json").exists()
 
 
+def test_review_input_lists_the_amended_tests(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    d = state_dir(rt.cfg, "NF-1")
+    amended = {"t/test_a.py": {"reason": "asserts the old API"}}
+    (d / "tests-amended.json").write_text(json.dumps(amended))
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    text = (d / "review-input.md").read_text()
+    assert "## Amended tests" in text and "- `t/test_a.py`: asserts the old API" in text
+
+
+def test_review_input_has_no_amended_section_without_amendments(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert "Amended tests" not in (state_dir(rt.cfg, "NF-1") / "review-input.md").read_text()
+
+
 def test_review_model_comes_from_config(rt):
     rt.cfg = replace(rt.cfg, review_model="sonnet")
     add(rt, phase="impl", tester_sha="sha-tests")
@@ -317,8 +335,9 @@ def test_fix_session_is_pointed_at_the_full_check_output(rt):
     assert str(d / "check-output.log") in (d / "check-failure.md").read_text()
 
 
-def test_check_failure_gets_one_fix_then_blocks(rt):
-    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+def test_check_failure_gets_two_fixes_then_blocks(rt):
+    failures = iter(["E1 boom", "E2 bang", "E3 crash"])
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
     add(rt, phase="impl", tester_sha="sha-tests")
     done(rt)
     supervise(rt, current(rt))
@@ -327,8 +346,56 @@ def test_check_failure_gets_one_fix_then_blocks(rt):
     assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
     done(rt)
     supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and current(rt).fix_attempts == 2
+    extra = next(a for a in rt.sessions.started[-1][1] if "E2 bang" in a)
+    assert "An earlier fix round failed with:" in extra and "E1 boom" in extra
+    assert extra.index("E1 boom") < extra.index("E2 bang")
+    done(rt)
+    supervise(rt, current(rt))
     assert current(rt).state == "blocked"
+    assert "The check still fails after 2 fix rounds" in rt.notifier.sent[-1].summary
     assert "flocc release --keep-worktree NF-1" in rt.notifier.sent[-1].action
+
+
+def test_the_same_check_failure_twice_blocks_without_another_round(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+    started = len(rt.sessions.started)
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and len(rt.sessions.started) == started
+    summary = rt.notifier.sent[-1].summary
+    assert summary == (
+        "The check failed the same way twice; the cause is likely outside the code:\nE1 boom"
+    )
+
+
+def test_a_different_check_failure_gets_its_second_round(rt):
+    failures = iter(["E1 boom", "E2 bang"])
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and current(rt).fix_attempts == 2
+
+
+def test_one_check_fix_round_keeps_the_old_behaviour(rt):
+    rt.cfg = replace(rt.cfg, check_fix_rounds=1)
+    failures = iter(["E1 boom", "E2 bang"])
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    assert "The check still fails after 1 fix round:" in rt.notifier.sent[-1].summary
 
 
 def test_publish_that_keeps_failing_blocks(rt):
@@ -485,6 +552,20 @@ def test_wall_clock(rt):
     assert current(rt).state == "timed_out"
     [(_, key, line)] = ledger.pending_digest(rt.con)
     assert key == "NF-1" and "flocc release NF-1" in line
+
+
+def test_an_open_question_holds_off_the_wall_clock(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    rt.now = lambda: 100.0 + 3601
+    (state_dir(rt.cfg, "NF-1") / "asking").write_text(
+        json.dumps({"at": 100.0 + 3600, "question": "Q?"})
+    )
+    supervise(rt, current(rt))
+    assert current(rt).state == "running" and "NF-1-test" not in rt.sessions.killed
+    (state_dir(rt.cfg, "NF-1") / "asking").unlink()
+    supervise(rt, current(rt))
+    assert current(rt).state == "timed_out"
 
 
 def test_high_context_requests_handoff_once(rt):

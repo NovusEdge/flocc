@@ -37,6 +37,7 @@ CATALOGUE = frozenset(a for b in BUDGETS.values() for a in b.agents)
 GRANTABLE = frozenset({"not-allowed", "launches", "workflow"})
 LAUNCH_GRANTS_ENV = "FLOCC_LAUNCH_GRANTS"
 LOG = "launches.jsonl"
+AMENDED = "tests-amended.json"
 
 
 @dataclass(frozen=True)

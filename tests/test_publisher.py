@@ -104,6 +104,88 @@ def test_rejects_changed_tests(origin, tmp_path):
     assert result.status == "tests_touched" and "test_x.py" in result.detail
 
 
+def test_amended_tests_pass_the_guard_and_reach_the_pr_body(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "test_x.py").write_text("assert 1\n")
+    git("commit", "-qam", "amend", cwd=path)
+    gh = Gh()
+    amended = {"test_x.py": {"reason": "asserts the old API"}}
+    result = publish(claim, repo, "t", "Did it.", token="t", runner=gh, amended=amended)
+    assert result.status == "opened"
+    body = gh.calls[-1][gh.calls[-1].index("--body") + 1]
+    assert "## Amended tests" in body and "- `test_x.py`: asserts the old API" in body
+    assert body.startswith("Fixes NF-5\n\nDid it.")
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "why"),
+    [
+        (
+            "def test_a():\n    assert 1\n\ndef test_b():\n    assert 1\n",
+            "def test_a():\n    assert 1\n",
+            "removes a test",
+        ),
+        ("describe('a', () => {})\n", "", "removes a test"),
+        (
+            "def test_a():\n    assert 1\n",
+            "import pytest\n\n@pytest.mark.skip\ndef test_a():\n    assert 1\n",
+            "skips a test",
+        ),
+        (
+            "def test_a():\n    assert 1\n",
+            "def test_a():\n    pytest.skip('later')\n",
+            "skips a test",
+        ),
+        ("it('a', () => {})\n", "it.only('a', () => {})\n", "skips a test"),
+        (
+            "func TestA(t *testing.T) {}\n",
+            "func TestA(t *testing.T) {\n\tt.Skip()\n}\n",
+            "skips a test",
+        ),
+    ],
+)
+def test_an_amendment_that_weakens_a_test_still_blocks(origin, tmp_path, before, after, why):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "test_w.py").write_text(before)
+    git("add", ".", cwd=path)
+    git("commit", "-qm", "more tests", cwd=path)
+    claim.tester_sha = git("rev-parse", "HEAD", cwd=path)
+    (path / "test_w.py").write_text(after)
+    git("commit", "-qam", "weaken", cwd=path)
+    amended = {"test_w.py": {"reason": "r"}}
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), amended=amended)
+    assert (
+        result.status == "tests_touched" and "test_w.py" in result.detail and why in result.detail
+    )
+
+
+def test_an_amendment_that_rewrites_a_test_passes(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "test_w.py").write_text("def test_a():\n    assert old()\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", "more tests", cwd=path)
+    claim.tester_sha = git("rev-parse", "HEAD", cwd=path)
+    (path / "test_w.py").write_text("def test_a():\n    assert new()\n")
+    git("commit", "-qam", "fix the test", cwd=path)
+    amended = {"test_w.py": {"reason": "old() is gone"}}
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), amended=amended)
+    assert result.status == "opened"
+
+
+def test_an_unapproved_touched_test_still_blocks_beside_an_approved_one(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "test_b.py").write_text("assert True\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", "more tests", cwd=path)
+    claim.tester_sha = git("rev-parse", "HEAD", cwd=path)
+    (path / "test_x.py").write_text("assert 1\n")
+    (path / "test_b.py").write_text("assert 1\n")
+    git("commit", "-qam", "amend both", cwd=path)
+    amended = {"test_x.py": {"reason": "r"}}
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), amended=amended)
+    assert result.status == "tests_touched" and result.detail == "test_b.py"
+
+
 def test_accepted_tests_pass_until_changed_again(origin, tmp_path):
     repo, path, claim = setup_claim(origin, tmp_path)
     (path / "test_x.py").write_text("assert 1\n")

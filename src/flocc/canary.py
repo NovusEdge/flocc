@@ -28,6 +28,15 @@ def clear(con, repo: str) -> None:
     ledger.meta_set(con, _key(repo), "")
 
 
+def forget_all(con) -> int:
+    rows = con.execute(
+        "SELECT key FROM meta WHERE key LIKE 'main_broken:%' AND value != ''"
+    ).fetchall()
+    for row in rows:
+        ledger.meta_set(con, row["key"], "")
+    return len(rows)
+
+
 def hold_reason(
     con, repo: str, base_branch: str, current_sha: str | None, now: float
 ) -> str | None:

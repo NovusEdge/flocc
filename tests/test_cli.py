@@ -5,6 +5,7 @@ import os
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -296,6 +297,54 @@ def test_gate_records_and_clears_a_question(tmp_path, monkeypatch):
     assert main(["gate"]) == 0 and (tmp_path / "asking").exists()
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
     assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
+
+
+def tester_claim(claims_env, tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    for args in (["init", "-q"], ["config", "user.name", "t"], ["config", "user.email", "t@t"]):
+        subprocess.run(["git", *args], cwd=wt, check=True)
+
+    def commit(name, text):
+        (wt / name).parent.mkdir(parents=True, exist_ok=True)
+        (wt / name).write_text(text)
+        subprocess.run(["git", "add", "."], cwd=wt, check=True)
+        subprocess.run(["git", "commit", "-qm", name], cwd=wt, check=True)
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt, check=True, capture_output=True)
+        return out.stdout.decode().strip()
+
+    base = commit("README", "x")
+    tester = commit("gateway/tests/test_a.py", "def test_a(): ...\n")
+    claim = make("NF-1", (), worktree=str(wt))
+    claim.base_sha, claim.tester_sha = base, tester
+    ledger.insert_claim(claims_env, claim)
+
+
+def test_tests_amended_records_paths_with_the_reason(claims_env, tmp_path, capsys):
+    tester_claim(claims_env, tmp_path)
+    state = Path(os.environ["FLOCC_STATE"])
+    cmd = ["tests-amended", "gateway/tests/test_a.py", "--reason", "contradicts the API"]
+    assert main(cmd) == 0
+    assert "recorded 1 amended test file" in capsys.readouterr().out
+    recorded = json.loads((state / "tests-amended.json").read_text())
+    assert recorded == {"gateway/tests/test_a.py": {"reason": "contradicts the API"}}
+
+
+def test_tests_amended_merges_into_the_existing_file(claims_env, tmp_path):
+    tester_claim(claims_env, tmp_path)
+    state = Path(os.environ["FLOCC_STATE"])
+    (state / "tests-amended.json").write_text(json.dumps({"other.py": {"reason": "r"}}))
+    assert main(["tests-amended", "gateway/tests/test_a.py", "--reason", "why"]) == 0
+    recorded = json.loads((state / "tests-amended.json").read_text())
+    assert set(recorded) == {"other.py", "gateway/tests/test_a.py"}
+
+
+def test_tests_amended_refuses_a_file_the_tester_did_not_write(claims_env, tmp_path, capsys):
+    tester_claim(claims_env, tmp_path)
+    state = Path(os.environ["FLOCC_STATE"])
+    assert main(["tests-amended", "src/app.py", "--reason", "why"]) == 2
+    assert "src/app.py" in capsys.readouterr().err
+    assert not (state / "tests-amended.json").exists()
 
 
 def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
@@ -648,6 +697,25 @@ def test_canary_marks_the_repo_when_setup_fails(host_cfg, monkeypatch, capsys):
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     assert canary.get_mark(ledger.connect(cfg.ledger_path), repo)["output"] == "go: not found"
     assert "go: not found" in capsys.readouterr().err
+
+
+def test_canary_forget_clears_every_mark_and_counts_them(host_cfg, capsys):
+    cfg = load(host_cfg)
+    cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    con = ledger.connect(cfg.ledger_path)
+    canary.mark(con, "backend", "abc", 1.0, "x")
+    canary.mark(con, "web", "def", 1.0, "y")
+    canary.clear(con, "docs")
+    assert main(["--config", str(host_cfg), "canary", "--forget"]) == 0
+    assert "cleared 2 main-broken holds" in capsys.readouterr().out
+    assert canary.get_mark(con, "backend") is None and canary.get_mark(con, "web") is None
+    assert main(["--config", str(host_cfg), "canary", "--forget"]) == 0
+    assert "cleared 0 main-broken holds" in capsys.readouterr().out
+
+
+def test_canary_needs_a_repo_or_forget(host_cfg, capsys):
+    assert main(["--config", str(host_cfg), "canary"]) == 2
+    assert "repo" in capsys.readouterr().err
 
 
 def test_canary_refuses_an_unknown_repo(host_cfg, capsys):

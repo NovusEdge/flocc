@@ -17,6 +17,7 @@ from flocc.poller import (
     poll,
     reap_worktrees,
     repo_for,
+    restart_timed_out,
     route_escalations,
 )
 from flocc.runtime import Runtime
@@ -43,6 +44,7 @@ class PollLinear:
     ready: list
     comments: list = field(default_factory=list)
     started: list = field(default_factory=list)
+    unstarted: list = field(default_factory=list)
     replies: dict = field(default_factory=dict)
     comment_fails: bool = False
     start_fails: bool = False
@@ -78,6 +80,9 @@ class PollLinear:
 
     def add_label(self, i, name):
         pass
+
+    def unstart(self, i):
+        self.unstarted.append(i.key)
 
 
 @pytest.fixture
@@ -511,11 +516,12 @@ def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d.mkdir(parents=True)
     from_before = Grants(launches=5)
     set_block(d / "grants.json", from_before)
-    for name in ("scratchpads", "compacted", "asking"):
+    names = ("scratchpads", "compacted", "asking", "tests-amended.json")
+    for name in names:
         (d / name).write_text("x")
     rt.linear.ready = [issue()]
     poll(rt)
-    for name in ("scratchpads", "compacted", "asking"):
+    for name in names:
         assert not (d / name).exists()
     assert for_phase(d / "grants.json", "impl").launches is None
 
@@ -665,6 +671,22 @@ def test_setup_failing_on_untouched_main_marks_the_repo_and_holds_its_issues(rt,
     assert esc.tier == 1 and esc.issue_key == "NF-9" and esc.cause.endswith("main-broken")
     assert "mise: no version set for go" in esc.summary and "flocc canary" in esc.action
     assert ledger.get_claim(rt.con, "NF-10") is None
+
+
+def test_a_setup_timeout_on_untouched_main_never_marks_the_repo(rt, monkeypatch):
+    from flocc import canary
+
+    _broken_main(rt, monkeypatch)
+
+    def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
+        raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
+
+    monkeypatch.setattr("flocc.poller.prepare_worktree", slow)
+    rt.linear.ready = [issue("NF-9")]
+    poll(rt)
+    assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
+    [esc] = rt.notifier.sent
+    assert esc.tier == 2 and esc.cause == "NF-9:prepare"
 
 
 def test_setup_failing_on_the_issues_own_commits_is_the_issues(rt, monkeypatch):
@@ -846,6 +868,46 @@ def test_reap_removes_worktrees_of_closed_issues_only(rt, monkeypatch, state_typ
     monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
     assert calls == ([("worktree", "remove", "--force", str(wt))] if removed else [])
+
+
+def timed_out(rt, monkeypatch, commit_times, state_type="started", key="NF-5"):
+    wt = finished(rt, key, state="timed_out")
+    ledger.update_claim(rt.con, key, base_sha="sha-base", started_at=1000.0)
+    rt.linear.state_types = lambda keys: {k: state_type for k in keys}
+    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: "\n".join(str(t) for t in commit_times))
+    return wt
+
+
+def test_a_timeout_with_new_commits_restarts_once(rt, monkeypatch):
+    timed_out(rt, monkeypatch, [1500, 500])
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is None
+    assert rt.linear.unstarted == ["NF-5"]
+    [(_, text)] = rt.linear.comments
+    assert text == "stopped at the wall-clock limit with new commits; restarting once"
+    # The rerun times out again: it stays as it is.
+    finished_again = rt.cfg.worktree_root / "NF-5"
+    ledger.insert_claim(rt.con, make("NF-5", state="timed_out", worktree=str(finished_again)))
+    ledger.update_claim(rt.con, "NF-5", base_sha="sha-base", started_at=1000.0)
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == ["NF-5"]
+
+
+@pytest.mark.parametrize(
+    ("times", "state_type"),
+    [([500], "started"), ([], "started"), ([1500], "completed"), ([1500], "canceled")],
+)
+def test_a_timeout_without_new_commits_or_an_open_issue_stays(rt, monkeypatch, times, state_type):
+    timed_out(rt, monkeypatch, times, state_type)
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == []
+
+
+def test_a_blocked_claim_is_not_restarted(rt, monkeypatch):
+    timed_out(rt, monkeypatch, [1500])
+    ledger.update_claim(rt.con, "NF-5", state="blocked")
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is not None
 
 
 def test_reap_leaves_live_claims_and_skips_missing_worktrees(rt, monkeypatch):

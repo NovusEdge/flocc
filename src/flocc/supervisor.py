@@ -19,7 +19,7 @@ from flocc.gate import (
 )
 from flocc.ledger import Claim
 from flocc.linear import LinearError
-from flocc.publisher import BranchMoved, review_comment
+from flocc.publisher import BranchMoved, amended_section, read_amended, review_comment
 from flocc.sessions import (
     allowed_plugins,
     claude_argv,
@@ -36,6 +36,7 @@ HANDOFF_ASK = (
 )
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
+FAILURE_HASH = "check-failure.sha256"
 CHECK_OUTPUT = "check-output.log"
 QUESTION_WAIT_S = 7200
 PANE = "pane.json"
@@ -211,6 +212,7 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
         (d / "review-input.md").write_text(
             f"# Review {key}: {title}\n\nPR: {url}\n\nThe diff is in {d / 'pr.diff'}.\n\n"
             f"## Issue description, including the acceptance criteria\n\n{description}\n"
+            f"{amended_section(read_amended(d))}\n"
         )
         launch(rt, claim, "review", started_at=start)
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
@@ -297,24 +299,51 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             line = f"{key}: commits without the Flocc trailer: {', '.join(result.untrailed)}"
             ledger.add_digest(rt.con, key, line, rt.now())
         _start_review(rt, claim, issue.title, issue.description, result.url)
-    elif result.status == "check_failed" and claim.fix_attempts == 0:
-        extra = f"The check failed with:\n\n{result.detail}"
-        if result.log:
-            log = state_dir(rt.cfg, key) / CHECK_OUTPUT
-            log.write_text(result.log)
-            extra += f"\n\nThis is an excerpt; the full output is in {log}."
-        (state_dir(rt.cfg, key) / FIX_CONTEXT).write_text(extra)
-        start = rt.now()
-        launch(rt, claim, "fix", extra=extra, started_at=start)
-        ledger.update_claim(rt.con, key, phase="fix", fix_attempts=1, restarts=0, started_at=start)
-    elif result.status == "check_failed":
+    elif (
+        result.status == "check_failed"
+        and claim.fix_attempts > 0
+        and _same_failure(rt, claim, result.detail)
+    ):
         if result.log:
             (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
         _block(
             rt,
             claim,
             "check-failed",
-            f"The check still fails after one fix:\n{result.detail}",
+            "The check failed the same way twice; the cause is likely outside the code:\n"
+            + result.detail,
+            f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
+        )
+    elif result.status == "check_failed" and claim.fix_attempts < rt.cfg.check_fix_rounds:
+        extra = f"The check failed with:\n\n{result.detail}"
+        if result.log:
+            log = state_dir(rt.cfg, key) / CHECK_OUTPUT
+            log.write_text(result.log)
+            extra += f"\n\nThis is an excerpt; the full output is in {log}."
+        context = state_dir(rt.cfg, key) / FIX_CONTEXT
+        if claim.fix_attempts > 0 and context.exists():
+            extra = f"An earlier fix round failed with:\n\n{context.read_text()}\n\n{extra}"
+        context.write_text(extra)
+        (state_dir(rt.cfg, key) / FAILURE_HASH).write_text(_digest(result.detail))
+        start = rt.now()
+        launch(rt, claim, "fix", extra=extra, started_at=start)
+        ledger.update_claim(
+            rt.con,
+            key,
+            phase="fix",
+            fix_attempts=claim.fix_attempts + 1,
+            restarts=0,
+            started_at=start,
+        )
+    elif result.status == "check_failed":
+        if result.log:
+            (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
+        rounds = f"{claim.fix_attempts} fix round{'s' * (claim.fix_attempts != 1)}"
+        _block(
+            rt,
+            claim,
+            "check-failed",
+            f"The check still fails after {rounds}:\n{result.detail}",
             f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
         )
     else:
@@ -327,6 +356,15 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             f" flocc release --keep-worktree {key}. If it is right, run"
             f" flocc release --accept-tests {key}",
         )
+
+
+def _digest(detail: str) -> str:
+    return hashlib.sha256(detail.encode()).hexdigest()
+
+
+def _same_failure(rt, claim: Claim, detail: str) -> bool:
+    path = state_dir(rt.cfg, claim.issue_key) / FAILURE_HASH
+    return path.exists() and path.read_text() == _digest(detail)
 
 
 def _check_question(rt, claim: Claim, d: Path, name: str) -> None:
@@ -489,7 +527,8 @@ def supervise(rt, claim: Claim) -> None:
         ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
     limit = rt.cfg.review_wall_clock_s if claim.phase == "review" else claim.wall_clock_s
-    if rt.now() - claim.started_at > limit:
+    # A session waiting on an answer burns no tokens, and the question escalation already pages the owner.
+    if rt.now() - claim.started_at > limit and not (d / "asking").exists():
         if claim.phase == "review":
             _record_usage(rt, key, claim.phase, "end")
             _review_skipped(rt, claim, f"stopped at the wall-clock limit ({name})")
