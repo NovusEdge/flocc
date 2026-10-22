@@ -496,7 +496,8 @@ def supervise(rt, claim: Claim) -> None:
         ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
     limit = rt.cfg.review_wall_clock_s if claim.phase == "review" else claim.wall_clock_s
-    if rt.now() - claim.started_at > limit:
+    # A session waiting on an answer burns no tokens, and the question escalation already pages the owner.
+    if rt.now() - claim.started_at > limit and not (d / "asking").exists():
         if claim.phase == "review":
             _record_usage(rt, key, claim.phase, "end")
             _review_skipped(rt, claim, f"stopped at the wall-clock limit ({name})")
