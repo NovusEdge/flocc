@@ -169,7 +169,7 @@ func Parse(b []byte) (*Answers, error) {
 		row, col := de.Position()
 		return nil, fmt.Errorf("answers: invalid TOML at line %d, column %d", row, col)
 	}
-	return nil, errors.New("answers: a value does not fit its field; check the types against the example in docs/vm-setup.md")
+	return nil, errors.New("answers: a value does not fit its field; check the types against the example in docs/book/setup/README.md")
 }
 
 func (a *Answers) Save(path string) error {

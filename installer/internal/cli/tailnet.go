@@ -33,6 +33,11 @@ func (w *wizard) tailnet() {
 	w.d.ui.Group("Tailnet")
 	st := w.d.ui.Step("Client")
 	st.Detail("looking for the OAuth client")
+	// A client in .env is taken on every run, not only the first: the owner may add it later.
+	if err := w.ops.envKeys(w.ctx, []keys.Slot{keys.Tailscale}); err != nil {
+		w.failAt(st, "Client", err)
+		return
+	}
 	api, ok := w.ops.tailnetClient()
 	// Only the first setup asks: the client is optional, and a later run would otherwise ask again
 	// for as long as the owner declines it. flocc keys still offers it.

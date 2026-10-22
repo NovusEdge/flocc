@@ -536,6 +536,7 @@ func (w *wizard) checkout() bool {
 	}
 	w.version = ver
 	w.end(st, rowDone, "checkout", root+" at "+v)
+	w.ops.seedEnv(root)
 	return true
 }
 
@@ -545,7 +546,11 @@ func (w *wizard) fillKeys(slots []keys.Slot, check bool) bool {
 	w.d.ui.Group("Keys")
 	st := w.d.ui.Step("keys")
 	st.Detail("looking for the keys the store lacks")
-	if err := w.ops.fillKeys(w.ctx, slots); err != nil {
+	err := w.ops.envKeys(w.ctx, slots)
+	if err == nil {
+		err = w.ops.fillKeys(w.ctx, slots)
+	}
+	if err != nil {
 		w.failAt(st, "keys", err)
 		return false
 	}

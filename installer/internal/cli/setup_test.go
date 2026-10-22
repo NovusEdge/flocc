@@ -48,6 +48,8 @@ var nimble = hosts.Host{Name: "flocc-nimble", SSH: "root@flocc-nimble", Machine:
 func doneOps(l *opsLog) setupOps {
 	return setupOps{
 		checkout:        func() (string, string, error) { return "/repo", "0.8.0", nil },
+		seedEnv:         func(root string) { l.add("seed %s", root) },
+		envKeys:         func(_ context.Context, s []keys.Slot) error { l.add("env %v", s); return nil },
 		fillKeys:        func(_ context.Context, s []keys.Slot) error { l.add("keys %v", s); return nil },
 		checkKeys:       func(context.Context) []string { return nil },
 		tailnetClient:   func() (tailnetAPI, bool) { return nil, false },
@@ -179,6 +181,26 @@ func TestSetupStopsWithoutTheCheckout(t *testing.T) {
 	ops.checkout = func() (string, string, error) { return "", "", errors.New("not a git checkout") }
 	d, out, _ := setupDeps(t, nil)
 	if code := runSetup(context.Background(), d, ops); code != 1 || l.has("keys") || !strings.Contains(out.String(), "not a git checkout") {
+		t.Fatalf("exit %d calls %v out %q", code, l.calls, out)
+	}
+}
+
+func TestSetupTakesEnvKeysBeforeAskingForEachHalf(t *testing.T) {
+	var l opsLog
+	d, _, _ := setupDeps(t, nil)
+	runSetup(context.Background(), d, doneOps(&l))
+	inOrder(t, l.calls, "seed /repo",
+		fmt.Sprintf("env %v", []keys.Slot{keys.Linear, keys.Agent}), fmt.Sprintf("keys %v", []keys.Slot{keys.Linear, keys.Agent}),
+		fmt.Sprintf("env %v", []keys.Slot{keys.Tailscale}),
+		fmt.Sprintf("env %v", []keys.Slot{keys.Publish, keys.Ntfy}), fmt.Sprintf("keys %v", []keys.Slot{keys.Publish, keys.Ntfy}))
+}
+
+func TestSetupFailsTheKeysRowWhenEnvKeysFails(t *testing.T) {
+	var l opsLog
+	ops := doneOps(&l)
+	ops.envKeys = func(context.Context, []keys.Slot) error { return errors.New("keyring locked") }
+	d, out, _ := setupDeps(t, nil)
+	if code := runSetup(context.Background(), d, ops); code != 1 || l.has("keys") || !strings.Contains(out.String(), "keyring locked") {
 		t.Fatalf("exit %d calls %v out %q", code, l.calls, out)
 	}
 }
@@ -722,7 +744,7 @@ func TestSetupOnAFinishedDesktopOnlyReads(t *testing.T) {
 		t.Fatalf("exit %d %q", code, out)
 	}
 	for _, c := range l.calls {
-		if !strings.HasPrefix(c, "keys ") && !strings.HasPrefix(c, "read ") && !strings.HasPrefix(c, "old ") && !strings.HasPrefix(c, "machine ") && c != "cardinal status" {
+		if !strings.HasPrefix(c, "keys ") && !strings.HasPrefix(c, "env ") && !strings.HasPrefix(c, "seed ") && !strings.HasPrefix(c, "read ") && !strings.HasPrefix(c, "old ") && !strings.HasPrefix(c, "machine ") && c != "cardinal status" {
 			t.Errorf("changed something: %q", c)
 		}
 	}

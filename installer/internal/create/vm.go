@@ -138,7 +138,7 @@ func (Egress) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if !e.hasCurl(ctx) {
 		return false, "curl is not installed in the VM yet", nil
 	}
-	return false, "no HTTPS from the VM; see \"Making a host with flocc host create\" in docs/vm-setup.md", nil
+	return false, "no HTTPS from the VM; see \"What create changes on the machine\" in docs/book/setup/host-create.md", nil
 }
 
 func (Egress) Apply(ctx context.Context, e *Env) error {
@@ -150,7 +150,7 @@ func (Egress) Apply(ctx context.Context, e *Env) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				return fmt.Errorf("the VM cannot install curl, so it likely has no way out; see \"Making a host with flocc host create\" in docs/vm-setup.md: %w", err)
+				return fmt.Errorf("the VM cannot install curl, so it likely has no way out; see \"What create changes on the machine\" in docs/book/setup/host-create.md: %w", err)
 			}
 		}
 	}

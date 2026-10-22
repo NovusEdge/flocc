@@ -24,6 +24,8 @@ import (
 // setupOps are the existing functions flocc setup calls, as fields so its tests can replace each.
 type setupOps struct {
 	checkout  func() (root, version string, err error)
+	seedEnv   func(root string)
+	envKeys   func(ctx context.Context, slots []keys.Slot) error
 	fillKeys  func(ctx context.Context, slots []keys.Slot) error
 	checkKeys func(ctx context.Context) []string
 	// tailnetClient is the stored OAuth client; false when the owner has none.
@@ -60,6 +62,8 @@ func newSetupOps(d *deps) setupOps {
 	cd := d.cardinalDeps()
 	return setupOps{
 		checkout: func() (string, string, error) { return checkoutVersion(d) },
+		seedEnv:  func(root string) { seedEnv(d, root) },
+		envKeys:  func(ctx context.Context, s []keys.Slot) error { return envKeys(ctx, d, s) },
 		fillKeys: func(ctx context.Context, s []keys.Slot) error {
 			return keys.Fill(ctx, keysEnv(d), mapped(listHosts(d)), s)
 		},
