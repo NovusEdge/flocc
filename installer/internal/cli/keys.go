@@ -70,7 +70,12 @@ func keysCmd(ctx context.Context, d *deps, args []string) int {
 	switch {
 	case len(args) == 0:
 		e := keysEnv(d)
-		if err := keys.Fill(ctx, e, m, append(slices.Clone(keys.Slots), keys.Tailscale)); err != nil {
+		slots := append(slices.Clone(keys.Slots), keys.Tailscale)
+		err := envKeys(ctx, d, slots)
+		if err == nil {
+			err = keys.Fill(ctx, e, m, slots)
+		}
+		if err != nil {
 			d.ui.Step("Fill keys").Fail(err)
 			d.ui.Todo("run flocc keys again to go on")
 			return 1
@@ -122,7 +127,16 @@ func rotate(ctx context.Context, d *deps, which string) int {
 			return 0
 		}
 	}
-	failed := false
+	if pushToHosts(ctx, d, all, changed, fmt.Sprintf("run flocc keys rotate %s again, paste nothing and answer yes to push the stored keys again, or run flocc ship -H <host>", which)) {
+		return 1
+	}
+	return code
+}
+
+// pushToHosts writes the changed keys to every host, one row each, and reports whether any host
+// failed; retry is the todo's advice for those. A GitHub token pushed also leaves the old one to
+// revoke.
+func pushToHosts(ctx context.Context, d *deps, all []hosts.Host, changed []keys.Slot, retry string) (failed bool) {
 	pushed := 0
 	for _, h := range all {
 		st := d.ui.Step("Push keys to " + h.Name)
@@ -136,15 +150,14 @@ func rotate(ctx context.Context, d *deps, which string) int {
 		pushed++
 		st.Done("")
 	}
-	if pushed > 0 && which == "github" {
+	if pushed > 0 && (slices.Contains(changed, keys.Agent) || slices.Contains(changed, keys.Publish)) {
 		d.ui.Todo("revoke the old token once the sessions running now end: each read GH_TOKEN when it started")
 		d.ui.Note("Token expiry", "flocc status -H all shows the new expiry after each host's next daily token check.")
 	}
 	if failed {
-		d.ui.Todo(fmt.Sprintf("once the hosts that failed are up, run flocc keys rotate %s again, paste nothing and answer yes to push the stored keys again, or run flocc ship -H <host>", which))
-		return 1
+		d.ui.Todo("once the hosts that failed are up, " + retry)
 	}
-	return code
+	return failed
 }
 
 // offerRepush asks whether to write the stored keys among slots to every host again, and returns

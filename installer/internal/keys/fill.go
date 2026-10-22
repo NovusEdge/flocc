@@ -239,7 +239,7 @@ func Take(ctx context.Context, e Env, m Mapped, vals map[Slot]Taken, slots []Slo
 }
 
 // hostFiled is the slots that have a secret file on each host.
-var hostFiled =[]Slot{Linear, Agent, Publish}
+var hostFiled = []Slot{Linear, Agent, Publish}
 
 // sameKey compares Tailscale values by their secret, as the id is ignored by the token endpoint.
 func sameKey(s Slot, stored, v string) bool {
@@ -286,7 +286,7 @@ func takeKey(ctx context.Context, e Env, m Mapped, s Slot, t Taken) (bool, error
 func takeNtfy(e Env, t Taken, replacing bool) (bool, error) {
 	topic, err := steps.CleanSecret(t.Value)
 	if err != nil {
-		e.UI.Step("Check "+Ntfy.Title()+" from "+t.From).Skip(fmt.Sprintf("%s not taken: %v", Masked(t.Value), err))
+		e.UI.Step("Check " + Ntfy.Title() + " from " + t.From).Skip(fmt.Sprintf("%s not taken: %v", Masked(t.Value), err))
 		return false, nil
 	}
 	if err := store(e, Ntfy, topic); err != nil {

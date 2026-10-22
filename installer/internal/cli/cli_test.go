@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -13,7 +14,8 @@ func testDeps(t *testing.T) (*deps, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	var out, errb bytes.Buffer
 	return &deps{out: &out, err: &errb, home: t.TempDir(), getenv: func(string) string { return "" },
-		ui: ui.New(&ui.Recorder{})}, &out, &errb
+		repoRoot: func() (string, error) { return "", errors.New("exit status 128") },
+		ui:       ui.New(&ui.Recorder{})}, &out, &errb
 }
 
 func TestBareFloccPrintsHelpAndFails(t *testing.T) {
