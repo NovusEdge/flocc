@@ -73,13 +73,19 @@ def amended_section(amended: dict[str, dict] | None) -> str:
     return f"\n\n## Amended tests\n\nThe implementer changed these tester files, with these reasons:\n\n{lines}"
 
 
+# describe() groups tests without being one: renaming a group drops no test.
 _TEST_NAME = re.compile(
     r"^\s*(?:(?:async\s+)?def (test_\w*)|func (Test\w*)"
-    r"|(?:test|it|describe)(?:\.\w+)*\(\s*(['\"`])(.+?)\3)"
+    r"|(?:test|it)(?:\.\w+)*\(\s*(['\"`])(.+?)\3)"
 )
+# Each form is tied to a test framework's own name, so .iter().skip(1) or client.todo(3) in the
+# code under test does not read as a skipped test.
 _SKIPS_TEST = re.compile(
-    r"pytest\.mark\.skip|pytest\.skip\(|pytest\.importorskip\(|xfail|skipIf|skipUnless"
-    r"|self\.skipTest\(|\.skip\(|\.only\(|\.todo\(|t\.Skip\(|t\.Skipf\(|t\.SkipNow\("
+    r"pytest\.mark\.(?:skip|skipif|xfail)\b|pytest\.(?:skip|xfail|importorskip)\("
+    r"|unittest\.(?:skip|skipIf|skipUnless|expectedFailure)\b"
+    r"|@(?:skip|skipIf|skipUnless|expectedFailure)\b|self\.skipTest\("
+    r"|\b(?:test|it|describe)\.(?:skip|only|todo|skipIf|fails)\b|\bx(?:it|test|describe)\("
+    r"|\bt\.Skip(?:f|Now)?\("
 )
 
 

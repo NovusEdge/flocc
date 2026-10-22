@@ -125,7 +125,7 @@ def test_amended_tests_pass_the_guard_and_reach_the_pr_body(origin, tmp_path):
             "def test_a():\n    assert 1\n",
             "removes a test",
         ),
-        ("describe('a', () => {})\n", "", "removes a test"),
+        ("describe('a', () => {\n  it('x', () => {})\n})\n", "", "removes a test"),
         (
             "def test_a():\n    assert 1\n",
             "import pytest\n\n@pytest.mark.skip\ndef test_a():\n    assert 1\n",
@@ -200,6 +200,32 @@ def test_a_moved_or_resigned_test_is_not_removed(origin, tmp_path):
         "def test_b():\n    assert 2\n\ndef test_a(x=1):\n    assert x\n"
     )
     git("commit", "-qam", "reorder and re-sign", cwd=path)
+    amended = {"test_w.py": {"reason": "r"}}
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), amended=amended)
+    assert result.status == "opened"
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        # Code under test that happens to call skip or todo.
+        ("def test_a():\n    assert f()\n", "def test_a():\n    assert list(xs.iter().skip(1))\n"),
+        ("it('a', () => {})\n", "it('a', () => { client.todo(3) })\n"),
+        # A group renamed around the same tests.
+        (
+            "describe('old', () => {\n  it('x', () => {})\n})\n",
+            "describe('new', () => {\n  it('x', () => {})\n})\n",
+        ),
+    ],
+)
+def test_an_amendment_that_only_looks_like_a_skip_passes(origin, tmp_path, before, after):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "test_w.py").write_text(before)
+    git("add", ".", cwd=path)
+    git("commit", "-qm", "more tests", cwd=path)
+    claim.tester_sha = git("rev-parse", "HEAD", cwd=path)
+    (path / "test_w.py").write_text(after)
+    git("commit", "-qam", "amend", cwd=path)
     amended = {"test_w.py": {"reason": "r"}}
     result = publish(claim, repo, "t", "s", token="t", runner=Gh(), amended=amended)
     assert result.status == "opened"

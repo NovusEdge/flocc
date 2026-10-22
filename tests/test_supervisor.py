@@ -380,7 +380,7 @@ def test_the_same_check_failure_twice_blocks_without_another_round(rt):
         ("--- FAIL: TestA (0.123s)\n\tx", "--- FAIL: TestA (0.456s)\n   x"),
     ],
 )
-def test_failures_differing_only_in_numbers_and_spacing_count_as_the_same(rt, first, second):
+def test_failures_differing_only_in_durations_and_spacing_count_as_the_same(rt, first, second):
     failures = iter([first, second])
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
     add(rt, phase="impl", tester_sha="sha-tests")
@@ -392,8 +392,15 @@ def test_failures_differing_only_in_numbers_and_spacing_count_as_the_same(rt, fi
     assert "the same way twice" in rt.notifier.sent[-1].summary
 
 
-def test_a_different_check_failure_gets_its_second_round(rt):
-    failures = iter(["E1 boom", "E2 bang"])
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("E1 boom", "E2 bang"),
+        ("FAILED t.py::test_case_1 - got 500", "FAILED t.py::test_case_2 - got 404"),
+    ],
+)
+def test_a_different_check_failure_gets_its_second_round(rt, first, second):
+    failures = iter([first, second])
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
     add(rt, phase="impl", tester_sha="sha-tests")
     done(rt)
@@ -604,11 +611,23 @@ def test_a_question_left_open_forever_times_out_after_the_wait(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
     d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(json.dumps({"at": 100.0 + 3000, "question": "Q?"}))
-    rt.now = lambda: 3600.0 + QUESTION_WAIT_S - 1
+    asked = 100.0 + 3500
+    (d / "asking").write_text(json.dumps({"at": asked, "question": "Q?"}))
+    # Asked just before the limit: the page goes out after QUESTION_WAIT_S, and the owner still
+    # gets as long again to answer it.
+    rt.now = lambda: asked + QUESTION_WAIT_S + 600
     supervise(rt, current(rt))
     assert current(rt).state == "running"
-    rt.now = lambda: 3600.0 + QUESTION_WAIT_S + 1
+    rt.now = lambda: asked + 2 * QUESTION_WAIT_S + 1
+    supervise(rt, current(rt))
+    assert current(rt).state == "timed_out"
+
+
+def test_a_torn_question_marker_does_not_hold_off_the_wall_clock(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    (state_dir(rt.cfg, "NF-1") / "asking").write_text("{torn")
+    rt.now = lambda: 100.0 + 3601
     supervise(rt, current(rt))
     assert current(rt).state == "timed_out"
 

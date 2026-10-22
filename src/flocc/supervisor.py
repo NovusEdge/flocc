@@ -369,9 +369,17 @@ def _asked_seconds(d: Path) -> float:
         return 0.0
 
 
+_RUN_NOISE = re.compile(
+    r"\d{4}-\d\d-\d\d[T ][\d:.]+Z?"  # timestamps
+    r"|0x[0-9a-fA-F]+"  # addresses
+    r"|\b\d+(?:\.\d+)?\s?(?:ms|s|sec|seconds)\b"  # durations
+)
+
+
 def _digest(detail: str) -> str:
-    # Durations and counts differ on every run of the same failure.
-    steady = " ".join(re.sub(r"\d+(?:\.\d+)?", "N", detail).split())
+    # Only what changes between runs of one failure is dropped; test names and their numbers stay,
+    # so two different failing cases do not read as the same failure.
+    steady = " ".join(_RUN_NOISE.sub("~", detail).split())
     return hashlib.sha256(steady.encode()).hexdigest()
 
 
@@ -544,9 +552,17 @@ def supervise(rt, claim: Claim) -> None:
         limit, held = rt.cfg.review_wall_clock_s, False
     else:
         limit = claim.wall_clock_s + _asked_seconds(d)
-        # A session waiting on an answer burns no tokens and the question escalation already
-        # pages the owner; the hold ends QUESTION_WAIT_S past the limit, so no wait is unbounded.
-        held = (d / "asking").exists() and elapsed <= limit + QUESTION_WAIT_S
+        # A session waiting on an answer burns no tokens. The owner is paged QUESTION_WAIT_S after
+        # the question and gets as long again to answer; measured from the limit instead, a
+        # question asked near it would be paged and killed in the same tick. A torn marker holds
+        # nothing, or every tick would read it as a fresh question.
+        held = False
+        if (d / "asking").exists():
+            try:
+                asked_at = float(json.loads((d / "asking").read_text())["at"])
+            except (OSError, ValueError, KeyError, TypeError):
+                asked_at = float("-inf")
+            held = rt.now() - asked_at <= 2 * QUESTION_WAIT_S
     if elapsed > limit and not held:
         if claim.phase == "review":
             _record_usage(rt, key, claim.phase, "end")
