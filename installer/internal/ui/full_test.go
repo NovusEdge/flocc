@@ -102,6 +102,18 @@ func TestFullStacksBelowHundredColumns(t *testing.T) {
 	}
 }
 
+func TestFullStackedRailFollowsTheCurrentGroup(t *testing.T) {
+	m := sized(80, 24)
+	for i := 1; i <= 8; i++ {
+		m = feed(m, Event{Kind: KGroup, Name: fmt.Sprintf("Group%d", i)})
+	}
+	v := plainView(m)
+	rail := strings.Split(v, "\n")[lineWith(t, v, "╭─ sections"):lineWith(t, v, "╭─ Group8")]
+	if !strings.Contains(strings.Join(rail, "\n"), "Group8") {
+		t.Errorf("the rail cut the current group:\n%s", v)
+	}
+}
+
 func TestFullKeyBarReplacesHints(t *testing.T) {
 	m := themed(keysAndHosts(sized(100, 30)))
 	v := plainView(m)

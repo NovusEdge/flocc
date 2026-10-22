@@ -23,9 +23,9 @@ const (
 )
 
 const (
-	cardW      = 34
-	activityN  = 5
-	minIssueRo = 3 // content rows the issues pane keeps before the activity pane may take any
+	cardW        = 34
+	activityN    = 5
+	minIssueRows = 3 // content rows the issues pane keeps before the activity pane may take any
 )
 
 // visible is the claims that pass the filter, which matches key, title, host or state.
@@ -83,8 +83,12 @@ func (m *Model) sev(s string, v ship.Sev) string {
 func (m *Model) fleetView() string {
 	iw, _ := theme.Inner(m.w, m.h)
 	bh := m.bodyHeight()
-	hostLines, cardLines := m.hostLines(), m.cardLines()
+	hostLines, selAt := m.hostLines()
+	cardLines := m.cardLines()
 	needH, needC := len(hostLines)+2, 0
+	hostPane := func(w, h int) string {
+		return m.th.Pane("hosts", "", strings.Join(theme.Window(hostLines, selAt, h-2), "\n"), w, h)
+	}
 	if len(m.cards) > 0 {
 		needC = len(cardLines) + 2
 	}
@@ -95,24 +99,24 @@ func (m *Model) fleetView() string {
 	switch {
 	case needC == 0:
 		topH = min(needH, capTop)
-		top = m.th.Pane("hosts", "", strings.Join(hostLines, "\n"), iw, topH)
-	case iw >= theme.StackBelow:
+		top = hostPane(iw, topH)
+	case m.w >= theme.StackBelow:
 		topH = min(max(needH, needC), capTop)
 		top = lipgloss.JoinHorizontal(lipgloss.Top,
-			m.th.Pane("hosts", "", strings.Join(hostLines, "\n"), iw-cardW-1, topH), " ",
+			hostPane(iw-cardW-1, topH), " ",
 			m.th.Pane("cardinal", "", strings.Join(cardLines, "\n"), cardW, topH))
 	default:
 		capTop = max(capTop, min(needH+needC, 10))
 		hH := min(needH, capTop-3)
 		cH := min(needC, capTop-hH)
 		topH = hH + cH
-		top = m.th.Pane("hosts", "", strings.Join(hostLines, "\n"), iw, hH) + "\n" +
+		top = hostPane(iw, hH) + "\n" +
 			m.th.Pane("cardinal", "", strings.Join(cardLines, "\n"), iw, cH)
 	}
 
 	avail := bh - topH
 	act, actKey := m.activityLines()
-	actH := min(len(act)+2, avail-(minIssueRo+2))
+	actH := min(len(act)+2, avail-(minIssueRows+2))
 	if actH < 3 {
 		actH = 0
 	}
@@ -151,13 +155,16 @@ func (m *Model) facts(rep *ship.Report) string {
 	return strings.Join([]string{"tick " + tick(), fmt.Sprintf("%d/%d", live, rep.SessionCap), five, week, m.sev(disk, dv)}, theme.Sep)
 }
 
-func (m *Model) hostLines() []string {
+// hostLines are one or two rows per host, and the row of the selected host's first line.
+func (m *Model) hostLines() (out []string, selAt int) {
 	th := m.th
 	if len(m.hosts) == 0 {
-		return []string{th.Dim.Render("no hosts yet, run flocc setup")}
+		return []string{th.Dim.Render("no hosts yet, run flocc setup")}, 0
 	}
-	var out []string
 	for i, h := range m.hosts {
+		if i == m.hostSel {
+			selAt = len(out)
+		}
 		name := saved.Sanitize(h.host.Name)
 		var first string
 		switch {
@@ -181,7 +188,7 @@ func (m *Model) hostLines() []string {
 			out = append(out, "    "+second)
 		}
 	}
-	return out
+	return out, selAt
 }
 
 func (m *Model) cardLines() []string {

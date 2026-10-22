@@ -16,8 +16,15 @@ func (m *Model) cardinalKey(k string) (tea.Model, tea.Cmd) {
 	switch k {
 	case "esc", "left", "h":
 		m.screen = fleetScreen
+	case "up", "k":
+		m.cardSel = max(m.cardSel-1, 0)
+	case "down", "j":
+		m.cardSel = max(min(m.cardSel+1, len(m.cards)-1), 0)
 	case "c":
-		return m, m.handoff("cardinal", "cardinal", "attach")
+		if len(m.cards) == 0 {
+			return m, nil
+		}
+		return m, m.handoff("cardinal", "cardinal", "attach", "--user", m.cards[m.cardSel].Saved.User)
 	}
 	return m, nil
 }
@@ -25,6 +32,7 @@ func (m *Model) cardinalKey(k string) (tea.Model, tea.Cmd) {
 func (m *Model) cardinalBar() []kb.Binding {
 	t := m.th
 	return []kb.Binding{
+		t.Key(len(m.cards) > 1, "↑↓", "select", "up", "down", "j", "k"),
 		t.Key(len(m.cards) > 0, "c", "attach"),
 		t.Key(true, "esc", "back", "esc", "left", "h"),
 		t.Key(true, "?", "keys"),
@@ -38,10 +46,13 @@ func (m *Model) cardinalView() string {
 		return m.th.Pane("cardinal", "", m.th.Dim.Render("no cardinal installs"), iw, 0)
 	}
 	var panes []string
-	for _, c := range m.cards {
+	for i, c := range m.cards {
 		title := "cardinal"
 		if len(m.cards) > 1 {
 			title = saved.Sanitize(c.Saved.User + "@" + c.Saved.Machine)
+			if i == m.cardSel {
+				title = theme.Cursor + " " + title
+			}
 		}
 		body := m.th.Err.Render(saved.Sanitize(c.Err))
 		if c.Status != nil {

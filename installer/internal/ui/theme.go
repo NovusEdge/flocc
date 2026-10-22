@@ -57,7 +57,7 @@ func withDark(th theme.Theme, dark bool) theme.Theme {
 func Form(groups ...*huh.Group) *huh.Form { return formIn(new(true), groups...) }
 
 func formIn(dark *bool, groups ...*huh.Group) *huh.Form {
-	return huh.NewForm(groups...).WithTheme(themeIn(dark)).WithShowHelp(true)
+	return huh.NewForm(groups...).WithTheme(themeIn(dark))
 }
 
 // SpinnerTheme gives the spinner the same palette as Theme.

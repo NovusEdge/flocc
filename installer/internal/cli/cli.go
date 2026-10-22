@@ -113,15 +113,28 @@ func Main(args []string) int {
 }
 
 // dashTitles looks issue titles up with the stored Linear key, which it reads on the first call:
-// the keyring can block, and that call runs in a command, not in the dashboard's update.
+// the keyring can block, and that call runs in a command, not in the dashboard's update. A failed
+// read is not kept, so the next poll tries again: the key may have been stored since.
 func dashTitles(store func() keys.Store, base string, client *http.Client) func(context.Context, []string) (map[string]dash.Title, error) {
-	key := sync.OnceValues(func() (string, error) {
+	var (
+		mu  sync.Mutex
+		got string
+	)
+	key := func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if got != "" {
+			return got, nil
+		}
 		k, err := store().Get(keys.Linear)
 		if err == nil && k == "" {
 			err = errors.New("no Linear key stored; run flocc keys")
 		}
+		if err == nil {
+			got = k
+		}
 		return k, err
-	})
+	}
 	return func(ctx context.Context, want []string) (map[string]dash.Title, error) {
 		k, err := key()
 		if err != nil {

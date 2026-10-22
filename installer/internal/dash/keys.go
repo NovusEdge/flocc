@@ -27,6 +27,13 @@ func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if k == "ctrl+c" {
 		return m, tea.Quit
 	}
+	if m.tooSmall() {
+		// Nothing is drawn but the notice, so no other key may act on what it cannot show.
+		if k == "q" {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
 	if m.ask != nil {
 		a := m.ask
 		m.ask = nil

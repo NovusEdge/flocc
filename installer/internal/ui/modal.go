@@ -24,10 +24,8 @@ func overlay(frame, box string, w, h int) string {
 	return lipgloss.NewCompositor(top, over).Render()
 }
 
-// modalBox is the open form in a rounded box. huh draws the question's title and facts itself.
-func modalBox(form string, w int) string { return modalBoxIn(theme.New(true), form, w) }
-
-// modalBoxIn is modalBox with the border in th's accent.
+// modalBoxIn is the open form in a rounded box with the border in th's accent. huh draws the
+// question's title and facts itself.
 func modalBoxIn(th theme.Theme, form string, w int) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

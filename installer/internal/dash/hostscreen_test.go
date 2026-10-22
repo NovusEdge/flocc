@@ -229,16 +229,17 @@ func TestCardinalAttachArgs(t *testing.T) {
 	m.focus = cardinalPane
 	key(m, "enter")
 	key(m, "c")
-	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "cardinal attach" {
+	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "cardinal attach --user cardinal" {
 		t.Errorf("ran %v", *ran)
 	}
 }
 
 func TestHostGolden(t *testing.T) {
 	for _, sz := range [][2]int{{59, 19}, {80, 24}, {140, 40}} {
-		m := goldenModel(t, sz)
+		m := goldenModel(t, [2]int{140, 40}) // keys do nothing below the minimum size, so resize after opening
 		src(m).answer("doctor --json", ok(doctorJSON))
 		cmd := openHost(t, m, "flocc-nimble")
+		m.Update(sizeMsg(sz))
 		m.Update(outputMsg{gen: m.outGen, title: "log", lines: []string{
 			"14:08 tick start", "14:08 NF-240 blocked: asked in Linear", "14:09 tick ok",
 		}})

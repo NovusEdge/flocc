@@ -301,8 +301,9 @@ func TestHostileOutputIsSanitised(t *testing.T) {
 
 func TestIssueGolden(t *testing.T) {
 	for _, sz := range [][2]int{{59, 19}, {80, 24}, {140, 40}} {
-		m := goldenModel(t, sz)
+		m := goldenModel(t, [2]int{140, 40})
 		openIssue(t, m, "NF-240")
+		m.Update(sizeMsg(sz))
 		m.Update(outputMsg{gen: m.outGen, title: "session", lines: []string{
 			"\u276f /review", "reading the diff of src/flocc/poller.py", "ran just check: 2 failures",
 			"waiting for the owner to answer in Linear",

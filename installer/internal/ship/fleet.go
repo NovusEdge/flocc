@@ -213,7 +213,7 @@ func fetch(ctx context.Context, r host.Runner, c *destCache, h FleetHost) Row {
 	defer cancel()
 	dest, err := c.resolve(ctx, h)
 	if err != nil {
-		row.Err = firstLine(err.Error())
+		row.Err = FirstLine(err.Error())
 		return row
 	}
 	// ssh failing may mean the cached token was revoked, so the next draw mints a fresh one. A
@@ -229,10 +229,10 @@ func fetch(ctx context.Context, r host.Runner, c *destCache, h FleetHost) Row {
 	switch {
 	case err != nil:
 		sshFailed = true
-		row.Err = scrub(firstLine(err.Error()), dest.Token)
+		row.Err = scrub(FirstLine(err.Error()), dest.Token)
 	case res.Code != 0:
 		sshFailed = res.Code == 255
-		row.Err = scrub(fmt.Sprintf("exit %d: %s", res.Code, firstLine(host.Tail(res.Out(), 1))), dest.Token)
+		row.Err = scrub(fmt.Sprintf("exit %d: %s", res.Code, FirstLine(host.Tail(res.Out(), 1))), dest.Token)
 	default:
 		var rep Report
 		if err := json.Unmarshal([]byte(res.Stdout), &rep); err != nil {
@@ -244,7 +244,8 @@ func fetch(ctx context.Context, r host.Runner, c *destCache, h FleetHost) Row {
 	return row
 }
 
-func firstLine(s string) string {
+// FirstLine is s trimmed, up to its first newline.
+func FirstLine(s string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	return line
 }
@@ -268,9 +269,9 @@ func fetchCardinal(ctx context.Context, r host.Runner, mux []string, s saved.Sav
 	var st steps.CardinalStatus
 	switch {
 	case err != nil:
-		row.Err = firstLine(err.Error())
+		row.Err = FirstLine(err.Error())
 	case res.Code != 0:
-		row.Err = fmt.Sprintf("exit %d: %s", res.Code, firstLine(host.Tail(res.Out(), 1)))
+		row.Err = fmt.Sprintf("exit %d: %s", res.Code, FirstLine(host.Tail(res.Out(), 1)))
 	case json.Unmarshal([]byte(res.Stdout), &st) != nil:
 		row.Err = "unreadable status output"
 	case st.Schema != steps.CardinalStatusSchema:

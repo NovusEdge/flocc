@@ -92,7 +92,7 @@ func Connect(ctx context.Context, r host.Runner, dest Dest, name string, tty boo
 		return nil
 	}
 	// The last line is where Tailscale puts its URL; with it the owner can approve and retry.
-	why := firstLine(host.Tail(res.Stderr, 1))
+	why := FirstLine(host.Tail(res.Stderr, 1))
 	switch {
 	case why == "" && err != nil:
 		why = err.Error()

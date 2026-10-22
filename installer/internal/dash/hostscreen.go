@@ -19,6 +19,7 @@ import (
 const (
 	hostFactsH   = 10 // eight rows and the border
 	hostFactsW   = 48
+	logPaneMin   = 5 // three rows and the border
 	shipToDoctor = "ship to see doctor checks"
 )
 
@@ -93,22 +94,32 @@ func (m *Model) hostBar() []kb.Binding {
 	}
 }
 
-// hostSplit is the host screen's layout: topH rows of facts and doctor above the log pane, and
-// docH, the doctor pane's height when it is stacked under the facts.
-func (m *Model) hostSplit() (side bool, topH, docH int) {
-	iw, _ := theme.Inner(m.w, m.h)
+// hostSplit is the host screen's layout: topH rows of facts and doctor above the log pane, and,
+// when they are stacked, the heights of the facts pane and the doctor pane under it. The log pane
+// keeps logPaneMin rows: the doctor pane shrinks first, to three rows, then the facts pane is cut;
+// with less room than that the doctor pane goes (docH 0).
+func (m *Model) hostSplit() (side bool, topH, factsH, docH int) {
 	bh := m.bodyHeight()
+	room := max(bh-logPaneMin, 3)
 	need := max(len(m.doctor.checks), 1) + 2
-	if iw >= theme.StackBelow {
-		return true, max(hostFactsH, min(need, bh-6)), 0
+	if m.w >= theme.StackBelow {
+		return true, min(max(hostFactsH, min(need, bh-6)), room), 0, 0
 	}
-	docH = min(need, max((bh-hostFactsH)/2, 3))
-	return false, hostFactsH + docH, docH
+	factsH = min(hostFactsH, room)
+	if docH = min(need, room-factsH); docH < 3 {
+		// A failing check matters more than the last facts rows: cut those, down to six, to keep it.
+		if room >= 6+3 {
+			factsH, docH = room-3, 3
+		} else {
+			docH = 0
+		}
+	}
+	return false, factsH + docH, factsH, docH
 }
 
 func (m *Model) hostView() string {
 	iw, _ := theme.Inner(m.w, m.h)
-	side, topH, docH := m.hostSplit()
+	side, topH, factsH, docH := m.hostSplit()
 	name := saved.Sanitize(m.cur[0])
 	var rows []string
 	for _, h := range m.hosts {
@@ -130,7 +141,10 @@ func (m *Model) hostView() string {
 			m.th.Pane(name, "", strings.Join(rows, "\n"), hostFactsW, topH), " ",
 			m.th.Pane("doctor", hint, doc, iw-hostFactsW-1, topH))
 	} else {
-		top = m.th.Pane(name, "", strings.Join(rows, "\n"), iw, hostFactsH) + "\n" + m.th.Pane("doctor", hint, doc, iw, docH)
+		top = m.th.Pane(name, "", strings.Join(rows, "\n"), iw, factsH)
+		if docH > 0 {
+			top += "\n" + m.th.Pane("doctor", hint, doc, iw, docH)
+		}
 	}
 	return top + "\n" + m.outputPane("log", "l full screen", iw, m.bodyHeight()-topH)
 }

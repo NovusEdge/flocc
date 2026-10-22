@@ -23,6 +23,7 @@ type pagerState struct {
 	follow bool
 	loaded bool // the 2000-line fetch has answered once
 	search string
+	hit    int // line of the last match; n goes on from it, since the viewport clamps near the end
 	note   string
 }
 
@@ -68,19 +69,20 @@ func (p *pagerState) load(msg outputMsg) {
 	p.loaded = true
 }
 
-// find moves to the next line holding the search text, wrapping at the end; from is the line at
-// the top of the view, or the one after it for n.
+// find moves to the next line holding the search text, wrapping at the end. A new search starts
+// at the top of the view; n starts after the last hit.
 func (p *pagerState) find(after bool) {
 	if p.search == "" || len(p.lines) == 0 {
 		return
 	}
 	needle, start := strings.ToLower(p.search), p.vp.YOffset()
 	if after {
-		start++
+		start = p.hit + 1
 	}
 	for i := range p.lines {
 		j := (start + i) % len(p.lines)
 		if strings.Contains(strings.ToLower(p.lines[j]), needle) {
+			p.hit = j
 			p.vp.SetYOffset(j)
 			return
 		}

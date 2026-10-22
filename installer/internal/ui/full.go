@@ -541,7 +541,11 @@ func (m fullModel) frame() string {
 			title = "log of " + s.ev.Name
 		}
 	}
-	rail := m.th.Pane("sections", "", strings.Join(m.rail(lo.railW-4), "\n"), lo.railW, lo.railH)
+	railRows := m.rail(lo.railW - 4)
+	if m.cur >= 0 {
+		railRows = theme.Window(railRows, slices.Index(m.railNames(), m.groups[m.cur].name), lo.railH-2)
+	}
+	rail := m.th.Pane("sections", "", strings.Join(railRows, "\n"), lo.railW, lo.railH)
 	live := m.th.Pane(title, hint, strings.Join(m.paneLines(lo.liveW-4), "\n"), lo.liveW, lo.liveH)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, rail, strings.Repeat(" ", paneGap), live)
 	if lo.stacked {

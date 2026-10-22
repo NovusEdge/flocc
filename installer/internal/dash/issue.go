@@ -1,6 +1,7 @@
 package dash
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -50,7 +51,7 @@ func (m *Model) curRow() (row, bool) {
 // outRows is how many lines the open screen's output pane shows.
 func (m *Model) outRows() int {
 	if m.screen == hostScreen {
-		_, topH, _ := m.hostSplit()
+		_, topH, _, _ := m.hostSplit()
 		return max(m.bodyHeight()-topH-2, 1)
 	}
 	return max(m.bodyHeight()-factsH-2, 1)
@@ -117,12 +118,11 @@ func (m *Model) outputPane(title, hint string, w, h int) string {
 	}
 	lines := m.out.lines
 	if len(lines) == 0 {
-		note := m.out.note
-		if note == "" {
-			note = "nothing yet"
-		}
-		st := m.th.Dim
-		if note != loading && note != shipToSee {
+		note, st := m.out.note, m.th.Dim
+		switch {
+		case note == "":
+			note = cmp.Or(m.out.empty, "nothing yet")
+		case note != loading && note != shipToSee:
 			st = m.th.Warn
 		}
 		lines = []string{st.Render(note)}

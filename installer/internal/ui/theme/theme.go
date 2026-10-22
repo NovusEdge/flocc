@@ -111,6 +111,13 @@ func Inner(w, h int) (iw, ih int) {
 	return max(w-2*MarginX, 1), max(h-2*MarginY, 1)
 }
 
+// Window is the room lines of lines that keep line at in view, centred on it where it can be.
+func Window(lines []string, at, room int) []string {
+	room = max(room, 1)
+	first := max(min(at-room/2, len(lines)-room), 0)
+	return lines[first:min(first+room, len(lines))]
+}
+
 // Screen puts body inside the margin, in exactly h lines.
 func Screen(body string, w, h int) string {
 	iw, ih := Inner(w, h)

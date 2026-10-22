@@ -178,6 +178,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		if m.tooSmall() {
+			m.ask = nil
+		}
 		m.sizePager()
 		return m, nil
 	case outputMsg:
@@ -224,7 +227,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case execDone:
 		cmd := m.startFetch()
 		if msg.err != nil {
-			cmd = tea.Batch(cmd, m.toasts.Show(msg.what+": "+saved.Sanitize(msg.err.Error()), true))
+			cmd = tea.Batch(cmd, m.toasts.Show(saved.Sanitize(msg.what)+": "+saved.Sanitize(msg.err.Error()), true))
 		}
 		return m, cmd
 	case tea.KeyPressMsg:
@@ -264,6 +267,7 @@ func (m *Model) rebuild() {
 		claims := slices.Clone(h.rep.Claims)
 		slices.SortFunc(claims, func(a, b ship.Claim) int { return strings.Compare(a.Issue, b.Issue) })
 		for _, c := range claims {
+			c.Issue = saved.Sanitize(c.Issue)
 			m.rows = append(m.rows, row{host: h.host.Name, claim: c, stale: h.err != ""})
 		}
 	}
@@ -298,9 +302,12 @@ func (m *Model) selected() (row, bool) {
 	return v[m.sel], true
 }
 
+// tooSmall holds when the terminal shows the too-small notice instead of a screen.
+func (m *Model) tooSmall() bool { return m.w < theme.MinW || m.h < theme.MinH }
+
 func (m *Model) View() tea.View {
 	var frame string
-	if m.w < theme.MinW || m.h < theme.MinH {
+	if m.tooSmall() {
 		frame = m.th.TooSmall(m.w, m.h)
 	} else {
 		frame = m.chrome(m.body(), m.bodyHeight())

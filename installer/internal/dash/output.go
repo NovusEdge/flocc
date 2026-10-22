@@ -28,6 +28,7 @@ type outputMsg struct {
 	title string   // "session" or "log"
 	lines []string // sanitised
 	note  string   // shipToSee, an error, or ""
+	empty string   // shown when lines and note are both empty
 }
 
 type outputTick struct{ gen int }
@@ -41,6 +42,7 @@ func oldHost(res host.Result) bool {
 type attempt struct {
 	title string
 	args  []string
+	empty string // what the pane says when the command prints nothing
 }
 
 // fetchOutput runs the attempts in order, going on to the next only after an exit of 3, which
@@ -52,7 +54,7 @@ func fetchOutput(ctx context.Context, src Source, h ship.FleetHost, gen int, tri
 	)
 	msg := outputMsg{gen: gen}
 	for _, a := range tries {
-		msg.title = a.title
+		msg.title, msg.empty = a.title, a.empty
 		if res, err = src.Run(ctx, h, a.args); err != nil || res.Code != 3 {
 			break
 		}
@@ -70,7 +72,7 @@ func fetchOutput(ctx context.Context, src Source, h ship.FleetHost, gen int, tri
 		if msg.note == "" {
 			msg.note = fmt.Sprintf("exit %d", res.Code)
 		}
-	default:
+	case strings.TrimSpace(res.Stdout) != "":
 		for _, l := range strings.Split(strings.TrimRight(res.Stdout, "\n"), "\n") {
 			msg.lines = append(msg.lines, saved.Sanitize(l))
 		}
@@ -78,10 +80,7 @@ func fetchOutput(ctx context.Context, src Source, h ship.FleetHost, gen int, tri
 	return msg
 }
 
-func firstLine(s string) string {
-	l, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
-	return saved.Sanitize(l)
-}
+func firstLine(s string) string { return saved.Sanitize(ship.FirstLine(s)) }
 
 func (m *Model) hostByName(name string) (ship.FleetHost, bool) {
 	for _, h := range m.hosts {
@@ -95,13 +94,13 @@ func (m *Model) hostByName(name string) (ship.FleetHost, bool) {
 // issueOutput is peek, falling back on exit 3 to logs --issue.
 func (m *Model) issueOutput(gen int, h ship.FleetHost, key string, n int) tea.Cmd {
 	return m.fetchCmd(gen, h, []attempt{
-		{"session", []string{"peek", key, "-n", strconv.Itoa(n)}},
-		{"log", []string{"logs", "--issue", key, "-n", strconv.Itoa(n)}},
+		{"session", []string{"peek", key, "-n", strconv.Itoa(n)}, ""},
+		{"log", []string{"logs", "--issue", key, "-n", strconv.Itoa(n)}, "no lines name " + key + " yet"},
 	})
 }
 
 func (m *Model) hostOutput(gen int, h ship.FleetHost, n int) tea.Cmd {
-	return m.fetchCmd(gen, h, []attempt{{"log", []string{"logs", "-n", strconv.Itoa(n)}}})
+	return m.fetchCmd(gen, h, []attempt{{"log", []string{"logs", "-n", strconv.Itoa(n)}, ""}})
 }
 
 func (m *Model) fetchCmd(gen int, h ship.FleetHost, tries []attempt) tea.Cmd {
