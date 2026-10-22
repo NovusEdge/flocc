@@ -558,11 +558,11 @@ func TestShipOpensTheConnectionOnTheTerminalBeforeItsFirstCapture(t *testing.T) 
 	if _, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Target: "root@h", TTY: true, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
-	warm := slices.Index(f.Calls, "interactive: ssh -T root@h true")
+	warm := slices.Index(f.Calls, "interactive: ssh -o ConnectTimeout=10 -T root@h true")
 	if uname := slices.Index(f.Calls, "ssh root@h uname -m"); warm < 0 || uname < warm {
 		t.Fatalf("%v", f.Calls)
 	}
-	f = &stageOK{host.NewFake().On("ssh -O check root@h", 255, "").OnInteractive("ssh -T root@h true", errors.New("exit status 255"))}
+	f = &stageOK{host.NewFake().On("ssh -O check root@h", 255, "").OnInteractive("ssh -o ConnectTimeout=10 -T root@h true", errors.New("exit status 255"))}
 	_, err := ship(context.Background(), f, shipRoot(t), Dest{SSH: "root@h"}, shipOpts{UI: quietUI(), Target: "root@h", TTY: true, Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "could not reach root@h") || f.Ran("ssh root@h uname -m") {
 		t.Fatalf("%v %v", err, f.Calls)
