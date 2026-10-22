@@ -41,6 +41,8 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `status [--json]` | Claims, last tick, usage, disk, Claude login (full, token-only, none or unknown) and GitHub token expiries |
 | `doctor [--json]` | Check config and host setup |
 | `logs [-n N] [-f]` | Print the service log: the journal on systemd hosts, `run.log` otherwise |
+| `logs --issue <key> [-n N]` | Only the service-log lines that name the issue, with a time on systemd hosts. It does not follow, so `-f` is refused |
+| `peek <key> [-n N]` | Print the last N lines (default 40) of the issue's live session. Exits 3 when it has none |
 | `attach <session>` | Attach read-only to an agent's tmux session, such as `ENG-12` or `ENG-12-review` |
 | `release <key> [--keep-worktree] [--accept-tests]` | Clear a claim and kill its session. The issue goes back to Todo. `--accept-tests` approves the tester's files as they stand on the branch and keeps the worktree |
 | `tick` | Run one service tick by hand. It takes the same lock as the timer's ticks |

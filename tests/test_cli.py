@@ -3,6 +3,7 @@ import io
 import json
 import os
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -520,7 +521,78 @@ def test_logs_tails_run_log_on_a_loop_host(host_cfg, tmp_path, monkeypatch):
     assert exc.value.args[0] == ["tail", "-n", "100", str(tmp_path / "state" / "run.log")]
 
 
+def test_logs_issue_prints_only_that_issues_lines(host_cfg, monkeypatch, capsys):
+    monkeypatch.setattr("flocc.status.detect_mode", lambda: "systemd")
+    journal = (
+        "1767225600.5 host flocc[7]: NF-240 started\n"
+        "1767225601.5 host flocc[7]: NF-2400 other\n"
+        "1767225602.5 host flocc[7]: NF-24 other\n"
+        "1767225603.5 host flocc[7]: NF-240 pushed"
+    )
+
+    def run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0, journal + "\n", "")
+
+    monkeypatch.setattr("subprocess.run", run)
+    assert main(["--config", str(host_cfg), "logs", "--issue", "NF-240", "-n", "5"]) == 0
+    stamps = [time.strftime("%H:%M:%S", time.localtime(t)) for t in (1767225600, 1767225603)]
+    assert capsys.readouterr().out == f"{stamps[0]} NF-240 started\n{stamps[1]} NF-240 pushed\n"
+
+
+def test_logs_issue_on_a_loop_host_prints_bare_text(host_cfg, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("flocc.status.detect_mode", lambda: "loop")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "run.log").write_text("NF-240 a\nNF-2400 b\nNF-240 c\n")
+    assert main(["--config", str(host_cfg), "logs", "--issue", "NF-240", "-n", "1"]) == 0
+    assert capsys.readouterr().out == "NF-240 c\n"
+
+
+def test_logs_issue_does_not_follow(host_cfg, capsys):
+    assert main(["--config", str(host_cfg), "logs", "--issue", "NF-240", "-f"]) == 2
+    assert capsys.readouterr().err == "--issue does not follow; drop -f\n"
+
+
 def test_attach_is_read_only_on_the_service_socket(host_cfg):
     with pytest.raises(Exec) as exc:
         main(["--config", str(host_cfg), "attach", "NF-12-review"])
     assert exc.value.args[0] == ["tmux", "-L", "flocc", "attach", "-r", "-t", "NF-12-review"]
+
+
+def _peek_host(host_cfg, monkeypatch, pane, alive=True, claim=True):
+    from dataclasses import replace
+
+    cfg = load(host_cfg)
+    cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    if claim:
+        con = ledger.connect(cfg.ledger_path)
+        ledger.insert_claim(con, replace(make("NF-240"), phase="review"))
+    fake = FakeSessions(
+        alive_names={"NF-240-review"} if alive else set(), panes={"NF-240-review": pane}
+    )
+    monkeypatch.setattr("flocc.sessions.Sessions", lambda: fake)
+    return fake
+
+
+def test_peek_prints_the_session_tail(host_cfg, monkeypatch, capsys):
+    fake = _peek_host(host_cfg, monkeypatch, "one\ntwo\x1b[31m red\nthree\n\n\n  \n")
+    assert main(["--config", str(host_cfg), "peek", "NF-240", "-n", "2"]) == 0
+    assert capsys.readouterr().out == "two [31m red\nthree\n"
+    assert fake.captured == [("NF-240-review", 202)]
+
+
+def test_peek_exits_3_without_a_live_session(host_cfg, monkeypatch, capsys):
+    _peek_host(host_cfg, monkeypatch, "x", alive=False)
+    assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3
+    assert capsys.readouterr().err == "peek: no live session for NF-240\n"
+
+
+def test_peek_exits_3_without_a_claim(host_cfg, monkeypatch, capsys):
+    _peek_host(host_cfg, monkeypatch, "x", claim=False)
+    assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3
+    assert capsys.readouterr().err == "peek: no live session for NF-240\n"
+
+
+def test_peek_exits_3_when_the_session_dies_before_the_capture(host_cfg, monkeypatch, capsys):
+    fake = _peek_host(host_cfg, monkeypatch, "")
+    assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3
+    assert fake.captured
