@@ -215,7 +215,12 @@ func openSession(ctx context.Context, d *deps, name string, rest []string) {
 		if in == nil {
 			in = strings.NewReader("")
 		}
-		d.ui = ui.Open(ctx, sessionMode(d, name, rest), d.out, in, "flocc "+strings.Join(rest[:min(len(rest), 2)], " "))
+		// A handoff-only command's stdout belongs to the remote command, which a pipe may read.
+		out := d.out
+		if handoffOnly(name, rest) {
+			out = d.err
+		}
+		d.ui = ui.Open(ctx, sessionMode(d, name, rest), out, in,"flocc "+strings.Join(rest[:min(len(rest), 2)], " "))
 	}
 	if d.prompt == nil {
 		d.prompt = sessionPrompt{ui.Prompts{S: d.ui}}

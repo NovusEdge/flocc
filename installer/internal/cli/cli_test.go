@@ -92,6 +92,18 @@ func TestAPanicInACommandClosesTheSessionBeforeItGoesOn(t *testing.T) {
 	run(context.Background(), d, []string{"-H", "all", "status", "--json"})
 }
 
+// A forwarded command's stdout is the remote command's, so flocc logs NF-1 | grep gets no rows of ours.
+func TestAHandoffOnlyCommandDrawsItsRowsOnStderr(t *testing.T) {
+	d, out, errb := testDeps(t)
+	d.ui = nil
+	openSession(context.Background(), d, "a", []string{"logs", "NF-1"})
+	d.ui.Step("Find NF-1").Done("flocc-a")
+	d.ui.Close()
+	if out.Len() != 0 || !strings.Contains(errb.String(), "Find NF-1") {
+		t.Fatalf("stdout %q stderr %q", out, errb)
+	}
+}
+
 func TestHelpGoesToStdout(t *testing.T) {
 	for _, arg := range []string{"help", "-h", "--help"} {
 		d, out, _ := testDeps(t)
