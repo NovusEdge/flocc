@@ -721,6 +721,96 @@ def test_a_malformed_idle_file_is_ignored(rt, content):
     assert rt.notifier.sent == []
 
 
+DIALOG = """\
+ Do you want to proceed?
+ > 1. Yes
+   2. No
+NF-1 · ctx 8% · 5h 20% · wk 25%
+"""
+
+
+def stalled(rt, pane=DIALOG):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    rt.sessions.panes["NF-1-test"] = pane
+    return state_dir(rt.cfg, "NF-1")
+
+
+def at(rt, t):
+    rt.now = lambda: t
+
+
+def test_a_screen_unchanged_mid_turn_is_escalated_once_with_its_tail(rt):
+    stalled(rt)
+    supervise(rt, current(rt))
+    at(rt, 100.0 + rt.cfg.stall_escalate_s)
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    (esc,) = rt.notifier.sent
+    assert esc.tier == 2 and esc.waiting and esc.cause == "NF-1:stalled"
+    assert esc.summary.startswith("NF-1-test has shown the same screen for 20 min")
+    assert esc.summary.endswith("```\n Do you want to proceed?\n > 1. Yes\n   2. No\n```")
+    assert "flocc press NF-1 Down Enter" in esc.action
+
+
+def test_a_changing_screen_restarts_the_stall_clock(rt):
+    stalled(rt)
+    supervise(rt, current(rt))
+    at(rt, 100.0 + rt.cfg.stall_escalate_s)
+    rt.sessions.panes["NF-1-test"] = "✻ Running… (20m 1s)\n"
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+def test_a_status_line_rewrite_does_not_restart_the_stall_clock(rt):
+    stalled(rt)
+    supervise(rt, current(rt))
+    rt.sessions.panes["NF-1-test"] = DIALOG.replace("5h 20%", "5h 0%")
+    at(rt, 100.0 + rt.cfg.stall_escalate_s)
+    supervise(rt, current(rt))
+    assert len(rt.notifier.sent) == 1
+
+
+@pytest.mark.parametrize("marker", ["idle", "asking"])
+def test_an_ended_turn_or_open_question_is_not_a_stall(rt, marker):
+    d = stalled(rt)
+    (d / marker).write_text(json.dumps({"at": 100.0 + rt.cfg.stall_escalate_s, "message": "m"}))
+    supervise(rt, current(rt))
+    at(rt, 100.0 + rt.cfg.stall_escalate_s)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+def test_a_still_screen_while_background_agents_run_is_not_a_stall(rt):
+    d = stalled(rt)
+    run = run_id("test", current(rt).started_at)
+    record_session(d, run, 0.0, "test")
+    assert run_gate(agent_call("source-finder"), d, "test", run, 1.0) is None
+    supervise(rt, current(rt))
+    at(rt, 100.0 + rt.cfg.stall_escalate_s)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+def test_a_still_screen_at_a_usage_limit_is_not_a_stall(rt):
+    d = stalled(rt)
+    full = {"used_percentage": 100.0, "resets_at": 4_000_000_000}
+    write_status(d, {"rate_limits": {"five_hour": full, "seven_day": full}})
+    supervise(rt, current(rt))
+    at(rt, 100.0 + rt.cfg.stall_escalate_s)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+def test_a_relaunch_forgets_the_last_screen(rt):
+    d = stalled(rt)
+    supervise(rt, current(rt))
+    assert (d / "pane.json").exists()
+    rt.sessions.alive_names.clear()
+    supervise(rt, current(rt))
+    assert not (d / "pane.json").exists()
+
+
 def test_a_stale_question_is_escalated_once(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")

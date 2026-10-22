@@ -509,7 +509,7 @@ def cmd_status(args) -> int:
     return 0
 
 
-def cmd_peek(args) -> int:
+def _live_session(args):
     from flocc.sessions import Sessions, session_name
     from flocc.status import _read_ledger
 
@@ -518,14 +518,57 @@ def cmd_peek(args) -> int:
     claim = next((c for c in claims if c.issue_key == args.key), None)
     sessions = Sessions()
     name = session_name(claim.issue_key, claim.phase) if claim else None
+    if name and sessions.alive(name):
+        return sessions, name
+    print(f"{args.command}: no live session for {args.key}", file=sys.stderr)
+    return None, None
+
+
+def cmd_peek(args) -> int:
+    sessions, name = _live_session(args)
     # Blank rows below the prompt count toward the capture, so ask for more than N.
-    text = sessions.capture(name, max(args.lines, 1) + 200) if name and sessions.alive(name) else ""
+    text = sessions.capture(name, max(args.lines, 1) + 200) if sessions else ""
     rows = text.rstrip().splitlines()
     if not rows:
-        print(f"peek: no live session for {args.key}", file=sys.stderr)
+        if sessions:
+            print(f"peek: no live session for {args.key}", file=sys.stderr)
         return 3
     for row in rows[-max(args.lines, 1) :]:
         print("".join(c if c.isprintable() else " " for c in row))
+    return 0
+
+
+# Enough to move through and answer any Claude Code dialog. Control keys stay out: C-c and C-d
+# end the Claude session, and a dialog never needs them. Single characters are letters and
+# digits only: tmux reads a lone ";" as a command separator and "-x" as a flag.
+PRESS_KEYS = frozenset(
+    {"Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "Space", "BSpace"}
+)
+
+
+def cmd_press(args) -> int:
+    bad = [k for k in args.keys if k not in PRESS_KEYS and not (len(k) == 1 and k.isalnum())]
+    if bad:
+        allowed = " ".join(sorted(PRESS_KEYS))
+        print(
+            f"press: not a key flocc sends: {' '.join(bad)}; use {allowed}, a letter or a digit",
+            file=sys.stderr,
+        )
+        return 2
+    sessions, name = _live_session(args)
+    if not sessions:
+        return 3
+    sessions.press(name, args.keys)
+    print(f"pressed {' '.join(args.keys)} in {name}; flocc peek {args.key} shows the result")
+    return 0
+
+
+def cmd_say(args) -> int:
+    sessions, name = _live_session(args)
+    if not sessions:
+        return 3
+    sessions.send(name, " ".join(args.text))
+    print(f"sent to {name}; flocc peek {args.key} shows the reply")
     return 0
 
 
@@ -566,7 +609,24 @@ def cmd_permissions(args) -> int:
 def cmd_attach(args) -> int:
     from flocc.sessions import SOCKET
 
-    argv = ["tmux", "-L", SOCKET, "attach", "-r", "-t", args.session]
+    # Typing into an attached pane goes nowhere, so the way out and the way to answer are shown
+    # in tmux's status line, where the attached screen does not cover them.
+    hint = "read-only · Ctrl-b d detaches, the session keeps running · answer with flocc press"
+    print(f"Attaching {args.session} {hint}", file=sys.stderr)
+    argv = [
+        "tmux",
+        "-L",
+        SOCKET,
+        "attach",
+        "-r",
+        "-t",
+        args.session,
+        ";",
+        "display-message",
+        "-d",
+        "15000",
+        hint,
+    ]
     os.execvp(argv[0], argv)
 
 
@@ -611,6 +671,8 @@ COMMANDS = {
     "status": cmd_status,
     "logs": cmd_logs,
     "peek": cmd_peek,
+    "press": cmd_press,
+    "say": cmd_say,
     "permissions": cmd_permissions,
     "attach": cmd_attach,
 }
@@ -685,6 +747,12 @@ def build_parser() -> argparse.ArgumentParser:
     peek = add("peek", "Print the tail of an issue's live session")
     peek.add_argument("key", help="issue key, e.g. NF-12")
     peek.add_argument("-n", dest="lines", type=int, default=40, help="lines to print")
+    press = add("press", "Press keys in an issue's live session, e.g. to answer a dialog")
+    press.add_argument("key", help="issue key, e.g. NF-12")
+    press.add_argument("keys", nargs="+", help="Enter, Escape, Up, Down, Tab, ... or one character")
+    say = add("say", "Type a message into an issue's live session and press Enter")
+    say.add_argument("key", help="issue key, e.g. NF-12")
+    say.add_argument("text", nargs="+", help="the message")
     perms = add("permissions", "Summarise the auto-mode blocks and prompts sessions met")
     perms.add_argument("action", choices=["report"], help="what to show")
     perms.add_argument("--days", type=int, default=7, help="how many days back")

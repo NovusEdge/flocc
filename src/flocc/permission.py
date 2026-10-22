@@ -10,6 +10,14 @@ from flocc.sessions import session_name
 
 LOG = "permissions.jsonl"
 MODEL_SWITCH = "refusal_fallback_preference"
+UNATTENDED = (
+    "Nobody is at this session to approve a permission prompt, so flocc denied it. Do it another"
+    " way that needs no approval, or, if the work cannot go on without it, {ask}."
+)
+# Only implementer and fix sessions have Remote Control, so only there does a question dialog
+# reach the owner; see the escalate skill.
+ASK_APP = "ask the owner with AskUserQuestion"
+ASK_ESCALATE = "escalate with flocc escalate --tier 2 --waiting (see the escalate skill) and stop"
 
 
 def _input(payload: dict) -> dict:
@@ -65,12 +73,27 @@ def handle(
     payload: dict, state: Path, phase: str | None, run: str | None, now: float
 ) -> dict | None:
     line = entry(payload, state, phase, run, now)
+    out = None
     if is_model_switch(payload):
         # Nothing answers this dialog on a host; as an open question it reaches the owner. The
         # Stop hook clears `asking` when the turn ends.
         note_question(state, payload, now)
+    elif payload.get("hook_event_name") == "PermissionRequest" and (
+        payload.get("tool_name") != "AskUserQuestion"
+    ):
+        # A dialog nobody answers holds the session until its wall-clock limit: NF-321's tester
+        # sat 90 minutes on a hook's "ask". AskUserQuestion is left to the dialog because the
+        # gate turns it into an escalation that reaches the owner.
+        line.update(decision="deny", decided_by="flocc", rule="unattended")
+        ask = ASK_APP if phase in ("impl", "fix") else ASK_ESCALATE
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {"behavior": "deny", "message": UNATTENDED.format(ask=ask)},
+            }
+        }
     record(state, line)
-    return None
+    return out
 
 
 def load_entries(state_root: Path, since: float) -> list[dict]:

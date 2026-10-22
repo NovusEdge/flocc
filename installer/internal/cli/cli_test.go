@@ -87,7 +87,7 @@ func testDeps(t *testing.T) (*deps, *bytes.Buffer, *bytes.Buffer) {
 		ui:       ui.New(&ui.Recorder{})}, &out, &errb
 }
 
-func TestBareFloccPrintsHelpAndFails(t *testing.T) {
+func TestBareFloccWithNoHostsPrintsHelpAndFails(t *testing.T) {
 	d, out, errb := testDeps(t)
 	if code := run(context.Background(), d, nil); code != 2 || out.Len() != 0 || !strings.Contains(errb.String(), "Desktop commands:") {
 		t.Fatalf("%d %q %q", code, out, errb)
@@ -111,7 +111,7 @@ func TestBareFloccOnATerminalOpensTheDashboard(t *testing.T) {
 	}
 }
 
-func TestBareFloccStaysPlainWhenAskedOrPiped(t *testing.T) {
+func TestBareFloccPrintsTheFleetStatusWhenAskedForPlainOrPiped(t *testing.T) {
 	for name, set := range map[string]func(*deps){
 		"flag":      func(d *deps) { d.mode = ui.ModePlain },
 		"piped out": func(d *deps) { d.outTTY = func() bool { return false } },
@@ -119,10 +119,22 @@ func TestBareFloccStaysPlainWhenAskedOrPiped(t *testing.T) {
 	} {
 		d, opened := dashDeps(t, "a")
 		set(d)
-		errb := d.err.(*bytes.Buffer)
-		if code := run(context.Background(), d, nil); code != 2 || *opened != 0 || !strings.Contains(errb.String(), "Desktop commands:") {
-			t.Errorf("%s: exit %d, opened %d, %q", name, code, *opened, errb)
+		fleet := 0
+		d.fleet = func(context.Context, ui.Session, []string) int { fleet++; return 0 }
+		if code := run(context.Background(), d, nil); code != 0 || *opened != 0 || fleet != 1 {
+			t.Errorf("%s: exit %d, opened %d, fleet runs %d", name, code, *opened, fleet)
 		}
+	}
+}
+
+func TestBareFloccOffATerminalKeepsTheHostGiven(t *testing.T) {
+	d, opened := dashDeps(t, "a", "b")
+	d.tty = false
+	fleet := 0
+	d.fleet = func(context.Context, ui.Session, []string) int { fleet++; return 0 }
+	run(context.Background(), d, []string{"-H", "a"})
+	if *opened != 0 || fleet != 0 {
+		t.Fatalf("opened %d, fleet runs %d: -H a went to every host", *opened, fleet)
 	}
 }
 

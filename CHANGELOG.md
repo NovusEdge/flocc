@@ -4,6 +4,21 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## Unreleased
+
+A host session no longer waits silently on a dialog nobody is there to answer.
+
+- `flocc permission` denies every permission dialog in a host session, AskUserQuestion excepted,
+  and tells the agent nobody is there to approve, so it finds another way or asks the owner. A
+  hook's "ask" used to hold the session until its wall-clock limit.
+- Each launch marks Claude Code's "Teach auto mode about your environment?" dialog as dismissed
+  in `~/.claude.json`, as its "Don't show again" does.
+- A session whose screen stays the same for `stall_escalate_s` (default 1200) in the middle of a
+  turn is escalated: a needs-decision comment and an ntfy push carrying the pane's last lines.
+- `flocc press NF-12 Down Enter` answers a dialog and `flocc say NF-12 <message>` types into a
+  session. `attach` shows that it is read-only and that Ctrl-b d detaches.
+- Bare `flocc` off a terminal prints every host's status instead of the usage.
+
 ## 0.9.0 (2026-10-22)
 
 The desktop CLI shows what it is doing, and hosts join the tailnet tagged without a browser login.

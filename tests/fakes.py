@@ -16,7 +16,7 @@ class FakeSessions:
 
     def capture(self, name, lines):
         self.captured.append((name, lines))
-        return self.panes[name]
+        return self.panes.get(name, "")
 
     def start(self, name, cwd, argv):
         self.started.append((name, argv))
@@ -31,6 +31,9 @@ class FakeSessions:
 
     def send(self, name, text):
         self.sent.append((name, text))
+
+    def press(self, name, keys):
+        self.sent.append((name, list(keys)))
 
 
 @dataclass
