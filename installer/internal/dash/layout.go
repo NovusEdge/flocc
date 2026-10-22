@@ -57,6 +57,8 @@ func (m *Model) statusLine() string {
 	switch {
 	case m.ask != nil:
 		return m.th.Warn.Render(m.ask.text)
+	case m.editing == filterEdit:
+		return "/" + m.filter + "▏"
 	case m.titleNote != "":
 		return m.th.Dim.Render(m.titleNote)
 	case len(m.notes) > 0:

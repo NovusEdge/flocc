@@ -115,14 +115,21 @@ type Model struct {
 	spin      spinner.Model
 	showKeys  bool
 	titles    map[string]Title
+	asked     map[string]bool // keys with a Titles call out
 	titleNote string
+
+	focus   focus
+	hostSel int
+	cardSel int
+	filter  string
+	editing editKind
 }
 
 func New(ctx context.Context, o Options) *Model {
 	if o.Interval <= 0 {
 		o.Interval = pollEvery
 	}
-	m := &Model{ctx: ctx, opts: o, now: time.Now, w: 80, h: 24, titles: map[string]Title{}}
+	m := &Model{ctx: ctx, opts: o, now: time.Now, w: 80, h: 24, titles: map[string]Title{}, asked: map[string]bool{}}
 	m.command = func(args ...string) *exec.Cmd { return exec.Command(o.Self, args...) }
 	m.th = theme.FromEnv(os.Getenv, true)
 	m.spin = m.th.Spinner()
@@ -179,6 +186,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.apply(msg)
+		return m, m.askTitles()
+	case titlesMsg:
+		m.gotTitles(msg)
 		return m, nil
 	case tick:
 		cmd := m.tickCmd()
@@ -232,25 +242,35 @@ func (m *Model) rebuild() {
 			m.rows = append(m.rows, row{host: h.host.Name, claim: c, stale: h.err != ""})
 		}
 	}
-	if i := slices.IndexFunc(m.rows, func(r row) bool { return [2]string{r.host, r.claim.Issue} == m.selKey }); i >= 0 {
+	m.hostSel = max(min(m.hostSel, len(m.hosts)-1), 0)
+	m.cardSel = max(min(m.cardSel, len(m.cards)-1), 0)
+	m.reselect()
+}
+
+// reselect puts sel back on the remembered row among the visible ones, or keeps it in range.
+func (m *Model) reselect() {
+	v := m.visible()
+	if i := slices.IndexFunc(v, func(r row) bool { return [2]string{r.host, r.claim.Issue} == m.selKey }); i >= 0 {
 		m.sel = i
 	}
-	m.sel = max(min(m.sel, len(m.rows)-1), 0)
+	m.sel = max(min(m.sel, len(v)-1), 0)
 	m.remember()
 }
 
+// remember keeps the old key when nothing is visible, so clearing a filter that matched nothing
+// finds the row again.
 func (m *Model) remember() {
-	m.selKey = [2]string{}
-	if m.sel < len(m.rows) {
-		m.selKey = [2]string{m.rows[m.sel].host, m.rows[m.sel].claim.Issue}
+	if v := m.visible(); m.sel < len(v) {
+		m.selKey = [2]string{v[m.sel].host, v[m.sel].claim.Issue}
 	}
 }
 
 func (m *Model) selected() (row, bool) {
-	if m.sel < 0 || m.sel >= len(m.rows) {
+	v := m.visible()
+	if m.sel < 0 || m.sel >= len(v) {
 		return row{}, false
 	}
-	return m.rows[m.sel], true
+	return v[m.sel], true
 }
 
 func (m *Model) View() tea.View {

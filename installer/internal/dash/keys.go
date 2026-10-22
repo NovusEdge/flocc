@@ -1,6 +1,8 @@
 package dash
 
 import (
+	"slices"
+
 	kb "charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 )
@@ -11,6 +13,14 @@ type execDone struct {
 	err  error
 }
 
+type editKind int
+
+const (
+	notEditing editKind = iota
+	filterEdit
+)
+
+// key sends a key to the first of: the open question, the text being typed, the screen.
 func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
 	if k == "ctrl+c" {
@@ -24,12 +34,32 @@ func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	switch k {
-	case "?":
+	if m.editing != notEditing {
+		return m, m.edit(msg)
+	}
+	if k == "?" {
 		m.showKeys = !m.showKeys
 		return m, nil
 	}
 	return m.fleetKey(k)
+}
+
+// edit takes a key into the text being typed: enter keeps it, esc drops it.
+func (m *Model) edit(msg tea.KeyPressMsg) tea.Cmd {
+	switch k := msg.String(); k {
+	case "enter":
+		m.editing = notEditing
+	case "esc":
+		m.filter, m.editing = "", notEditing
+	case "backspace":
+		if r := []rune(m.filter); len(r) > 0 {
+			m.filter = string(r[:len(r)-1])
+		}
+	default:
+		m.filter += msg.Text
+	}
+	m.reselect()
+	return nil
 }
 
 func (m *Model) fleetKey(k string) (tea.Model, tea.Cmd) {
@@ -40,6 +70,15 @@ func (m *Model) fleetKey(k string) (tea.Model, tea.Cmd) {
 		m.move(-1)
 	case "down", "j":
 		m.move(1)
+	case "tab":
+		m.cycle()
+	case "/":
+		m.editing = filterEdit
+	case "esc":
+		m.filter = ""
+		m.reselect()
+	case "right", "l", "enter":
+		return m, m.open()
 	case "a", "r":
 		if !m.issueActs() {
 			return m, nil
@@ -58,12 +97,45 @@ func (m *Model) fleetKey(k string) (tea.Model, tea.Cmd) {
 // issueActs holds when a and r have an issue to act on.
 func (m *Model) issueActs() bool {
 	_, ok := m.selected()
+	return ok && m.focus == issuesPane
+}
+
+// opens holds when the focused pane has a row to open.
+func (m *Model) opens() bool {
+	switch m.focus {
+	case hostsPane:
+		return len(m.hosts) > 0
+	case cardinalPane:
+		return len(m.cards) > 0
+	}
+	_, ok := m.selected()
 	return ok
 }
 
+// panes are the focus order tab cycles; the cardinal pane is there only with an install.
+func (m *Model) panes() []focus {
+	if len(m.cards) == 0 {
+		return []focus{hostsPane, issuesPane}
+	}
+	return []focus{hostsPane, cardinalPane, issuesPane}
+}
+
+func (m *Model) cycle() {
+	p := m.panes()
+	m.focus = p[(slices.Index(p, m.focus)+1)%len(p)]
+}
+
 func (m *Model) move(by int) {
-	m.sel = max(min(m.sel+by, len(m.rows)-1), 0)
-	m.remember()
+	clamp := func(i, n int) int { return max(min(i+by, n-1), 0) }
+	switch m.focus {
+	case hostsPane:
+		m.hostSel = clamp(m.hostSel, len(m.hosts))
+	case cardinalPane:
+		m.cardSel = clamp(m.cardSel, len(m.cards))
+	default:
+		m.sel = clamp(m.sel, len(m.visible()))
+		m.remember()
+	}
 }
 
 // bar is the current screen's short bindings; a key that does nothing here is dimmed, not hidden.
@@ -71,8 +143,11 @@ func (m *Model) bar() []kb.Binding {
 	t := m.th
 	return []kb.Binding{
 		t.Key(true, "↑↓", "select", "up", "down"),
+		t.Key(true, "tab", "hosts/issues"),
+		t.Key(m.opens(), "→", "open", "right"),
 		t.Key(m.issueActs(), "a", "attach"),
 		t.Key(m.issueActs(), "r", "release"),
+		t.Key(true, "/", "filter"),
 		t.Key(true, "?", "keys"),
 		t.Key(true, "q", "quit"),
 	}
@@ -82,9 +157,9 @@ func (m *Model) bar() []kb.Binding {
 func (m *Model) fullKeys() [][]kb.Binding {
 	t := m.th
 	return [][]kb.Binding{
-		{t.Key(true, "↑↓", "select", "up", "down")},
-		{t.Key(m.issueActs(), "a", "attach"), t.Key(m.issueActs(), "r", "release")},
-		{t.Key(true, "?", "keys"), t.Key(true, "q", "quit")},
+		{t.Key(true, "↑↓", "select", "up", "down"), t.Key(true, "tab", "hosts/issues"), t.Key(m.opens(), "→", "open", "right")},
+		{t.Key(m.issueActs(), "a", "attach"), t.Key(m.issueActs(), "r", "release"), t.Key(true, "/", "filter")},
+		{t.Key(true, "esc", "clear filter"), t.Key(true, "?", "keys"), t.Key(true, "q", "quit")},
 	}
 }
 
