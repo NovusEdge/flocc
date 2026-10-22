@@ -1,25 +1,34 @@
 package dash
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
-// bodyHeight is the inner height less the header, the status line and the key bar, which wraps.
+// keyPanel is the "?" panel's rows, none while it is closed.
+func (m *Model) keyPanel(iw int) []string {
+	if !m.showKeys {
+		return nil
+	}
+	return strings.Split(m.th.KeyHelp(m.fullKeys(), iw), "\n")
+}
+
+// bodyHeight is the inner height less the header, the status line, the key bar (which wraps) and
+// the "?" panel, so every pane of the body keeps its border while the panel is open.
 func (m *Model) bodyHeight() int {
 	iw, ih := theme.Inner(m.w, m.h)
 	bar := strings.Count(m.th.KeyBar(m.bar(), iw), "\n") + 1
-	return max(ih-2-bar, 1)
+	return max(ih-2-bar-len(m.keyPanel(iw)), 1)
 }
 
 // chrome is the header, body, status line and key bar in the margin, with the toast over it. body
-// is cut or padded to bodyH rows; with "?" on, the key panel replaces its bottom rows.
+// is cut or padded to bodyH rows, and the "?" panel sits under it.
 func (m *Model) chrome(body string, bodyH int) string {
 	iw, _ := theme.Inner(m.w, m.h)
 	lines := strings.Split(body, "\n")
@@ -29,18 +38,14 @@ func (m *Model) chrome(body string, bodyH int) string {
 	for len(lines) < bodyH {
 		lines = append(lines, "")
 	}
-	if m.showKeys {
-		help := strings.Split(m.th.KeyHelp(m.fullKeys(), iw), "\n")
-		help = help[:min(len(help), bodyH)]
-		lines = append(lines[:bodyH-len(help)], help...)
-	}
+	lines = append(lines, m.keyPanel(iw)...)
 	out := append([]string{m.header(iw)}, lines...)
 	out = append(out, m.statusLine(), m.th.KeyBar(m.bar(), iw))
 	return m.th.Toast(theme.Screen(strings.Join(out, "\n"), m.w, m.h), m.toasts, m.w)
 }
 
 func (m *Model) header(iw int) string {
-	left := m.th.Title.Render("flocc") + fmt.Sprintf(" %d hosts%s%d issues", len(m.hosts), theme.Sep, len(m.rows))
+	left := m.th.Title.Render("flocc") + " " + steps.Plural(len(m.hosts), "host") + theme.Sep + steps.Plural(len(m.rows), "issue")
 	right := m.th.Dim.Render("loading")
 	switch {
 	case m.fetching:

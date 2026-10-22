@@ -13,6 +13,7 @@ import (
 
 	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
@@ -182,7 +183,7 @@ func (m *Model) hostFacts(h hostState) []string {
 		m.label(w, "disk", m.sev(disk, dv)),
 		m.label(w, "claude", m.sev(login, lv)),
 		m.label(w, "tokens", m.sev(tokens, kv)),
-		m.label(w, "cap", fmt.Sprintf("%d sessions", rep.SessionCap)),
+		m.label(w, "cap", steps.Plural(rep.SessionCap, "session")),
 	}
 	if h.err == "" {
 		return rows

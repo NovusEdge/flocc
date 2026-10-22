@@ -249,6 +249,54 @@ func TestInlineDrawDuringAHandoffDoesNotBlock(t *testing.T) {
 	s.Close()
 }
 
+func quits(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(tea.QuitMsg)
+	return ok
+}
+
+// A reply that lands after the program quit is typed at the shell prompt (`^[]11;rgb:...`).
+func TestInlineCloseWaitsForTheTerminalsReplies(t *testing.T) {
+	now := time.Unix(0, 0)
+	m := newInlineModel(func() time.Time { return now })
+	m, cmd := update(m, closeMsg{})
+	if quits(cmd) {
+		t.Fatal("quit before any reply")
+	}
+	if m, cmd = update(m, kbReply); quits(cmd) {
+		t.Fatal("quit with one reply of two missing")
+	}
+	if _, cmd = update(m, bgReply); !quits(cmd) {
+		t.Fatalf("no quit after both replies: %v", cmd)
+	}
+}
+
+func TestInlineCloseQuitsAtTheDeadlineWithoutReplies(t *testing.T) {
+	now := time.Unix(0, 0)
+	m := newInlineModel(func() time.Time { return now })
+	m, _ = update(m, closeMsg{})
+	if _, cmd := update(m, replyDeadline{}); quits(cmd) {
+		t.Fatal("quit before replyWait")
+	}
+	now = now.Add(replyWait)
+	if _, cmd := update(m, replyDeadline{}); !quits(cmd) {
+		t.Fatal("no quit once replyWait passed")
+	}
+}
+
+func TestInlineFlushesTheInputAfterTheProgramEnds(t *testing.T) {
+	got := flushes(t)
+	in := strings.NewReader("")
+	var out syncBuf
+	s := New(newInline(&out, in, tea.WithWindowSize(80, 24)))
+	s.Close()
+	if len(*got) != 1 || (*got)[0] != in {
+		t.Errorf("flushInput calls = %v, want one on the input", *got)
+	}
+}
+
 type lineWriter func(string)
 
 func (w lineWriter) Write(p []byte) (int, error) {

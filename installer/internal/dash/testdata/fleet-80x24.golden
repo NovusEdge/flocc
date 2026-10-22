@@ -19,5 +19,5 @@
   │ no activity reported                                                     │
   ╰──────────────────────────────────────────────────────────────────────────╯
 
-  ↑↓ select · tab hosts/issues · → open · a attach · r release · / filter
-  ? keys · q quit
+  ↑↓ select · tab panes · → open · a attach · r release · / filter · ? keys
+  q quit

@@ -171,3 +171,43 @@ func TestLogsForAnIssueWithNoLinesNamesIt(t *testing.T) {
 		t.Errorf("frame:\n%s", text(m))
 	}
 }
+
+func TestCountsArePluralised(t *testing.T) {
+	m, _ := newModel(t)
+	rep := report(1, claim("NF-402", "test", "running", 18, 1, 60))
+	rep.SessionCap = 1
+	m.Update(fetched{results: []Result{{Host: ship.FleetHost{Name: "flocc-2"}, Status: rep}}, at: t0})
+	if got := text(m); !strings.Contains(got, "flocc 1 host · 1 issue") {
+		t.Errorf("header:\n%s", got)
+	}
+	openHost(t, m, "flocc-2")
+	if got := squeezed(m); !strings.Contains(got, "cap 1 session") || strings.Contains(got, "1 sessions") {
+		t.Errorf("host facts:\n%s", got)
+	}
+}
+
+func TestOpenHintGoesWithoutAURL(t *testing.T) {
+	m, _ := newModel(t)
+	m.Update(canned())
+	openIssue(t, m, "NF-402")
+	if strings.Contains(text(m), "open in Linear") {
+		t.Errorf("hint shown without a URL:\n%s", text(m))
+	}
+}
+
+func TestTabBarSaysPanes(t *testing.T) {
+	m := goldenModel(t, [2]int{140, 40})
+	if got := text(m); !strings.Contains(got, "tab panes") || strings.Contains(got, "hosts/issues") {
+		t.Errorf("key bar:\n%s", got)
+	}
+}
+
+func TestKeyPanelKeepsEveryPaneBorder(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {140, 40}} {
+		m := goldenModel(t, sz)
+		key(m, "?")
+		if top, bottom := strings.Count(text(m), "╭"), strings.Count(text(m), "╰"); top != bottom {
+			t.Errorf("%v: %d top borders, %d bottom:\n%s", sz, top, bottom, text(m))
+		}
+	}
+}

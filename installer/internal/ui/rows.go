@@ -112,12 +112,19 @@ func TableText(t Table) string {
 }
 
 // CloseText is the record at the end of a session: the to-dos, then the log file.
-func CloseText(todos []string, log string) string {
+func CloseText(todos []string, log string) string { return closeText(todos, log, same) }
+
+// ThemedCloseText is CloseText with each to-do in Warn.
+func ThemedCloseText(todos []string, log string, th theme.Theme) string {
+	return closeText(todos, log, func(s string) string { return th.Warn.Render(s) })
+}
+
+func closeText(todos []string, log string, warn func(string) string) string {
 	var b strings.Builder
 	if len(todos) > 0 {
 		b.WriteString("\nStill yours to do\n")
 		for _, t := range todos {
-			b.WriteString(indent + "• " + t + "\n")
+			b.WriteString(indent + warn("• "+t) + "\n")
 		}
 	}
 	if log != "" {

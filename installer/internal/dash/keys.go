@@ -112,11 +112,15 @@ func (m *Model) fleetKey(k string) (tea.Model, tea.Cmd) {
 		if k == "a" {
 			return m, m.handoff("attach "+r.claim.Issue, "-H", r.host, "attach", r.claim.Issue)
 		}
-		m.ask = &ask{text: "release " + r.claim.Issue + "? y/N", yes: func() tea.Cmd {
-			return m.handoff("release "+r.claim.Issue, "-H", r.host, "release", r.claim.Issue)
-		}}
+		m.askRelease(r)
 	}
 	return m, nil
+}
+
+func (m *Model) askRelease(r row) {
+	m.ask = &ask{text: "release " + r.claim.Issue + "? y/N", yes: func() tea.Cmd {
+		return m.handoff("release "+r.claim.Issue, "-H", r.host, "release", r.claim.Issue)
+	}}
 }
 
 // issueActs holds when a and r have an issue to act on.
@@ -178,7 +182,7 @@ func (m *Model) bar() []kb.Binding {
 	t := m.th
 	return []kb.Binding{
 		t.Key(true, "↑↓", "select", "up", "down"),
-		t.Key(true, "tab", "hosts/issues"),
+		t.Key(true, "tab", "panes"),
 		t.Key(m.opens(), "→", "open", "right"),
 		t.Key(m.issueActs(), "a", "attach"),
 		t.Key(m.issueActs(), "r", "release"),
@@ -195,7 +199,7 @@ func (m *Model) fullKeys() [][]kb.Binding {
 	}
 	t := m.th
 	return [][]kb.Binding{
-		{t.Key(true, "↑↓", "select", "up", "down"), t.Key(true, "tab", "hosts/issues"), t.Key(m.opens(), "→", "open", "right")},
+		{t.Key(true, "↑↓", "select", "up", "down"), t.Key(true, "tab", "panes"), t.Key(m.opens(), "→", "open", "right")},
 		{t.Key(m.issueActs(), "a", "attach"), t.Key(m.issueActs(), "r", "release"), t.Key(true, "/", "filter")},
 		{t.Key(true, "esc", "clear filter"), t.Key(true, "?", "keys"), t.Key(true, "q", "quit")},
 	}

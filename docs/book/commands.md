@@ -135,7 +135,7 @@ The pager scrolls with `j`, `k`, page up and down, `g` and `G`, searches with `/
 
 Keys that do nothing on the current row stay in the key bar, dimmed. An action that fails shows its error at the top right for 4 seconds. Below 60 columns by 20 rows the dashboard says the terminal is too small and only `q` and Ctrl-C work. Panes that sit side by side stack below 100 columns. The colours follow the terminal's background, light or dark.
 
-`a`, `s` and `c` hand the terminal to the child and return to the dashboard when it exits.
+`a`, `s` and `c` hand the terminal to the child, and so does `r` after its `y`. Each returns to the dashboard when the child exits.
 
 ## The fleet table
 

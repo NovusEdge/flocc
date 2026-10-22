@@ -305,6 +305,14 @@ def test_issue_lines_keeps_only_the_lines_naming_the_issue(cfg):
     assert issue_lines(cfg, "NF-240", 1, mode="systemd", run=_journal(*_NAMING)) == got[-1:]
 
 
+def test_a_loop_host_without_run_log_has_no_lines(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, make("NF-1"))
+    assert issue_lines(cfg, "NF-1", 5, mode="loop") == []
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop")
+    assert report["claims"][0]["activity"] == [] and "activity_error" not in report
+
+
 def test_issue_lines_reads_run_log_on_a_loop_host(cfg):
     cfg.state_root.mkdir(parents=True, exist_ok=True)
     log = cfg.state_root / "run.log"

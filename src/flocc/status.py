@@ -127,11 +127,15 @@ def _recent_lines(cfg: Config, mode: str, run) -> list[tuple[int, str]]:
         return [(int(float(m.group(1))), m.group(2)) for m in parsed if m]
     log = cfg.state_root / "run.log"
     # run.log lines carry no timestamp, so they all take the file's last write time.
-    at = int(log.stat().st_mtime)
-    with log.open("rb") as f:
-        f.seek(0, 2)
-        f.seek(max(0, f.tell() - _LOG_TAIL))
-        tail = f.read().decode(errors="replace").splitlines()
+    try:
+        at = int(log.stat().st_mtime)
+        with log.open("rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - _LOG_TAIL))
+            tail = f.read().decode(errors="replace").splitlines()
+    except FileNotFoundError:
+        # A loop host writes run.log on its first tick; before that there is nothing to report.
+        return []
     return [(at, line) for line in tail[-_ACTIVITY_LINES:]]
 
 

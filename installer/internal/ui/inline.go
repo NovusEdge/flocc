@@ -124,7 +124,13 @@ func (m inlineModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.th = withDark(m.th, msg.IsDark())
 		m.spinner.Style = m.th.Accent
 		*m.formDark = m.th.Dark
-		return m.toForm(msg) // a select caches its rendered options until it sees an update
+		next, cmd := m.toForm(msg) // a select caches its rendered options until it sees an update
+		return next.(inlineModel).afterReply(cmd)
+	case tea.KeyboardEnhancementsMsg:
+		next, cmd := m.toForm(msg)
+		return next.(inlineModel).afterReply(cmd)
+	case replyDeadline:
+		return m.closeIfIdle()
 	case drawMsg:
 		return m.draw(msg.e)
 	case promptMsg:
@@ -154,12 +160,20 @@ func (m inlineModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.toForm(msg)
 }
 
-// closeIfIdle ends the program once a requested close has nothing left to print.
+// afterReply retries a close that was waiting for the terminal's replies.
+func (m inlineModel) afterReply(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	next, quit := m.closeIfIdle()
+	return next, tea.Batch(cmd, quit)
+}
+
+// closeIfIdle ends the program once a requested close has nothing left to print and the terminal
+// has answered the startup queries: a reply that lands after the program ends is typed at the
+// shell prompt.
 func (m inlineModel) closeIfIdle() (tea.Model, tea.Cmd) {
-	if m.closing == nil || m.printing > 0 {
+	if m.closing == nil || m.printing > 0 || !m.hold.gate.ready(m.now()) {
 		return m, nil
 	}
-	if text := CloseText(m.closing.todos, m.log); text != "" {
+	if text := ThemedCloseText(m.closing.todos, m.log, m.th); text != "" {
 		return m, tea.Sequence(tea.Println(strings.TrimRight(text, "\n")), tea.Quit)
 	}
 	return m, tea.Quit
@@ -409,6 +423,7 @@ func newInline(out io.Writer, in io.Reader, opts ...tea.ProgramOption) Renderer 
 	go func() {
 		defer close(r.done)
 		r.p.Run()
+		flushInput(in)
 	}()
 	return r
 }

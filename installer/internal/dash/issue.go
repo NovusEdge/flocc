@@ -68,9 +68,7 @@ func (m *Model) issueKey(k string) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		if live {
-			m.ask = &ask{text: "release " + r.claim.Issue + "? y/N", yes: func() tea.Cmd {
-				return m.handoff("release "+r.claim.Issue, "-H", r.host, "release", r.claim.Issue)
-			}}
+			m.askRelease(r)
 		}
 	case "o":
 		if url, open := m.titles[m.cur[1]].URL, m.opts.Open; url != "" && open != nil {
@@ -106,7 +104,11 @@ func (m *Model) issueView() string {
 	if r, ok := m.curRow(); ok {
 		rows = m.issueFacts(r)
 	}
-	facts := m.th.Pane(title, "o open in Linear", strings.Join(rows, "\n"), iw, factsH)
+	hint := ""
+	if m.titles[m.cur[1]].URL != "" {
+		hint = "o open in Linear"
+	}
+	facts := m.th.Pane(title, hint, strings.Join(rows, "\n"), iw, factsH)
 	return facts + "\n" + m.outputPane("session", "L full screen", iw, m.bodyHeight()-factsH)
 }
 

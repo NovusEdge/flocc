@@ -191,7 +191,7 @@ func (s Summary) Rows() []ui.Event {
 		case days < 0:
 			rows = append(rows, row(name, ui.Pending, "expired "+exp.Format("2006-01-02")))
 		default:
-			rows = append(rows, row(name, ui.Done, fmt.Sprintf("expires %s (%s)", exp.Format("2006-01-02"), plural(days, "day"))))
+			rows = append(rows, row(name, ui.Done, fmt.Sprintf("expires %s (%s)", exp.Format("2006-01-02"), Plural(days, "day"))))
 		}
 	}
 	switch {

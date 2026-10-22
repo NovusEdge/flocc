@@ -42,6 +42,17 @@ func TestThemedRowPlainEqualsRowText(t *testing.T) {
 	}
 }
 
+func TestThemedCloseTextDrawsTodosInWarn(t *testing.T) {
+	th := theme.New(true)
+	got := ThemedCloseText([]string{"run flocc ship"}, "/tmp/x.log", th)
+	if want := th.Warn.Render("• run flocc ship"); !strings.Contains(got, want) {
+		t.Errorf("ThemedCloseText %q lacks %q", got, want)
+	}
+	if g, want := ThemedCloseText([]string{"a"}, "l", theme.Plain), CloseText([]string{"a"}, "l"); g != want {
+		t.Errorf("ThemedCloseText(Plain) = %q, CloseText = %q", g, want)
+	}
+}
+
 func TestRowText(t *testing.T) {
 	cases := []struct {
 		e     Event
