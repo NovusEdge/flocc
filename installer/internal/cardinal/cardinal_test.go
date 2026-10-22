@@ -330,6 +330,30 @@ func TestStatusNamesATailscaleCheckInsteadOfSetup(t *testing.T) {
 	}
 }
 
+func TestStatusOnATerminalConnectsFirstSoACheckURLShowsAtOnce(t *testing.T) {
+	f := host.NewFake()
+	d, rec := testDeps(t, f)
+	d.TTY = true
+	status := d.user(card, false, setupPath+" --phase cardinal-status").String()
+	f.On(status, 0, `{"schema":1,"user":"cardinal","unit":"active","login":"full"}`)
+	d.status(context.Background(), card)
+	connect, ran := -1, -1
+	for i, c := range f.Calls {
+		if strings.HasPrefix(c, "interactive: ssh") && strings.HasSuffix(c, card.Dest()+" true") {
+			connect = i
+		}
+		if c == status {
+			ran = i
+		}
+	}
+	if connect < 0 || ran < connect {
+		t.Fatalf("calls %q", f.Calls)
+	}
+	if d.UI.Failed() {
+		t.Fatalf("rows %+v", rec.Rows())
+	}
+}
+
 func TestAttachWriteWarnsAboutCtrlDBeforeTheHandoff(t *testing.T) {
 	f := host.NewFake()
 	o := &orderRenderer{}
