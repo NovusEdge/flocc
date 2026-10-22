@@ -157,7 +157,7 @@ func TestEgressNamesTheFirewallWhenAptFails(t *testing.T) {
 		On("incus exec flocc-a --env DEBIAN_FRONTEND=noninteractive -- apt-get update -q", 100, "Could not resolve deb.debian.org")
 	e, _ := testEnv(f)
 	err := Egress{}.Apply(context.Background(), e)
-	if err == nil || !strings.Contains(err.Error(), "docs/vm-setup.md") {
+	if err == nil || !strings.Contains(err.Error(), "docs/book/setup/host-create.md") {
 		t.Fatal(err)
 	}
 }
@@ -177,7 +177,7 @@ func TestEgressReportsACancelDuringApt(t *testing.T) {
 
 func TestEgressCheckFailureNamesTheDocs(t *testing.T) {
 	e, _ := testEnv(host.NewFake().On(curlCheck, 7, "").On("incus exec flocc-a -- sh -c command -v curl", 0, "/usr/bin/curl\n"))
-	if ok, detail, _ := (Egress{}).Check(context.Background(), e); ok || !strings.Contains(detail, "docs/vm-setup.md") {
+	if ok, detail, _ := (Egress{}).Check(context.Background(), e); ok || !strings.Contains(detail, "docs/book/setup/host-create.md") {
 		t.Fatalf("%v %q", ok, detail)
 	}
 }
