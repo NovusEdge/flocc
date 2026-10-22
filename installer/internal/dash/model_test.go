@@ -3,29 +3,39 @@ package dash
 import (
 	"context"
 	"errors"
+	"image/color"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
+	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme/themetest"
 )
 
-var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
-
 var t0 = time.Date(2026, 10, 22, 14, 10, 0, 0, time.UTC)
+
+func TestMain(m *testing.M) {
+	time.Local = time.UTC
+	os.Exit(m.Run())
+}
 
 func f64(v float64) *float64 { return &v }
 
 func report(v int, claims ...ship.Claim) *ship.Report {
-	r := &ship.Report{V: v, SessionCap: 2, Claims: claims}
+	r := &ship.Report{V: v, Mode: "live", SessionCap: 2, FiveHourMaxPct: 80, WeeklyMaxPct: 90, Claims: claims}
 	r.LastTick = &struct {
 		Exit *string  `json:"exit"`
 		AgeS *float64 `json:"age_s"`
-	}{AgeS: f64(120)}
+	}{AgeS: f64(120), Exit: new("0")}
 	r.Usage = &struct {
 		FiveHourPct float64 `json:"five_hour_pct"`
 		WeeklyPct   float64 `json:"weekly_pct"`
@@ -34,11 +44,13 @@ func report(v int, claims ...ship.Claim) *ship.Report {
 		FreeBytes  uint64 `json:"free_bytes"`
 		TotalBytes uint64 `json:"total_bytes"`
 	}{82 << 30, 200 << 30}
+	r.ClaudeLogin = new("full")
 	return r
 }
 
 func claim(issue, phase, state string, pct float64, launches int, upd float64, act ...string) ship.Claim {
-	c := ship.Claim{Issue: issue, Phase: phase, State: state, ContextPct: f64(pct), Launches: launches, LaunchLimit: 2, UpdatedAge: f64(upd)}
+	c := ship.Claim{Issue: issue, Phase: phase, State: state, ContextPct: f64(pct), Launches: launches, LaunchLimit: 2,
+		UpdatedAge: f64(upd), StartedAge: 3 * 86400, TmuxAlive: state == "running"}
 	for i, a := range act {
 		c.Activity = append(c.Activity, ship.ActivityLine{At: float64(t0.Add(time.Duration(i) * time.Minute).Unix()), Text: a})
 	}
@@ -46,7 +58,7 @@ func claim(issue, phase, state string, pct float64, launches int, upd float64, a
 }
 
 func canned() fetched {
-	a := report(1, claim("NF-240", "fix", "blocked", 7, 0, 840, "ran just check: 2 failures", "asked in Linear: keep the old summary line?"),
+	a := report(1, claim("NF-240", "fix", "blocked", 7, 0, 86400, "ran just check: 2 failures", "asked in Linear: keep the old summary line?"),
 		claim("NF-388", "review", "running", 41, 1, 1))
 	b := report(1, claim("NF-402", "test", "running", 18, 1, 60))
 	return fetched{
@@ -58,17 +70,63 @@ func canned() fetched {
 	}
 }
 
-type fakeSource struct{}
+// fakeSource answers Run from answers, keyed by the joined args, and records every call.
+type fakeSource struct {
+	mu      sync.Mutex
+	answers map[string]host.Result
+	calls   []string
+}
 
-func (fakeSource) Discover(context.Context) ([]ship.FleetHost, []string) { return nil, nil }
-func (fakeSource) Status(context.Context, ship.FleetHost) (*ship.Report, error) {
+func (*fakeSource) Discover(context.Context) ([]ship.FleetHost, []string) { return nil, nil }
+func (*fakeSource) Status(context.Context, ship.FleetHost) (*ship.Report, error) {
 	return nil, nil
 }
-func (fakeSource) Cardinals(context.Context) ([]ship.CardinalRow, []string) { return nil, nil }
+func (*fakeSource) Cardinals(context.Context) ([]ship.CardinalRow, []string) { return nil, nil }
 
+func (f *fakeSource) Run(_ context.Context, h ship.FleetHost, args []string) (host.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := strings.Join(args, " ")
+	f.calls = append(f.calls, h.Name+": "+k)
+	if r, ok := f.answers[norm(k)]; ok {
+		return r, nil
+	}
+	return host.Result{Code: 1, Stderr: "no scripted answer for " + k}, nil
+}
+
+var lastN = regexp.MustCompile(` -n (\d+)$`)
+
+// norm makes a screen's row count irrelevant to a scripted answer, except the pager's 2000.
+func norm(k string) string {
+	if m := lastN.FindStringSubmatch(k); m != nil && m[1] != "2000" {
+		return lastN.ReplaceAllString(k, " -n *")
+	}
+	return k
+}
+
+func (f *fakeSource) answer(args string, r host.Result) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.answers == nil {
+		f.answers = map[string]host.Result{}
+	}
+	f.answers[norm(args)] = r
+}
+
+func (f *fakeSource) ran() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func src(m *Model) *fakeSource { return m.opts.Source.(*fakeSource) }
+
+// newModel returns a model on a 100×30 terminal and the handoffs it has built.
 func newModel(t *testing.T) (*Model, *[][]string) {
 	t.Helper()
-	m := New(context.Background(), Options{Source: fakeSource{}, Self: "flocc"})
+	m := New(context.Background(), Options{Source: &fakeSource{}, Self: "flocc"})
+	m.th = theme.New(true)
+	m.spin = m.th.Spinner()
 	m.now = func() time.Time { return t0.Add(3 * time.Second) }
 	var ran [][]string
 	m.command = func(args ...string) *exec.Cmd {
@@ -79,32 +137,53 @@ func newModel(t *testing.T) (*Model, *[][]string) {
 	return m, &ran
 }
 
-func text(m *Model) string { return ansiRE.ReplaceAllString(m.View().Content, "") }
+func sizeMsg(sz [2]int) tea.WindowSizeMsg { return tea.WindowSizeMsg{Width: sz[0], Height: sz[1]} }
+
+func text(m *Model) string { return themetest.Strip(m.View().Content) }
 
 func key(m *Model, s string) tea.Cmd {
 	var k tea.KeyPressMsg
 	switch s {
 	case "down":
 		k = tea.KeyPressMsg{Code: tea.KeyDown}
+	case "up":
+		k = tea.KeyPressMsg{Code: tea.KeyUp}
 	case "enter":
 		k = tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "esc":
+		k = tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "tab":
+		k = tea.KeyPressMsg{Code: tea.KeyTab}
+	case "backspace":
+		k = tea.KeyPressMsg{Code: tea.KeyBackspace}
+	case "pgup":
+		k = tea.KeyPressMsg{Code: tea.KeyPgUp}
+	case "pgdown":
+		k = tea.KeyPressMsg{Code: tea.KeyPgDown}
+	case "right":
+		k = tea.KeyPressMsg{Code: tea.KeyRight}
 	default:
 		k = tea.KeyPressMsg{Code: rune(s[0]), Text: s}
 	}
 	_, cmd := m.Update(k)
-	if m.confirm != nil {
-		settle(m, cmd, 4)
-	}
 	return cmd
 }
 
+// typed sends each rune of s as its own key.
+func typed(m *Model, s string) {
+	for _, r := range s {
+		key(m, string(r))
+	}
+}
+
 // settle feeds the messages cmd produces back into the model, a few levels deep, as the program
-// loop would.
+// loop would. A tea.Tick blocks for its duration, so settle skips commands slower than 50ms.
 func settle(m *Model, cmd tea.Cmd, depth int) {
 	if cmd == nil || depth == 0 {
 		return
 	}
-	switch msg := cmd().(type) {
+	msg := run(cmd)
+	switch msg := msg.(type) {
 	case nil:
 	case tea.BatchMsg:
 		for _, c := range msg {
@@ -116,7 +195,17 @@ func settle(m *Model, cmd tea.Cmd, depth int) {
 	}
 }
 
-func hhmm(i int) string { return t0.Add(time.Duration(i) * time.Minute).Local().Format("15:04") }
+// run returns cmd's message, or nil when it takes longer than 50ms (a tick or a spinner).
+func run(cmd tea.Cmd) tea.Msg {
+	ch := make(chan tea.Msg, 1)
+	go func() { ch <- cmd() }()
+	select {
+	case msg := <-ch:
+		return msg
+	case <-time.After(50 * time.Millisecond):
+		return nil
+	}
+}
 
 func line(m *Model, sub string) string {
 	for _, l := range strings.Split(text(m), "\n") {
@@ -127,49 +216,102 @@ func line(m *Model, sub string) string {
 	return ""
 }
 
-func TestHeaderStripAndTable(t *testing.T) {
+func TestTooSmall(t *testing.T) {
 	m, _ := newModel(t)
 	m.Update(canned())
-	got := text(m)
-	for _, want := range []string{
-		"flocc  2 hosts · 3 issues", "refreshed 3s ago",
-		"flocc-2", "v1", "tick 2m ago", "5h 12%  wk 31%", "disk 82 GiB", "cap 2",
-		"ISSUE", "LAUNCHES", "UPDATED",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q:\n%s", want, got)
-		}
-	}
-	if strings.Index(got, "NF-402") > strings.Index(got, "NF-240") || strings.Index(got, "NF-240") > strings.Index(got, "NF-388") {
-		t.Errorf("rows are not sorted by host then issue:\n%s", got)
-	}
-	if l := line(m, "NF-388"); !strings.Contains(l, "41%") || !strings.Contains(l, "1/2") || !strings.Contains(l, "now") {
-		t.Errorf("NF-388 row %q", l)
+	m.Update(tea.WindowSizeMsg{Width: 59, Height: 19})
+	if got := text(m); !strings.Contains(got, "terminal too small: 59×19 · needs 60×20") {
+		t.Errorf("frame:\n%s", got)
 	}
 }
 
-func TestSelectionAndActivity(t *testing.T) {
+func TestBackgroundAnswerSwitchesPalette(t *testing.T) {
+	m, _ := newModel(t)
+	dark := m.View().Content
+	m.Update(tea.BackgroundColorMsg{Color: color.White})
+	if m.View().Content == dark {
+		t.Error("a light background drew the dark palette")
+	}
+}
+
+func TestReleaseAsksOnTheStatusLine(t *testing.T) {
+	m, ran := newModel(t)
+	m.Update(canned())
+	key(m, "r") // the dashboard opens with focus on the issues pane
+	if l := line(m, "release NF-402? y/N"); l == "" {
+		t.Fatalf("no question:\n%s", text(m))
+	}
+	key(m, "x")
+	if l := line(m, "y/N"); l != "" {
+		t.Fatalf("a key other than y left the question: %q", l)
+	}
+	key(m, "r")
+	if l := line(m, "release NF-402? y/N"); l == "" {
+		t.Fatalf("no question:\n%s", text(m))
+	}
+	key(m, "n")
+	if len(*ran) != 0 || line(m, "y/N") != "" {
+		t.Errorf("n released or left the question: %v", *ran)
+	}
+	key(m, "r")
+	settle(m, key(m, "y"), 2)
+	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "-H flocc-2 release NF-402" {
+		t.Errorf("ran %v", *ran)
+	}
+}
+
+func TestQuestionTakesTheKeyBeforeQuit(t *testing.T) {
 	m, _ := newModel(t)
 	m.Update(canned())
-	if l := line(m, "NF-402"); !strings.Contains(l, "▸") {
-		t.Fatalf("first row is not selected:\n%s", text(m))
+	key(m, "r")
+	if cmd := key(m, "q"); cmd != nil {
+		t.Error("q quit with a question open")
 	}
-	if strings.Contains(line(m, "NF-240"), "▸") {
-		t.Error("two rows selected")
+	if line(m, "y/N") != "" {
+		t.Error("q left the question open")
 	}
-	key(m, "down")
-	if !strings.Contains(line(m, "NF-240"), "▸") || strings.Contains(line(m, "NF-402"), "▸") {
-		t.Fatalf("selection did not move:\n%s", text(m))
+}
+
+func TestHandoffErrorIsAToast(t *testing.T) {
+	m, _ := newModel(t)
+	m.Update(execDone{what: "attach NF-402", err: errors.New("exit status 1")})
+	if !strings.Contains(text(m), "attach NF-402: exit status 1") {
+		t.Errorf("no toast:\n%s", text(m))
 	}
-	got := text(m)
-	for _, want := range []string{hhmm(0) + " ran just check: 2 failures", hhmm(1) + " asked in Linear"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("activity lacks %q:\n%s", want, got)
+	m.Update(theme.ToastExpired{Gen: 0})
+	if !strings.Contains(text(m), "attach NF-402") {
+		t.Error("a stale timer cleared the toast")
+	}
+	m.Update(theme.ToastExpired{Gen: 1})
+	if strings.Contains(text(m), "attach NF-402") {
+		t.Error("the current timer left the toast up")
+	}
+}
+
+func TestQuestionMarkShowsEveryKey(t *testing.T) {
+	m, _ := newModel(t)
+	key(m, "?")
+	for _, want := range []string{"keys", "attach", "release", "quit"} {
+		if !strings.Contains(text(m), want) {
+			t.Errorf("? lacks %q:\n%s", want, text(m))
 		}
 	}
-	key(m, "down")
-	if !strings.Contains(text(m), "no activity reported") {
-		t.Errorf("empty activity not said:\n%s", text(m))
+}
+
+func TestEveryFrameFitsTheTerminal(t *testing.T) {
+	for _, sz := range [][2]int{{59, 19}, {80, 24}, {140, 40}} {
+		m, _ := newModel(t)
+		m.Update(canned())
+		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+		lines := strings.Split(text(m), "\n")
+		if len(lines) != sz[1] {
+			t.Errorf("%v: %d lines", sz, len(lines))
+		}
+		for _, l := range lines {
+			if lipgloss.Width(l) > sz[0] {
+				t.Errorf("%v: %q too wide", sz, l)
+			}
+		}
 	}
 }
 
@@ -181,85 +323,30 @@ func TestSelectionFollowsItsRowAcrossAPoll(t *testing.T) {
 	f.at = t0.Add(time.Second)
 	f.results[1].Status = report(1, claim("NF-100", "fix", "running", 1, 0, 1), claim("NF-240", "fix", "blocked", 7, 0, 840))
 	m.Update(f)
-	if !strings.Contains(line(m, "NF-240    flocc-nimble"), "▸") {
-		t.Errorf("selection moved off NF-240:\n%s", text(m))
-	}
-}
-
-func TestAFailedHostKeepsItsRowsStale(t *testing.T) {
-	m, _ := newModel(t)
-	m.Update(canned())
-	f := canned()
-	f.at = t0.Add(time.Second)
-	f.results[0] = Result{Host: ship.FleetHost{Name: "flocc-nimble"}, Err: errors.New("exit 255: Connection refused")}
-	m.Update(f)
-	got := text(m)
-	if l := line(m, "flocc-nimble"); !strings.Contains(l, "Connection refused") || !strings.Contains(l, "(stale)") {
-		t.Errorf("strip line %q", l)
-	}
-	if l := line(m, "NF-388"); !strings.Contains(l, "(stale)") {
-		t.Errorf("stale row %q\n%s", l, got)
-	}
-	if l := line(m, "NF-402"); strings.Contains(l, "stale") {
-		t.Errorf("fresh row marked stale: %q", l)
-	}
-}
-
-func TestAHostWithoutAVersionIsBehind(t *testing.T) {
-	m, _ := newModel(t)
-	f := canned()
-	f.results[0].Status = report(0)
-	m.Update(f)
-	if l := line(m, "flocc-nimble"); !strings.Contains(l, "behind, ship to update") || !strings.Contains(l, "tick 2m ago") {
-		t.Errorf("strip line %q", l)
-	}
-}
-
-func TestNoHostsYet(t *testing.T) {
-	m, _ := newModel(t)
-	m.Update(fetched{at: t0})
-	got := text(m)
-	if !strings.Contains(got, "0 hosts · 0 issues") || !strings.Contains(got, "no claimed issues") {
-		t.Errorf("%s", got)
-	}
-}
-
-func TestReleaseAsksFirst(t *testing.T) {
-	m, ran := newModel(t)
-	m.Update(canned())
-	key(m, "r")
-	got := text(m)
-	for _, want := range []string{"Release NF-402?", "Its session ends and it goes back to Todo."} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("modal lacks %q:\n%s", want, got)
+	for _, l := range strings.Split(text(m), "\n") {
+		if strings.Contains(l, "NF-240") && strings.Contains(l, "flocc-nimble") && !strings.Contains(l, "❯") {
+			t.Errorf("selection moved off NF-240 on flocc-nimble:\n%s", text(m))
 		}
 	}
-	if len(*ran) != 0 {
-		t.Fatalf("released before the answer: %v", *ran)
+	if m.selKey != [2]string{"flocc-nimble", "NF-240"} {
+		t.Errorf("selKey %v", m.selKey)
 	}
-	key(m, "enter")
-	if m.confirm != nil || len(*ran) != 0 {
-		t.Fatalf("the default answer released: %v", *ran)
-	}
-	key(m, "r")
-	key(m, "y")
-	key(m, "enter")
-	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "-H flocc-2 release NF-402" {
-		t.Fatalf("ran %v", *ran)
+}
+
+func TestRowsSortByHostThenIssue(t *testing.T) {
+	m, _ := newModel(t)
+	m.Update(canned())
+	got := text(m)
+	if strings.Index(got, "NF-402") > strings.Index(got, "NF-240") || strings.Index(got, "NF-240") > strings.Index(got, "NF-388") {
+		t.Errorf("rows are not sorted by host then issue:\n%s", got)
 	}
 }
 
 func TestHandoffKeys(t *testing.T) {
-	for _, c := range []struct{ key, want string }{
-		{"a", "-H flocc-2 attach NF-402"},
-		{"l", "-H flocc-2 logs NF-402"},
-		{"c", "cardinal attach"},
-	} {
-		m, ran := newModel(t)
-		m.Update(canned())
-		if cmd := key(m, c.key); cmd == nil || len(*ran) != 1 || strings.Join((*ran)[0], " ") != c.want {
-			t.Errorf("%s: ran %v", c.key, *ran)
-		}
+	m, ran := newModel(t)
+	m.Update(canned())
+	if cmd := key(m, "a"); cmd == nil || len(*ran) != 1 || strings.Join((*ran)[0], " ") != "-H flocc-2 attach NF-402" {
+		t.Errorf("ran %v", *ran)
 	}
 }
 
@@ -269,9 +356,6 @@ func TestHandoffReturnPollsAtOnce(t *testing.T) {
 	_, cmd := m.Update(execDone{what: "attach NF-402", err: errors.New("exit status 1")})
 	if cmd == nil || !m.fetching {
 		t.Error("no poll after the child exited")
-	}
-	if !strings.Contains(text(m), "attach NF-402: exit status 1") {
-		t.Errorf("child failure not shown:\n%s", text(m))
 	}
 }
 

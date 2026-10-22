@@ -1,0 +1,23 @@
+
+  flocc 2 hosts · 3 issues                                    refreshed 3s ago
+  ╭─ NF-240 · Fix the poller tick ──────────────────────── o open in Linear ─╮
+  │ phase    test ✓ → impl ✓ → review ✓ → fix ✗                              │
+  │ state    blocked 24h                                                     │
+  │ session  none · context 7% · launches 0/2                                │
+  │ host     flocc-nimble · started 3d ago · updated 24h ago                 │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  ╭─ session ──────────────────────────────────────────────── L full screen ─╮
+  │ ❯ /review                                                                │
+  │ reading the diff of src/flocc/poller.py                                  │
+  │ ran just check: 2 failures                                               │
+  │ waiting for the owner to answer in Linear                                │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+
+  a attach · r release · o open · L pager · esc back · ? keys

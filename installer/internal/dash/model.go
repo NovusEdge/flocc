@@ -12,36 +12,42 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
-	"github.com/NovusEdge/flocc/installer/internal/ui"
+	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
-const (
-	pollEvery     = 10 * time.Second
-	activityLines = 5
-	hintsShort    = "↑↓ select · a attach · l logs · r release · c cardinal · ? keys · q quit"
-	hintsLong     = "a opens the issue's session · l its log · r sends it back to Todo · c attaches to cardinal, read-only"
-)
+const pollEvery = 10 * time.Second
 
 // Source is the fleet the dashboard polls. ship.Source is the real one.
 type Source interface {
 	Discover(context.Context) ([]ship.FleetHost, []string)
 	Status(context.Context, ship.FleetHost) (*ship.Report, error)
 	Cardinals(context.Context) ([]ship.CardinalRow, []string)
+	Run(ctx context.Context, h ship.FleetHost, args []string) (host.Result, error)
 }
+
+// Title is an issue's Linear title and page. A zero Title is a key Linear did not return.
+type Title struct{ Title, URL string }
 
 type Options struct {
 	Source Source
-	// Self is the flocc binary that attach, logs, release and cardinal attach re-run.
+	// Self is the flocc binary that attach, release, ship and cardinal attach re-run.
 	Self string
 	In   io.Reader
 	Out  io.Writer
 	// Interval defaults to pollEvery.
 	Interval time.Duration
+	// Titles looks up Linear titles; nil, or an error, leaves the screens showing keys alone.
+	Titles func(ctx context.Context, keys []string) (map[string]Title, error)
+	// Open opens a URL in the browser.
+	Open func(url string)
+	// ShipBlock is why ship cannot run from here ("" when it can).
+	ShipBlock string
 }
 
 // hostState keeps the last good report of a host across polls that fail.
@@ -67,6 +73,22 @@ type fetched struct {
 
 type tick time.Time
 
+type screen int
+
+const (
+	fleetScreen screen = iota
+	issueScreen
+	hostScreen
+	cardinalScreen
+	pagerScreen
+)
+
+// ask is the open y/N question on the status line.
+type ask struct {
+	text string
+	yes  func() tea.Cmd
+}
+
 type Model struct {
 	ctx  context.Context
 	opts Options
@@ -86,23 +108,45 @@ type Model struct {
 	startedAt time.Time
 	fetchedAt time.Time
 
-	confirm  *ui.Confirm
-	confirmN row
-	showKeys bool
-	notice   string
+	th        theme.Theme
+	screen    screen
+	toasts    theme.Toasts
+	ask       *ask
+	spin      spinner.Model
+	showKeys  bool
+	titles    map[string]Title
+	asked     map[string]bool // keys with a Titles call out
+	titleNote string
+
+	focus   focus
+	hostSel int
+	cardSel int
+	filter  string
+	editing editKind
+
+	outGen int       // bumped on entering or leaving a screen with output; a message of another gen is dropped
+	out    outputMsg // the open screen's output pane
+	cur    [2]string // host and issue of the open detail screen; the host alone for the host screen
+	pager  pagerState
+
+	docGen     int // doctor runs started; an answer of another number is dropped
+	docRunning bool
+	doctor     doctorMsg
 }
 
 func New(ctx context.Context, o Options) *Model {
 	if o.Interval <= 0 {
 		o.Interval = pollEvery
 	}
-	m := &Model{ctx: ctx, opts: o, now: time.Now, w: 80, h: 24}
+	m := &Model{ctx: ctx, opts: o, now: time.Now, w: 80, h: 24, titles: map[string]Title{}, asked: map[string]bool{}}
 	m.command = func(args ...string) *exec.Cmd { return exec.Command(o.Self, args...) }
+	m.th = theme.FromEnv(os.Getenv, true)
+	m.spin = m.th.Spinner()
 	return m
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.startFetch(), m.tickCmd())
+	return tea.Batch(m.startFetch(), m.tickCmd(), tea.RequestBackgroundColor, m.spin.Tick)
 }
 
 func (m *Model) tickCmd() tea.Cmd {
@@ -134,12 +178,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		m.sizePager()
+		return m, nil
+	case outputMsg:
+		if msg.gen != m.outGen {
+			return m, nil
+		}
+		return m, m.gotOutput(msg)
+	case doctorMsg:
+		if msg.gen == m.docGen {
+			m.doctor, m.docRunning = msg, false
+		}
+		return m, nil
+	case outputTick:
+		if msg.gen != m.outGen {
+			return m, nil
+		}
+		return m, m.refresh()
+	case tea.BackgroundColorMsg:
+		m.th = m.th.WithDark(msg.IsDark())
+		m.spin.Style = m.th.Accent
+		return m, nil
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+	case theme.ToastExpired:
+		m.toasts.Expire(msg)
 		return m, nil
 	case fetched:
 		if msg.at.Before(m.fetchedAt) {
 			return m, nil
 		}
 		m.apply(msg)
+		return m, m.askTitles()
+	case titlesMsg:
+		m.gotTitles(msg)
 		return m, nil
 	case tick:
 		cmd := m.tickCmd()
@@ -148,17 +222,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	case execDone:
-		m.notice = ""
+		cmd := m.startFetch()
 		if msg.err != nil {
-			m.notice = fmt.Sprintf("%s: %v", msg.what, msg.err)
+			cmd = tea.Batch(cmd, m.toasts.Show(msg.what+": "+saved.Sanitize(msg.err.Error()), true))
 		}
-		return m, m.startFetch()
+		return m, cmd
 	case tea.KeyPressMsg:
-		if m.confirm == nil {
-			return m.key(msg)
-		}
+		return m.key(msg)
 	}
-	return m.toConfirm(msg)
+	return m, nil
 }
 
 // apply folds a poll into the state. A host that failed keeps its last report, which its rows
@@ -195,228 +267,61 @@ func (m *Model) rebuild() {
 			m.rows = append(m.rows, row{host: h.host.Name, claim: c, stale: h.err != ""})
 		}
 	}
-	if i := slices.IndexFunc(m.rows, func(r row) bool { return [2]string{r.host, r.claim.Issue} == m.selKey }); i >= 0 {
+	m.hostSel = max(min(m.hostSel, len(m.hosts)-1), 0)
+	m.cardSel = max(min(m.cardSel, len(m.cards)-1), 0)
+	m.reselect()
+}
+
+// reselect puts sel back on the remembered row among the visible ones, or keeps it in range.
+func (m *Model) reselect() {
+	v := m.visible()
+	if i := slices.IndexFunc(v, func(r row) bool { return [2]string{r.host, r.claim.Issue} == m.selKey }); i >= 0 {
 		m.sel = i
 	}
-	m.sel = max(min(m.sel, len(m.rows)-1), 0)
+	m.sel = max(min(m.sel, len(v)-1), 0)
 	m.remember()
 }
 
+// remember keeps the old key when nothing is visible, so clearing a filter that matched nothing
+// finds the row again.
 func (m *Model) remember() {
-	m.selKey = [2]string{}
-	if m.sel < len(m.rows) {
-		m.selKey = [2]string{m.rows[m.sel].host, m.rows[m.sel].claim.Issue}
+	if v := m.visible(); m.sel < len(v) {
+		m.selKey = [2]string{v[m.sel].host, v[m.sel].claim.Issue}
 	}
 }
 
 func (m *Model) selected() (row, bool) {
-	if m.sel < 0 || m.sel >= len(m.rows) {
+	v := m.visible()
+	if m.sel < 0 || m.sel >= len(v) {
 		return row{}, false
 	}
-	return m.rows[m.sel], true
+	return v[m.sel], true
 }
-
-func (m *Model) toConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.confirm == nil {
-		return m, nil
-	}
-	cmd, done, yes := m.confirm.Update(msg)
-	if !done {
-		return m, cmd
-	}
-	r := m.confirmN
-	m.confirm = nil
-	if !yes {
-		return m, cmd
-	}
-	return m, tea.Batch(cmd, m.handoff("release "+r.claim.Issue, "-H", r.host, "release", r.claim.Issue))
-}
-
-var (
-	green  = lipgloss.NewStyle().Foreground(lipgloss.Green)
-	red    = lipgloss.NewStyle().Foreground(lipgloss.Red)
-	yellow = lipgloss.NewStyle().Foreground(lipgloss.Yellow)
-	faint  = lipgloss.NewStyle().Faint(true)
-	bold   = lipgloss.NewStyle().Bold(true)
-)
 
 func (m *Model) View() tea.View {
-	frame := m.frame()
-	if m.confirm != nil {
-		frame = m.confirm.Over(frame, m.w, m.h)
+	var frame string
+	if m.w < theme.MinW || m.h < theme.MinH {
+		frame = m.th.TooSmall(m.w, m.h)
+	} else {
+		frame = m.chrome(m.body(), m.bodyHeight())
 	}
 	v := tea.NewView(frame)
 	v.AltScreen = true
 	return v
 }
 
-func (m *Model) frame() string {
-	rule := faint.Render(strings.Repeat("─", m.w))
-	strip := m.strip()
-	activity := m.activity()
-	// header and rule above the strip, then rule, column titles, rows, rule, activity, rule, hints.
-	room := max(m.h-(2+len(strip)+2+1+len(activity)+1+1), 1)
-
-	lines := append([]string{m.header(), rule}, strip...)
-	lines = append(lines, rule)
-	lines = append(lines, m.table(room)...)
-	lines = append(lines, rule)
-	lines = append(lines, activity...)
-	lines = append(lines, rule, m.hints())
-	for i, l := range lines {
-		lines[i] = lipgloss.NewStyle().MaxWidth(m.w).Render(l)
+func (m *Model) body() string {
+	switch m.screen {
+	case issueScreen:
+		return m.issueView()
+	case hostScreen:
+		return m.hostView()
+	case cardinalScreen:
+		return m.cardinalView()
+	case pagerScreen:
+		return m.pagerView()
 	}
-	return strings.Join(lines, "\n")
-}
-
-func (m *Model) header() string {
-	left := fmt.Sprintf(" %s  %d hosts · %d issues", bold.Render("flocc"), len(m.hosts), len(m.rows))
-	if dot, ok := m.cardinalDot(); ok {
-		left += " · cardinal " + dot
-	}
-	right := "loading"
-	if m.loaded {
-		right = "refreshed " + ship.Age(max(m.now().Sub(m.fetchedAt).Seconds(), 0)) + " ago"
-	}
-	gap := max(m.w-lipgloss.Width(left)-lipgloss.Width(right)-1, 1)
-	return left + strings.Repeat(" ", gap) + faint.Render(right)
-}
-
-// cardinalDot is green when every saved install is healthy and red otherwise; ok is false with no
-// installs.
-func (m *Model) cardinalDot() (string, bool) {
-	if len(m.cards) == 0 {
-		return "", false
-	}
-	for _, c := range m.cards {
-		if c.Status == nil || len(c.Status.Failures()) > 0 {
-			return red.Render("●"), true
-		}
-	}
-	return green.Render("●"), true
-}
-
-func (m *Model) strip() []string {
-	if len(m.hosts) == 0 {
-		return []string{faint.Render("  no hosts")}
-	}
-	nameW := 0
-	for _, h := range m.hosts {
-		nameW = max(nameW, lipgloss.Width(saved.Sanitize(h.host.Name)))
-	}
-	out := make([]string, 0, len(m.hosts))
-	for _, h := range m.hosts {
-		name := fmt.Sprintf("%-*s", nameW, saved.Sanitize(h.host.Name))
-		dot, text := green.Render("●"), ""
-		switch {
-		case h.err != "":
-			dot, text = red.Render("●"), red.Render(h.err)
-			if h.rep != nil {
-				text += faint.Render(" (stale)")
-			}
-		case h.rep != nil:
-			text = hostColumns(h.rep)
-		}
-		out = append(out, "  "+dot+" "+name+"  "+text)
-	}
-	return out
-}
-
-func hostColumns(r *ship.Report) string {
-	ver := fmt.Sprintf("v%d", r.V)
-	if r.V == 0 {
-		ver = yellow.Render("behind, ship to update")
-	}
-	tick := "tick -"
-	if r.LastTick != nil && r.LastTick.AgeS != nil {
-		tick = "tick " + ship.Age(*r.LastTick.AgeS) + " ago"
-	}
-	usage := "5h -  wk -"
-	if r.Usage != nil {
-		usage = fmt.Sprintf("5h %2.0f%%  wk %2.0f%%", r.Usage.FiveHourPct, r.Usage.WeeklyPct)
-	}
-	disk := "disk -"
-	if r.Disk != nil && r.Disk.TotalBytes > 0 {
-		disk = fmt.Sprintf("disk %.0f GiB", float64(r.Disk.FreeBytes)/(1<<30))
-	}
-	return fmt.Sprintf("%s  %-14s  %s  %s  cap %d", ver, tick, usage, disk, r.SessionCap)
-}
-
-// table is the header and the rows that fit in room lines, the window following the selection.
-func (m *Model) table(room int) []string {
-	hostW := len("HOST")
-	for _, r := range m.rows {
-		hostW = max(hostW, lipgloss.Width(saved.Sanitize(r.host)))
-	}
-	layout := func(sel, a, b, c, d, e, f, g string) string {
-		return fmt.Sprintf(" %s %-8s  %-*s  %-8s  %-8s  %-5s  %-8s  %s", sel, a, hostW, b, c, d, e, f, g)
-	}
-	out := []string{faint.Render(layout(" ", "ISSUE", "HOST", "PHASE", "STATE", "CTX", "LAUNCHES", "UPDATED"))}
-	if len(m.rows) == 0 {
-		return append(out, faint.Render("  no claimed issues"))
-	}
-	room = max(room-1, 1)
-	first := max(min(m.sel-room/2, len(m.rows)-room), 0)
-	for i := first; i < min(first+room, len(m.rows)); i++ {
-		r, c := m.rows[i], m.rows[i].claim
-		ctxPct, upd := "-", "-"
-		if c.ContextPct != nil {
-			ctxPct = fmt.Sprintf("%.0f%%", *c.ContextPct)
-		}
-		if c.UpdatedAge != nil {
-			upd = ship.Age(*c.UpdatedAge)
-			if *c.UpdatedAge < 5 {
-				upd = "now"
-			}
-		}
-		marker := " "
-		if i == m.sel {
-			marker = "▸"
-		}
-		line := layout(marker, saved.Sanitize(c.Issue), saved.Sanitize(r.host), saved.Sanitize(c.Phase), saved.Sanitize(c.State), ctxPct,
-			fmt.Sprintf("%d/%d", c.Launches, c.LaunchLimit), upd)
-		switch {
-		case r.stale:
-			line = faint.Render(line + " (stale)")
-		case c.State == "blocked":
-			line = yellow.Render(line)
-		}
-		if i == m.sel {
-			line = bold.Render(line)
-		}
-		out = append(out, line)
-	}
-	return out
-}
-
-func (m *Model) activity() []string {
-	r, ok := m.selected()
-	if !ok {
-		return []string{faint.Render("  nothing selected")}
-	}
-	c := r.claim
-	head := fmt.Sprintf("  %s  %s", bold.Render(saved.Sanitize(c.Issue)), saved.Sanitize(c.State))
-	if r.stale {
-		head += faint.Render(" (stale)")
-	}
-	out := []string{head}
-	if len(c.Activity) == 0 {
-		return append(out, faint.Render("  no activity reported"))
-	}
-	for _, a := range c.Activity[max(len(c.Activity)-activityLines, 0):] {
-		out = append(out, "  "+faint.Render(time.Unix(int64(a.At), 0).Format("15:04"))+" "+saved.Sanitize(a.Text))
-	}
-	return out
-}
-
-func (m *Model) hints() string {
-	switch {
-	case m.notice != "":
-		return " " + red.Render(saved.Sanitize(m.notice))
-	case m.showKeys:
-		return " " + faint.Render(hintsLong)
-	}
-	return " " + faint.Render(hintsShort)
+	return m.fleetView()
 }
 
 // Run opens the dashboard on o.Out and returns the exit code. It takes the terminal for itself:

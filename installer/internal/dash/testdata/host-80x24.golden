@@ -1,0 +1,23 @@
+
+  flocc 2 hosts · 3 issues                                    refreshed 3s ago
+  ╭─ flocc-nimble ───────────────────────────────────────────────────────────╮
+  │ version    status v1                                                     │
+  │ mode       live                                                          │
+  │ last tick  2m ago, ok                                                    │
+  │ usage      5h 12% of 80% · wk 31% of 90%                                 │
+  │ disk       82.0 GiB free of 200 GiB                                      │
+  │ claude     full                                                          │
+  │ tokens     -                                                             │
+  │ cap        2 sessions                                                    │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  ╭─ doctor ─────────────────────────────────────────────────── d run again ─╮
+  │ ✗ linear  401                                                            │
+  │ • ntfy    placeholder                                                    │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  ╭─ log ──────────────────────────────────────────────────── l full screen ─╮
+  │ 14:08 tick start                                                         │
+  │ 14:08 NF-240 blocked: asked in Linear                                    │
+  │ 14:09 tick ok                                                            │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+
+  d doctor · s ship · l log · esc back · ? keys
