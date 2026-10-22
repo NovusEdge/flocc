@@ -1,13 +1,13 @@
-package create
+package steps
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
-
-	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
 const (
@@ -18,30 +18,28 @@ const (
 // dockerJump runs the VM's traffic through Docker's own forwarding chain, which admits only
 // published ports on every Docker bridge, whatever its name, and returns the rest. Below it,
 // dockerAccept would open every container's ports to the VM. Docker has the chain from 28.0 on.
-var dockerJump = []string{"-i", Bridge, "-j", "DOCKER-FORWARD"}
+var dockerJump = []string{"-i", IncusBridge, "-j", "DOCKER-FORWARD"}
 
 // dockerAccept and the conntrack rule let the VM through the DROP policy Docker puts on FORWARD,
 // scoped to the bridge, as the Incus firewall docs give them.
-var dockerAccept = []string{"-i", Bridge, "-j", "ACCEPT"}
+var dockerAccept = []string{"-i", IncusBridge, "-j", "ACCEPT"}
 
 // dockerRules is DOCKER-USER's wanted order, top first.
 var dockerRules = [][]string{
 	dockerJump,
 	dockerAccept,
-	{"-o", Bridge, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
+	{"-o", IncusBridge, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
 }
 
-// xt runs an iptables or ip6tables command as root. -w waits for the xtables lock, which Docker
-// and firewalld hold while they change rules; without it iptables-legacy fails at once.
-func xt(e *Env, tool string, args ...string) host.Cmd {
-	return e.root(cmd(tool, append([]string{"-w"}, args...)...))
-}
+// xtArgs puts -w first: it waits for the xtables lock, which Docker and firewalld hold while they
+// change rules; without it iptables-legacy fails at once.
+func xtArgs(args ...string) []string { return append([]string{"-w"}, args...) }
 
 // dockerUnit re-adds the rules after every Docker start (PartOf restarts it with Docker). It has
 // no ExecStop: a stopped Docker leaves FORWARD at DROP, so removing the rules then would cut the
 // VM off. systemd expands $name in Exec lines, so the shell's variables are $$t and $$m. ip6tables
 // is skipped where Docker made no IPv6 DOCKER-USER chain. Any rule left out fails the unit, whose
-// status is all a boot leaves to see. -w is as in xt.
+// status is all a boot leaves to see. -w is as in xtArgs.
 //
 // -I puts a rule at the top, so the rules go in bottom first, and once one has gone in, every rule
 // above it is deleted and inserted again: an ACCEPT added under a jump already there would
@@ -56,7 +54,7 @@ func dockerUnit() string {
 	loop := "rc=0; for t in iptables ip6tables; do " +
 		"[ $$t = iptables ] || $$t -w -L DOCKER-USER -n >/dev/null 2>&1 || continue; m=0; "
 	return "[Unit]\n" +
-		"Description=Let Incus VMs on " + Bridge + " through Docker's forward drop (flocc)\n" +
+		"Description=Let Incus VMs on " + IncusBridge + " through Docker's forward drop (flocc)\n" +
 		"After=docker.service\n" +
 		"PartOf=docker.service\n" +
 		"\n[Service]\n" +
@@ -86,23 +84,18 @@ type Docker struct{}
 
 func (Docker) Name() string { return "Docker" }
 
-// backend reads daemon.json as root: it may be 0600. With sudo -n working, a failed read means
-// the file is absent, which is Docker's iptables default.
-func (d Docker) backend(ctx context.Context, e *Env) string {
-	return dockerBackend(e.out(ctx, e.root(cmd("cat", daemonJSON))))
+// backend: a failed read means the file is absent, which is Docker's iptables default.
+func (d Docker) backend(e *Env) string {
+	b, _ := os.ReadFile(e.Path(daemonJSON))
+	return dockerBackend(string(b))
 }
 
 func (d Docker) Check(ctx context.Context, e *Env) (bool, string, error) {
-	running := e.ok(ctx, cmd("systemctl", "is-active", "--quiet", "docker.service"))
-	// A stopped or socket-activated Docker still sets FORWARD to DROP at its next start.
-	if !running && !e.ok(ctx, cmd("systemctl", "is-enabled", "--quiet", "docker.service")) &&
-		!e.ok(ctx, cmd("systemctl", "is-active", "--quiet", "docker.socket")) {
-		return true, "Docker not running", nil
+	running, present := dockerPresent(ctx, e)
+	if !present {
+		return true, noDocker, nil
 	}
-	if err := e.needRoot("Reading Docker's firewall rules"); err != nil {
-		return false, "", err
-	}
-	backend := d.backend(ctx, e)
+	backend := d.backend(e)
 	if strings.HasPrefix(backend, "nftables") {
 		return false, "Docker uses the nftables firewall backend", nil
 	}
@@ -111,11 +104,11 @@ func (d Docker) Check(ctx context.Context, e *Env) (bool, string, error) {
 			return false, msg, nil
 		}
 	}
-	// sudo's umask is the owner's ORed with 022, so under umask 077 tee leaves the unit 0600.
-	if e.out(ctx, e.root(cmd("cat", dockerUnitPath))) != strings.TrimSpace(dockerUnit()) {
+	unit, _ := os.ReadFile(e.Path(dockerUnitPath))
+	if strings.TrimSpace(string(unit)) != strings.TrimSpace(dockerUnit()) {
 		return false, dockerUnitPath + " missing or out of date", nil
 	}
-	if !e.ok(ctx, cmd("systemctl", "is-enabled", "--quiet", dockerUnitName)) {
+	if !e.Ok(ctx, "systemctl", "is-enabled", "--quiet", dockerUnitName) {
 		return false, dockerUnitName + " not enabled", nil
 	}
 	if !running {
@@ -123,26 +116,26 @@ func (d Docker) Check(ctx context.Context, e *Env) (bool, string, error) {
 	}
 	for _, tool := range d.tools(ctx, e) {
 		for _, r := range dockerRules {
-			if !e.ok(ctx, xt(e, tool, append([]string{"-C", "DOCKER-USER"}, r...)...)) {
+			if !e.Ok(ctx, tool, xtArgs(append([]string{"-C", "DOCKER-USER"}, r...)...)...) {
 				return false, tool + " DOCKER-USER lacks " + strings.Join(r, " "), nil
 			}
 		}
 		// -S prints rules as iptables-save does. A rule that -C finds but -S spells another way is
 		// left out of the order check rather than failing a chain that may well be right.
-		rules := strings.Split(e.out(ctx, xt(e, tool, "-S", "DOCKER-USER")), "\n")
+		rules := strings.Split(e.Output(ctx, tool, xtArgs("-S", "DOCKER-USER")...), "\n")
 		at := func(r []string) int { return slices.Index(rules, "-A DOCKER-USER "+strings.Join(r, " ")) }
 		if accept := at(dockerAccept); accept >= 0 && at(dockerJump) > accept {
 			return false, tool + " DOCKER-USER has " + strings.Join(dockerAccept, " ") + " above " +
 				strings.Join(dockerJump, " ") + "; delete that ACCEPT and run create again", nil
 		}
 	}
-	return true, "DOCKER-USER lets " + Bridge + " through (" + backend + " backend)", nil
+	return true, "DOCKER-USER lets " + IncusBridge + " through (" + backend + " backend)", nil
 }
 
 // tools are the iptables commands whose DOCKER-USER chain gets the rules: ip6tables only where
 // Docker made an IPv6 one, as the unit does.
 func (d Docker) tools(ctx context.Context, e *Env) []string {
-	if e.ok(ctx, xt(e, "ip6tables", "-L", "DOCKER-USER", "-n")) {
+	if e.Ok(ctx, "ip6tables", xtArgs("-L", "DOCKER-USER", "-n")...) {
 		return []string{"iptables", "ip6tables"}
 	}
 	return []string{"iptables"}
@@ -151,7 +144,7 @@ func (d Docker) tools(ctx context.Context, e *Env) []string {
 // noForward says why a running Docker cannot take dockerJump, or "" when it can.
 func (d Docker) noForward(ctx context.Context, e *Env) string {
 	for _, tool := range d.tools(ctx, e) {
-		if !e.ok(ctx, xt(e, tool, "-L", "DOCKER-FORWARD", "-n")) {
+		if !e.Ok(ctx, tool, xtArgs("-L", "DOCKER-FORWARD", "-n")...) {
 			chain := "DOCKER-FORWARD"
 			if tool != "iptables" {
 				chain = tool + " " + chain
@@ -163,29 +156,30 @@ func (d Docker) noForward(ctx context.Context, e *Env) string {
 }
 
 func (d Docker) Apply(ctx context.Context, e *Env) error {
-	if strings.HasPrefix(d.backend(ctx, e), "nftables") {
-		return errors.New("Docker on " + e.Spec.Machine + " uses the nftables firewall backend, which has no DOCKER-USER chain; create supports only Docker's iptables backend")
+	if strings.HasPrefix(d.backend(e), "nftables") {
+		return errors.New("Docker on this machine uses the nftables firewall backend, which has no DOCKER-USER chain; create supports only Docker's iptables backend")
 	}
-	running := e.ok(ctx, cmd("systemctl", "is-active", "--quiet", "docker.service"))
+	running := e.Ok(ctx, "systemctl", "is-active", "--quiet", "docker.service")
 	if running {
 		if msg := d.noForward(ctx, e); msg != "" {
 			return errors.New(msg)
 		}
 	}
-	tee := e.root(cmd("tee", dockerUnitPath))
-	tee.Stdin = strings.NewReader(dockerUnit())
-	if _, err := e.must(ctx, tee); err != nil {
+	if err := os.MkdirAll(e.Path(filepath.Dir(dockerUnitPath)), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(e.Path(dockerUnitPath), []byte(dockerUnit()), 0o644); err != nil {
 		return err
 	}
 	// Only this oneshot is restarted. docker.service never is: on 2026-10-20 a Docker restart
 	// killed another session's image build on the shared laptop. With Docker stopped the oneshot
 	// stays inactive: once active it would not run again at Docker's start.
-	steps := [][]string{{"daemon-reload"}, {"enable", dockerUnitName}}
+	calls := [][]string{{"daemon-reload"}, {"enable", dockerUnitName}}
 	if running {
-		steps = append(steps, []string{"restart", dockerUnitName})
+		calls = append(calls, []string{"restart", dockerUnitName})
 	}
-	for _, args := range steps {
-		if _, err := e.must(ctx, e.root(cmd("systemctl", args...))); err != nil {
+	for _, args := range calls {
+		if _, err := e.Must(ctx, "systemctl", args...); err != nil {
 			return err
 		}
 	}

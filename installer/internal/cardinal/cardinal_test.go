@@ -417,7 +417,7 @@ func TestMainRemoveMarksTheSavedFileRemoved(t *testing.T) {
 	s.Save(saved.Dir(d.Home))
 	f.On(d.user(s, false, removeUnits).String(), 0, "")
 	f.On(d.owner(s.Machine, false, "uname -m").String(), 0, "x86_64\n")
-	d.Run = prefixFake{f}
+	f.OnName("go", 0, "").OnName("scp", 0, "")
 	if code := Main(context.Background(), d, []string{"remove"}); code != 0 {
 		t.Fatalf("exit %d; %v", code, f.Calls)
 	}
@@ -445,18 +445,6 @@ func TestMainErrorIsAFailedStepAndALogTodo(t *testing.T) {
 	if len(rec.Todos) != 1 || !strings.HasPrefix(rec.Todos[0], "Log: ") || !strings.HasSuffix(rec.Todos[0], "cardinal-cardinal.log") {
 		t.Fatalf("todos %v", rec.Todos)
 	}
-}
-
-// prefixFake answers go build and scp calls, whose paths are temp directories; they are still
-// recorded.
-type prefixFake struct{ *host.Fake }
-
-func (p prefixFake) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
-	if c.Name == "go" || c.Name == "scp" {
-		p.Fake.Run(ctx, c)
-		return host.Result{}, nil
-	}
-	return p.Fake.Run(ctx, c)
 }
 
 func TestRootCallsRunRemovalsFirstAndOnlyWhatHasWork(t *testing.T) {
@@ -517,7 +505,7 @@ func TestRemoveOldRunsOnlyThePurgeWithoutTheDesktopKey(t *testing.T) {
 	f.On("ssh -O check "+m, 0, "")
 	f.On(d.owner(m, false, "uname -m").String(), 0, "x86_64\n")
 	f.On(d.owner(m, false, "mktemp -d /tmp/flocc-cardinal.XXXXXX").String(), 0, "/tmp/flocc-cardinal.Ab12Cd\n")
-	d.Run = prefixFake{f}
+	f.OnName("go", 0, "").OnName("scp", 0, "")
 	if err := d.RemoveOld(context.Background(), m, []string{"linear-agents"}); err != nil {
 		t.Fatalf("%v; %v", err, f.Calls)
 	}

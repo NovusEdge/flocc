@@ -59,7 +59,7 @@ func doneOps(l *opsLog) setupOps {
 		createLogs:      func() []string { return nil },
 		machine: func(_ context.Context, m string) machineState {
 			l.add("machine %s", m)
-			return machineState{Sudo: true}
+			return machineState{}
 		},
 		create: func(_ context.Context, s create.Spec) error { l.add("create %s %s", s.Machine, s.Name); return nil },
 		add: func(_ context.Context, name string, r hosts.Host) error {
@@ -229,17 +229,6 @@ func TestSetupCreatesTheFirstHostBetweenTheKeyHalves(t *testing.T) {
 		fmt.Sprintf("keys %v", []keys.Slot{keys.Publish, keys.Ntfy}))
 	if slices.ContainsFunc(p.asked, func(q string) bool { return strings.HasPrefix(q, "Which machine holds") }) {
 		t.Fatal("asked the machine of a host create just made on one")
-	}
-}
-
-func TestSetupRefusesCreateWithoutPasswordlessSudo(t *testing.T) {
-	var l opsLog
-	ops := doneOps(&l)
-	ops.hosts = func() []hosts.Host { return nil }
-	ops.machine = func(context.Context, string) machineState { return machineState{Sudo: false} }
-	d, out, _ := setupDeps(t, map[string]any{"No hosts yet": 0, "Host name": "flocc-nimble", "Machine to make": "zer0-day-nimble"})
-	if code := runSetup(context.Background(), d, ops); code != 1 || l.has("create") || !strings.Contains(out.String(), "passwordless sudo") {
-		t.Fatalf("exit %d calls %v out %q", code, l.calls, out)
 	}
 }
 
