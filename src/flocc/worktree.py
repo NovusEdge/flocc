@@ -160,6 +160,15 @@ def setup_at_base(
             return 0, "no ./setup", sha
         cache = root / (".uv-cache" if shared_uv_cache else ".uv-cache-canary")
         code, out = _run_setup(path, cache, timeout_s, keep_cache=shared_uv_cache)
+        # The poller marks a setup that leaves files git sees, so passing one here would lift a
+        # hold the next issue sets again.
+        added = _status(path) if code == 0 else []
+        if added:
+            return (
+                1,
+                "./setup left files git sees; gitignore them:\n" + "\n".join(added[:_LISTED]),
+                sha,
+            )
         return code, out, sha
     finally:
         subprocess.run(

@@ -24,6 +24,7 @@ from flocc.sessions import session_name
 from flocc.supervisor import launch
 from flocc.usage import latest_usage
 from flocc.worktree import (
+    DirtyWorktree,
     contains,
     git,
     has_uncommitted_changes,
@@ -245,6 +246,8 @@ def _size(path: Path) -> int:
 def _start(rt, issue: Issue, repo: str, settings) -> None:
     cfg = rt.cfg
     cause = f"{issue.key}:prepare"
+    # A kept worktree may hold a previous run's uncommitted work, so its failure is the issue's.
+    reused = (cfg.worktree_root.resolve() / issue.key).exists()
     try:
         path, branch, base = prepare_worktree(
             cfg.repos[repo],
@@ -258,13 +261,18 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         if isinstance(stderr, bytes):
             stderr = stderr.decode(errors="replace")
         detail = f"\n\n{stderr.strip()[-1500:]}" if stderr.strip() else ""
-        # prepare_worktree fetched origin and cut the worktree at the base, so an untouched
-        # checkout that fails is main's or the host's failure, and every issue would repeat it.
-        # Before the dedupe below: a mark must land even when this issue's own alert is recent.
-        base = head_at_base(cfg.repos[repo], cfg.worktree_root.resolve() / issue.key)
+        # A fresh worktree still at the base that ./setup itself fails on is main's or the host's
+        # failure, and every issue would repeat it. A git failure (a fetch on a network blip)
+        # says nothing about main. Before the dedupe below: a mark must land even when this
+        # issue's own alert is recent.
+        setup_failed = isinstance(exc, DirtyWorktree) or getattr(exc, "cmd", None) == ["./setup"]
+        base = None
+        if setup_failed and not reused:
+            base = head_at_base(cfg.repos[repo], cfg.worktree_root.resolve() / issue.key)
         if base is not None:
             base_branch = cfg.repos[repo].base_branch
-            canary.mark(rt.con, repo, base, rt.now(), stderr.strip() or str(exc))
+            # Marked only once the escalation is out: a mark holds every issue before _start,
+            # so one set ahead of a failed send would hold them with nobody told.
             rt.notifier.send(
                 Escalation(
                     1,
@@ -278,6 +286,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
                 issue,
                 issue.team_id,
             )
+            canary.mark(rt.con, repo, base, rt.now(), stderr.strip() or str(exc))
             return
         # A tier 2 escalation labels and comments every time it is sent, and a broken ./setup
         # fails on every poll.

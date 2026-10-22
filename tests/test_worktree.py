@@ -519,6 +519,12 @@ def test_setup_at_base_runs_setup_on_a_throwaway_checkout(origin, tmp_path, body
     assert list((tmp_path / "wt").iterdir()) == []
 
 
+def test_setup_at_base_fails_a_setup_that_leaves_files_git_sees(origin, tmp_path):
+    push_setup(origin, "touch stray.txt")
+    code, out, _ = setup_at_base(RepoConfig(origin), tmp_path / "wt", 30, False)
+    assert code == 1 and "stray.txt" in out
+
+
 def test_setup_at_base_reports_a_timeout(origin, tmp_path):
     push_setup(origin, "sleep 30")
     code, _, _ = setup_at_base(RepoConfig(origin), tmp_path / "wt", 0.5, False)

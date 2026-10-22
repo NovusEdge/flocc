@@ -76,7 +76,7 @@ docker = true           # docker.io, the daemon, and the service user in the doc
 go = "1.27.1"
 ```
 
-Use the Playwright version the repos pin. A tool in `[tools]` must be one mise can install; `flocc ship` sets it with `mise use -g`. The docker group is root-equivalent on the VM, and it reaches sessions only once the service user's systemd manager restarts (`systemctl restart user@<uid>` as root, when no session is running).
+Use the Playwright version the repos pin. A tool in `[tools]` must be one mise can install, at an exact version or a prefix such as `1.27`; `flocc ship` sets it with `mise use -g`, and `latest` never reads back as set. The docker group is root-equivalent on the VM, and it reaches sessions only once the service user's systemd manager restarts (`systemctl restart user@<uid>` as root, when no session is running).
 
 ## Auto-mode blocks
 

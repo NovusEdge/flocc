@@ -41,6 +41,14 @@ func TestToolsNamesTheOnesWithoutAGlobalVersion(t *testing.T) {
 	}
 }
 
+func TestToolsTakesAVersionPrefixAsSetButNotAPartialNumber(t *testing.T) {
+	e := toolsEnv(t, host.NewFake().On(miseBin+" current go", 0, "1.27.1\n").On(miseBin+" current just", 0, "1.58.0\n"), true)
+	e.Answers.Tools = map[string]string{"go": "1.27", "just": "1.5"}
+	if ok, detail, _ := (Tools{}).Check(context.Background(), e); ok || detail != "not set: just 1.5" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
 func TestToolsApplySetsOnlyTheMissingOnes(t *testing.T) {
 	f := host.NewFake().On(miseBin+" current go", 0, "").On(miseBin+" current just", 0, "1.58.0").
 		On(miseBin+" use -g go@1.27.1", 0, "")

@@ -22,13 +22,15 @@ const miseRel = ".local/bin/mise"
 func (Tools) Name() string { return "Tools" }
 
 // unset lists "name version" for each tool whose global version is not the host file's. mise
-// current prints nothing, and exits 0, for a tool with no version set.
+// current prints nothing, and exits 0, for a tool with no version set, and prints the resolved
+// version for a prefix: "1.27" reads back as "1.27.1".
 func (Tools) unset(ctx context.Context, e *Env) []string {
 	var out []string
 	for _, name := range slices.Sorted(maps.Keys(e.Answers.Tools)) {
 		want := e.Answers.Tools[name]
 		r, err := e.Run.Run(ctx, host.Cmd{Name: e.Real(miseRel), Args: []string{"current", name}, Dir: e.Home})
-		if err != nil || r.Code != 0 || strings.TrimSpace(r.Stdout) != want {
+		got := strings.TrimSpace(r.Stdout)
+		if err != nil || r.Code != 0 || (got != want && !strings.HasPrefix(got, want+".")) {
 			out = append(out, name+" "+want)
 		}
 	}

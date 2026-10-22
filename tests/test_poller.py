@@ -622,6 +622,39 @@ def _broken_main(rt, monkeypatch, at_base="sha-main"):
     return calls
 
 
+def test_a_kept_worktree_or_a_git_failure_never_marks_the_repo(rt, monkeypatch):
+    from flocc import canary
+
+    _broken_main(rt, monkeypatch)
+    (rt.cfg.worktree_root / "NF-9").mkdir(parents=True)
+
+    def fetch_fails(repo, root, key, setup_timeout_s, shared_uv_cache):
+        if key == "NF-10":
+            raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="network down")
+        raise subprocess.CalledProcessError(1, ["./setup"], stderr="uncommitted junk\n")
+
+    monkeypatch.setattr("flocc.poller.prepare_worktree", fetch_fails)
+    rt.linear.ready = [issue("NF-9"), issue("NF-10")]
+    poll(rt)
+    assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
+    assert all(e.tier == 2 for e in rt.notifier.sent)
+
+
+def test_a_failed_escalation_leaves_no_silent_hold(rt, monkeypatch):
+    from flocc import canary
+
+    _broken_main(rt, monkeypatch)
+
+    def down(esc, issue, team_id):
+        raise LinearError("down")
+
+    rt.notifier.send = down
+    rt.linear.ready = [issue("NF-9")]
+    with pytest.raises(LinearError):
+        poll(rt)
+    assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
+
+
 def test_setup_failing_on_untouched_main_marks_the_repo_and_holds_its_issues(rt, monkeypatch):
     calls = _broken_main(rt, monkeypatch)
     rt.linear.ready = [issue("NF-9"), issue("NF-10")]
