@@ -18,8 +18,20 @@ The desktop CLI shows what it is doing, and hosts join the tailnet tagged withou
   session, in place of the raw host output and the two summary marker lines. `status --json` adds
   recent activity per issue and cardinal's status.
 - Bare `flocc`, or `flocc status --watch` on a terminal, opens a dashboard of every host and
-  issue, polled every 10 seconds. `a` attaches, `l` shows logs, `r` releases after a confirmation,
-  `c` attaches to cardinal read-only. `-H all doctor` and `logs` are drawn by the desktop.
+  issue, polled every 10 seconds. `a` attaches, `r` releases after a confirmation. `-H all doctor`
+  and `logs` are drawn by the desktop.
+- Every desktop screen shares one palette, which follows the terminal's light or dark background,
+  one rounded pane style and one key bar that dims keys doing nothing on the current row. The
+  full-screen commands draw their sections and steps as two panes, stacked below 100 columns, and
+  switch to inline below 60×20.
+- The dashboard opens an issue, a host or cardinal into a screen of its own: an issue's live tmux
+  pane or the log lines naming it, a host's facts, doctor checks and log tail, and a pager with
+  search and follow. Issues show their Linear titles. `/` filters, errors show as toasts, and
+  release asks on the line above the key bar.
+- Hosts gain `flocc peek <issue>`, the tail of an issue's live session, and `flocc logs --issue
+  <key>`, only the log lines that name it.
+- A terminal handoff waits for the terminal's answers to the program's startup queries, so they no
+  longer appear as `^[[?1u` in a `host create` ssh login.
 - `flocc cardinal login` and `cardinal attach --write` warn that Ctrl-D twice ends cardinal's
   session.
 - `flocc setup` has a Tailnet section. The Tailscale OAuth client is a new optional key slot;

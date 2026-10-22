@@ -82,7 +82,7 @@ flocc setup --inline
 FLOCC_UI=plain flocc ship -H my-host
 ```
 
-A pipe, `NO_COLOR` or `TERM=dumb` gives plain whatever is set. Commands that hand the terminal to a child (forwarded host commands, `host run`, `cardinal attach`) always run plain. A full-screen run on a terminal smaller than 80 columns by 20 rows switches to inline.
+A pipe, `NO_COLOR` or `TERM=dumb` gives plain whatever is set. Commands that hand the terminal to a child (forwarded host commands, `host run`, `cardinal attach`) always run plain. A full-screen run on a terminal smaller than 60 columns by 20 rows switches to inline. Below 100 columns the rail of sections sits above the steps instead of beside them.
 
 In full-screen:
 
@@ -96,25 +96,46 @@ When a step needs the real terminal (a `sudo` password, a Tailscale login, a bro
 
 ## The dashboard
 
-Bare `flocc`, or `flocc status --watch`, on a terminal. It shows:
+Bare `flocc`, or `flocc status --watch`, on a terminal. The fleet screen has four panes:
 
-- A strip per host: version, last tick, usage, disk and capacity.
-- One table of every host's issues: phase, state, context use, launches and last update.
-- The selected issue's recent activity.
+- hosts: per host, its status version, last tick, live sessions against the cap, usage and free disk.
+- cardinal: per saved install, its unit, session age, last turn and login. Shown only when an install is saved.
+- issues: every claimed issue with its Linear title, phase, state, context use and host. Titles come from the Linear key stored by `flocc keys`; without it the keys show alone, and the line above the key bar says why.
+- activity: the selected issue's recent service-log lines.
 
-It polls every host's `status --json` every 10 seconds. An unreachable host shows a red dot, and its last known rows are marked stale. A host older than the desktop is shown as needing a ship.
+It polls every host's `status --json` every 10 seconds; the top line shows a spinner while a poll is out. A host whose poll failed keeps its last report, drawn dim with the error on its row. A host older than the desktop is shown as needing a ship.
 
-| Key | Does |
-|---|---|
-| up, down (or k, j) | Select an issue |
-| a | `flocc -H <host> attach <issue>` |
-| l | `flocc -H <host> logs <issue>` |
-| r | Release the issue, after a confirmation |
-| c | cardinal, read-only attach |
-| ? | List the keys |
-| q, Ctrl-C | Quit |
+Each row opens into a screen of its own:
 
-`a`, `l` and `c` hand the terminal to the child and return to the dashboard when it exits.
+- An issue: its phases, state, session and host, and the live tmux pane of its session, refreshed every 2 seconds. With no live session the pane shows the service-log lines that name the issue.
+- A host: its facts, its `doctor --json` checks and the tail of its service log.
+- cardinal: the table `flocc cardinal status` prints.
+
+A host shipped before `peek` and `logs --issue` existed shows "ship to see session output" in place of the output.
+
+| Key | Where | Does |
+|---|---|---|
+| up, down (or k, j) | any list | Move the selection |
+| tab | fleet | Move between the hosts, cardinal and issues panes |
+| right, enter, l | fleet | Open the selected row |
+| / | fleet | Filter issues by key, title, host or state; `esc` clears it |
+| a | issues pane, issue screen | `flocc -H <host> attach <issue>` |
+| r | issues pane, issue screen | Release the issue, after `y` on the line above the key bar |
+| o | issue screen | Open the issue in Linear |
+| L | issue screen | The output in the pager |
+| d | host screen | Run doctor again |
+| s | host screen | `flocc ship -H <host>`; dimmed when the dashboard did not start inside a git checkout |
+| l | host screen | The service log in the pager |
+| c | cardinal screen | Attach read-only to the selected install |
+| esc, left | any screen | Back |
+| ? | anywhere | List the keys |
+| q | fleet | Quit; Ctrl-C quits anywhere |
+
+The pager scrolls with `j`, `k`, page up and down, `g` and `G`, searches with `/` and `n`, and follows new lines with `f`.
+
+Keys that do nothing on the current row stay in the key bar, dimmed. An action that fails shows its error at the top right for 4 seconds. Below 60 columns by 20 rows the dashboard says the terminal is too small and only `q` and Ctrl-C work. Panes that sit side by side stack below 100 columns. The colours follow the terminal's background, light or dark.
+
+`a`, `s` and `c` hand the terminal to the child and return to the dashboard when it exits.
 
 ## The fleet table
 
