@@ -46,7 +46,7 @@ func (HostDocker) Check(ctx context.Context, e *Env) (bool, string, error) {
 
 func (HostDocker) Apply(ctx context.Context, e *Env) error {
 	install := host.Cmd{Name: "apt-get", Args: []string{"install", "-y", "docker.io"}, Env: []string{"DEBIAN_FRONTEND=noninteractive"}}
-	if err := e.UI.Spin(install.String(), func() error { _, err := e.MustCmd(ctx, install); return err }); err != nil {
+	if err := e.SpinCmd(ctx, install); err != nil {
 		return err
 	}
 	if e.Mode == Systemd {

@@ -76,7 +76,7 @@ func (Packages) Apply(ctx context.Context, e *Env) error {
 		cmds = append(cmds, host.Cmd{Name: "dnf", Args: append([]string{"install", "-y"}, pkgs...)})
 	}
 	for _, c := range cmds {
-		if err := e.UI.Spin(c.String(), func() error { _, err := e.MustCmd(ctx, c); return err }); err != nil {
+		if err := e.SpinCmd(ctx, c); err != nil {
 			return err
 		}
 	}

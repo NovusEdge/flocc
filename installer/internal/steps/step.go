@@ -59,6 +59,11 @@ func (e *Env) Must(ctx context.Context, name string, args ...string) (string, er
 	return e.MustCmd(ctx, host.Cmd{Name: name, Args: args})
 }
 
+// SpinCmd runs c to completion under a spinner labelled with its command line.
+func (e *Env) SpinCmd(ctx context.Context, c host.Cmd) error {
+	return e.UI.Spin(c.String(), func() error { _, err := e.MustCmd(ctx, c); return err })
+}
+
 func (e *Env) Ok(ctx context.Context, name string, args ...string) bool {
 	r, err := e.Run.Run(ctx, host.Cmd{Name: name, Args: args})
 	return err == nil && r.Code == 0

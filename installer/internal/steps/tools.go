@@ -55,7 +55,7 @@ func (t Tools) Apply(ctx context.Context, e *Env) error {
 	for _, nv := range t.unset(ctx, e) {
 		name, version, _ := strings.Cut(nv, " ")
 		c := host.Cmd{Name: e.Real(miseRel), Args: []string{"use", "-g", fmt.Sprintf("%s@%s", name, version)}, Dir: e.Home}
-		if err := e.UI.Spin(c.String(), func() error { _, err := e.MustCmd(ctx, c); return err }); err != nil {
+		if err := e.SpinCmd(ctx, c); err != nil {
 			return err
 		}
 	}

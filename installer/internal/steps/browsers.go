@@ -54,6 +54,5 @@ func (b Browsers) Check(ctx context.Context, e *Env) (bool, string, error) {
 }
 
 func (b Browsers) Apply(ctx context.Context, e *Env) error {
-	c := b.npx(e, false)
-	return e.UI.Spin(c.String(), func() error { _, err := e.MustCmd(ctx, c); return err })
+	return e.SpinCmd(ctx, b.npx(e, false))
 }
