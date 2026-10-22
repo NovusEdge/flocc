@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -373,6 +374,8 @@ func (d Deps) login(ctx context.Context, s saved.Saved, email string) error {
 // unreachable is a status that never ran; status() names setup as its remedy.
 type unreachable struct{ error }
 
+var tailscaleCheck = regexp.MustCompile(`https://login\.tailscale\.com/a/\S+`)
+
 func (d Deps) readStatus(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error) {
 	// Full status health-checks every MCP server and host, so it gets longer than the outcome checks.
 	ctx, cancel := context.WithTimeout(ctx, 3*reachLimit)
@@ -380,6 +383,10 @@ func (d Deps) readStatus(ctx context.Context, s saved.Saved) (steps.CardinalStat
 	var st steps.CardinalStatus
 	res, err := d.Run.Run(ctx, d.user(s, false, setupPath+" --phase cardinal-status"))
 	if err != nil || res.Code != 0 {
+		// A check-mode SSH rule holds ssh at its URL until the timeout, so err alone reads as a dead machine.
+		if u := tailscaleCheck.FindString(res.Stderr); u != "" {
+			return st, fmt.Errorf("%s waits on a Tailscale SSH check: open %s, approve it, then run this again", s.Dest(), u)
+		}
 		why := passOutput(res, 5)
 		if err != nil {
 			why = err.Error()

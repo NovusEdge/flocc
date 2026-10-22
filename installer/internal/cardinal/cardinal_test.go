@@ -304,6 +304,32 @@ func TestStatusDrawsAnUnreachableMachineAsAFailedStepAndATodo(t *testing.T) {
 	}
 }
 
+// hungRunner is ssh held at a Tailscale check prompt until the status timeout kills it.
+type hungRunner struct {
+	*host.Fake
+	stderr string
+}
+
+func (h hungRunner) Run(context.Context, host.Cmd) (host.Result, error) {
+	return host.Result{Stderr: h.stderr}, context.DeadlineExceeded
+}
+
+func TestStatusNamesATailscaleCheckInsteadOfSetup(t *testing.T) {
+	d, rec := testDeps(t, host.NewFake())
+	d.Run = hungRunner{host.NewFake(), "# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/abc123\n"}
+	if code := d.status(context.Background(), card); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	rows := rec.Rows()
+	if len(rows) != 1 || rows[0].State != ui.Failed || !strings.Contains(rows[0].Err, "https://login.tailscale.com/a/abc123") {
+		t.Fatalf("rows %+v", rows)
+	}
+	d.UI.Close()
+	if len(rec.Todos) != 0 {
+		t.Fatalf("todos %v", rec.Todos)
+	}
+}
+
 func TestAttachWriteWarnsAboutCtrlDBeforeTheHandoff(t *testing.T) {
 	f := host.NewFake()
 	o := &orderRenderer{}
