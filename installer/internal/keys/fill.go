@@ -205,6 +205,99 @@ func Adopt(ctx context.Context, e Env, m Mapped, s Slot, raw, from string) error
 	}
 }
 
+// Take stores the keys in vals that differ from the store, for the slots named, each checked as a
+// paste is. A value that fails its check, or whose recheck the owner declines, is skipped and the
+// stored key stays. It returns the slots that held another key before, and only those a host file
+// carries, so the caller can push them; a store error comes back with what was stored so far.
+func Take(ctx context.Context, e Env, m Mapped, vals map[Slot]Taken, slots []Slot) (replaced []Slot, err error) {
+	for _, s := range fillOrder {
+		t, ok := vals[s]
+		if !ok || !slices.Contains(slots, s) {
+			continue
+		}
+		old, err := e.Store.Get(s)
+		if err != nil {
+			return replaced, err
+		}
+		if sameKey(s, old, t.Value) {
+			continue
+		}
+		var stored bool
+		if s == Ntfy {
+			stored, err = takeNtfy(e, t, old != "")
+		} else {
+			stored, err = takeKey(ctx, e, m, s, t)
+		}
+		if err != nil {
+			return replaced, err
+		}
+		if stored && old != "" && slices.Contains(hostFiled, s) {
+			replaced = append(replaced, s)
+		}
+	}
+	return replaced, nil
+}
+
+// hostFiled is the slots that have a secret file on each host.
+var hostFiled =[]Slot{Linear, Agent, Publish}
+
+// sameKey compares Tailscale values by their secret, as the id is ignored by the token endpoint.
+func sameKey(s Slot, stored, v string) bool {
+	if s == Tailscale {
+		_, a, okA := SplitClient(stored)
+		_, b, okB := SplitClient(v)
+		if okA && okB {
+			return a == b
+		}
+	}
+	return stored == v
+}
+
+func takeKey(ctx context.Context, e Env, m Mapped, s Slot, t Taken) (bool, error) {
+	for {
+		v, note, st, err := accept(ctx, e, m, s, t.Value, "Check "+s.Title()+" from "+t.From)
+		if ctx.Err() != nil {
+			st.Fail(ctx.Err())
+			return false, ctx.Err()
+		}
+		var u unchecked
+		if errors.As(err, &u) {
+			st.Skip(fmt.Sprintf("%s not taken: %v", maskedPaste(s, t.Value), err))
+			again, err := e.Prompt.Confirm("Check it again?", true)
+			if err != nil {
+				return false, err
+			}
+			if again {
+				continue
+			}
+			return false, nil
+		}
+		if err != nil {
+			st.Skip(fmt.Sprintf("%s not taken: %v", maskedPaste(s, t.Value), err))
+			return false, nil
+		}
+		st.Done(note)
+		return true, store(e, s, v)
+	}
+}
+
+// takeNtfy has no live check to run: the topic is only cleaned. Hosts hold it in their ship, not in
+// a secret file, so a topic that replaces another waits for the next ship.
+func takeNtfy(e Env, t Taken, replacing bool) (bool, error) {
+	topic, err := steps.CleanSecret(t.Value)
+	if err != nil {
+		e.UI.Step("Check "+Ntfy.Title()+" from "+t.From).Skip(fmt.Sprintf("%s not taken: %v", Masked(t.Value), err))
+		return false, nil
+	}
+	if err := store(e, Ntfy, topic); err != nil {
+		return false, err
+	}
+	if replacing {
+		e.UI.Todo("run flocc ship -H <host> for each host to send its pushes to the new ntfy topic, and subscribe to it in the ntfy app")
+	}
+	return true, nil
+}
+
 // Replace asks for a new value of each slot in turn and checks it as Fill does, and stores
 // nothing until every slot has been asked, so a Ctrl-C or a failed prompt changes no key. An
 // empty paste keeps the current value. It returns the slots it changed, also with an error from
