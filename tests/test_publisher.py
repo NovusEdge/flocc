@@ -142,6 +142,37 @@ def test_amended_tests_pass_the_guard_and_reach_the_pr_body(origin, tmp_path):
             "func TestA(t *testing.T) {\n\tt.Skip()\n}\n",
             "skips a test",
         ),
+        ("func TestA(t *testing.T) {}\n", "", "removes a test"),
+        # Equal counts, different names: one test went and another came.
+        ("def test_a():\n    assert 1\n", "def test_b():\n    assert 1\n", "removes a test"),
+        ("test('adds', () => {})\n", "test('subtracts', () => {})\n", "removes a test"),
+        (
+            "func TestA(t *testing.T) {}\n",
+            'func TestA(t *testing.T) {\n\tt.Skipf("x")\n}\n',
+            "skips a test",
+        ),
+        (
+            "func TestA(t *testing.T) {}\n",
+            "func TestA(t *testing.T) {\n\tt.SkipNow()\n}\n",
+            "skips a test",
+        ),
+        (
+            "def test_a(self):\n    pass\n",
+            "@unittest.skipIf(True, 'x')\ndef test_a(self):\n    pass\n",
+            "skips a test",
+        ),
+        (
+            "def test_a(self):\n    pass\n",
+            "def test_a(self):\n    self.skipTest('x')\n",
+            "skips a test",
+        ),
+        (
+            "def test_a():\n    pass\n",
+            "def test_a():\n    pytest.importorskip('x')\n",
+            "skips a test",
+        ),
+        ("it('a', () => {})\n", "it.skipIf(true)('a', () => {})\n", "skips a test"),
+        ("it('a', () => {})\n", "it.todo('a')\n", "skips a test"),
     ],
 )
 def test_an_amendment_that_weakens_a_test_still_blocks(origin, tmp_path, before, after, why):
@@ -157,6 +188,21 @@ def test_an_amendment_that_weakens_a_test_still_blocks(origin, tmp_path, before,
     assert (
         result.status == "tests_touched" and "test_w.py" in result.detail and why in result.detail
     )
+
+
+def test_a_moved_or_resigned_test_is_not_removed(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "test_w.py").write_text("def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", "more tests", cwd=path)
+    claim.tester_sha = git("rev-parse", "HEAD", cwd=path)
+    (path / "test_w.py").write_text(
+        "def test_b():\n    assert 2\n\ndef test_a(x=1):\n    assert x\n"
+    )
+    git("commit", "-qam", "reorder and re-sign", cwd=path)
+    amended = {"test_w.py": {"reason": "r"}}
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), amended=amended)
+    assert result.status == "opened"
 
 
 def test_an_amendment_that_rewrites_a_test_passes(origin, tmp_path):

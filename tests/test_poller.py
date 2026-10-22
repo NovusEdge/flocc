@@ -164,6 +164,20 @@ def test_rerun_ignores_files_from_the_previous_claim(rt):
     assert not (d / "done.json").exists()
 
 
+def test_a_resume_at_the_implementer_keeps_the_amended_tests_record(rt, monkeypatch):
+    ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
+    monkeypatch.setattr(
+        "flocc.poller.contains",
+        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+    )
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir()
+    (d / "tests-amended.json").write_text('{"t.py": {"reason": "r"}}')
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert (d / "tests-amended.json").exists()
+
+
 def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
@@ -872,7 +886,7 @@ def test_reap_removes_worktrees_of_closed_issues_only(rt, monkeypatch, state_typ
 
 def timed_out(rt, monkeypatch, commit_times, state_type="started", key="NF-5"):
     wt = finished(rt, key, state="timed_out")
-    ledger.update_claim(rt.con, key, base_sha="sha-base", started_at=1000.0)
+    ledger.update_claim(rt.con, key, base_sha="sha-base", started_at=1000.0, phase="impl")
     rt.linear.state_types = lambda keys: {k: state_type for k in keys}
     monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: "\n".join(str(t) for t in commit_times))
     return wt
@@ -888,17 +902,46 @@ def test_a_timeout_with_new_commits_restarts_once(rt, monkeypatch):
     # The rerun times out again: it stays as it is.
     finished_again = rt.cfg.worktree_root / "NF-5"
     ledger.insert_claim(rt.con, make("NF-5", state="timed_out", worktree=str(finished_again)))
-    ledger.update_claim(rt.con, "NF-5", base_sha="sha-base", started_at=1000.0)
+    ledger.update_claim(rt.con, "NF-5", base_sha="sha-base", started_at=1000.0, phase="impl")
     restart_timed_out(rt)
     assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == ["NF-5"]
 
 
 @pytest.mark.parametrize(
     ("times", "state_type"),
-    [([500], "started"), ([], "started"), ([1500], "completed"), ([1500], "canceled")],
+    [
+        ([500], "started"),
+        ([], "started"),
+        ([1500], "completed"),
+        ([1500], "canceled"),
+        ([1500], "unstarted"),
+        ([1500], "backlog"),
+    ],
 )
 def test_a_timeout_without_new_commits_or_an_open_issue_stays(rt, monkeypatch, times, state_type):
     timed_out(rt, monkeypatch, times, state_type)
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == []
+
+
+@pytest.mark.parametrize("phase", ["test", "review"])
+def test_only_implementer_and_fix_timeouts_restart(rt, monkeypatch, phase):
+    timed_out(rt, monkeypatch, [1500])
+    ledger.update_claim(rt.con, "NF-5", phase=phase)
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == []
+
+
+def test_a_fix_timeout_restarts(rt, monkeypatch):
+    timed_out(rt, monkeypatch, [1500])
+    ledger.update_claim(rt.con, "NF-5", phase="fix")
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is None
+
+
+def test_an_issue_without_the_trigger_label_is_not_restarted(rt, monkeypatch):
+    timed_out(rt, monkeypatch, [1500])
+    rt.linear.issue = lambda key: issue(key, labels=("backend",))
     restart_timed_out(rt)
     assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == []
 

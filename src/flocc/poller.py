@@ -79,7 +79,10 @@ def restart_timed_out(rt) -> None:
         key = claim.issue_key
         once = f"timeout_restart:{key}"
         wt = Path(claim.worktree)
-        if claim.state != "timed_out" or claim.base_sha is None or not wt.exists():
+        # A tester's commits were never remembered, so a rerun from "test" would find none.
+        if claim.state != "timed_out" or claim.phase not in ("impl", "fix"):
+            continue
+        if claim.base_sha is None or not wt.exists():
             continue
         if ledger.meta_get(rt.con, once):
             continue
@@ -87,7 +90,11 @@ def restart_timed_out(rt) -> None:
             stamps = git("log", "--format=%ct", claim.branch, "--not", claim.base_sha, cwd=wt)
             if not any(float(s) > claim.started_at for s in stamps.split()):
                 continue
-            if rt.linear.state_types([key])[key] in ("completed", "canceled"):
+            # An issue since parked, unlabelled or closed is no longer wanted; releasing it would
+            # strand its worktree with nothing to pick it up again.
+            if rt.linear.state_types([key])[key] != "started":
+                continue
+            if rt.cfg.trigger_label not in rt.linear.issue(key).labels:
                 continue
         except (subprocess.CalledProcessError, OSError, LinearError, KeyError, ValueError) as exc:
             print(f"restart: {key} not checked: {exc}", file=sys.stderr)
@@ -363,7 +370,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         "asking-escalated",
         "idle",
         "idle-escalated",
-        "tests-amended.json",
+        "asked-seconds",
     ):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
@@ -385,6 +392,10 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
             ledger.remember_tests(rt.con, issue.key, *remembered)
     if remembered and contains(path, remembered[1]):
         (base, tester_sha), phase = remembered, "impl"
+    # A run resuming at the implementer still needs the first run's amendments, or the guard
+    # blocks them; a run that starts at the tester has none.
+    if phase == "test":
+        (d / "tests-amended.json").unlink(missing_ok=True)
     claim = Claim(
         issue_key=issue.key,
         issue_id=issue.id,

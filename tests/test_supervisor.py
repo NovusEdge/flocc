@@ -373,6 +373,25 @@ def test_the_same_check_failure_twice_blocks_without_another_round(rt):
     )
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("FAILED t.py::test_a - 1 failed in 37.36s", "FAILED t.py::test_a - 1 failed in 41.02s"),
+        ("--- FAIL: TestA (0.123s)\n\tx", "--- FAIL: TestA (0.456s)\n   x"),
+    ],
+)
+def test_failures_differing_only_in_numbers_and_spacing_count_as_the_same(rt, first, second):
+    failures = iter([first, second])
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    assert "the same way twice" in rt.notifier.sent[-1].summary
+
+
 def test_a_different_check_failure_gets_its_second_round(rt):
     failures = iter(["E1 boom", "E2 bang"])
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
@@ -566,6 +585,41 @@ def test_an_open_question_holds_off_the_wall_clock(rt):
     (state_dir(rt.cfg, "NF-1") / "asking").unlink()
     supervise(rt, current(rt))
     assert current(rt).state == "timed_out"
+
+
+def test_the_time_a_question_was_open_is_credited_to_the_wall_clock(rt):
+    add(rt, wall_clock_s=3 * 3600)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "asked-seconds").write_text("10800")
+    rt.now = lambda: 100.0 + 4 * 3600
+    supervise(rt, current(rt))
+    assert current(rt).state == "running"
+    rt.now = lambda: 100.0 + 6 * 3600 + 1
+    supervise(rt, current(rt))
+    assert current(rt).state == "timed_out"
+
+
+def test_a_question_left_open_forever_times_out_after_the_wait(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "asking").write_text(json.dumps({"at": 100.0 + 3000, "question": "Q?"}))
+    rt.now = lambda: 3600.0 + QUESTION_WAIT_S - 1
+    supervise(rt, current(rt))
+    assert current(rt).state == "running"
+    rt.now = lambda: 3600.0 + QUESTION_WAIT_S + 1
+    supervise(rt, current(rt))
+    assert current(rt).state == "timed_out"
+
+
+def test_an_open_question_never_holds_off_the_review_limit(rt):
+    rt.cfg = replace(rt.cfg, review_wall_clock_s=60)
+    review_session(rt, text=None)
+    (state_dir(rt.cfg, "NF-1") / "asking").write_text(json.dumps({"at": 100.0, "question": "Q?"}))
+    rt.now = lambda: 100.0 + 61
+    supervise(rt, current(rt))
+    assert current(rt).state == "done"
 
 
 def test_high_context_requests_handoff_once(rt):
