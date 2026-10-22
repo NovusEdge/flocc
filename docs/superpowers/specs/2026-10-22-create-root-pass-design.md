@@ -25,7 +25,8 @@ once. With passwordless sudo the same command runs without a prompt, so there is
   `installer/internal/steps` (`steps.Firewalld`, `steps.Docker`), written against `steps.Env`.
   They run as root, so commands run without `sudo`. Files are read and written with
   `os.ReadFile`/`os.WriteFile` on `e.Path(...)` (`firewalld.conf`, `daemon.json`, the
-  `flocc-docker-user.service` unit) instead of `cat`/`tee`.
+  `flocc-docker-user.service` unit, written 0644 as `Egress.Apply` writes its unit) instead of
+  `cat`/`tee`.
 - Checks, fixes and messages stay as they are, with one change: the machine-side code does not
   know the owner's ssh destination, so "on <machine>" becomes "on this machine". The desktop's
   error for a failed pass names the machine.
@@ -33,8 +34,12 @@ once. With passwordless sudo the same command runs without a prompt, so there is
 - `steps.CreateRootSteps()` returns `[Firewalld{}, Docker{}]`.
 - `steps.CreateRootIdle(ctx, e) (idle bool, detail string)` reports, with no root, whether
   neither step has work: firewalld not active, and Docker neither active, enabled nor
-  socket-activated. The steps' Checks use it for their first branch, and the desktop uses it
+  socket-activated. The steps' Checks start with the same two tests, and the desktop calls it
   through its ssh runner to skip the pass.
+- Under a cancelled context every command fails, so `systemctl is-active` reads as "not running"
+  and a Check reads as done. The firewalld rebind wait checks `ctx.Err()` after each probe, before
+  it trusts a clean answer, and the phase reports `ctx.Err()` with no steps when its context ended,
+  even if `RunAll` returned nil.
 - `flocc-setup --phase create-root` is a staged root phase in `cmd/flocc-setup/cardinal.go`,
   next to `cardinal-root` and `cardinal-purge`. It takes no `--user`. It checks the stage as
   those do (owned by `SUDO_UID`, mode 700, no symlinks), runs `steps.RunAll` over
@@ -47,18 +52,19 @@ once. With passwordless sudo the same command runs without a prompt, so there is
 
 - A new package `installer/internal/rootpass` holds the pieces cardinal and create share, moved
   out of `cardinal/passes.go`: `SSH` (was `sshArgs`), `Build` (was `Deps.build`, minus the
-  `Group` call and the RepoRoot lookup), `Pass` (the body of `Deps.rootPass`: mktemp, stage
-  check, scp, the one `ssh -t` line of sudo calls, the report tap, the error naming the log),
-  `Events` (was `reportEvents`) and `Tap` (was `reportTap`). Cardinal calls them; its behaviour
-  and tests do not change. `create` cannot import `cardinal` (cardinal imports create), hence the
-  new package.
+  `Group` call and the RepoRoot lookup), `Run` over a `Pass` struct (the body of
+  `Deps.rootPass`: mktemp, stage check, scp, the one `ssh -t` line of sudo calls, the report tap,
+  the error naming the log), `Events` (was `reportEvents`) and `Tap` (was `reportTap`). Cardinal
+  calls them; its behaviour does not change. `create` cannot import `cardinal` (cardinal imports
+  create), hence the new package. `rootpass` imports `host`, `ship`, `steps`, `cardinal/saved`
+  and `ui`, none of which imports `create`, `cardinal` or `rootpass`.
 - In `create.Steps()`, `Firewalld{}, Docker{}` become one `Root{}` step named "Root pass":
   - Check: once the pass ran in this run, done with its detail. Otherwise `CreateRootIdle` over
     `e.M`; idle is done with its detail ("firewalld not running; ...; Docker not running").
     Else not done: "firewalld or Docker runs on <machine>; checking them needs root".
   - Apply: refuse when `!e.TTY && !e.sudo` ("sudo on <machine> asks for a password; run create
     in a terminal"). Read `uname -m`, `ship.ArchFor`, build `flocc-setup` from the checkout
-    (`Env.Checkout`, set from the new `Installer.RepoRoot()`), run `rootpass.Pass` with stage
+    (`Env.Checkout`, set from the new `Installer.RepoRoot()`), run `rootpass.Run` with stage
     prefix `/tmp/flocc-create` and the one call `--phase create-root`. Draw the report's steps
     as rows with `rootpass.Events`. Fail on a failed pass (the error names the report's error,
     the machine and the stage's log) or on any report step not done, naming it.
@@ -82,10 +88,12 @@ The pass carries no secret: no answers document, no auth key. The handoff banner
 ### Ctrl-C
 
 In the handoff, ssh holds the terminal in raw mode, so Ctrl-C reaches the remote sudo and
-flocc-setup as SIGINT. flocc-setup's context ends, the rebind wait returns, and the report
-carries the error. The desktop fails the Root pass row and create stops; the next create run
-starts the pass again. A Ctrl-C at the password prompt ends sudo before any report; the error
-says the pass ended without a report.
+flocc-setup as SIGINT. flocc-setup's context ends, the rebind wait returns `ctx.Err()`, and the
+report carries the error and no steps. The remote shell can die of the same SIGINT before the
+report arrives; the desktop then has only ssh's non-zero exit. Either way the desktop fails the
+Root pass row and create stops; the next create run starts the pass again. A Ctrl-C at the
+password prompt ends sudo before flocc-setup starts, so no report comes and no log is written;
+the error carries ssh's exit status.
 
 ### Idempotence
 
