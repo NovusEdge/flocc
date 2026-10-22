@@ -3,6 +3,7 @@ import io
 import json
 import os
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -518,6 +519,37 @@ def test_logs_tails_run_log_on_a_loop_host(host_cfg, tmp_path, monkeypatch):
     with pytest.raises(Exec) as exc:
         main(["--config", str(host_cfg), "logs"])
     assert exc.value.args[0] == ["tail", "-n", "100", str(tmp_path / "state" / "run.log")]
+
+
+def test_logs_issue_prints_only_that_issues_lines(host_cfg, monkeypatch, capsys):
+    monkeypatch.setattr("flocc.status.detect_mode", lambda: "systemd")
+    journal = (
+        "1767225600.5 host flocc[7]: NF-240 started\n"
+        "1767225601.5 host flocc[7]: NF-2400 other\n"
+        "1767225602.5 host flocc[7]: NF-24 other\n"
+        "1767225603.5 host flocc[7]: NF-240 pushed"
+    )
+
+    def run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0, journal + "\n", "")
+
+    monkeypatch.setattr("subprocess.run", run)
+    assert main(["--config", str(host_cfg), "logs", "--issue", "NF-240", "-n", "5"]) == 0
+    stamps = [time.strftime("%H:%M:%S", time.localtime(t)) for t in (1767225600, 1767225603)]
+    assert capsys.readouterr().out == f"{stamps[0]} NF-240 started\n{stamps[1]} NF-240 pushed\n"
+
+
+def test_logs_issue_on_a_loop_host_prints_bare_text(host_cfg, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("flocc.status.detect_mode", lambda: "loop")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "run.log").write_text("NF-240 a\nNF-2400 b\nNF-240 c\n")
+    assert main(["--config", str(host_cfg), "logs", "--issue", "NF-240", "-n", "1"]) == 0
+    assert capsys.readouterr().out == "NF-240 c\n"
+
+
+def test_logs_issue_does_not_follow(host_cfg, capsys):
+    assert main(["--config", str(host_cfg), "logs", "--issue", "NF-240", "-f"]) == 2
+    assert capsys.readouterr().err == "--issue does not follow; drop -f\n"
 
 
 def test_attach_is_read_only_on_the_service_socket(host_cfg):

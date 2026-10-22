@@ -8,7 +8,7 @@ from flocc import ledger, usage
 from flocc.cli import main
 from flocc.config import load
 from flocc.gate import run_gate
-from flocc.status import collect, last_tick, systemd_tick
+from flocc.status import collect, issue_lines, last_tick, systemd_tick
 from tests.fakes import FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -288,3 +288,25 @@ def test_a_failing_journal_leaves_activity_empty_and_status_whole(cfg):
 
     report = collect(cfg, FakeSessions(), now=1000.0, mode="systemd", run=run)
     assert report["claims"][0]["activity"] == [] and report["activity_error"]
+
+
+_NAMING = [
+    "1000.5 host flocc[7]: NF-240 started",
+    "1001.5 host flocc[7]: NF-2400 other",
+    "1002.5 host flocc[7]: NF-24 other",
+    "1003.5 host flocc[7]: NF-240 pushed",
+    "1004.5 host flocc[7]: tick done",
+]
+
+
+def test_issue_lines_keeps_only_the_lines_naming_the_issue(cfg):
+    got = issue_lines(cfg, "NF-240", 5, mode="systemd", run=_journal(*_NAMING))
+    assert got == [(1000, "NF-240 started"), (1003, "NF-240 pushed")]
+    assert issue_lines(cfg, "NF-240", 1, mode="systemd", run=_journal(*_NAMING)) == got[-1:]
+
+
+def test_issue_lines_reads_run_log_on_a_loop_host(cfg):
+    cfg.state_root.mkdir(parents=True, exist_ok=True)
+    log = cfg.state_root / "run.log"
+    log.write_text("NF-240 a\nNF-2400 b\nNF-24 c\nNF-240 d\n")
+    assert [t for _, t in issue_lines(cfg, "NF-240", 5, mode="loop")] == ["NF-240 a", "NF-240 d"]

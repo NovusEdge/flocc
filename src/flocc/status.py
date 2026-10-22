@@ -135,10 +135,27 @@ def _recent_lines(cfg: Config, mode: str, run) -> list[tuple[int, str]]:
     return [(at, line) for line in tail[-_ACTIVITY_LINES:]]
 
 
+def _naming(key: str) -> re.Pattern:
+    # Word-bounded: NF-24 must not match NF-240.
+    return re.compile(rf"\b{re.escape(key)}\b")
+
+
 def _activity(lines: list[tuple[int, str]], key: str) -> list[dict]:
-    named = re.compile(rf"\b{re.escape(key)}\b")
+    named = _naming(key)
     hits = [{"at": at, "text": text} for at, text in lines if named.search(text)]
     return hits[-_ACTIVITY_KEPT:]
+
+
+def issue_lines(
+    cfg: Config, key: str, n: int, mode: str | None = None, run=subprocess.run
+) -> list[tuple[int, str]]:
+    named = _naming(key)
+    hits = [
+        (at, text)
+        for at, text in _recent_lines(cfg, mode or detect_mode(), run)
+        if named.search(text)
+    ]
+    return hits[-n:] if n > 0 else []
 
 
 def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:

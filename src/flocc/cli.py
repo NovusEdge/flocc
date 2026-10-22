@@ -530,9 +530,23 @@ def cmd_peek(args) -> int:
 
 
 def cmd_logs(args) -> int:
-    from flocc.status import detect_mode
+    from flocc.status import detect_mode, issue_lines
 
     cfg, _ = _config(args)
+    if args.issue:
+        if args.follow:
+            print("--issue does not follow; drop -f", file=sys.stderr)
+            return 2
+        mode = detect_mode()
+        try:
+            hits = issue_lines(cfg, args.issue, args.lines, mode, subprocess.run)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"logs: {exc}", file=sys.stderr)
+            return 1
+        for at, text in hits:
+            stamp = f"{time.strftime('%H:%M:%S', time.localtime(at))} " if mode == "systemd" else ""
+            print(stamp + text)
+        return 0
     follow = ["-f"] if args.follow else []
     lines = ["-n", str(args.lines)]
     if detect_mode() == "systemd":
@@ -596,6 +610,7 @@ COMMANDS = {
     "doctor": cmd_doctor,
     "status": cmd_status,
     "logs": cmd_logs,
+    "peek": cmd_peek,
     "permissions": cmd_permissions,
     "attach": cmd_attach,
 }
@@ -610,7 +625,6 @@ def _version() -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="flocc", description="Run Claude sessions on Linear issues."
-    "peek": cmd_peek,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
     parser.add_argument("--config", default=None, help="config file (default: standard path)")
@@ -667,6 +681,10 @@ def build_parser() -> argparse.ArgumentParser:
     logs = add("logs", "Print the service log: the journal on systemd hosts, run.log otherwise")
     logs.add_argument("-n", dest="lines", type=int, default=100, help="lines to print")
     logs.add_argument("-f", "--follow", action="store_true", help="keep printing new lines")
+    logs.add_argument("--issue", metavar="KEY", help="only the lines that name this issue")
+    peek = add("peek", "Print the tail of an issue's live session")
+    peek.add_argument("key", help="issue key, e.g. NF-12")
+    peek.add_argument("-n", dest="lines", type=int, default=40, help="lines to print")
     perms = add("permissions", "Summarise the auto-mode blocks and prompts sessions met")
     perms.add_argument("action", choices=["report"], help="what to show")
     perms.add_argument("--days", type=int, default=7, help="how many days back")
@@ -681,10 +699,6 @@ DESKTOP_VERBS = ("ship", "login", "keys", "host")
 def _command(argv: list[str]) -> str | None:
     it = iter(argv)
     for arg in it:
-    logs.add_argument("--issue", metavar="KEY", help="only the lines that name this issue")
-    peek = add("peek", "Print the tail of an issue's live session")
-    peek.add_argument("key", help="issue key, e.g. NF-12")
-    peek.add_argument("-n", dest="lines", type=int, default=40, help="lines to print")
         if arg == "--config":
             next(it, None)
         elif not arg.startswith("-"):
