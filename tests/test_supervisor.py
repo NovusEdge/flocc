@@ -317,8 +317,9 @@ def test_fix_session_is_pointed_at_the_full_check_output(rt):
     assert str(d / "check-output.log") in (d / "check-failure.md").read_text()
 
 
-def test_check_failure_gets_one_fix_then_blocks(rt):
-    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+def test_check_failure_gets_two_fixes_then_blocks(rt):
+    failures = iter(["E1 boom", "E2 bang", "E3 crash"])
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", next(failures))
     add(rt, phase="impl", tester_sha="sha-tests")
     done(rt)
     supervise(rt, current(rt))
@@ -327,8 +328,28 @@ def test_check_failure_gets_one_fix_then_blocks(rt):
     assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
     done(rt)
     supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and current(rt).fix_attempts == 2
+    extra = next(a for a in rt.sessions.started[-1][1] if "E2 bang" in a)
+    assert "An earlier fix round failed with:" in extra and "E1 boom" in extra
+    assert extra.index("E1 boom") < extra.index("E2 bang")
+    done(rt)
+    supervise(rt, current(rt))
     assert current(rt).state == "blocked"
+    assert "The check still fails after 2 fix rounds" in rt.notifier.sent[-1].summary
     assert "flocc release --keep-worktree NF-1" in rt.notifier.sent[-1].action
+
+
+def test_one_check_fix_round_keeps_the_old_behaviour(rt):
+    rt.cfg = replace(rt.cfg, check_fix_rounds=1)
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    assert "The check still fails after 1 fix round:" in rt.notifier.sent[-1].summary
 
 
 def test_publish_that_keeps_failing_blocks(rt):

@@ -297,24 +297,30 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             line = f"{key}: commits without the Flocc trailer: {', '.join(result.untrailed)}"
             ledger.add_digest(rt.con, key, line, rt.now())
         _start_review(rt, claim, issue.title, issue.description, result.url)
-    elif result.status == "check_failed" and claim.fix_attempts == 0:
+    elif result.status == "check_failed" and claim.fix_attempts < rt.cfg.check_fix_rounds:
         extra = f"The check failed with:\n\n{result.detail}"
         if result.log:
             log = state_dir(rt.cfg, key) / CHECK_OUTPUT
             log.write_text(result.log)
             extra += f"\n\nThis is an excerpt; the full output is in {log}."
-        (state_dir(rt.cfg, key) / FIX_CONTEXT).write_text(extra)
+        context = state_dir(rt.cfg, key) / FIX_CONTEXT
+        if claim.fix_attempts > 0 and context.exists():
+            extra = f"An earlier fix round failed with:\n\n{context.read_text()}\n\n{extra}"
+        context.write_text(extra)
         start = rt.now()
         launch(rt, claim, "fix", extra=extra, started_at=start)
-        ledger.update_claim(rt.con, key, phase="fix", fix_attempts=1, restarts=0, started_at=start)
+        ledger.update_claim(
+            rt.con, key, phase="fix", fix_attempts=claim.fix_attempts + 1, restarts=0, started_at=start
+        )
     elif result.status == "check_failed":
         if result.log:
             (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
+        rounds = f"{claim.fix_attempts} fix round{'s' * (claim.fix_attempts != 1)}"
         _block(
             rt,
             claim,
             "check-failed",
-            f"The check still fails after one fix:\n{result.detail}",
+            f"The check still fails after {rounds}:\n{result.detail}",
             f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
         )
     else:
