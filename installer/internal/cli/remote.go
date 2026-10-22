@@ -263,7 +263,7 @@ func onAll(ctx context.Context, d *deps, args []string) int {
 		d.ui.Group(h.Name)
 		ui.Rows(d.ui, o.rows)
 		if o.text != "" {
-			d.ui.Note(h.Name, o.text)
+			d.ui.Note("", o.text)
 		}
 		if o.todo != "" {
 			d.ui.Todo(o.todo)

@@ -434,7 +434,7 @@ func TestDashHAllDoctorFallsBackToTextForAnOlderHost(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	a := groups(f.rec)["a"]
-	if len(a) != 1 || a[0].Kind != ui.KNote || a[0].Text != "ok    config: /x" {
+	if len(a) != 1 || a[0].Kind != ui.KNote || a[0].Text != "ok    config: /x" || a[0].Name != "" {
 		t.Fatalf("%+v", a)
 	}
 	if !slices.Equal(f.rec.Todos, []string{"flocc ship -H a to update it"}) {
