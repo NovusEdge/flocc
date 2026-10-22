@@ -124,15 +124,20 @@ func (u *urlWatch) Write(p []byte) (int, error) {
 // OpenURL opens u in the desktop's browser and prints it as a QR code for a phone. ssh -t holds
 // this terminal in raw mode; qr.Write ends its lines with \r\n for that.
 func OpenURL(u string) {
+	Browse(u)
+	if err := qr.Write(os.Stderr, u); err != nil {
+		fmt.Fprintf(os.Stderr, "\r\nno QR code: %v\r\n", err)
+	}
+}
+
+// Browse opens u in the desktop's browser and draws nothing, so a session on the terminal keeps it.
+func Browse(u string) {
 	opener := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		opener = "open"
 	}
 	if cmd := exec.Command(opener, u); cmd.Start() == nil {
 		go cmd.Wait()
-	}
-	if err := qr.Write(os.Stderr, u); err != nil {
-		fmt.Fprintf(os.Stderr, "\r\nno QR code: %v\r\n", err)
 	}
 }
 

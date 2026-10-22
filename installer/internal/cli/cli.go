@@ -87,7 +87,8 @@ func Main(args []string) int {
 		run: host.Exec{}, tty: st != nil && st.Mode()&os.ModeCharDevice != 0, resolve: ship.Resolve,
 		fleet: func(ctx context.Context, s ui.Session, args []string) int { return ship.Fleet(ctx, s, args) }}
 	d.store = sync.OnceValue(func() keys.Store { return keys.Open(home, notes{d}) })
-	d.open = ship.OpenURL
+	// Key pages are made on the desktop; only a host login, which a phone may finish, gets a QR code.
+	d.open = ship.Browse
 	d.http = &http.Client{Timeout: 30 * time.Second}
 	d.githubAPI, d.linearAPI, d.ntfyBase = githubapi.DefaultBase, linearapi.DefaultURL, "https://ntfy.sh"
 	d.newTopic = answers.RandomTopic
