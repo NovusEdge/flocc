@@ -20,7 +20,13 @@ from flocc.gate import (
 )
 from flocc.ledger import Claim
 from flocc.linear import LinearError
-from flocc.publisher import BranchMoved, amended_section, read_amended, review_comment
+from flocc.publisher import (
+    BranchMoved,
+    amended_section,
+    pr_title,
+    read_amended,
+    review_comment,
+)
 from flocc.sessions import (
     allowed_plugins,
     claude_argv,
@@ -373,12 +379,13 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         # Kept apart from later check-fix summaries, which would overwrite it.
         (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[found.start() :].lstrip())
     issue = rt.linear.issue(key)
+    title = pr_title(key, issue.title, issue.labels)
     try:
         # After a review fix the PR must still be open: a new one would reopen finished work.
         result = (
-            rt.publish_fn(claim, issue.title, summary, reuse_only=True)
+            rt.publish_fn(claim, title, summary, reuse_only=True)
             if review_fix
-            else rt.publish_fn(claim, issue.title, summary)
+            else rt.publish_fn(claim, title, summary)
         )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
         _publish_failed(rt, claim, exc)

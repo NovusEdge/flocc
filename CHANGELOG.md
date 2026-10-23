@@ -15,6 +15,8 @@ main's problems.
 - A review that asks for changes starts one fix session on the same branch with the review as its
   context. The fix pushes to the open PR, a second review follows, and what needs the owner is
   listed in the issue comment. Skipped over the usage limits.
+- PR titles carry a Conventional Commits type, `feat: <title> (NF-…)`, with `fix` for a Bug label
+  and `chore` for a Chore label, so a repo's semantic title check passes.
 - A killed `flocc canary` no longer leaves `./setup` running; `run_bounded` kills its child's
   process group when interrupted, and the poller removes stray `.canary-*` directories.
 - Host file `playwright = "<version>"` installs chromium's system libraries and fonts on apt
