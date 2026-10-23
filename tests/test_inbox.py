@@ -5,8 +5,15 @@ from flocc import inbox
 
 def _add(con, root, to="NF-2", body="hello", sender="NF-1@h1", kind="direct", now=100.0):
     return inbox.add(
-        con, root, to_issue=to, sender=sender, token_id="host:h1", kind=kind, body=body,
-        meta={"to": to}, now=now,
+        con,
+        root,
+        to_issue=to,
+        sender=sender,
+        token_id="host:h1",
+        kind=kind,
+        body=body,
+        meta={"to": to},
+        now=now,
     )
 
 
@@ -80,7 +87,10 @@ def test_settle_rejects_closed_issues_and_expires_old_rows(tmp_path):
     kept = _add(con, tmp_path, to="NF-5")
     now = inbox.EXPIRE_S + 50.0
     assert inbox.settle(con, now, {"NF-3": "completed"}) == 2
-    assert (inbox.get(con, done).state, inbox.get(con, done).reason) == ("REJECTED", "issue is Done")
+    assert (inbox.get(con, done).state, inbox.get(con, done).reason) == (
+        "REJECTED",
+        "issue is Done",
+    )
     assert inbox.get(con, old).state == "FAILED"
     assert inbox.get(con, kept).state == "SUBMITTED"
 

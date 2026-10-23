@@ -71,9 +71,7 @@ def connect(path: Path) -> sqlite3.Connection:
     return con
 
 
-_COLS = (
-    "task_id, to_issue, sender, token_id, kind, body, meta, created, delivered, state, reply, reason"
-)
+_COLS = "task_id, to_issue, sender, token_id, kind, body, meta, created, delivered, state, reply, reason"
 
 
 def _msg(row: sqlite3.Row) -> Message:
@@ -110,7 +108,9 @@ def sent_since(con, token_id: str, sender: str, since: float) -> int:
 
 
 def _attr(value: str) -> str:
-    return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+    )
 
 
 def wrap(msg: Message) -> str:

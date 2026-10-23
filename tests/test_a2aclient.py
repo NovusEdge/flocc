@@ -1,6 +1,7 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import ClassVar
 
 import pytest
 
@@ -34,7 +35,7 @@ def test_missing_file_is_not_configured(tmp_path):
 
 
 class _Fake(BaseHTTPRequestHandler):
-    seen: list = []
+    seen: ClassVar[list] = []
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -46,8 +47,15 @@ class _Fake(BaseHTTPRequestHandler):
         if self.path == "/tasks/missing":
             self._reply(404, {"error": {"code": 404, "message": "Task not found"}})
         else:
-            card = {"skills": [{"id": "NF-1", "name": "Fix", "tags": [
-                "phase:impl", "repo:backend", "live", "path:src/a.py"]}]}
+            card = {
+                "skills": [
+                    {
+                        "id": "NF-1",
+                        "name": "Fix",
+                        "tags": ["phase:impl", "repo:backend", "live", "path:src/a.py"],
+                    }
+                ]
+            }
             self._reply(200, card)
 
     def _reply(self, code, doc):
@@ -96,8 +104,14 @@ def test_a_dead_host_is_unreachable():
 
 def test_claims_reads_the_card(peer):
     (c,) = a2aclient.claims(a2aclient.extended_card(peer, "tok"))
-    assert c == {"issue": "NF-1", "title": "Fix", "phase": "impl", "repo": "backend",
-                 "paths": ["src/a.py"], "live": True}
+    assert c == {
+        "issue": "NF-1",
+        "title": "Fix",
+        "phase": "impl",
+        "repo": "backend",
+        "paths": ["src/a.py"],
+        "live": True,
+    }
 
 
 def test_reply_text():
