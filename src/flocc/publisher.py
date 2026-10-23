@@ -265,6 +265,19 @@ def review_comment(review: str) -> str:
     return body[: COMMENT_LIMIT - len(_TRUNCATED)] + _TRUNCATED
 
 
+def pr_view(claim: Claim, url: str, token: str, runner=subprocess.run) -> dict:
+    out = runner(
+        ["gh", "pr", "view", url, "--json", "state,mergedAt,files"],
+        # A finished claim's worktree may already be reaped.
+        cwd=claim.worktree if Path(claim.worktree).exists() else None,
+        env={**os.environ, "GH_TOKEN": token},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(out.stdout)
+
+
 def comment_on_pr(claim: Claim, url: str, body: str, token: str, runner=subprocess.run) -> None:
     # The body goes in on stdin: a long review would otherwise ride on the command line.
     runner(
