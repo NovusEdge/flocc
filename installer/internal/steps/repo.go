@@ -47,7 +47,7 @@ func (Repo) Apply(ctx context.Context, e *Env) error {
 	for _, c := range []host.Cmd{
 		// Go is only for building flocc-setup on the desktop; the host does not need it.
 		{Name: "./setup", Dir: dir, Env: []string{"MISE_DISABLE_TOOLS=go"}},
-		{Name: e.Real(".local/bin/mise"), Args: []string{"exec", "--", "uv", "tool", "install", "--force", "--editable", "."}, Dir: dir},
+		{Name: e.Real(".local/bin/mise"), Args: []string{"exec", "--", "uv", "tool", "install", "--force", "--editable", ".[a2a]"}, Dir: dir},
 	} {
 		if err := e.SpinCmd(ctx, c); err != nil {
 			return err
