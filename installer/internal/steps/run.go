@@ -41,6 +41,16 @@ func timerOn(ctx context.Context, e *Env) bool {
 	return err == nil && r.Code == 0
 }
 
+// ForgetHolds lifts every broken-main hold: a ship may have fixed the host or the checkout, and
+// the next issue's ./setup tests main again. It runs on every ship, not in Run.Apply, which a
+// healthy host skips. A failure (an older flocc without the flag) must not fail the ship.
+func ForgetHolds(ctx context.Context, e *Env) {
+	r, err := e.Run.Run(ctx, host.Cmd{Name: e.Real(".local/bin/flocc"), Args: []string{"canary", "--forget"}, Env: []string{ServicePath(e.Home)}})
+	if err == nil && r.Code == 0 && strings.TrimSpace(r.Stdout) != "" {
+		e.UI.Note("flocc canary --forget", r.Stdout)
+	}
+}
+
 func (Run) Name() string { return "Run" }
 
 func (e *Env) userctl(args ...string) host.Cmd {

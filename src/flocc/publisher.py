@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shlex
@@ -6,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from flocc.config import TRAILER, RepoConfig
+from flocc.gate import AMENDED
 from flocc.ledger import Claim
 from flocc.worktree import changed_files, git, run_bounded
 
@@ -56,6 +58,60 @@ def failure_excerpt(out: str, limit: int = _TAIL) -> str:
     return text if len(text) <= limit else text[: limit - 4] + "\n..."
 
 
+def read_amended(state: Path) -> dict[str, dict]:
+    try:
+        data = json.loads((state / AMENDED).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def amended_section(amended: dict[str, dict] | None) -> str:
+    if not amended:
+        return ""
+    lines = "\n".join(f"- `{path}`: {entry.get('reason', '')}" for path, entry in amended.items())
+    return f"\n\n## Amended tests\n\nThe implementer changed these tester files, with these reasons:\n\n{lines}"
+
+
+# describe() groups tests without being one: renaming a group drops no test.
+_TEST_NAME = re.compile(
+    r"^\s*(?:(?:async\s+)?def (test_\w*)|func (Test\w*)"
+    r"|(?:test|it)(?:\.\w+)*\(\s*(['\"`])(.+?)\3)"
+)
+# Each form is tied to a test framework's own name, so .iter().skip(1) or client.todo(3) in the
+# code under test does not read as a skipped test.
+_SKIPS_TEST = re.compile(
+    r"pytest\.mark\.(?:skip|skipif|xfail)\b|pytest\.(?:skip|xfail|importorskip)\("
+    r"|unittest\.(?:skip|skipIf|skipUnless|expectedFailure)\b"
+    r"|@(?:skip|skipIf|skipUnless|expectedFailure)\b|self\.skipTest\("
+    r"|\b(?:test|it|describe)\.(?:skip|only|todo|skipIf|fails)\b|\bx(?:it|test|describe)\("
+    r"|\bt\.Skip(?:f|Now)?\("
+)
+
+
+def _test_names(lines: list[str]) -> set[str]:
+    return {m[1] or m[2] or m[4] for line in lines if (m := _TEST_NAME.match(line))}
+
+
+def weakens_test(wt: Path, since: str, path: str) -> str | None:
+    """Why the change to a tester's file since `since` drops or disables a test, if it does.
+
+    Not covered: subtests, parametrize cases and a test wrapped in a comment; the reviewer reads
+    the amendment diff for those."""
+    diff = git("diff", "-U0", f"{since}..HEAD", "--", path, cwd=wt)
+    removed = [x[1:] for x in diff.splitlines() if x.startswith("-") and not x.startswith("---")]
+    added = [x[1:] for x in diff.splitlines() if x.startswith("+") and not x.startswith("+++")]
+    # First: a skip wrapper such as it.skipIf(c)('a') hides the name, which would read as removal.
+    if sum(map(bool, map(_SKIPS_TEST.search, added))) > sum(
+        map(bool, map(_SKIPS_TEST.search, removed))
+    ):
+        return "skips a test"
+    # Names, not counts: a test renamed in place leaves the counts level and still loses a test.
+    if _test_names(removed) - _test_names(added):
+        return "removes a test"
+    return None
+
+
 def publish(
     claim: Claim,
     repo: RepoConfig,
@@ -66,14 +122,22 @@ def publish(
     check_timeout_s: float = 1800,
     trailer: bool = True,
     accepted_sha: str | None = None,
+    amended: dict[str, dict] | None = None,
 ) -> PublishResult:
     wt = Path(claim.worktree)
     if claim.base_sha is None or claim.tester_sha is None:
         raise ValueError(f"{claim.issue_key} has no recorded tester commit to guard")
     tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
-    touched = changed_files(wt, accepted_sha or claim.tester_sha, "HEAD") & tester_files
-    if touched:
-        return PublishResult("tests_touched", ", ".join(sorted(touched)))
+    since = accepted_sha or claim.tester_sha
+    touched = changed_files(wt, since, "HEAD") & tester_files
+    weakened = {}
+    for path in touched & set(amended or {}):
+        if why := weakens_test(wt, since, path):
+            weakened[path] = why
+    touched -= set(amended or {})
+    if touched or weakened:
+        parts = [*sorted(touched), *(f"{p} {why}" for p, why in sorted(weakened.items()))]
+        return PublishResult("tests_touched", ", ".join(parts))
     # Only commits are pushed, and the guard above compares commits only; a check on the working
     # tree would pass on files the PR leaves out.
     dirty = git("status", "--porcelain", cwd=wt)
@@ -159,7 +223,7 @@ def publish(
             "--title",
             f"{claim.issue_key}: {title}",
             "--body",
-            f"Fixes {claim.issue_key}\n\n{summary}",
+            f"Fixes {claim.issue_key}\n\n{summary}{amended_section(amended)}",
         ],
         cwd=wt,
         env=env,

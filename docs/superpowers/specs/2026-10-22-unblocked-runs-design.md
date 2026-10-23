@@ -107,6 +107,32 @@ flocc-nimble's host file has no `[permissions]` table. Write the environment lin
 design proposes ("Each session runs in a disposable VM…") and ship them. After a week, turn
 `flocc permissions report` into exact allow rules. This is configuration, not code.
 
+## Revisions after review, 2026-10-23
+
+A Fable review of this spec, both plans and the shipped code changed these, with the owner's
+agreement:
+
+- Change 4 asks no one. The implementer fixes a tester's test that contradicts the criteria or
+  the real API, records why with `flocc tests-amended <path> --reason`, and goes on. The publisher
+  refuses only an amendment that removes or skips a test; the PR's "Amended tests" section and the
+  reviewer cover the rest, and the owner sees it at merge. Matching an answered question to file
+  paths broke on rephrasing and made every amendment wait for the owner.
+- A setup timeout does not mark main broken: a slow setup is the host's (cold caches), not main's.
+- Every `flocc ship` clears the broken-main marks, since a host fix moves no commit.
+- A second fix round that fails the same way as the first blocks at once: the cause is outside
+  the code.
+- The wall clock does not stop a session while it waits on an open question.
+- A run stopped by the wall clock with new commits restarts once on its own.
+- "Done when" and "Definition of done" headings count as acceptance criteria.
+- Skill wording: a change on the issue's branch is reversible, so the agent decides and records
+  it; "irreversible" means effects outside the branch. Implementers shrink a plan that does not
+  fit instead of asking, and leave second-round review findings to the PR reviewer.
+- Two environment lines: registries and the check command are routine, and `~/.config/flocc`
+  holds the service's credentials.
+
+Not built, by the same review: the permission judge, a scheduled canary, a longer wall clock,
+wildcard allow rules.
+
 ## Order and measure
 
 1 and 2 first (the 10 setup stops and the 3 e2e check failures, 13 of the 18 stops whose cause is

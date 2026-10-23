@@ -273,6 +273,9 @@ func run(args []string) int {
 		list = steps.RootSteps()
 	}
 	err = steps.RunAll(ctx, env, list)
+	if err == nil && *phase == "service" {
+		steps.ForgetHolds(ctx, env)
+	}
 	if err == nil && *phase == "root" {
 		var piped io.Reader
 		if fromStdin {

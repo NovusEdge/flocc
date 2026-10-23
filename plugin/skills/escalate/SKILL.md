@@ -12,6 +12,10 @@ Most uncertainty is yours to resolve. Escalate only by this table.
 | 3 | Something the owner should read later: a reversible choice you made, a limitation | `--tier 3 --cause <id> --summary '...'` |
 | 4 | Anything else | Do not escalate |
 
+A change on the issue's branch is reversible: the owner reviews the PR before anything merges. So
+for a choice that only shapes the branch, choose, record it at tier 3 and carry on. "Irreversible"
+means effects outside the branch: data, other repos, shared infrastructure.
+
 ## Asking the owner directly
 
 For a decision you cannot go on without (what tier 2 `--waiting` was for), ask with

@@ -10,7 +10,7 @@ Check each condition. The host starts an issue only when all hold.
 2. It carries the `claude` label, or whatever `trigger_label` is set to.
 3. It is in an unstarted state such as Todo, in the host's team.
 4. A label or the Linear project is named exactly like a repository mapped on that host. If none matches, the service comments "No configured repo matches this issue's labels or project" once, unless `skip_unmapped = true`.
-5. The description has an `Acceptance criteria` heading followed by a list. If not, the service comments once and skips the issue until the description changes.
+5. The description has an `Acceptance criteria`, `Done when` or `Definition of done` heading followed by a list. If not, the service comments once and skips the issue until the description changes.
 6. The `agent` block, if any, parses. An unknown key, a `wall_clock` that is not like `90m` or `2h`, a missing closing fence or an `mcp` server the host does not configure gets a "Skipping:" comment.
 7. Admission allows it: the host is under `session_cap`, usage is below `five_hour_max_pct` and `weekly_max_pct`, free disk is above `min_free_disk_gb`, its `paths` do not overlap a live claim, and every `depends_on` issue is done. `flocc -H <host> logs` prints `held, <reason>` for an issue that waits.
 
@@ -21,6 +21,10 @@ If the host's tick has not run, `flocc -H <host> status` shows the last tick. In
 The claim stays until you release it. Fix what the issue's comment or the digest names, then move the issue back to Todo or run `flocc release ENG-12`. The next tick restarts it on the kept branch. A move to Todo while the run is still going does nothing.
 
 A run that touched files the tester committed is refused at publish. Run `flocc release ENG-12 --accept-tests` to approve the tester's files as they stand on the branch.
+
+A tester file the implementer fixed because its test was wrong, and recorded with `flocc tests-amended <path> --reason ...`, does not block. It goes into the PR's "Amended tests" section with the reason, and the reviewer judges it. An amendment that removes or skips a test blocks, and so does any touched tester file that is not recorded.
+
+A failed check gets `check_fix_rounds` (default 2) fix sessions before the claim blocks.
 
 A failed `./setup` or a worktree that is not clean after `./setup` fails the start of the issue with a tier 2 escalation. Gitignore everything `./setup` and the check write.
 

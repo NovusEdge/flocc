@@ -325,6 +325,13 @@ def _check_hook_blocks(origin, tmp_path, root):
     assert changed_files(path, base, "HEAD") == {"ok.txt"}
 
 
+def test_changed_files_reports_both_sides_of_a_rename(origin, tmp_path):
+    path, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    git("mv", "a.txt", "old.txt", cwd=path)
+    git("commit", "-qam", "rename", cwd=path)
+    assert changed_files(path, base, "HEAD") == {"a.txt", "old.txt"}
+
+
 def test_reinstalled_hook_still_chains_to_the_repo_hook_once(origin, tmp_path):
     path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     repo_hook = origin / ".git" / "hooks" / "pre-commit"

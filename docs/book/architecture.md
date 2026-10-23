@@ -50,7 +50,7 @@ A session's state lives outside its context: commits in the worktree, a handoff 
 |---|---|
 | Session process gone while its claim is live | Restart once from the latest handoff note. On a second failure, `needs-decision` and a tier 2 escalation |
 | Wall-clock limit reached | Kill the session, keep the branch, report in the digest |
-| The check fails | One fresh implementer session with the failure output. On a second failure, `needs-decision` |
+| The check fails | Up to `check_fix_rounds` (default 2) fresh implementer sessions, each with the failure output. After the last one fails, `needs-decision` |
 | Usage limit hit mid-run | The session waits for the reset. Nothing new is admitted until usage is below the thresholds |
 | Agent needs a decision | It escalates with a default and a deadline and continues on the default, unless the decision is irreversible |
 | A Linear, git or tmux call fails partway through a step | The claim's state changes only after the step's side effects succeed, so the next tick repeats the step |

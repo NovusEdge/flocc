@@ -73,6 +73,42 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
     ledger.clear_issue_alerts(rt.con, claim.issue_key)
 
 
+def restart_timed_out(rt) -> None:
+    """Sends a run that hit the wall clock after committing back to Todo, once per issue."""
+    for claim in ledger.finished_claims(rt.con):
+        key = claim.issue_key
+        once = f"timeout_restart:{key}"
+        wt = Path(claim.worktree)
+        # A tester's commits were never remembered, so a rerun from "test" would find none.
+        if claim.state != "timed_out" or claim.phase not in ("impl", "fix"):
+            continue
+        if claim.base_sha is None or not wt.exists():
+            continue
+        if ledger.meta_get(rt.con, once):
+            continue
+        try:
+            stamps = git("log", "--format=%ct", claim.branch, "--not", claim.base_sha, cwd=wt)
+            if not any(float(s) > claim.started_at for s in stamps.split()):
+                continue
+            # An issue since parked, unlabelled or closed is no longer wanted; releasing it would
+            # strand its worktree with nothing to pick it up again.
+            if rt.linear.state_types([key])[key] != "started":
+                continue
+            if rt.cfg.trigger_label not in rt.linear.issue(key).labels:
+                continue
+        except (subprocess.CalledProcessError, OSError, LinearError, KeyError, ValueError) as exc:
+            print(f"restart: {key} not checked: {exc}", file=sys.stderr)
+            continue
+        # Recorded first: a release that fails halfway must not restart the issue every tick.
+        ledger.meta_set(rt.con, once, "1")
+        text = "stopped at the wall-clock limit with new commits; restarting once"
+        try:
+            rt.linear.comment(claim.issue_id, text)
+        except LinearError as exc:
+            print(f"restart: {key} not commented: {exc}", file=sys.stderr)
+        release_claim(rt, claim, keep_worktree=True, to_todo=True)
+
+
 def reap_worktrees(rt) -> None:
     """Removes the worktrees of finished runs whose issue is closed; the branch stays."""
     # Caches a killed tick left behind; setup runs under the tick lock, so none is in use here.
@@ -195,8 +231,8 @@ def poll(rt) -> None:
                 rt,
                 issue,
                 f"{issue.key}:no-criteria",
-                "Skipping until the description has an 'Acceptance criteria' heading"
-                " followed by a list.",
+                "Skipping until the description has an 'Acceptance criteria', 'Done when' or"
+                " 'Definition of done' heading followed by a list.",
             )
             continue
         try:
@@ -265,7 +301,10 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         # failure, and every issue would repeat it. A git failure (a fetch on a network blip)
         # says nothing about main. Before the dedupe below: a mark must land even when this
         # issue's own alert is recent.
-        setup_failed = isinstance(exc, DirtyWorktree) or getattr(exc, "cmd", None) == ["./setup"]
+        # A timeout is a slow host as often as a broken main; it stays this issue's problem.
+        setup_failed = isinstance(exc, DirtyWorktree) or (
+            isinstance(exc, subprocess.CalledProcessError) and exc.cmd == ["./setup"]
+        )
         base = None
         if setup_failed and not reused:
             base = head_at_base(cfg.repos[repo], cfg.worktree_root.resolve() / issue.key)
@@ -331,6 +370,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         "asking-escalated",
         "idle",
         "idle-escalated",
+        "asked-seconds",
     ):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
@@ -352,6 +392,10 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
             ledger.remember_tests(rt.con, issue.key, *remembered)
     if remembered and contains(path, remembered[1]):
         (base, tester_sha), phase = remembered, "impl"
+    # A run resuming at the implementer still needs the first run's amendments, or the guard
+    # blocks them; a run that starts at the tester has none.
+    if phase == "test":
+        (d / "tests-amended.json").unlink(missing_ok=True)
     claim = Claim(
         issue_key=issue.key,
         issue_id=issue.id,

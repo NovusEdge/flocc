@@ -150,6 +150,41 @@ def _shared_paths(args, repo: str) -> tuple[str, ...]:
     return cfg.repos[repo].shared_paths if repo in cfg.repos else ()
 
 
+def cmd_tests_amended(args) -> int:
+    from flocc.worktree import changed_files
+
+    state = _state_dir()
+    claim = ledger.get_claim(_ledger(args), state.name)
+    if claim is None or claim.base_sha is None or claim.tester_sha is None:
+        print(
+            f"tests-amended: no live claim with a tester commit for {state.name}", file=sys.stderr
+        )
+        return 1
+    tester_files = changed_files(Path(claim.worktree), claim.base_sha, claim.tester_sha)
+    foreign = [p for p in args.paths if p not in tester_files]
+    if foreign:
+        print(
+            f"tests-amended: {', '.join(foreign)} not among the files the tester committed",
+            file=sys.stderr,
+        )
+        return 2
+    path = state / gate.AMENDED
+    try:
+        recorded = json.loads(path.read_text())
+    except (OSError, ValueError):
+        recorded = {}
+    if not isinstance(recorded, dict):
+        recorded = {}
+    for p in args.paths:
+        recorded[p] = {"reason": args.reason}
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(recorded))
+    os.replace(tmp, path)
+    n = len(args.paths)
+    print(f"recorded {n} amended test file{'s' * (n != 1)}")
+    return 0
+
+
 def cmd_claim(args) -> int:
     key = _state_dir().name
     for glob in args.globs:
@@ -257,7 +292,7 @@ def cmd_gate(args) -> int:
                 agent_type = str(_hook_input().get("agent_type", ""))
                 gate.record_stop(state, run, time.time(), agent_type, phase)
             else:
-                gate.clear_question(state)
+                gate.clear_question(state, time.time())
         except Exception as exc:  # noqa: BLE001 - must not block the stop
             print(f"flocc gate could not record the event: {exc}", file=sys.stderr)
             return 1
@@ -461,6 +496,13 @@ def cmd_canary(args) -> int:
     from flocc.tick import tick_lock
 
     cfg, _ = _config(args)
+    if args.forget:
+        n = canary.forget_all(ledger.connect(cfg.ledger_path))
+        print(f"canary: cleared {n} main-broken hold{'s' * (n != 1)}")
+        return 0
+    if args.repo is None:
+        print("canary: name a repo, or pass --forget", file=sys.stderr)
+        return 2
     if args.repo not in cfg.repos:
         print(
             f"canary: no repo {args.repo} in the config ({', '.join(cfg.repos)})", file=sys.stderr
@@ -695,6 +737,7 @@ COMMANDS = {
     "escalate": cmd_escalate,
     "hook": cmd_hook,
     "claim": cmd_claim,
+    "tests-amended": cmd_tests_amended,
     "context": cmd_context,
     "gate": cmd_gate,
     "idle": cmd_idle,
@@ -752,6 +795,9 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("message_file", nargs="?", help="commit message file (commit-msg)")
     claim = add("claim", "Claim file globs for this issue")
     claim.add_argument("globs", nargs="+", help="file globs to claim")
+    amended = add("tests-amended", "Declare tester files you changed because a test was wrong")
+    amended.add_argument("paths", nargs="+", help="repo-relative paths of the amended tester files")
+    amended.add_argument("--reason", required=True, help="why the test was wrong")
     add("context", "Print the issue's claims and context")
     gate = add("gate", "Hook: allow or refuse a subagent or workflow launch, track questions")
     which = gate.add_mutually_exclusive_group()
@@ -780,7 +826,8 @@ def build_parser() -> argparse.ArgumentParser:
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )
-    can.add_argument("repo", help="repo name from the config")
+    can.add_argument("repo", nargs="?", help="repo name from the config")
+    can.add_argument("--forget", action="store_true", help="clear every repo's broken-main hold")
     doctor = add("doctor", "Check config and host setup")
     doctor.add_argument("--json", action="store_true", help="print the checks as JSON")
     status = add("status", "Show claims, last tick, usage and disk")

@@ -37,6 +37,8 @@ CATALOGUE = frozenset(a for b in BUDGETS.values() for a in b.agents)
 GRANTABLE = frozenset({"not-allowed", "launches", "workflow"})
 LAUNCH_GRANTS_ENV = "FLOCC_LAUNCH_GRANTS"
 LOG = "launches.jsonl"
+AMENDED = "tests-amended.json"
+ASKED = "asked-seconds"
 
 
 @dataclass(frozen=True)
@@ -257,7 +259,16 @@ def note_question(state: Path, payload: dict, now: float) -> None:
     os.replace(tmp, state / "asking")
 
 
-def clear_question(state: Path) -> None:
+def clear_question(state: Path, now: float | None = None) -> None:
+    """With `now`, the time the question was open is added to asked-seconds, which the wall
+    clock gives back. Launch clears without it: a dead session's question was never answered."""
+    if now is not None:
+        try:
+            opened = float(json.loads((state / "asking").read_text())["at"])
+            credited = float((state / ASKED).read_text() or 0) if (state / ASKED).exists() else 0.0
+            (state / ASKED).write_text(str(round(credited + max(now - opened, 0.0))))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     for name in ("asking", "asking-escalated"):
         (state / name).unlink(missing_ok=True)
 
