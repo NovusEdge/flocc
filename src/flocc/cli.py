@@ -599,6 +599,8 @@ def cmd_status(args) -> int:
         print(f"  usage 5h {_pct(u['five_hour_pct'])}  wk {_pct(u['weekly_pct'])}")
     if report["disk"]:
         print(f"  disk {report['disk']['free_bytes'] / 2**30:.1f} GiB free")
+    if report.get("a2a"):
+        print(f"  a2a service {report['a2a']}")
     return 0
 
 

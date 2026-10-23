@@ -110,6 +110,15 @@ class Linear:
         )
         return _issue(data["issue"])
 
+    def blocked_issues(self, key: str) -> list[Issue]:
+        data = self._post(
+            f"""query($id: String!) {{ issue(id: $id) {{ relations {{ nodes {{
+                 type relatedIssue {{ {_ISSUE_FIELDS} }} }} }} }} }}""",
+            {"id": key},
+        )
+        nodes = data["issue"]["relations"]["nodes"]
+        return [_issue(n["relatedIssue"]) for n in nodes if n["type"] == "blocks"]
+
     def state_types(self, keys) -> dict[str, str]:
         query = "query($id: String!) { issue(id: $id) { identifier state { type } } }"
         out = {}

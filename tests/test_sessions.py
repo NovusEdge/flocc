@@ -68,7 +68,7 @@ def test_argv_wraps_claude_in_a_clean_env():
 
 def test_session_settings_drop_attribution_and_deny_no_verify_commits():
     argv = claude_argv(CFG, "NF-1", IssueSettings(), "p", env=STATE, claude_exe="c", exe="x")
-    settings =json.loads(argv[argv.index("--settings") + 1])
+    settings = json.loads(argv[argv.index("--settings") + 1])
     assert settings["attribution"] is False
     deny = settings["permissions"]["deny"]
     assert "Bash(git commit --no-verify:*)" in deny and "Bash(git commit -n:*)" in deny
@@ -215,7 +215,9 @@ def test_the_hosts_rules_and_environment_reach_the_session():
         permission_allow=("Bash(uv sync --frozen)",),
         permission_environment=("Nothing on this VM is production.",),
     )
-    s = settings_of(claude_argv(cfg, "NF-1", IssueSettings(), "p", env=STATE, claude_exe="c", exe="x"))
+    s = settings_of(
+        claude_argv(cfg, "NF-1", IssueSettings(), "p", env=STATE, claude_exe="c", exe="x")
+    )
     assert s["permissions"]["allow"] == ["Bash(uv sync --frozen)", *A2A_TOOLS]
     assert "Bash(claude:*)" in s["permissions"]["deny"]
     assert s["autoMode"] == {"environment": ["$defaults", "Nothing on this VM is production."]}

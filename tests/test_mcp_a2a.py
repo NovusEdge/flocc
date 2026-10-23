@@ -77,7 +77,7 @@ def test_send_goes_to_the_host_holding_the_claim(fake):
 
 
 def test_send_to_an_unclaimed_issue_needs_a_repo_with_several_hosts(fake):
-    ctx, sent = fake
+    ctx, _ = fake
     with pytest.raises(mcp_a2a.ToolError, match="repo"):
         mcp_a2a.call("send", {"to": "NF-50", "body": "hi"}, ctx)
     assert mcp_a2a.call("send", {"to": "NF-50", "body": "hi", "repo": "web"}, ctx)["host"] == "h2"

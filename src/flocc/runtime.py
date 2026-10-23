@@ -27,3 +27,5 @@ class Runtime:
     review_diff: Callable[[Claim], str]
     comment_pr: Callable[[Claim, str, str], None]
     free_disk_gb: Callable[[Path], float] = free_disk_gb
+    # The PR's state and files; None in tests that never reach the A2A step.
+    pr_view: Callable[[Claim, str], dict] | None = None

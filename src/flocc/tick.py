@@ -7,7 +7,7 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
-from flocc import ledger
+from flocc import a2atick, ledger
 from flocc.config import Config, trailer_enabled
 from flocc.context import state_dir
 from flocc.escalation import Escalation, Notifier, ntfy_push
@@ -21,7 +21,7 @@ from flocc.poller import (
     restart_timed_out,
     route_escalations,
 )
-from flocc.publisher import comment_on_pr, publish, read_amended
+from flocc.publisher import comment_on_pr, pr_view, publish, read_amended
 from flocc.runtime import Runtime
 from flocc.sessions import Sessions
 from flocc.supervisor import supervise
@@ -95,6 +95,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         git_head=lambda path: git("rev-parse", "HEAD", cwd=Path(path)),
         review_diff=review_diff,
         comment_pr=comment_pr,
+        pr_view=lambda claim, url: pr_view(claim, url, token),
     )
 
 
@@ -183,6 +184,8 @@ def tick(cfg: Config, config_path: Path) -> int:
         # Before poll: a rerun's _start drops the old listing, which would orphan its pads.
         clean_scratchpads(rt)
         poll(rt)
+        # After poll, so an issue started this tick counts as live for the record comments.
+        a2atick.step(rt)
         # Before the digest, so a warning written today goes out with today's digest.
         check_tokens(rt)
         check_claude_login(rt)
