@@ -163,7 +163,9 @@ class Linear:
             if n["team"] is None or n["team"]["id"] == issue.team_id
         ]
         if not usable:
-            raise LinearError(f"label {name!r} does not exist; create it in Linear (docs/book/setup/README.md)")
+            raise LinearError(
+                f"label {name!r} does not exist; create it in Linear (docs/book/setup/README.md)"
+            )
         target = usable[0]
         current = data["issue"]["labels"]["nodes"]
         # issue.labels can be stale within a tick.

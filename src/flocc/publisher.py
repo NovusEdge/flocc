@@ -113,6 +113,16 @@ def weakens_test(wt: Path, since: str, path: str) -> str | None:
     return None
 
 
+# Repos gate PR titles on a Conventional Commits type (amannn/action-semantic-pull-request), and a
+# squash merge takes the title as the commit subject.
+_TITLE_TYPE = {"Bug": "fix", "Chore": "chore"}
+
+
+def pr_title(key: str, title: str, labels: tuple[str, ...] = ()) -> str:
+    kind = next((_TITLE_TYPE[x] for x in labels if x in _TITLE_TYPE), "feat")
+    return f"{kind}: {title} ({key})"
+
+
 def publish(
     claim: Claim,
     repo: RepoConfig,
@@ -229,7 +239,7 @@ def publish(
             "--base",
             repo.base_branch,
             "--title",
-            f"{claim.issue_key}: {title}",
+            title,
             "--body",
             f"Fixes {claim.issue_key}\n\n{summary}{amended_section(amended)}",
         ],

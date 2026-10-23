@@ -10,6 +10,7 @@ from flocc.publisher import (
     BranchMoved,
     comment_on_pr,
     failure_excerpt,
+    pr_title,
     publish,
     review_comment,
 )
@@ -55,6 +56,21 @@ def test_opens_draft_pr(origin, tmp_path):
     assert pr[:3] == ["gh", "pr", "create"] and "--draft" in pr
     assert "Fixes NF-5" in pr[pr.index("--body") + 1]
     assert git("ls-remote", "origin", claim.branch, cwd=path)
+
+
+def test_pr_title_has_a_conventional_type_from_the_labels():
+    assert pr_title("NF-1", "Fix rounding", ("v2", "Bug")) == "fix: Fix rounding (NF-1)"
+    assert pr_title("NF-2", "Pool writes", ("Chore", "claude")) == "chore: Pool writes (NF-2)"
+    assert pr_title("NF-3", "Web app: frames", ("Feature",)) == "feat: Web app: frames (NF-3)"
+    assert pr_title("NF-4", "Unlabelled") == "feat: Unlabelled (NF-4)"
+
+
+def test_pr_is_created_with_the_title_as_given(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    gh = Gh()
+    publish(claim, repo, "fix: Rounding (NF-5)", "s", token="t", runner=gh)
+    pr = gh.calls[-1]
+    assert pr[pr.index("--title") + 1] == "fix: Rounding (NF-5)"
 
 
 def test_repo_without_drafts_opens_a_ready_pr(origin, tmp_path):
