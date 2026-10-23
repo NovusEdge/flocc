@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
@@ -74,6 +75,20 @@ func TestHostInstallerIsReadyOnlyInsideTheCheckout(t *testing.T) {
 	d.repoRoot = func() (string, error) { return "/repo", nil }
 	if err := (hostInstaller{d: d}).Ready(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHostInstallerShipTellsTheOwnerToReshipTheOtherHosts(t *testing.T) {
+	d, _, _, rec := shipDeps(t, allKeys)
+	if err := hosts.Save(hosts.Dir(d.home), hosts.Host{Name: "b", SSH: "root@b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := (hostInstaller{d: d}).Ship(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	d.ui.Close()
+	if len(rec.Todos) != 1 || !strings.Contains(rec.Todos[0], "flocc ship -H b") || !strings.Contains(rec.Todos[0], "from a") {
+		t.Fatalf("todos %q", rec.Todos)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,6 +64,12 @@ func TestShipSendsTheHostFileAndTheKeysOnStdinAndDrawsTheSummary(t *testing.T) {
 	if err != nil || a.TeamKey != "NF" || a.NtfyTopic != "flocc-t" || a.Secrets.LinearKey != "lin_api_k" ||
 		a.Secrets.AgentToken != "github_pat_agent" || a.Secrets.PublishToken != "github_pat_publish" {
 		t.Fatalf("%+v %v", a, err)
+	}
+	if f := a.Secrets.A2A; f == nil || f.Name != "a" || f.Token == "" || f.Hosts["a"].URL != "http://a:7443" {
+		t.Fatalf("a2a %+v", f)
+	}
+	if b, err := os.ReadFile(filepath.Join(d.home, ".config", "flocc", "a2a.toml")); err != nil || !strings.Contains(string(b), `name = 'owner'`) {
+		t.Fatalf("desktop file %q %v", b, err)
 	}
 	// The summary names the host, not its ssh destination, in the command it asks for.
 	var out string

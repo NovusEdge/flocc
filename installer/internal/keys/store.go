@@ -2,6 +2,8 @@
 package keys
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,24 @@ const (
 	// and the answers document would refuse a desktop that never made one.
 	Tailscale Slot = "tailscale_oauth"
 )
+
+// A2A tokens are not in Slots: ship makes them itself, so nothing asks the owner for one.
+const A2AOwner Slot = "a2a_owner"
+
+func A2AHost(name string) Slot { return Slot("a2a_host:" + name) }
+
+// EnsureToken returns the slot's token, making and storing a random one first if it has none.
+func EnsureToken(st Store, s Slot) (string, error) {
+	if v, err := st.Get(s); err != nil || v != "" {
+		return v, err
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	v := hex.EncodeToString(b)
+	return v, st.Set(s, v)
+}
 
 // Slots is the required keys in fill order: the publish token's page opens only after the agent
 // token passes.
