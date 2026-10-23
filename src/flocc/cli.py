@@ -251,8 +251,8 @@ def cmd_context(args) -> int:
     peers = [c for c in live if mine and c.repo == mine.repo and c.issue_key != state.name]
     names = ", ".join(session_name(c.issue_key, c.phase) for c in peers) or "none"
     print(
-        f"## Peers in this repo\n\n{names}. ListAgents shows them under generated names; match"
-        " on the tmux session name it lists. Message no other session.\n"
+        f"## Peers in this repo\n\n{names}. The flocc-a2a tool `agents` lists every host's"
+        " issues; message one with `send`.\n"
     )
     g = for_phase(state / "grants.json", os.environ.get("FLOCC_PHASE", ""))
     items = [f"launches {g.launches}"] if g.launches is not None else []
@@ -774,8 +774,15 @@ def cmd_a2a(args) -> int:
     return 0
 
 
+def cmd_mcp_a2a(args) -> int:
+    from flocc import mcp_a2a
+
+    return mcp_a2a.main()
+
+
 COMMANDS = {
     "a2a": cmd_a2a,
+    "mcp-a2a": cmd_mcp_a2a,
     "statusline": cmd_statusline,
     "escalate": cmd_escalate,
     "hook": cmd_hook,
@@ -826,6 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     a2a.add_argument("action", choices=["serve"], help="what to do")
     a2a.add_argument("--bind", default=None, help="address to bind (default: tailscale ip -4)")
     a2a.add_argument("--port", type=int, default=7443, help="port to bind")
+    add("mcp-a2a", "Run the flocc-a2a MCP server on stdio")
     add("statusline", "Record session usage from stdin and print the status line")
     esc = add("escalate", "Record an escalation for the service to route")
     esc.add_argument("--tier", type=int, required=True, help="escalation tier")
