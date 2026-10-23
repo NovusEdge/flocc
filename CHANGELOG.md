@@ -4,7 +4,7 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
-## Unreleased
+## 0.10.0 (2026-10-23)
 
 Host sessions no longer wait silently on a dialog, and runs stop less often on the host's or
 main's problems.
