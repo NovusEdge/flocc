@@ -197,6 +197,17 @@ def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeyp
     assert (d / "handoff.prev.md").read_text() == "the previous claim's notes"
 
 
+def test_a_fresh_claim_gets_its_own_review_fix_round(rt):
+    ledger.meta_set(rt.con, "review_fix:NF-9", "1")
+    ledger.meta_set(rt.con, "review_posted:NF-9:1", "1")
+    ledger.meta_set(rt.con, "review_posted:NF-9:2", "1")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert not ledger.meta_get(rt.con, "review_fix:NF-9")
+    assert not ledger.meta_get(rt.con, "review_posted:NF-9:1")
+    assert not ledger.meta_get(rt.con, "review_posted:NF-9:2")
+
+
 def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": False)
@@ -1044,6 +1055,30 @@ def test_reap_clears_caches_a_killed_setup_left(rt):
     reap_worktrees(rt)
     assert not stale.exists()
     assert shared.exists()
+
+
+def test_reap_removes_stray_canary_dirs_and_prunes_the_repos(rt, monkeypatch):
+    stray = rt.cfg.worktree_root / ".canary-x"
+    stray.mkdir(parents=True)
+    (stray / "file").write_text("x")
+    ran = []
+    next(iter(rt.cfg.repos.values())).path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "flocc.poller.subprocess.run", lambda argv, **kw: ran.append((argv, kw["cwd"]))
+    )
+    reap_worktrees(rt)
+    assert not stray.exists()
+    paths = {repo.path for repo in rt.cfg.repos.values() if repo.path.exists()}
+    assert paths and {cwd for _, cwd in ran} == paths
+    assert all(argv == ["git", "worktree", "prune"] for argv, _ in ran)
+
+
+def test_reap_prune_failure_is_tolerated(rt, monkeypatch):
+    def broken(argv, **kw):
+        raise OSError("no git")
+
+    monkeypatch.setattr("flocc.poller.subprocess.run", broken)
+    reap_worktrees(rt)
 
 
 def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monkeypatch):

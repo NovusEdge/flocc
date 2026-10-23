@@ -12,6 +12,11 @@ main's problems.
 - When `./setup` fails on an untouched checkout of a repo's base branch, the repo's issues are
   held instead of each running setup again every tick, with one comment and push. A new commit
   on the base, 24 hours, or a passing `flocc canary <repo>` lifts the hold.
+- A review that asks for changes starts one fix session on the same branch with the review as its
+  context. The fix pushes to the open PR, a second review follows, and what needs the owner is
+  listed in the issue comment. Skipped over the usage limits.
+- A killed `flocc canary` no longer leaves `./setup` running; `run_bounded` kills its child's
+  process group when interrupted, and the poller removes stray `.canary-*` directories.
 - Host file `playwright = "<version>"` installs chromium's system libraries and fonts on apt
   hosts, `docker = true` installs Docker and adds the service user to its group, and `[tools]`
   sets mise tools' global versions for the service user.

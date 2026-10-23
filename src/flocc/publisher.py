@@ -35,6 +35,7 @@ class PublishResult:
     url: str = ""
     untrailed: tuple[str, ...] = ()  # short SHAs of branch commits without the Flocc trailer
     log: str = ""  # the check's full output, when it ran and failed
+    existing: bool = False  # "opened" by finding the PR that was already open
 
 
 def failure_excerpt(out: str, limit: int = _TAIL) -> str:
@@ -123,6 +124,7 @@ def publish(
     trailer: bool = True,
     accepted_sha: str | None = None,
     amended: dict[str, dict] | None = None,
+    reuse_only: bool = False,
 ) -> PublishResult:
     wt = Path(claim.worktree)
     if claim.base_sha is None or claim.tester_sha is None:
@@ -209,7 +211,13 @@ def publish(
         text=True,
     )
     if existing.stdout.strip():
-        return PublishResult("opened", url=existing.stdout.strip(), untrailed=untrailed)
+        return PublishResult(
+            "opened", url=existing.stdout.strip(), untrailed=untrailed, existing=True
+        )
+    if reuse_only:
+        # A review fix round: the owner closed or merged the PR meanwhile, and a new one on the
+        # same branch would reopen work they just finished.
+        return PublishResult("pr_closed")
     pr = runner(
         [
             "gh",

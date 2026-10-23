@@ -60,7 +60,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
     notifier = Notifier(cfg, con, linear, now=time.time)
     token = cfg.publish_gh_token_file.read_text().strip()
 
-    def publish_fn(claim, title, summary):
+    def publish_fn(claim, title, summary, **kw):
         return publish(
             claim,
             cfg.repos[claim.repo],
@@ -71,6 +71,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
             trailer=trailer_enabled(cfg, cfg.repos[claim.repo]),
             accepted_sha=ledger.accepted_tests(con, claim.issue_key),
             amended=read_amended(state_dir(cfg, claim.issue_key)),
+            **kw,
         )
 
     def review_diff(claim):

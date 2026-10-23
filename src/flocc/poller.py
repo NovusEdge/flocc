@@ -116,6 +116,19 @@ def reap_worktrees(rt) -> None:
         shutil.rmtree(
             stale, onexc=lambda fn, p, exc: print(f"reap: {p} not removed: {exc}", file=sys.stderr)
         )
+    # A canary killed past its finally leaves its checkout; git still lists it until pruned.
+    for stray in rt.cfg.worktree_root.glob(".canary-*"):
+        shutil.rmtree(
+            stray, onexc=lambda fn, p, exc: print(f"reap: {p} not removed: {exc}", file=sys.stderr)
+        )
+    for repo in rt.cfg.repos.values():
+        if repo.path.exists():
+            try:
+                subprocess.run(
+                    ["git", "worktree", "prune"], cwd=repo.path, capture_output=True, check=False
+                )
+            except OSError as exc:
+                print(f"reap: {repo.path} not pruned: {exc}", file=sys.stderr)
     for claim in ledger.finished_claims(rt.con):
         # A removed worktree is not retried: its path is gone, so no Linear call is made.
         if not Path(claim.worktree).exists():
@@ -360,6 +373,11 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     # handoff-ready before the new session wrote its own. Kept for the owner.
     if (d / "handoff.md").exists():
         (d / "handoff.md").replace(d / "handoff.prev.md")
+    # A fresh claim gets its own review fix round.
+    ledger.meta_set(rt.con, f"review_fix:{issue.key}", "")
+    for round_ in (1, 2):
+        ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")
+    (d / "owner-items.md").unlink(missing_ok=True)
     # A previous claim's grants, scratchpads, compaction and question belong to that run; the
     # agent block's grants are written again at launch.
     for stale in (

@@ -15,6 +15,9 @@ Review the branch the implementer pushed. You change nothing: do not edit files,
   amendment's diff yourself for dropped subtests, parametrize cases and tests commented out.
 - Read the repo's `AGENTS.md` and `CLAUDE.md` if present, and check the diff against their
   conventions. Open the surrounding code when the diff alone does not show whether a change is safe.
+- If `review-input.md` has an "Your earlier review" section, a fix round followed it. Judge the new diff against
+  that review's findings: say which are fixed and which remain. The fixer was told to leave
+  findings that need the owner alone, so those are not failures; list them once under `## Minor`.
 - Run the repo's check only if you doubt it passes; the service already ran it before the push.
 - Findings go only in `review.md`. Do not run `flocc escalate`; the PR is already open and
   the owner reads the review.

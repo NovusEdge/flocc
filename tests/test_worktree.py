@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import time
@@ -245,6 +246,35 @@ def test_timeout_returns_while_an_escaped_child_holds_the_output(tmp_path):
     )
     assert time.monotonic() - start < 10
     assert code is None and "started" in out
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_interrupted_run_bounded_kills_the_childs_process_group(tmp_path, monkeypatch):
+    pidfile = tmp_path / "pid"
+    real = subprocess.Popen.communicate
+
+    def interrupted(self, *a, **kw):
+        deadline = time.monotonic() + 5
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run_bounded(["sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"], tmp_path, 60)
+    monkeypatch.setattr(subprocess.Popen, "communicate", real)
+    pid = int(pidfile.read_text())
+    deadline = time.monotonic() + 5
+    while _alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not _alive(pid)
 
 
 def test_failed_setup_carries_its_output(origin, tmp_path):

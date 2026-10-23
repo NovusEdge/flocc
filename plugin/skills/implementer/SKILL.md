@@ -61,10 +61,15 @@ Make the committed tests pass by implementing the behavior.
 
 ## Fix phase
 
-When the service starts you to fix a failed check, the plan, the plan review, waves and wave
+When the service starts you to fix a failed check or a review's findings, the plan, the plan review, waves and wave
 review do not apply. Fix the failure inline; if it is more than a few lines, write the brief to
 `briefs/fix.md` in your state directory and start one `flocc:task-implementer` on it. Then
 write its diff to `waves/fix.diff` and start one `flocc:fix-rereviewer` on that file, giving it the
 failed check output (`check-failure.md` in your state directory) as the single finding; this
 is all the fix phase allows. When the fix is a few lines, skip the `fix-rereviewer`. Then run
 the check and finish with `flocc done`.
+
+When the fix answers a review, fix only what the review asks that is agent work. For a finding
+that needs the owner (a manual run, a product decision, a question for the lead), change nothing
+and put it in the `flocc done` summary, in a paragraph that starts with `Needs the owner:`. Do
+not ask the owner; the summary reaches them on the issue.
