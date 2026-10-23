@@ -2,7 +2,8 @@
 	"tagOwners": {"tag:flocc-host": ["autogroup:admin"]},
 	"hosts": {"laptop": "100.64.0.1", "desktop": "100.64.0.2"},
 	"grants": [
-		{"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]}
+		{"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
+		{"src": ["tag:flocc-host"], "dst": ["tag:flocc-host"], "ip": ["tcp:7443"]}
 	],
 	"ssh": [
 		{"action": "check", "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot", "root"]},
