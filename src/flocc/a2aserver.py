@@ -217,35 +217,21 @@ class Handler(RequestHandler):
             )
         return card
 
-    async def on_list_tasks(self, params, context):
+    async def _unsupported(self, params, context):
         raise UnsupportedOperationError()
 
-    async def on_cancel_task(self, params, context):
-        raise UnsupportedOperationError()
-
-    async def on_message_send_stream(
-        self, params: SendMessageRequest, context: ServerCallContext
+    async def _unsupported_stream(
+        self, params: SendMessageRequest | SubscribeToTaskRequest, context: ServerCallContext
     ) -> AsyncGenerator[Event]:
         raise UnsupportedOperationError()
         yield
 
-    async def on_create_task_push_notification_config(self, params, context):
-        raise UnsupportedOperationError()
-
-    async def on_get_task_push_notification_config(self, params, context):
-        raise UnsupportedOperationError()
-
-    async def on_subscribe_to_task(
-        self, params: SubscribeToTaskRequest, context: ServerCallContext
-    ) -> AsyncGenerator[Event]:
-        raise UnsupportedOperationError()
-        yield
-
-    async def on_list_task_push_notification_configs(self, params, context):
-        raise UnsupportedOperationError()
-
-    async def on_delete_task_push_notification_config(self, params, context):
-        raise UnsupportedOperationError()
+    on_list_tasks = on_cancel_task = _unsupported
+    on_create_task_push_notification_config = _unsupported
+    on_get_task_push_notification_config = _unsupported
+    on_list_task_push_notification_configs = _unsupported
+    on_delete_task_push_notification_config = _unsupported
+    on_message_send_stream = on_subscribe_to_task = _unsupported_stream
 
 
 def public_card(a2a: A2AConfig) -> AgentCard:
