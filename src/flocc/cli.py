@@ -743,7 +743,39 @@ def _age(seconds: float) -> str:
     return f"{seconds / 86400:.0f}d"
 
 
+def cmd_a2a(args) -> int:
+    from flocc.a2aconf import NotConfigured, load
+    from flocc.worktree import git
+
+    cfg, _ = _config(args)
+    try:
+        load()
+    except NotConfigured as exc:
+        # Exit 0: the unit restarts only on failure, and a host shipped without A2A has nothing
+        # to serve.
+        print(f"a2a serve: {exc}; run flocc ship from the desktop", file=sys.stderr)
+        return 0
+    host = args.bind
+    if host is None:
+        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, check=False)
+        host = out.stdout.split()[0] if out.returncode == 0 and out.stdout.split() else None
+    if host is None:
+        print("a2a serve: no tailnet address yet; systemd restarts this", file=sys.stderr)
+        return 1
+    try:
+        from flocc import a2aserver
+    except ImportError:
+        print(
+            "a2a serve: install flocc with the a2a extra: uv tool install '.[a2a]'", file=sys.stderr
+        )
+        return 1
+    a2aserver.write_served(cfg, git("rev-parse", "HEAD", cwd=cfg.plugin_dir.parent))
+    a2aserver.serve(cfg, host, args.port)
+    return 0
+
+
 COMMANDS = {
+    "a2a": cmd_a2a,
     "statusline": cmd_statusline,
     "escalate": cmd_escalate,
     "hook": cmd_hook,
@@ -790,6 +822,10 @@ def build_parser() -> argparse.ArgumentParser:
     def add(name, text):
         return sub.add_parser(name, help=text, description=text)
 
+    a2a = add("a2a", "Serve this host's A2A endpoint on the tailnet")
+    a2a.add_argument("action", choices=["serve"], help="what to do")
+    a2a.add_argument("--bind", default=None, help="address to bind (default: tailscale ip -4)")
+    a2a.add_argument("--port", type=int, default=7443, help="port to bind")
     add("statusline", "Record session usage from stdin and print the status line")
     esc = add("escalate", "Record an escalation for the service to route")
     esc.add_argument("--tier", type=int, required=True, help="escalation tier")
