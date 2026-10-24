@@ -107,14 +107,16 @@ def sent_since(con, token_id: str, sender: str, since: float) -> int:
     return row[0]
 
 
+def _text(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _attr(value: str) -> str:
-    return (
-        value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-    )
+    return _text(value).replace('"', "&quot;")
 
 
 def wrap(msg: Message) -> str:
-    body = msg.body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    body = _text(msg.body)
     head = (
         f'<flocc-message from="{_attr(msg.sender)}" kind="{_attr(msg.kind)}"'
         f' task="{_attr(msg.task_id)}">'
@@ -155,7 +157,7 @@ def digest(con, to_issue: str, now: float, max_lines: int = 20) -> list[str]:
     ).fetchall()
     lines = []
     for r in reversed(rows):
-        first = (r["body"].splitlines() or [""])[0][:200]
+        first = _text((r["body"].splitlines() or [""])[0][:200])
         lines.append(f"- {r['sender']}, {r['kind']}: {first} ({r['task_id']})")
     return lines
 
