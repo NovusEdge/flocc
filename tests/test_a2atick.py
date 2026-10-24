@@ -19,6 +19,11 @@ A2A = A2AConfig(
 )
 
 
+@pytest.fixture(autouse=True)
+def seeded(rt):  # noqa: F811
+    ledger.meta_set(rt.con, a2atick.SEEDED, "1")
+
+
 @pytest.fixture
 def sent(monkeypatch):
     out = []
@@ -114,6 +119,38 @@ def test_failed_sends_stop_after_three_tries(rt, monkeypatch):  # noqa: F811
     for _ in range(5):
         a2atick.step(rt, lambda: A2A)
     assert len(calls) == a2atick.RETRIES
+
+
+def test_the_first_tick_announces_no_historical_pr(rt, sent):  # noqa: F811
+    ledger.meta_set(rt.con, a2atick.SEEDED, "")
+    _claim(rt, "NF-1", state="done")
+    _claim(rt, "NF-2", repo="web")
+    rt.linear.blocked_issues = lambda key: [issue("NF-5", labels=("claude", "web"))]
+    rt.pr_view = lambda claim, url: {"state": "MERGED", "files": []}
+    a2atick.step(rt, lambda: A2A)
+    assert sent == []
+    # A live claim's PR was opened before the upgrade; its merge is still announced.
+    ledger.update_claim(rt.con, "NF-2", state="done")
+    a2atick.step(rt, lambda: A2A)
+    assert [(h, kw["sender_as"], kw["kind"]) for h, kw in sent] == [("h2", "NF-2", "handoff")]
+
+
+def test_one_claims_failing_lookup_does_not_stop_the_others(rt, sent):  # noqa: F811
+    _claim(rt, "NF-1")
+    _claim(rt, "NF-2")
+    rt.linear.blocked_issues = lambda key: [issue("NF-5", labels=("claude", "web"))]
+
+    def view(claim, url):
+        if claim.issue_key == "NF-1":
+            raise RuntimeError("gh pr view failed")
+        return {"state": "OPEN", "files": []}
+
+    rt.pr_view = view
+    for _ in range(a2atick.RETRIES + 2):
+        a2atick.step(rt, lambda: A2A)
+    assert [kw["sender_as"] for _, kw in sent] == ["NF-2"]
+    assert ledger.meta_get(rt.con, "a2a_retry:NF-1:open") == str(a2atick.RETRIES)
+    assert ledger.meta_get(rt.con, "a2a_sent:NF-1:open") == "gave-up"
 
 
 def test_no_config_does_nothing(rt):  # noqa: F811

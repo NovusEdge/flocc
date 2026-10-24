@@ -10,6 +10,7 @@ from flocc.linear import LinearError
 from flocc.sessions import session_name
 
 RETRIES = 3
+SEEDED = "a2a_seeded"
 _FILES = 30
 
 
@@ -22,11 +23,29 @@ def step(rt, a2a: Callable[[], A2AConfig] = load) -> None:
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         return
-    for part in (_settle, _record, _opened, _merged):
+    for part in (_seed, _settle, _record, _opened, _merged):
         try:
             part(rt, cfg)
         except Exception:  # noqa: BLE001 - one part's failure must not stop the others
             traceback.print_exc()
+
+
+def _seed(rt, cfg: A2AConfig) -> None:
+    """Marks the PRs that exist when A2A first runs as announced.
+
+    Done claims stay in the ledger until their issue reruns, so without this the first tick sends
+    handoffs and merge notices for every historical PR.
+    """
+    if ledger.meta_get(rt.con, SEEDED):
+        return
+    for claim in ledger.live_claims(rt.con):
+        if _pr_url(rt, claim) is not None:
+            ledger.meta_set(rt.con, f"a2a_sent:{claim.issue_key}:open", "seeded")
+    for claim in ledger.finished_claims(rt.con):
+        if _pr_url(rt, claim) is not None:
+            for event in ("open", "merged"):
+                ledger.meta_set(rt.con, f"a2a_sent:{claim.issue_key}:{event}", "seeded")
+    ledger.meta_set(rt.con, SEEDED, "1")
 
 
 def _inbox(rt):
@@ -89,14 +108,24 @@ def _body(what: str, url: str, files: list[str]) -> str:
     return f"{what}: {url}\n\nChanged files:\n{listed}"
 
 
-def _once(rt, cfg: A2AConfig, key: str, event: str, sends: list[tuple]) -> None:
-    """Sends each (peer, to, kind, body, extra) not yet sent for this event; gives up after RETRIES."""
+def _once(
+    rt, cfg: A2AConfig, key: str, event: str, build: Callable[[], list[tuple] | None]
+) -> None:
+    """Sends what build returns, each (peer, to, kind, body, extra) once; None means not yet.
+
+    A failure in build or in a send counts toward RETRIES for this key and event, then gives up.
+    """
     done = f"a2a_sent:{key}:{event}"
     if ledger.meta_get(rt.con, done):
         return
     counter = f"a2a_retry:{key}:{event}"
     failed = False
-    for peer, to, kind, body, extra in sends:
+    try:
+        sends = build()
+    except Exception as exc:  # noqa: BLE001 - one claim's failure must not stop the others
+        print(f"a2a: {event} for {key} not prepared: {exc}", file=sys.stderr)
+        sends, failed = None, True
+    for peer, to, kind, body, extra in sends or []:
         sub = f"{done}:{to}"
         if ledger.meta_get(rt.con, sub):
             continue
@@ -107,6 +136,8 @@ def _once(rt, cfg: A2AConfig, key: str, event: str, sends: list[tuple]) -> None:
             failed = True
             continue
         ledger.meta_set(rt.con, sub, "1")
+    if sends is None and not failed:
+        return
     if not failed:
         ledger.meta_set(rt.con, done, "1")
         return
@@ -131,37 +162,40 @@ def _handoffs(rt, cfg: A2AConfig, claim: Claim, url: str, files: list[str], what
 def _opened(rt, cfg: A2AConfig) -> None:
     for claim in [*ledger.live_claims(rt.con), *ledger.finished_claims(rt.con)]:
         url = _pr_url(rt, claim)
-        if url is None or ledger.meta_get(rt.con, f"a2a_sent:{claim.issue_key}:open"):
+        if url is None:
             continue
-        view = rt.pr_view(claim, url)
-        sends = _handoffs(rt, cfg, claim, url, _files(view), f"{claim.issue_key} opened a PR")
-        _once(rt, cfg, claim.issue_key, "open", sends)
+
+        def build(claim=claim, url=url) -> list[tuple]:
+            view = rt.pr_view(claim, url)
+            return _handoffs(rt, cfg, claim, url, _files(view), f"{claim.issue_key} opened a PR")
+
+        _once(rt, cfg, claim.issue_key, "open", build)
 
 
 def _merged(rt, cfg: A2AConfig) -> None:
     me = cfg.hosts.get(cfg.name)
     for claim in ledger.finished_claims(rt.con):
-        key = claim.issue_key
         url = _pr_url(rt, claim)
-        if (
-            claim.state != "done"
-            or url is None
-            or ledger.meta_get(rt.con, f"a2a_sent:{key}:merged")
-        ):
+        if claim.state != "done" or url is None:
             continue
-        view = rt.pr_view(claim, url)
-        if view.get("state") == "CLOSED":
-            ledger.meta_set(rt.con, f"a2a_sent:{key}:merged", "closed")
-            continue
-        if view.get("state") != "MERGED":
-            continue
-        files = _files(view)
-        sends = _handoffs(rt, cfg, claim, url, files, f"{key} merged")
-        if me is not None:
-            for peer in ledger.in_repo(ledger.live_claims(rt.con), claim.repo):
-                if peer.issue_key != key:
-                    body = _body(f"{key} merged into {claim.repo}", url, files)
-                    sends.append(
-                        (me, peer.issue_key, "notice", body, {"pr": url, "repo": claim.repo})
-                    )
-        _once(rt, cfg, key, "merged", sends)
+
+        def build(claim=claim, url=url) -> list[tuple] | None:
+            key = claim.issue_key
+            view = rt.pr_view(claim, url)
+            if view.get("state") == "CLOSED":
+                ledger.meta_set(rt.con, f"a2a_sent:{key}:merged", "closed")
+                return None
+            if view.get("state") != "MERGED":
+                return None
+            files = _files(view)
+            sends = _handoffs(rt, cfg, claim, url, files, f"{key} merged")
+            if me is not None:
+                for peer in ledger.in_repo(ledger.live_claims(rt.con), claim.repo):
+                    if peer.issue_key != key:
+                        body = _body(f"{key} merged into {claim.repo}", url, files)
+                        sends.append(
+                            (me, peer.issue_key, "notice", body, {"pr": url, "repo": claim.repo})
+                        )
+            return sends
+
+        _once(rt, cfg, claim.issue_key, "merged", build)

@@ -11,6 +11,7 @@ from flocc.a2aserver import NUDGE, build_app
 from tests.fakes import FakeSessions
 from tests.test_ledger import make
 
+
 def _id(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
