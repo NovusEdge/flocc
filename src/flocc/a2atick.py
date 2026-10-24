@@ -42,9 +42,20 @@ def _seed(rt, cfg: A2AConfig) -> None:
         if _pr_url(rt, claim) is not None:
             ledger.meta_set(rt.con, f"a2a_sent:{claim.issue_key}:open", "seeded")
     for claim in ledger.finished_claims(rt.con):
-        if _pr_url(rt, claim) is not None:
-            for event in ("open", "merged"):
-                ledger.meta_set(rt.con, f"a2a_sent:{claim.issue_key}:{event}", "seeded")
+        url = _pr_url(rt, claim)
+        if url is None:
+            continue
+        ledger.meta_set(rt.con, f"a2a_sent:{claim.issue_key}:open", "seeded")
+        if claim.state != "done":
+            continue
+        # A done claim's PR may still wait for the owner; only a settled one is history.
+        try:
+            settled = rt.pr_view(claim, url).get("state") in ("MERGED", "CLOSED")
+        except Exception as exc:  # noqa: BLE001 - left unseeded, _merged retries it with a cap
+            print(f"a2a: seed read of {claim.issue_key} failed: {exc}", file=sys.stderr)
+            continue
+        if settled:
+            ledger.meta_set(rt.con, f"a2a_sent:{claim.issue_key}:merged", "seeded")
     ledger.meta_set(rt.con, SEEDED, "1")
 
 

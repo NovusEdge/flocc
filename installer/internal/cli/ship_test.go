@@ -82,6 +82,38 @@ func TestShipSendsTheHostFileAndTheKeysOnStdinAndDrawsTheSummary(t *testing.T) {
 	}
 }
 
+func a2aTodos(rec *ui.Recorder) string {
+	var out string
+	for _, e := range rec.Events {
+		if e.Kind == ui.KTodo && strings.Contains(e.Text, "A2A URL") {
+			out += e.Text + "\n"
+		}
+	}
+	return out
+}
+
+func TestShipWarnsWhenAHostHasNoTailnetAddressAndShipsAnyway(t *testing.T) {
+	d, _, calls, rec := shipDeps(t, allKeys)
+	if code := run(context.Background(), d, []string{"ship", "-H", "a"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if len(*calls) != 1 || !strings.Contains(a2aTodos(rec), "a: no tailnet address found for a") {
+		t.Fatalf("calls %d todos %q", len(*calls), a2aTodos(rec))
+	}
+}
+
+func TestShipDoesNotWarnWhenTheAddressIsKnown(t *testing.T) {
+	d, f, _, rec := shipDeps(t, allKeys)
+	// fakeSSH answers by the second-to-last argument, which for tailscale status --json is "status".
+	f.out["status"] = `{"Self":{"ID":"n1","HostName":"a","TailscaleIPs":["100.64.0.9"]},"Peer":{},"User":{}}`
+	if code := run(context.Background(), d, []string{"ship", "-H", "a"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if got := a2aTodos(rec); got != "" {
+		t.Fatalf("todos %q", got)
+	}
+}
+
 func TestShipAsksForAMissingKeyThenShips(t *testing.T) {
 	d, _, calls, _ := shipDeps(t, strings.Replace(allKeys, "publish_token = 'github_pat_publish'\n", "", 1))
 	d.prompt = &hostScript{secrets: []string{"github_pat_publish"}}

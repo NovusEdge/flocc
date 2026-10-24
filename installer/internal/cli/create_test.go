@@ -79,7 +79,8 @@ func TestHostInstallerIsReadyOnlyInsideTheCheckout(t *testing.T) {
 }
 
 func TestHostInstallerShipTellsTheOwnerToReshipTheOtherHosts(t *testing.T) {
-	d, _, _, rec := shipDeps(t, allKeys)
+	d, f, _, rec := shipDeps(t, allKeys)
+	f.out["status"] = `{"Self":{"ID":"n1","HostName":"a","TailscaleIPs":["100.64.0.9"]},"Peer":{},"User":{}}`
 	if err := hosts.Save(hosts.Dir(d.home), hosts.Host{Name: "b", SSH: "root@b"}); err != nil {
 		t.Fatal(err)
 	}

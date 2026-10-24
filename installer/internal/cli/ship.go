@@ -6,10 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
@@ -50,7 +53,13 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 		if err := keys.Fill(ctx, keysEnv(d), mapped(listHosts(d)), keys.Slots); err != nil {
 			return err
 		}
-		doc, err := answersDoc(d.store(), h, listHosts(d), d.home, daytonaKey(ctx, d, h), peerAddrs(ctx, d))
+		ips := peerAddrs(ctx, d)
+		if node := saved.HostPart(h.SSH); h.SSH != "" && ips[strings.ToLower(node)] == "" {
+			if _, err := netip.ParseAddr(node); err != nil {
+				d.ui.Todo(h.Name + ": no tailnet address found for " + node + ", so its A2A URL falls back to that name, which does not reach its own server; its sessions and tick cannot message their own host until a ship finds the address")
+			}
+		}
+		doc, err := answersDoc(d.store(), h, listHosts(d), d.home, daytonaKey(ctx, d, h), ips)
 		if err != nil {
 			return err
 		}

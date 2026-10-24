@@ -135,6 +135,19 @@ def test_the_first_tick_announces_no_historical_pr(rt, sent):  # noqa: F811
     assert [(h, kw["sender_as"], kw["kind"]) for h, kw in sent] == [("h2", "NF-2", "handoff")]
 
 
+def test_a_pr_still_open_at_the_first_tick_announces_its_merge_later(rt, sent):  # noqa: F811
+    ledger.meta_set(rt.con, a2atick.SEEDED, "")
+    _claim(rt, "NF-1", state="done")
+    rt.linear.blocked_issues = lambda key: [issue("NF-5", labels=("claude", "web"))]
+    state = {"s": "OPEN"}
+    rt.pr_view = lambda claim, url: {"state": state["s"], "files": []}
+    a2atick.step(rt, lambda: A2A)
+    assert sent == []
+    state["s"] = "MERGED"
+    a2atick.step(rt, lambda: A2A)
+    assert [(h, kw["kind"]) for h, kw in sent] == [("h2", "handoff")]
+
+
 def test_one_claims_failing_lookup_does_not_stop_the_others(rt, sent):  # noqa: F811
     _claim(rt, "NF-1")
     _claim(rt, "NF-2")
