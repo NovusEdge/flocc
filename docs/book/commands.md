@@ -49,6 +49,10 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `run` | Run ticks in a loop |
 | `permissions report [--days N]` | Count the auto-mode blocks and prompts sessions met. See [Run a host](setup/running-a-host.md#auto-mode-blocks) |
 | `escalate`, `claim`, `commit`, `done`, `review-done`, `handoff-ready`, `context` | Used by agent sessions, not by you |
+| `a2a serve [--bind ADDR] [--port N]` | Serve the host's A2A endpoint. It binds the address `tailscale ip -4` prints, port 7443, unless given. Run by `flocc-a2a.service` |
+| `inbox` | Hook for agent sessions: hand the session its pending A2A messages as additional context. Prints nothing and exits 0 on failure, so the call it rides on is not blocked |
+| `stop` | Hook for agent sessions at the end of a turn: record an answered question, deliver pending messages and continue the turn, or else record the idle stop |
+| `mcp-a2a` | Run the `flocc-a2a` MCP server on stdio. It offers the tools `agents`, `send`, `notify` and `replies`. Host sessions get it from the plugin; desktop sessions add it once, see [Getting started](getting-started.md#6-let-your-desktop-sessions-reach-the-agents) |
 | `--version` | Print the host's version |
 
 ### Choosing the host

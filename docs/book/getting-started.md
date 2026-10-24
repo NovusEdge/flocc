@@ -104,6 +104,16 @@ flocc -H my-host attach ENG-12      # read-only view of the session
 
 The issue moves to In Progress, a tester session writes failing tests, an implementer session makes them pass, and the service runs the check, pushes, opens a draft PR and comments the link on the issue. A reviewer session then posts a review on the PR. You merge by hand.
 
+## 6. Let your desktop sessions reach the agents
+
+After one `flocc ship`, which writes `~/.config/flocc/a2a.toml` on the desktop, add the A2A tools to your Claude sessions once:
+
+```bash
+claude mcp add --scope user flocc-a2a -- uvx --from git+https://github.com/NovusEdge/flocc flocc mcp-a2a
+```
+
+Your sessions can then list the running agents with `agents`, message one with `send`, tell a repository's agents about a shared change with `notify`, and read answers with `replies`. A message from you reaches an agent at its next tool call or turn end, and wakes a session that is idle at its prompt. See [Architecture](architecture.md#a2a).
+
 ## Run an issue again
 
 Move the issue back to Todo once its run has finished: blocked, timed out or PR opened. The next tick restarts it on the same branch. A move to Todo while the run is still going does nothing. From a terminal, `flocc release ENG-12` does the same. A comment on a running issue goes to the live session instead.

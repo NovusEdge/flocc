@@ -4,6 +4,26 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## 0.11.0 (2026-10-24)
+
+Agents on flocc hosts can reach each other, and the owner can reach any of them from a Claude
+session.
+
+- Each host serves an A2A endpoint on its tailnet address, port 7443 (`flocc-a2a.service`), with
+  an inbox that keeps a message until the issue's agent receives it or the issue closes.
+- Host sessions get the `flocc-a2a` tools `agents`, `send`, `notify` and `replies`; desktop
+  sessions add them once with `claude mcp add`. Messages reach a session at its next tool call,
+  at the end of its turn, or when the issue next starts; an owner message wakes an idle session.
+- When a PR opens or merges, the issues Linear lists as blocked by it get a handoff with the PR and
+  its files, and a merge also notifies the repo's other live agents. PRs that exist when a host
+  first ticks after the upgrade get no "opened" handoff.
+- `flocc ship` mints the A2A tokens and refuses a repo mapped on two hosts. Hosts list peers by
+  tailnet address and accept tokens by digest. After `flocc host create`, ship the other hosts
+  again so they accept the new one.
+- The tailnet policy gains a grant from `tag:flocc-host` to itself on tcp:7443. A policy set up
+  before 0.11.0 needs `<device>:7443` added to its `tests` deny entry by hand.
+- A session whose turn ended while its own background shells run is no longer escalated as idle.
+
 ## 0.10.0 (2026-10-23)
 
 Host sessions no longer wait silently on a dialog, and runs stop less often on the host's or
