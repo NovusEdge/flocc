@@ -50,7 +50,7 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 		if err := keys.Fill(ctx, keysEnv(d), mapped(listHosts(d)), keys.Slots); err != nil {
 			return err
 		}
-		doc, err := answersDoc(d.store(), h, listHosts(d), d.home, daytonaKey(ctx, d, h))
+		doc, err := answersDoc(d.store(), h, listHosts(d), d.home, daytonaKey(ctx, d, h), peerAddrs(ctx, d))
 		if err != nil {
 			return err
 		}
@@ -102,7 +102,7 @@ func daytonaKey(ctx context.Context, d *deps, h hosts.Host) string {
 
 // answersDoc is what ship sends on stdin: the host file's answers with the stored keys and, when
 // there is one, the one-off Tailscale key. Part 2a's Ship redacts the document's secrets from its log.
-func answersDoc(st keys.Store, h hosts.Host, all []hosts.Host, home, tsKey string) ([]byte, error) {
+func answersDoc(st keys.Store, h hosts.Host, all []hosts.Host, home, tsKey string, ips map[string]string) ([]byte, error) {
 	v := map[keys.Slot]string{}
 	for _, s := range keys.Slots {
 		got, err := st.Get(s)
@@ -117,7 +117,7 @@ func answersDoc(st keys.Store, h hosts.Host, all []hosts.Host, home, tsKey strin
 	a := h.Answers
 	a.NtfyTopic = v[keys.Ntfy]
 	a.Secrets = &answers.Secrets{LinearKey: v[keys.Linear], AgentToken: v[keys.Agent], PublishToken: v[keys.Publish], TailscaleAuthKey: tsKey}
-	per, desk, err := a2aFiles(st, all)
+	per, desk, err := a2aFiles(st, all, ips)
 	if err != nil {
 		return nil, err
 	}

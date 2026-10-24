@@ -32,7 +32,8 @@ func TestA2AFilesGiveEveryHostEveryToken(t *testing.T) {
 		a2aHost("box2", "me@box2", "web"),
 		{Name: "sandbox", Daytona: "abc"},
 	}
-	per, desk, err := a2aFiles(st, all)
+	ips := map[string]string{"flocc-nimble": "100.69.173.63"}
+	per, desk, err := a2aFiles(st, all, ips)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,13 +44,23 @@ func TestA2AFilesGiveEveryHostEveryToken(t *testing.T) {
 	if n.Name != "flocc-nimble" || n.Hosts["box2"].URL != "http://box2:7443" || n.Hosts["flocc-nimble"].Repos[0] != "nimblefox" {
 		t.Fatalf("file: %+v", n)
 	}
-	if n.Accept[per["box2"].Token] != "host:box2" || n.Accept[desk.Token] != "owner" || n.Accept[n.Token] != "host:flocc-nimble" {
+	// The host's own name resolves to 127.0.1.1 there, while its server binds the tailnet address.
+	if u := n.Hosts["flocc-nimble"].URL; u != "http://100.69.173.63:7443" {
+		t.Fatalf("url %s must carry the tailnet address", u)
+	}
+	if n.Accept[tokenID(per["box2"].Token)] != "host:box2" || n.Accept[tokenID(desk.Token)] != "owner" || n.Accept[tokenID(n.Token)] != "host:flocc-nimble" {
 		t.Fatalf("accept: %v", n.Accept)
+	}
+	if _, clear := n.Accept[desk.Token]; clear {
+		t.Fatal("accept must not hold the owner's token in clear text")
+	}
+	if tokenID("abc") != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
+		t.Fatal("tokenID is lowercase hex SHA-256")
 	}
 	if desk.Name != "owner" || desk.Accept != nil || len(desk.Hosts) != 2 {
 		t.Fatalf("desktop: %+v", desk)
 	}
-	again, _, _ := a2aFiles(st, all)
+	again, _, _ := a2aFiles(st, all, ips)
 	if again["box2"].Token != per["box2"].Token {
 		t.Fatal("tokens must be stable across ships")
 	}
@@ -57,7 +68,7 @@ func TestA2AFilesGiveEveryHostEveryToken(t *testing.T) {
 
 func TestA2AFilesRefuseARepoOnTwoHosts(t *testing.T) {
 	all := []hosts.Host{a2aHost("a", "root@a", "web"), a2aHost("b", "root@b", "web")}
-	_, _, err := a2aFiles(newMemStore(), all)
+	_, _, err := a2aFiles(newMemStore(), all, nil)
 	if err == nil || !strings.Contains(err.Error(), "web") || !strings.Contains(err.Error(), "a") {
 		t.Fatalf("err = %v", err)
 	}
