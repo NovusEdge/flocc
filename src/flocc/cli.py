@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path, PurePosixPath
 
-from flocc import gate, ledger, permission, usage
+from flocc import gate, inbox, ledger, permission, usage
 from flocc.config import TRAILER, default_config_path, load
 from flocc.escalation import Escalation, validate
 from flocc.grants import for_phase
@@ -334,6 +334,61 @@ def cmd_idle(args) -> int:
         gate.note_idle(_state_dir(), _hook_input(), time.time())
     except Exception as exc:  # noqa: BLE001 - must not block the stop
         print(f"flocc idle could not record the stop: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _context_out(event: str, text: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
+
+
+def cmd_inbox(args) -> int:
+    from flocc import delivery
+
+    # A failure must not block the call or the prompt it rides on; the rows wait for the next hook.
+    try:
+        payload = _hook_input()
+        if payload.get("agent_id"):
+            return 0
+        event = str(payload.get("hook_event_name") or "PostToolUse")
+        state = _state_dir()
+        if event == "SessionStart":
+            text = delivery.session_text(state, time.time())
+        else:
+            text = delivery.take(state, time.time())
+        if text:
+            _context_out(event, text)
+    except Exception as exc:  # noqa: BLE001
+        print(f"flocc inbox delivered nothing: {exc}", file=sys.stderr)
+    return 0
+
+
+def cmd_stop(args) -> int:
+    from flocc import delivery
+
+    # Exit 2 on Stop blocks the stop; bookkeeping failures exit 1 as cmd_gate and cmd_idle do.
+    try:
+        state = _state_dir()
+        payload = _hook_input()
+        gate.clear_question(state, time.time())
+        gate.note_background(state, payload)
+    except Exception as exc:  # noqa: BLE001
+        print(f"flocc stop could not record the answer: {exc}", file=sys.stderr)
+        return 1
+    if (state / inbox.MARKER).exists() and not any((state / n).exists() for n in delivery.ENDING):
+        try:
+            text = delivery.take(state, time.time())
+        except Exception as exc:  # noqa: BLE001
+            print(f"flocc stop delivered nothing: {exc}", file=sys.stderr)
+            text = ""
+        if text:
+            # Continues the turn; Claude Code's stop_hook_active protection bounds the loop.
+            _context_out("Stop", text)
+            return 0
+    try:
+        gate.note_idle(state, payload, time.time())
+    except Exception as exc:  # noqa: BLE001
+        print(f"flocc stop could not record the stop: {exc}", file=sys.stderr)
         return 1
     return 0
 
@@ -783,6 +838,8 @@ def cmd_mcp_a2a(args) -> int:
 
 
 COMMANDS = {
+    "inbox": cmd_inbox,
+    "stop": cmd_stop,
     "a2a": cmd_a2a,
     "mcp-a2a": cmd_mcp_a2a,
     "statusline": cmd_statusline,
@@ -861,6 +918,8 @@ def build_parser() -> argparse.ArgumentParser:
     which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
     which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
     add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
+    add("inbox", "Hook: hand this session its pending A2A messages")
+    add("stop", "Hook (Stop): answered-question check, then mail, else record the idle stop")
     add("permission", "Hook: log an auto-mode block or prompt")
     add("session-start", "Hook: record compaction and the scratchpad, print the context")
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")
