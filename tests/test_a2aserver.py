@@ -134,6 +134,32 @@ def test_a_reply_is_stored_on_the_original_task(env):
     assert got["artifacts"][0]["parts"][0]["text"] == "done"
 
 
+@pytest.mark.parametrize("to", ["owner", "NF-7@h2"])
+def test_a_reply_does_not_need_an_issue_key_in_to(env, to):
+    client, _, _ = env
+    sender = {"headers": OWNER} if to == "owner" else {"headers": PEER, "as": "NF-7"}
+    headers = sender.pop("headers")
+    task_id = _send(client, headers, **sender).json()["task"]["id"]
+    r = _send(client, HOST, to=to, body="done", kind="reply", reply_to=task_id, **{"as": "NF-1"})
+    assert r.status_code == 200
+    got = client.get(f"/tasks/{task_id}", headers=headers).json()
+    assert got["artifacts"][0]["parts"][0]["text"] == "done"
+
+
+def test_a_non_reply_still_needs_an_issue_key(env):
+    client, _, _ = env
+    assert _send(client, OWNER, to="owner").status_code == 400
+
+
+def test_an_ending_session_is_not_nudged(env):
+    client, cfg, sessions = env
+    d = cfg.state_root / "NF-1"
+    (d / "idle").write_text(json.dumps({"at": 1.0}))
+    (d / "done.json").write_text("{}")
+    _send(client, OWNER)
+    assert sessions.sent == []
+
+
 def test_an_owner_message_nudges_an_idle_session(env):
     client, cfg, sessions = env
     (cfg.state_root / "NF-1" / "idle").write_text(json.dumps({"at": 1.0}))

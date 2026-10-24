@@ -574,8 +574,6 @@ def _check_stall(rt, claim: Claim, d: Path, name: str) -> None:
         return
     if running_agents(d, run_id(claim.phase, claim.started_at), claim.phase):
         return
-    if has_background(d):
-        return
     u = latest_usage(rt.cfg.state_root, rt.now())
     if u is not None and max(u.five_hour_pct, u.weekly_pct) >= 100:
         return

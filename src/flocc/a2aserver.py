@@ -36,7 +36,7 @@ from google.protobuf.json_format import MessageToDict
 from google.protobuf.struct_pb2 import Struct
 from starlette.applications import Starlette
 
-from flocc import inbox, ledger
+from flocc import delivery, inbox, ledger
 from flocc.a2aconf import ISSUE_KEY, A2AConfig
 from flocc.config import Config
 from flocc.sessions import session_name
@@ -82,7 +82,7 @@ def _title(cfg: Config, key: str) -> str:
 
 def should_nudge(cfg: Config, key: str, now: float) -> bool:
     d = cfg.state_root / key
-    if not (d / "idle").exists() or (d / "asking").exists():
+    if not (d / "idle").exists() or (d / "asking").exists() or delivery.ending(d):
         return False
     u = latest_usage(cfg.state_root, now)
     return u is None or (
@@ -144,7 +144,10 @@ class Handler(RequestHandler):
                 message=f"body is {len(body.encode())} bytes; the limit is {inbox.BODY_LIMIT}"
             )
         kind, to = str(meta.get("kind", "direct")), str(meta.get("to", ""))
-        if kind not in inbox.KINDS or not ISSUE_KEY.match(to):
+        reply_to = str(meta.get("reply_to") or "")
+        # A reply is routed by the original task, so `to` may be "owner" or a sender address.
+        is_reply = kind == "reply" and bool(reply_to)
+        if kind not in inbox.KINDS or not (is_reply or ISSUE_KEY.match(to)):
             raise InvalidParamsError(message=f"bad kind {kind!r} or recipient {to!r}")
         if who == "owner":
             session = str(meta.get("session") or "")
@@ -164,8 +167,7 @@ class Handler(RequestHandler):
             )
         now = self.now()
         con = self._inbox()
-        reply_to = str(meta.get("reply_to") or "")
-        if kind == "reply" and reply_to and inbox.get(con, reply_to) is not None:
+        if is_reply and inbox.get(con, reply_to) is not None:
             stored = inbox.store_reply(con, reply_to, sender.split("@")[0], body)
             if stored is None:
                 raise InvalidParamsError(message=f"{reply_to} was not sent to {sender}")
