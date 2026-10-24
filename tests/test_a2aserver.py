@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import replace
 
@@ -10,6 +11,10 @@ from flocc.a2aserver import NUDGE, build_app
 from tests.fakes import FakeSessions
 from tests.test_ledger import make
 
+def _id(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 V = {"A2A-Version": "1.0"}
 OWNER = {**V, "Authorization": "Bearer t-owner"}
 HOST = {**V, "Authorization": "Bearer t-h1"}
@@ -21,7 +26,7 @@ def env(tmp_cfg):
     a2a = A2AConfig(
         "h1",
         "t-h1",
-        {"t-owner": "owner", "t-h1": "host:h1", "t-h2": "host:h2"},
+        {_id("t-owner"): "owner", _id("t-h1"): "host:h1", _id("t-h2"): "host:h2"},
         {"h1": Peer("h1", "http://h1:7443", ("backend",))},
     )
     con = ledger.connect(tmp_cfg.ledger_path)
@@ -68,6 +73,7 @@ def test_send_stores_the_row_and_sets_the_sender_from_the_token(env):
     assert task["status"]["state"] == "TASK_STATE_SUBMITTED"
     con = inbox.connect(inbox.db_path(cfg.state_root))
     msg = inbox.get(con, task["id"])
+    assert msg is not None
     assert (msg.sender, msg.token_id, msg.body) == ("NF-2@h1", "host:h1", "hello")
 
 
@@ -79,6 +85,8 @@ def test_a_host_sender_must_name_its_issue(env):
 
 def test_unknown_tokens_get_401(env):
     client, _, _ = env
+    # The accept map holds digests; a digest is not a token.
+    assert _send(client, {**V, "Authorization": f"Bearer {_id('t-owner')}"}).status_code == 401
     bad = {**V, "Authorization": "Bearer nope"}
     assert _send(client, bad).status_code == 401
     assert _send(client, V).status_code == 401
@@ -124,7 +132,7 @@ def test_an_owner_message_nudges_an_idle_session(env):
     assert sessions.sent == [("NF-1", NUDGE)]
 
 
-@pytest.mark.parametrize("blocker", ["asking", "not-idle", "agent-sender"])
+@pytest.mark.parametrize("blocker", ["asking", "not-idle", "agent-sender", "desktop-agent"])
 def test_no_nudge(env, blocker):
     client, cfg, sessions = env
     d = cfg.state_root / "NF-1"
@@ -134,6 +142,20 @@ def test_no_nudge(env, blocker):
         (d / "asking").write_text("{}")
     if blocker == "agent-sender":
         _send(client, HOST, **{"as": "NF-2"})
+    elif blocker == "desktop-agent":
+        _send(client, OWNER, session="kairos-voice")
     else:
         _send(client, OWNER)
     assert sessions.sent == []
+
+
+def test_a_same_host_reply_is_queued_to_the_sender(env):
+    client, cfg, _ = env
+    task_id = _send(client, HOST, to="NF-7", **{"as": "NF-1"}).json()["task"]["id"]
+    r = _send(
+        client, HOST, to="NF-1", body="done", kind="reply", reply_to=task_id, **{"as": "NF-7"}
+    )
+    assert r.status_code == 200 and r.json()["task"]["metadata"]["from"] == "NF-1@h1"
+    con = inbox.connect(inbox.db_path(cfg.state_root))
+    batch, _ = inbox.claim(con, "NF-1", 2000.0)
+    assert [(m.sender, m.kind, m.body) for m in batch] == [("NF-7@h1", "reply", "done")]

@@ -106,6 +106,34 @@ def test_a_reply_is_stored_then_forwarded_to_the_sender(fake):
     assert sent[1][0] == "h2" and sent[1][1]["to"] == "NF-9" and sent[1][1]["kind"] == "reply"
 
 
+def test_a_reply_to_a_same_host_sender_is_not_forwarded(fake, monkeypatch):
+    ctx, sent = fake
+    original = a2aclient.send
+
+    def same_host(peer, token, **kw):
+        task = original(peer, token, **kw)
+        return {**task, "metadata": {"from": "NF-9@h1"}} if kw.get("kind") == "reply" else task
+
+    monkeypatch.setattr(a2aclient, "send", same_host)
+    mcp_a2a.call("send", {"to": "NF-9", "body": "done", "reply_to": "orig"}, ctx)
+    assert [s[0] for s in sent] == ["h1"]
+
+
+def test_an_unexpected_error_is_returned_and_the_server_keeps_serving(fake, monkeypatch):
+    ctx, _ = fake
+
+    def boom(args, ctx):
+        raise KeyError("task")
+
+    monkeypatch.setitem(mcp_a2a._CALLS, "agents", boom)
+    call = {"name": "agents", "arguments": {}}
+    lines = [{"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": call} for i in (1, 2)]
+    out = io.StringIO()
+    mcp_a2a.serve(io.StringIO("\n".join(json.dumps(r) for r in lines)), out, ctx)
+    replies = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [r["result"]["isError"] for r in replies] == [True, True]
+
+
 def test_replies_reads_tasks_this_session_sent(fake):
     ctx, _ = fake
     mcp_a2a.call("send", {"to": "NF-4", "body": "hi"}, ctx)

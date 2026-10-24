@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import sqlite3
@@ -116,8 +117,10 @@ class Handler(RequestHandler):
     def _identity(self, context) -> str:
         auth = context.state.get("headers", {}).get("authorization", "")
         token = auth.removeprefix("Bearer ").strip()
-        # Read per request, so a ship's new token map applies without a restart.
-        who = self.a2a().accept.get(token) if auth.startswith("Bearer ") else None
+        # Read per request, so a ship's new token map applies without a restart. The file lists
+        # SHA-256 digests, so a session that reads it cannot send as the owner.
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        who = self.a2a().accept.get(digest) if auth.startswith("Bearer ") else None
         if not who:
             raise Unauthenticated()
         return who
@@ -160,6 +163,20 @@ class Handler(RequestHandler):
             stored = inbox.store_reply(con, reply_to, sender.split("@")[0], body)
             if stored is None:
                 raise InvalidParamsError(message=f"{reply_to} was not sent to {sender}")
+            origin, _, host = stored.sender.partition("@")
+            if host == self.a2a().name:
+                # The sender is on this host, so the client has no other host to forward to.
+                inbox.add(
+                    con,
+                    self.cfg.state_root,
+                    to_issue=origin,
+                    sender=sender,
+                    token_id=who,
+                    kind="reply",
+                    body=body,
+                    meta={"to": origin, "reply_to": reply_to},
+                    now=now,
+                )
             return _task(stored, sender=stored.sender)
         if inbox.sent_since(con, who, sender, now - 3600) >= inbox.RATE_PER_HOUR:
             raise RateLimited(
@@ -177,7 +194,7 @@ class Handler(RequestHandler):
             meta={"to": to, **extra},
             now=now,
         )
-        if who == "owner" and kind == "direct":
+        if sender == "owner" and kind == "direct":
             self._nudge(to, now)
         stored = inbox.get(con, task_id)
         assert stored is not None

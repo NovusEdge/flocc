@@ -170,7 +170,8 @@ def _send_tool(args: dict, ctx: Ctx) -> dict:
         task = _send(ctx, home, to, body, "reply", args, {"reply_to": reply_to})
         sender = str((task.get("metadata") or {}).get("from", ""))
         issue, _, host = sender.partition("@")
-        if host in cfg.hosts and ISSUE_KEY.match(issue):
+        # A sender on this host was queued by the server that stored the reply.
+        if host != cfg.name and host in cfg.hosts and ISSUE_KEY.match(issue):
             _send(ctx, cfg.hosts[host], issue, body, "reply", args, {"reply_to": reply_to})
         return {"task": task["id"], "state": a2aclient.state(task), "host": home.name}
     peer = _target(ctx, to, args.get("repo"))
@@ -267,7 +268,7 @@ def serve(stdin, stdout, ctx: Ctx) -> None:
             params = req.get("params") or {}
             try:
                 body, err = call(params.get("name", ""), params.get("arguments") or {}, ctx), False
-            except ToolError as exc:
+            except Exception as exc:  # noqa: BLE001 - an uncaught error would end the session's tools
                 body, err = {"error": str(exc)}, True
             text = json.dumps(body)
             out = _result(req_id, {"content": [{"type": "text", "text": text}], "isError": err})
