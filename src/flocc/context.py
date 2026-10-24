@@ -14,7 +14,7 @@ decision the spec leaves open, through the escalate skill.
 
 - `flocc claim '<glob>'` before editing files outside your claimed paths.
 - `flocc context` to see this text again with the current peer list.
-- message a peer with `SendMessage` before escalating when your change affects theirs; see the coordinate skill.
+- the flocc-a2a tools `agents`, `send`, `notify` and `replies` reach agents on every host; see the coordinate skill.
 - `flocc escalate ...` when you need the owner; see the escalate skill.
 - `flocc done --summary '<one paragraph>'` when this phase is finished.
 - `flocc review-done` after writing review.md, in the review phase only.

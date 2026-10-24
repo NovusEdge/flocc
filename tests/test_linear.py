@@ -36,6 +36,32 @@ def test_ready_issues_paginates():
     assert post.calls[1][1]["after"] == "c1"
 
 
+def test_blocked_issues_reads_blocks_relations():
+    node = {
+        "id": "u2",
+        "identifier": "NF-2",
+        "title": "T",
+        "description": "",
+        "url": "u",
+        "state": {"type": "unstarted"},
+        "labels": {"nodes": [{"name": "web"}]},
+        "project": None,
+        "team": {"id": "t1"},
+    }
+    data = {
+        "issue": {
+            "relations": {
+                "nodes": [
+                    {"type": "blocks", "relatedIssue": node},
+                    {"type": "related", "relatedIssue": {**node, "identifier": "NF-3"}},
+                ]
+            }
+        }
+    }
+    linear = Linear(lambda q, v: data)
+    assert [i.key for i in linear.blocked_issues("NF-1")] == ["NF-2"]
+
+
 def test_comment_is_prefixed():
     post = FakePost({"commentCreate": {"success": True}})
     Linear(post).comment("u1", "hello")

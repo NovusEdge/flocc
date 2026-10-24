@@ -340,6 +340,30 @@ def note_idle(state: Path, payload: dict, now: float) -> None:
     stopped.touch()
 
 
+BACKGROUND = "background"
+
+
+def note_background(state: Path, payload: dict) -> None:
+    """Records the background tasks a turn ended with; the supervisor treats them as work."""
+    kinds = [
+        str(t.get("type", "")) for t in payload.get("background_tasks") or [] if isinstance(t, dict)
+    ]
+    path = state / BACKGROUND
+    if not kinds:
+        path.unlink(missing_ok=True)
+        return
+    tmp = state / "background.tmp"
+    tmp.write_text(json.dumps(kinds))
+    os.replace(tmp, path)
+
+
+def has_background(state: Path) -> bool:
+    try:
+        return bool(json.loads((state / BACKGROUND).read_text()))
+    except (OSError, ValueError):
+        return False
+
+
 def clear_idle(state: Path) -> None:
     for name in ("idle", "idle-escalated"):
         (state / name).unlink(missing_ok=True)

@@ -82,9 +82,9 @@ class FakeSystemctl:
         self.stdout = stdout
 
     def __call__(self, argv, **kwargs):
-        assert argv[:4] == ["systemctl", "--user", "show", "flocc.service"]
+        assert argv[:3] == ["systemctl", "--user", "show"] or argv[2] == "is-active"
         assert kwargs["env"]["XDG_RUNTIME_DIR"].startswith("/run/user/")
-        return type("R", (), {"stdout": self.stdout})()
+        return type("R", (), {"stdout": "active\n" if argv[2] == "is-active" else self.stdout})()
 
 
 def test_systemd_tick_reads_the_service_timestamps(cfg):
@@ -100,6 +100,8 @@ def test_systemd_tick_reads_the_service_timestamps(cfg):
         cfg, FakeSessions(), now=1767225800.0, mode="systemd", run=FakeSystemctl(props)
     )
     assert report["last_tick"]["exit"] == "1" and report["last_tick"]["age_s"] == 20.0
+    assert report["a2a"] == "active"
+    assert collect(cfg, FakeSessions(), now=1.0, mode="loop")["a2a"] is None
 
 
 def test_last_tick_reads_the_final_marker_pair(tmp_path):

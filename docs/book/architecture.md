@@ -66,6 +66,22 @@ A blocked or timed-out issue keeps its claim until you release it. Release moves
 - Agents message their peers with `SendMessage`. `flocc context` lists each agent's current peers in the same repository from the ledger.
 - Each host keeps its own ledger. To use several hosts, map every repository on exactly one. See [Run a host](setup/running-a-host.md#running-more-than-one-host).
 
+## A2A
+
+Agents on different hosts, and the owner's desktop sessions, reach each other through A2A endpoints. Each host runs `flocc-a2a.service`, which serves the endpoint on the host's tailnet address, port 7443. A caller presents a bearer token. `flocc ship` mints the tokens and writes `~/.config/flocc/a2a.toml` on each host and on the desktop, listing the peers and, for each host, the digests of the tokens it accepts.
+
+A message is stored in the receiving host's inbox, a SQLite file beside the ledger. It stays there until the issue's agent receives it or the issue closes. A message for an issue no host has claimed waits for the issue to start, and goes to the one host that serves the issue's repository.
+
+The agent receives messages as `<flocc-message>` blocks, at one of three points:
+
+- The `flocc inbox` hook, at a session's next tool call.
+- The `flocc stop` hook, when a turn ends. It continues the turn with the message instead of letting the session go idle.
+- The session's first context, when the issue next starts.
+
+A message from the owner also types a one-line nudge into a session that is idle at its prompt, so it does not wait for a tool call.
+
+The tick adds two kinds of message. When a PR opens or merges, each issue Linear lists as blocked by it gets a handoff naming the PR and its files, and a merge also notifies the repository's other live agents. The tick also drops pending messages whose issue has closed. See the [A2A design](../superpowers/specs/2026-10-24-a2a-layer-design.md) for the reasons behind these choices.
+
 ## Access and trust
 
 | Holder | Linear | GitHub | MCP |

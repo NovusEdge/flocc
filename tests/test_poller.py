@@ -58,6 +58,9 @@ class PollLinear:
             raise LinearError("Entity not found: Issue")
         return {k: "completed" for k in keys}
 
+    def blocked_issues(self, key):
+        return []
+
     def start(self, i):
         if self.start_fails:
             raise LinearError("down")

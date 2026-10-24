@@ -91,6 +91,14 @@ def allowed_plugins(path: Path) -> tuple[str, ...] | None:
     return tuple(line for line in lines if line and not line.startswith("#"))
 
 
+A2A_TOOLS = (
+    "mcp__flocc-a2a__agents",
+    "mcp__flocc-a2a__send",
+    "mcp__flocc-a2a__notify",
+    "mcp__flocc-a2a__replies",
+)
+
+
 def claude_argv(
     cfg: Config,
     name: str,
@@ -104,12 +112,17 @@ def claude_argv(
     remote_control: bool = True,
 ) -> list[str]:
     servers = {s: cfg.mcp_servers[s] for s in settings.mcp}
+    # Through --mcp-config: --strict-mcp-config ignores a plugin's .mcp.json.
+    servers["flocc-a2a"] = {
+        "type": "stdio",
+        "command": exe,
+        "args": ["mcp-a2a"],
+        "env": {"FLOCC_STATE": env["FLOCC_STATE"]},
+    }
     deny = list(_DENY)
     if "general-purpose" not in grants.agents:
         deny.append(_GENERAL_DENY)
-    permissions: dict = {"deny": deny}
-    if cfg.permission_allow:
-        permissions["allow"] = list(cfg.permission_allow)
+    permissions: dict = {"deny": deny, "allow": [*cfg.permission_allow, *A2A_TOOLS]}
     session_settings: dict = {
         "statusLine": {"type": "command", "command": f"{exe} statusline"},
         "autoContinueAtUsageLimit": True,

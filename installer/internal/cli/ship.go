@@ -6,10 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
+	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
@@ -50,7 +53,13 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 		if err := keys.Fill(ctx, keysEnv(d), mapped(listHosts(d)), keys.Slots); err != nil {
 			return err
 		}
-		doc, err := answersDoc(d.store(), h, daytonaKey(ctx, d, h))
+		ips := peerAddrs(ctx, d)
+		if node := saved.HostPart(h.SSH); h.SSH != "" && ips[strings.ToLower(node)] == "" {
+			if _, err := netip.ParseAddr(node); err != nil {
+				d.ui.Todo(h.Name + ": no tailnet address found for " + node + ", so its A2A URL falls back to that name, which does not reach its own server; its sessions and tick cannot message their own host until a ship finds the address")
+			}
+		}
+		doc, err := answersDoc(d.store(), h, listHosts(d), d.home, daytonaKey(ctx, d, h), ips)
 		if err != nil {
 			return err
 		}
@@ -102,7 +111,7 @@ func daytonaKey(ctx context.Context, d *deps, h hosts.Host) string {
 
 // answersDoc is what ship sends on stdin: the host file's answers with the stored keys and, when
 // there is one, the one-off Tailscale key. Part 2a's Ship redacts the document's secrets from its log.
-func answersDoc(st keys.Store, h hosts.Host, tsKey string) ([]byte, error) {
+func answersDoc(st keys.Store, h hosts.Host, all []hosts.Host, home, tsKey string, ips map[string]string) ([]byte, error) {
 	v := map[keys.Slot]string{}
 	for _, s := range keys.Slots {
 		got, err := st.Get(s)
@@ -117,6 +126,16 @@ func answersDoc(st keys.Store, h hosts.Host, tsKey string) ([]byte, error) {
 	a := h.Answers
 	a.NtfyTopic = v[keys.Ntfy]
 	a.Secrets = &answers.Secrets{LinearKey: v[keys.Linear], AgentToken: v[keys.Agent], PublishToken: v[keys.Publish], TailscaleAuthKey: tsKey}
+	per, desk, err := a2aFiles(st, all, ips)
+	if err != nil {
+		return nil, err
+	}
+	if f, ok := per[h.Name]; ok {
+		a.Secrets.A2A = &f
+	}
+	if err := writeDesktopA2A(home, desk); err != nil {
+		return nil, err
+	}
 	return toml.Marshal(a)
 }
 
