@@ -7,6 +7,10 @@ ENDING = ("done.json", "handoff-ready")
 _DIGEST_CHARS = 1500
 
 
+def ending(state: Path) -> bool:
+    return any((state / n).exists() for n in ENDING)
+
+
 def take(state: Path, now: float, limit: int = inbox.BATCH_CHARS) -> str:
     marker = state / inbox.MARKER
     # Unlinked before the claim: a row the server adds meanwhile writes the marker again.

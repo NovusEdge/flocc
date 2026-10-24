@@ -99,6 +99,14 @@ def test_the_body_limit(env):
     assert r.status_code == 400 and "8192" in r.json()["error"]["message"]
 
 
+def test_a_body_that_escapes_past_the_batch_limit_is_refused(env):
+    client, _, _ = env
+    # Each "<" becomes four characters: 2,300 bytes pass BODY_LIMIT but wrap to over 9,000.
+    r = _send(client, OWNER, body="<" * 2300)
+    assert r.status_code == 400 and str(inbox.BATCH_CHARS) in r.json()["error"]["message"]
+    assert _send(client, OWNER, body="<" * 1000).status_code == 200
+
+
 def test_the_rate_cap(env):
     client, _, _ = env
     for _ in range(inbox.RATE_PER_HOUR):

@@ -354,6 +354,8 @@ def cmd_inbox(args) -> int:
         state = _state_dir()
         if event == "SessionStart":
             text = delivery.session_text(state, time.time())
+        elif delivery.ending(state):
+            return 0
         else:
             text = delivery.take(state, time.time())
         if text:
@@ -370,12 +372,18 @@ def cmd_stop(args) -> int:
     try:
         state = _state_dir()
         payload = _hook_input()
+    except Exception as exc:  # noqa: BLE001
+        print(f"flocc stop could not read its input: {exc}", file=sys.stderr)
+        return 1
+    # The inbox and note_idle still run when this fails, so the supervisor sees the session idle.
+    failed = 0
+    try:
         gate.clear_question(state, time.time())
         gate.note_background(state, payload)
     except Exception as exc:  # noqa: BLE001
         print(f"flocc stop could not record the answer: {exc}", file=sys.stderr)
-        return 1
-    if (state / inbox.MARKER).exists() and not any((state / n).exists() for n in delivery.ENDING):
+        failed = 1
+    if (state / inbox.MARKER).exists() and not delivery.ending(state):
         try:
             text = delivery.take(state, time.time())
         except Exception as exc:  # noqa: BLE001
@@ -390,7 +398,7 @@ def cmd_stop(args) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"flocc stop could not record the stop: {exc}", file=sys.stderr)
         return 1
-    return 0
+    return failed
 
 
 def cmd_permission(args) -> int:

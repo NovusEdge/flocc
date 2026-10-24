@@ -156,6 +156,12 @@ class Handler(RequestHandler):
             if not ISSUE_KEY.match(as_):
                 raise InvalidParamsError(message="a host token must name its issue in 'as'")
             sender = f"{as_}@{who.removeprefix('host:')}"
+        # claim always takes the first row, so a message over the batch limit would reach the
+        # agent truncated by Claude Code.
+        if inbox.wrapped_len(sender, kind, body) > inbox.BATCH_CHARS:
+            raise InvalidParamsError(
+                message=f"body is too long once escaped; a message may not pass {inbox.BATCH_CHARS} characters"
+            )
         now = self.now()
         con = self._inbox()
         reply_to = str(meta.get("reply_to") or "")

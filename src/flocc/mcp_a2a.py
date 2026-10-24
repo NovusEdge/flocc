@@ -158,10 +158,11 @@ def _target(ctx: Ctx, to: str, repo: str | None) -> Peer:
 def _send_tool(args: dict, ctx: Ctx) -> dict:
     cfg = _cfg(ctx)
     to, body = str(args.get("to", "")), str(args.get("body", ""))
-    if not ISSUE_KEY.match(to):
+    reply_to = args.get("reply_to")
+    # A reply is routed by reply_to; the server ignores `to`, which may be "owner".
+    if not reply_to and not ISSUE_KEY.match(to):
         raise ToolError(f"{to!r} is not an issue key")
     _check_body(body)
-    reply_to = args.get("reply_to")
     if reply_to:
         # The original task lives on the host that delivered it to this session: its own.
         home = cfg.hosts.get(cfg.name)

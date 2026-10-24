@@ -100,6 +100,38 @@ def test_stop_delivers_nothing_after_done(state, monkeypatch, capsys, ending):
     assert (state / inbox.MARKER).exists()
 
 
+@pytest.mark.parametrize("ending", delivery.ENDING)
+@pytest.mark.parametrize("event", ["PostToolUse", "UserPromptSubmit"])
+def test_inbox_delivers_nothing_after_done(state, monkeypatch, capsys, ending, event):
+    _add(state)
+    (state / ending).write_text("{}")
+    code, out = _hook(monkeypatch, capsys, "inbox", {"hook_event_name": event})
+    assert (code, out) == (0, None)
+    assert (state / inbox.MARKER).exists()
+
+
+def test_session_start_still_delivers_when_a_phase_is_ending(state, monkeypatch, capsys):
+    _add(state)
+    (state / delivery.ENDING[0]).write_text("{}")
+    _, out = _hook(monkeypatch, capsys, "inbox", {"hook_event_name": "SessionStart"})
+    assert out is not None and "hello" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_a_failed_answer_check_still_delivers_mail(state, monkeypatch, capsys):
+    _add(state)
+    monkeypatch.setattr("flocc.gate.clear_question", lambda *a: 1 / 0)
+    code, out = _hook(monkeypatch, capsys, "stop", {"hook_event_name": "Stop"})
+    assert code == 0 and out is not None
+    assert "hello" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_a_failed_answer_check_still_notes_idle_and_exits_1(state, monkeypatch, capsys):
+    monkeypatch.setattr("flocc.gate.clear_question", lambda *a: 1 / 0)
+    code, _ = _hook(monkeypatch, capsys, "stop", {"last_assistant_message": "waiting"})
+    assert code == 1
+    assert json.loads((state / "idle").read_text())["message"] == "waiting"
+
+
 def test_session_start_gives_the_digest_and_pending_mail(state, monkeypatch, capsys):
     now = time.time()
     _add(state, body="old news", now=now - 60)

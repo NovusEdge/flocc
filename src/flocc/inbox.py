@@ -125,6 +125,11 @@ def wrap(msg: Message) -> str:
     return text if msg.sender == "owner" else f"{text}\n{TRUST_LINE}"
 
 
+def wrapped_len(sender: str, kind: str, body: str) -> int:
+    msg = Message(str(uuid.uuid4()), "", sender, "", kind, body, {}, 0.0, None, "", None, None)
+    return len(wrap(msg)) + 2
+
+
 def claim(con, to_issue: str, now: float, limit: int = BATCH_CHARS) -> tuple[list[Message], bool]:
     # One write transaction around the read and the update, so two hooks firing for parallel
     # tool calls cannot both take a row.
@@ -137,7 +142,7 @@ def claim(con, to_issue: str, now: float, limit: int = BATCH_CHARS) -> tuple[lis
         batch, used = [], 0
         for row in rows:
             msg = _msg(row)
-            size = len(wrap(msg)) + 2
+            size = wrapped_len(msg.sender, msg.kind, msg.body)
             if batch and used + size > limit:
                 break
             batch.append(msg)

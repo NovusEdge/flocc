@@ -106,6 +106,18 @@ def test_a_reply_is_stored_then_forwarded_to_the_sender(fake):
     assert sent[1][0] == "h2" and sent[1][1]["to"] == "NF-9" and sent[1][1]["kind"] == "reply"
 
 
+def test_a_reply_may_name_the_owner(fake):
+    ctx, sent = fake
+    mcp_a2a.call("send", {"to": "owner", "body": "done", "reply_to": "orig"}, ctx)
+    assert sent[0][0] == "h1"
+
+
+def test_a_plain_send_still_needs_an_issue_key(fake):
+    ctx, _ = fake
+    with pytest.raises(mcp_a2a.ToolError, match="issue key"):
+        mcp_a2a.call("send", {"to": "owner", "body": "hi"}, ctx)
+
+
 def test_a_reply_to_a_same_host_sender_is_not_forwarded(fake, monkeypatch):
     ctx, sent = fake
     original = a2aclient.send
