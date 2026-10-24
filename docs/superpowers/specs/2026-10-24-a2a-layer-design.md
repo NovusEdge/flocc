@@ -310,9 +310,18 @@ tasks is busy for that check, as it already is for the stall check.
 
 - `a2a-sdk` 1.2.x's server API and its HTTP+JSON request shapes: check against the installed
   version before planning tasks, since the senders hand-write those requests.
-- That a `Stop` hook's `additionalContext` continues an autonomous interactive session, and how
-  the continuation cap counts. Test on a host first.
-- That `PostToolUse` `additionalContext` reaches the model mid-turn in the current Claude Code.
-- An `asyncRewake` Stop hook (exit 2 "wakes Claude immediately even when the session is idle")
-  could replace the typed owner nudge. Test it; if it works, the nudge goes.
+- Confirmed on flocc-nimble 2026-10-24 (Claude Code 2.1.309, `--permission-mode auto`): a `Stop`
+  hook's `additionalContext` continues the turn. The pane showed "Stop hook feedback:
+  PROBE-STOP ..." followed by MANGO, and the hook ran again with `stop_hook_active: true`. The
+  continuation cap was not probed.
+- Confirmed on the same run: `PostToolUse` `additionalContext` reaches the model before its next
+  request. The model answered PINEAPPLE right after `echo hi`, within the same turn.
+- Confirmed on the same run: the `Stop` hook input carries `background_tasks`, e.g.
+  `[{"id":"...","type":"shell","status":"running","command":"sleep 30"}]` while a
+  `run_in_background` shell was live, and `[]` after it exited.
+- Confirmed on the same run: an `asyncRewake` Stop hook wakes an idle session. The session sat at
+  its prompt for about 45 s, the hook exited 2 with stderr "PROBE-REWAKE ...", and KIWI appeared
+  with no input. The hook's `timeout` applies: a hook left for longer than its 600 s had already
+  expired by the time its trigger fired, so a rewake hook must outlive the idle wait or be
+  restarted by the next Stop. This replaces the typed owner nudge; see the follow-up issue.
 - Where the tailnet policy lives (a file in a repo or the admin console); the change goes there.
