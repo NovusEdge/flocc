@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -7,10 +8,11 @@ import pytest
 
 from flocc import a2aclient, a2aconf
 
-CONF = """name = "h1"
+OWNER_DIGEST = hashlib.sha256(b"t-owner").hexdigest()
+CONF = f"""name = "h1"
 token = "t-h1"
 [accept]
-"t-owner" = "owner"
+"{OWNER_DIGEST}" = "owner"
 [hosts.h1]
 url = "http://127.0.0.1:1"
 repos = ["backend"]
@@ -24,8 +26,9 @@ def test_load_and_route(tmp_path):
     path = tmp_path / "a2a.toml"
     path.write_text(CONF)
     cfg = a2aconf.load(path)
-    assert cfg.name == "h1" and cfg.accept == {"t-owner": "owner"}
-    assert a2aconf.route(cfg, ["claude", "web"]).name == "h2"
+    assert cfg.name == "h1" and cfg.accept == {OWNER_DIGEST: "owner"}
+    peer = a2aconf.route(cfg, ["claude", "web"])
+    assert peer is not None and peer.name == "h2"
     assert a2aconf.route(cfg, ["claude"]) is None
 
 
@@ -66,7 +69,7 @@ class _Fake(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def log_message(self, *a):
+    def log_message(self, format, *args):
         pass
 
 
