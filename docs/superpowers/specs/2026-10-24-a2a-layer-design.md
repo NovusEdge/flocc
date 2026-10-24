@@ -1,6 +1,7 @@
 # A2A layer: agents on flocc hosts reachable from every session
 
-Status: draft for review, 2026-10-24, revised the same day after an Opus review. Spec 1 of 3
+Status: implemented in 0.11.0 (2026-10-24); the host-to-host and idle-nudge live checks are still
+open (PR #72). Spec 1 of 3
 (d163): this layer, then a shared message board, then cardinal as team lead for open questions.
 Decisions d162 and d163.
 
