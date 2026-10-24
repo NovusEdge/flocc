@@ -12,9 +12,11 @@ from flocc.context import phase_prompt, state_dir
 from flocc.escalation import Escalation, scoped
 from flocc.gate import (
     ASKED,
+    BACKGROUND,
     LAUNCH_GRANTS_ENV,
     clear_idle,
     clear_question,
+    has_background,
     run_id,
     running_agents,
 )
@@ -125,7 +127,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | No
     # After everything above that can raise. The previous session's markers would be taken for
     # the new one's, and its context reading would ask the new session to hand off at once.
     markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
-    for leftover in (*_MARKERS, "status.json", "compacted", PANE, STALL_ESCALATED):
+    for leftover in (*_MARKERS, "status.json", "compacted", PANE, STALL_ESCALATED, BACKGROUND):
         (d / leftover).unlink(missing_ok=True)
     clear_question(d)
     # A new phase or claim starts a new clock; a restart of the same session keeps its credit.
@@ -542,6 +544,8 @@ def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
         return
     if running_agents(d, run_id(claim.phase, claim.started_at), claim.phase):
         return
+    if has_background(d):
+        return
     minutes = int((rt.now() - at) / 60)
     esc = scoped(
         Escalation(
@@ -569,6 +573,8 @@ def _check_stall(rt, claim: Claim, d: Path, name: str) -> None:
     if (d / "idle").exists() or (d / "asking").exists():
         return
     if running_agents(d, run_id(claim.phase, claim.started_at), claim.phase):
+        return
+    if has_background(d):
         return
     u = latest_usage(rt.cfg.state_root, rt.now())
     if u is not None and max(u.five_hour_pct, u.weekly_pct) >= 100:

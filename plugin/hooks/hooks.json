@@ -1,10 +1,20 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "flocc session-start" } ] }
+      {
+        "hooks": [
+          { "type": "command", "command": "flocc session-start" },
+          { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || flocc inbox", "timeout": 5 }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" } ] }
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" },
+          { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || [ ! -e \"$FLOCC_STATE/inbox-pending\" ] || flocc inbox", "timeout": 5 }
+        ]
+      }
     ],
     "PreToolUse": [
       {
@@ -21,6 +31,9 @@
       {
         "matcher": "AskUserQuestion",
         "hooks": [ { "type": "command", "command": "flocc gate --answered" } ]
+      },
+      {
+        "hooks": [ { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || [ ! -e \"$FLOCC_STATE/inbox-pending\" ] || flocc inbox", "timeout": 5 } ]
       }
     ],
     "PostToolUseFailure": [
@@ -36,12 +49,7 @@
       { "hooks": [ { "type": "command", "command": "flocc permission", "timeout": 60 } ] }
     ],
     "Stop": [
-      {
-        "hooks": [
-          { "type": "command", "command": "flocc gate --answered" },
-          { "type": "command", "command": "flocc idle" }
-        ]
-      }
+      { "hooks": [ { "type": "command", "command": "flocc stop" } ] }
     ],
     "SubagentStop": [
       { "hooks": [ { "type": "command", "command": "flocc gate --stopped" } ] }

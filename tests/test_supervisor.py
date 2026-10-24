@@ -1135,6 +1135,22 @@ def test_a_still_screen_while_background_agents_run_is_not_a_stall(rt):
     assert rt.notifier.sent == []
 
 
+def test_idle_with_background_tasks_is_busy(rt):
+    d = idle_session(rt)
+    (d / "background").write_text('["shell"]')
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
+def test_stall_with_background_tasks_is_busy(rt):
+    d = stalled(rt)
+    (d / "background").write_text('["shell"]')
+    supervise(rt, current(rt))
+    at(rt, 100.0 + rt.cfg.stall_escalate_s)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent == []
+
+
 def test_a_still_screen_at_a_usage_limit_is_not_a_stall(rt):
     d = stalled(rt)
     full = {"used_percentage": 100.0, "resets_at": 4_000_000_000}
