@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -52,12 +53,7 @@ func (a A2A) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if r, err := e.Run.Run(ctx, e.userctl("is-active", "--quiet", deploy.A2AUnit)); err != nil || r.Code != 0 {
 		return false, "flocc-a2a not running", nil
 	}
-	var served struct {
-		Head string `json:"head"`
-	}
-	b, _ := os.ReadFile(e.HomePath(".local/state/flocc/a2a-serve.json"))
-	_ = json.Unmarshal(b, &served)
-	if served.Head == "" || served.Head != e.Output(ctx, "git", "-C", e.Real(repoRel), "rev-parse", "HEAD") {
+	if h := servedHead(e); h == "" || h != e.Output(ctx, "git", "-C", e.Real(repoRel), "rev-parse", "HEAD") {
 		return false, "serving an older flocc", nil
 	}
 	return true, "serving on port 7443", nil
@@ -92,5 +88,25 @@ func (a A2A) Apply(ctx context.Context, e *Env) error {
 			return err
 		}
 	}
+	// The server writes a2a-serve.json about a second after systemd reports it started, and the
+	// runner checks right after Apply.
+	head := e.Output(ctx, "git", "-C", e.Real(repoRel), "rev-parse", "HEAD")
+	for range 20 {
+		if servedHead(e) == head {
+			return nil
+		}
+		if err := waitFor(ctx, e, time.Second); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func servedHead(e *Env) string {
+	var served struct {
+		Head string `json:"head"`
+	}
+	b, _ := os.ReadFile(e.HomePath(".local/state/flocc/a2a-serve.json"))
+	_ = json.Unmarshal(b, &served)
+	return served.Head
 }

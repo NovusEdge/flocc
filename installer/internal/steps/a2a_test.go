@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -79,6 +80,24 @@ func TestA2ACheckPassesWhenServingTheCurrentHead(t *testing.T) {
 	writeServed(t, e, a2aHead)
 	if done, detail, err := (A2A{}).Check(ctx, e); !done || err != nil {
 		t.Fatalf("done=%v detail=%q err=%v", done, detail, err)
+	}
+}
+
+func TestA2AApplyWaitsForTheServerToRecordItsHead(t *testing.T) {
+	e := a2aEnv(t, a2aFake())
+	ctx := context.Background()
+	slept := 0
+	e.Sleep = func(time.Duration) {
+		slept++
+		if slept == 2 {
+			writeServed(t, e, a2aHead)
+		}
+	}
+	if err := (A2A{}).Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if done, detail, err := (A2A{}).Check(ctx, e); !done || err != nil || slept != 2 {
+		t.Fatalf("done=%v detail=%q err=%v slept=%d", done, detail, err, slept)
 	}
 }
 
