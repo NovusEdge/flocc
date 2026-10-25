@@ -211,6 +211,28 @@ def test_commit_hook_still_refuses_a_peer_claim_in_the_same_repo(
     assert "server/x.py is claimed by NF-2" in capsys.readouterr().err
 
 
+def test_commit_hook_ignores_what_the_merged_side_brought_in(claims_env, origin, monkeypatch):
+    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
+    ledger.insert_claim(claims_env, make("NF-2", ("server/x.py",), worktree="/wt/NF-2"))
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=origin, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    for args in (
+        ["checkout", "-qb", "side"],
+        ["commit", "-q", "--allow-empty", "-m", "side"],
+        ["checkout", "-q", branch],
+    ):
+        subprocess.run(["git", *args], cwd=origin, check=True)
+    (origin / "server").mkdir()
+    (origin / "server" / "x.py").write_text("x")
+    subprocess.run(["git", "add", "server/x.py"], cwd=origin, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=origin, check=True)
+    subprocess.run(["git", "checkout", "-q", "side"], cwd=origin, check=True)
+    subprocess.run(["git", "merge", "--no-commit", "--no-ff", "-q", branch], cwd=origin, check=True)
+    monkeypatch.chdir(origin)
+    assert main(["hook", "pre-commit"]) == 0
+
+
 def test_commit_hook_never_refuses_a_shared_path(claims_env, origin, monkeypatch):
     peer = make("NF-2", ("docs/**",), worktree="/wt/NF-2")
     assert commit_hook(claims_env, origin, monkeypatch, peer, "docs/verification.md") == 0

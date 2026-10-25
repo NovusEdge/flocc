@@ -73,6 +73,14 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
     ledger.clear_issue_alerts(rt.con, claim.issue_key)
 
 
+def still_wanted(rt, key: str) -> bool:
+    """False for an issue since parked, unlabelled or closed."""
+    return (
+        rt.linear.state_types([key])[key] == "started"
+        and rt.cfg.trigger_label in rt.linear.issue(key).labels
+    )
+
+
 def restart_timed_out(rt) -> None:
     """Sends a run that hit the wall clock after committing back to Todo, once per issue."""
     for claim in ledger.finished_claims(rt.con):
@@ -92,9 +100,7 @@ def restart_timed_out(rt) -> None:
                 continue
             # An issue since parked, unlabelled or closed is no longer wanted; releasing it would
             # strand its worktree with nothing to pick it up again.
-            if rt.linear.state_types([key])[key] != "started":
-                continue
-            if rt.cfg.trigger_label not in rt.linear.issue(key).labels:
+            if not still_wanted(rt, key):
                 continue
         except (subprocess.CalledProcessError, OSError, LinearError, KeyError, ValueError) as exc:
             print(f"restart: {key} not checked: {exc}", file=sys.stderr)
@@ -196,7 +202,7 @@ def clean_scratchpads(rt) -> None:
             print(f"scratchpads: {listing} not cleaned: {exc}", file=sys.stderr)
 
 
-def _main_hold(rt, repo: str, bases: dict[str, str | None]) -> str | None:
+def main_hold(rt, repo: str, bases: dict[str, str | None]) -> str | None:
     # Fetches only for a marked repo, once per poll, so an unmarked one costs nothing per tick.
     if canary.get_mark(rt.con, repo) is None:
         return None
@@ -269,14 +275,25 @@ def poll(rt) -> None:
             continue
         for cause in ("no-repo", "no-criteria", "bad-deps"):
             ledger.clear_alert(rt.con, f"{issue.key}:{cause}")
-        hold = _main_hold(rt, repo, bases)
+        hold = main_hold(rt, repo, bases)
         if hold:
             print(f"{issue.key}: held, {hold}", file=sys.stderr)
             continue
         live = ledger.live_claims(rt.con)
         usage = latest_usage(cfg.state_root, rt.now())
         free = rt.free_disk_gb(cfg.worktree_root)
-        decision = admit(issue.key, repo, settings, live, usage, deps, cfg, rt.now(), free)
+        decision = admit(
+            issue.key,
+            repo,
+            settings,
+            live,
+            usage,
+            deps,
+            cfg,
+            rt.now(),
+            free,
+            ledger.held_keys(rt.con),
+        )
         if not decision.ok:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)
             continue

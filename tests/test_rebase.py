@@ -1,13 +1,23 @@
+from dataclasses import replace
+
 import pytest
 
-from flocc import ledger, rebase
+from flocc import canary, ledger, rebase
 from flocc.context import state_dir
 from flocc.publisher import PublishResult
 from flocc.supervisor import supervise
 from flocc.usage import write_status
+from tests.fakes import ISSUE
+from tests.test_ledger import make
 from tests.test_supervisor import add, current, done, rt  # noqa: F401 - the fixture
 
-CONFLICTING = {"state": "OPEN", "mergeable": "CONFLICTING", "files": []}
+CONFLICTING = {
+    "state": "OPEN",
+    "mergeable": "CONFLICTING",
+    "files": [],
+    "headRefOid": "sha-tests",
+}
+BASE = "0123456789abcdef"
 
 
 @pytest.fixture
@@ -15,7 +25,10 @@ def pr(rt, monkeypatch, tmp_path):  # noqa: F811
     """A finished claim whose open PR the fake gh reports as `rt.view`."""
     rt.view = dict(CONFLICTING)
     rt.pr_view = lambda claim, url: rt.view
-    monkeypatch.setattr("flocc.rebase.origin_base", lambda repo: "base-1")
+    rt.linear.state_types = lambda keys: {k: "started" for k in keys}
+    rt.linear.issue = lambda key: replace(ISSUE, labels=("claude",))
+    monkeypatch.setattr("flocc.rebase.origin_base", lambda repo: BASE)
+    monkeypatch.setattr("flocc.poller.origin_base", lambda repo: BASE)
     wt = tmp_path / "wt-1"
     wt.mkdir()
     add(rt, state="done", phase="review", worktree=str(wt), tester_sha="sha-tests")
@@ -30,7 +43,8 @@ def test_a_conflicting_pr_starts_one_fix_session_on_the_same_branch(pr):
     name, argv = pr.sessions.started[-1]
     prompt = next(a for a in argv if "origin/main" in a)
     assert name == "NF-1" and "without changing behaviour" in prompt
-    assert ledger.meta_get(pr.con, "rebase_tried:NF-1") == "base-1"
+    assert ledger.meta_get(pr.con, "rebase_tried:NF-1") == BASE
+    assert "flocc tests-amended" in prompt
     assert (state_dir(pr.cfg, "NF-1") / "check-failure.md").read_text() in prompt
 
 
@@ -77,9 +91,9 @@ def test_the_same_base_is_not_tried_twice_and_the_second_conflict_blocks(pr):
     rebase.step(pr)
     assert len(pr.sessions.started) == started
     assert current(pr).state == "blocked"
-    assert "base-1"[:9] in pr.notifier.sent[-1].summary
+    assert BASE[:9] in pr.notifier.sent[-1].summary
     (line,) = [d for _, k, d in ledger.pending_digest(pr.con) if k == "NF-1"]
-    assert "base-1"[:9] in line and "conflict" in line
+    assert BASE[:9] in line and BASE not in line and "conflict" in line
 
 
 def test_a_base_that_moved_again_gets_a_new_attempt(pr, monkeypatch):
@@ -89,6 +103,41 @@ def test_a_base_that_moved_again_gets_a_new_attempt(pr, monkeypatch):
     rebase.step(pr)
     assert len(pr.sessions.started) == 2
     assert ledger.meta_get(pr.con, "rebase_tried:NF-1") == "base-2"
+
+
+def test_a_pr_pushed_to_by_someone_else_is_left_alone(pr):
+    pr.view = {**CONFLICTING, "headRefOid": "pushed-by-the-owner"}
+    rebase.step(pr)
+    assert pr.sessions.started == [] and current(pr).state == "done"
+
+
+def test_a_pr_whose_issue_is_unlabelled_or_parked_is_left_alone(pr):
+    pr.linear.issue = lambda key: replace(ISSUE, labels=())
+    rebase.step(pr)
+    pr.linear.issue = lambda key: replace(ISSUE, labels=("claude",))
+    pr.linear.state_types = lambda keys: {k: "unstarted" for k in keys}
+    rebase.step(pr)
+    assert pr.sessions.started == []
+
+
+def test_the_session_cap_holds_a_rebase(pr):
+    for key in ("NF-7", "NF-8"):
+        ledger.insert_claim(pr.con, make(key, ("z/**",), repo="web"))
+    window = {"used_percentage": 20.0, "resets_at": 4_000_000_000}
+    write_status(
+        state_dir(pr.cfg, "NF-1"), {"rate_limits": {"five_hour": window, "seven_day": window}}
+    )
+    rebase.step(pr)
+    assert pr.sessions.started == [] and current(pr).state == "done"
+    ledger.meta_set(pr.con, "base_held:NF-7", "{}")
+    rebase.step(pr)
+    assert len(pr.sessions.started) == 1
+
+
+def test_a_repo_held_on_a_broken_main_gets_no_rebase(pr):
+    canary.mark(pr.con, "backend", BASE, pr.now(), "E1 boom", check="just check")
+    rebase.step(pr)
+    assert pr.sessions.started == [] and current(pr).state == "done"
 
 
 def test_an_unreachable_remote_starts_nothing(pr, monkeypatch):
@@ -118,7 +167,8 @@ def test_the_session_publishes_to_the_open_pr_and_ends_without_a_review(pr):
     supervise(pr, current(pr))
     assert calls == [{"reuse_only": True}]
     assert current(pr).state == "done" and len(pr.sessions.started) == 1
-    assert "merged" in pr.linear.comments[-1].lower() and "https://pr/1" in pr.linear.comments[-1]
+    assert "https://pr/1" in pr.linear.comments[-1]
+    assert "not reviewed again" in pr.linear.comments[-1]
     assert not ledger.meta_get(pr.con, "rebase:NF-1")
     assert len(pr.pr_comments) == 0
 

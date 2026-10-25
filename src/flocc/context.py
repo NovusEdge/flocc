@@ -62,7 +62,8 @@ def phase_prompt(phase: str, issue_key: str, extra: str = "") -> str:
     else:
         body = (
             f"You are fixing {issue_key} after the service's check failed, the"
-            " reviewer asked for changes or the PR conflicted with its base. Follow the implementer skill's Fix phase section, fix what the text"
-            " below reports, then run flocc done."
+            " reviewer asked for changes or the PR conflicted with its base. Follow the"
+            " implementer skill's Fix phase section, fix what the text below reports, then run"
+            " flocc done."
         )
     return f"{body}\n\n{extra}".strip()

@@ -31,6 +31,16 @@ def test_cap():
     assert not d.ok and "cap" in d.reason
 
 
+def test_a_claim_waiting_on_a_broken_base_does_not_use_a_session_slot():
+    live = [make("NF-1", ("a/**",)), make("NF-2", ("b/**",))]
+    d = admit("NF-9", "backend", DEFAULT, live, OK, {}, CFG, 1100, None, held=frozenset({"NF-2"}))
+    assert d.ok
+    clash = IssueSettings(paths=("b/x.py",))
+    held = frozenset({"NF-2"})
+    d = admit("NF-9", "backend", clash, live, OK, {}, CFG, 1100, None, held=held)
+    assert not d.ok and "NF-2" in d.reason
+
+
 def test_usage_thresholds():
     assert not run(usage=Usage(80, 10, 1000)).ok
     assert not run(usage=Usage(10, 80, 1000)).ok

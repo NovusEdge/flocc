@@ -3,7 +3,7 @@ import os
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from flocc.config import TRAILER, RepoConfig
@@ -18,6 +18,8 @@ from flocc.worktree import (
 )
 
 _TAIL = 3000
+# Stands in for the base checkout's path when its failure is compared with a branch's.
+BASE_CHECKOUT = "<checkout>"
 _FAILURE = re.compile(r"error|fail|traceback|panic|exit code [1-9]", re.IGNORECASE)
 _NOISE = re.compile(r"warning", re.IGNORECASE)
 # git's words for a remote branch holding commits the push lacks; `[remote rejected]` (a hook or
@@ -155,7 +157,40 @@ def check_at_base(
             return sha, PublishResult(
                 "check_failed", f"./setup {why} on the base\n\n{out[-_TAIL:]}", log=out
             )
-        return sha, run_check(repo, path, check_timeout_s)
+        failure = run_check(repo, path, check_timeout_s)
+        if failure is None:
+            return sha, None
+        # The checkout's name is random, so a branch's failure could never match the same text.
+        return sha, replace(
+            failure,
+            detail=failure.detail.replace(str(path), BASE_CHECKOUT),
+            log=failure.log.replace(str(path), BASE_CHECKOUT),
+        )
+
+
+def _without_merged_base(wt: Path, since: str, base_branch: str) -> str:
+    """`since`, or the tree it makes when merged with the base commits HEAD took in.
+
+    After a merge from the base, the two-dot diff from the tester's commit lists every file the
+    base changed; against this tree only the branch's own edits and conflict resolutions differ."""
+    try:
+        taken = git("merge-base", "HEAD", f"origin/{base_branch}", cwd=wt)
+    except subprocess.CalledProcessError:
+        return since
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", taken, since], cwd=wt, check=False
+    )
+    if ancestor.returncode == 0:
+        return since
+    # Exit 1 is a conflicted merge; its tree still holds the markers, so a resolution differs.
+    merged = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "--no-messages", since, taken],
+        cwd=wt,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return merged.stdout.split()[0] if merged.returncode in (0, 1) and merged.stdout else since
 
 
 def publish(
@@ -175,7 +210,7 @@ def publish(
     if claim.base_sha is None or claim.tester_sha is None:
         raise ValueError(f"{claim.issue_key} has no recorded tester commit to guard")
     tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
-    since = accepted_sha or claim.tester_sha
+    since = _without_merged_base(wt, accepted_sha or claim.tester_sha, repo.base_branch)
     touched = changed_files(wt, since, "HEAD") & tester_files
     weakened = {}
     for path in touched & set(amended or {}):
@@ -298,7 +333,7 @@ def review_comment(review: str) -> str:
 
 def pr_view(claim: Claim, url: str, token: str, runner=subprocess.run) -> dict:
     out = runner(
-        ["gh", "pr", "view", url, "--json", "state,mergedAt,files,mergeable"],
+        ["gh", "pr", "view", url, "--json", "state,mergedAt,files,mergeable,headRefOid"],
         # A finished claim's worktree may already be reaped.
         cwd=claim.worktree if Path(claim.worktree).exists() else None,
         env={**os.environ, "GH_TOKEN": token},
