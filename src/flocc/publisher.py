@@ -220,7 +220,21 @@ def publish(
         capture_output=True,
         text=True,
     )
+
+    def label(url: str) -> None:
+        if not (amended and repo.amended_label):
+            return
+        runner(
+            ["gh", "pr", "edit", url, "--add-label", repo.amended_label],
+            cwd=wt,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     if existing.stdout.strip():
+        label(existing.stdout.strip())
         return PublishResult(
             "opened", url=existing.stdout.strip(), untrailed=untrailed, existing=True
         )
@@ -249,7 +263,9 @@ def publish(
         capture_output=True,
         text=True,
     )
-    return PublishResult("opened", url=pr.stdout.strip().splitlines()[-1], untrailed=untrailed)
+    url = pr.stdout.strip().splitlines()[-1]
+    label(url)
+    return PublishResult("opened", url=url, untrailed=untrailed)
 
 
 COMMENT_HEADER = "🤖 flocc review\n\n"
