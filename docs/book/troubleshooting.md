@@ -24,7 +24,11 @@ A run that touched files the tester committed is refused at publish. Run `flocc 
 
 A tester file the implementer fixed because its test was wrong, and recorded with `flocc tests-amended <path> --reason ...`, does not block. It goes into the PR's "Amended tests" section with the reason, and the reviewer judges it. An amendment that removes or skips a test blocks, and so does any touched tester file that is not recorded.
 
-A failed check gets `check_fix_rounds` (default 2) fix sessions before the claim blocks.
+If a repo requires a label on PRs with amended tests, as nimblefox's `tests-amended` does, set `amended_label` on the repo in `config.toml` and flocc adds it.
+
+A failed check gets `check_fix_rounds` (default 2) fix sessions before the claim blocks. A failure the base branch shows too holds the repo instead; `flocc canary <repo>` or a new commit on the base lifts it.
+
+A rerun stops before any session starts if its kept branch and GitHub's copy both have commits the other lacks. Keep what's needed from the worktree, then release the issue again.
 
 A failed `./setup` or a worktree that is not clean after `./setup` fails the start of the issue with a tier 2 escalation. Gitignore everything `./setup` and the check write.
 
