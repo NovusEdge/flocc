@@ -244,6 +244,21 @@ def test_tests_recovered_from_the_branch_are_remembered_and_resume_the_implement
     assert ledger.remembered_tests(rt.con, "NF-9") == ("sha-fork", "sha-tests")
 
 
+def test_a_rebased_branch_recovers_the_tests_and_updates_the_record(rt, monkeypatch):
+    ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-rewritten")
+    monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: ("sha-new-base", "sha-tests"))
+    monkeypatch.setattr(
+        "flocc.poller.contains",
+        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+    )
+    rt.linear.ready = [issue()]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None
+    assert (c.phase, c.base_sha, c.tester_sha) == ("impl", "sha-new-base", "sha-tests")
+    assert ledger.remembered_tests(rt.con, "NF-9") == ("sha-new-base", "sha-tests")
+
+
 def test_remembered_tests_are_not_recovered_again(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
 

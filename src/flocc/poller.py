@@ -403,11 +403,13 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         ledger.forget_tests(rt.con, issue.key)
         remembered = None
     # A branch another host pushed holds its tester's commits, but this ledger has no record of
-    # them, and the publisher's guard and --accept-tests compare against that record.
-    if remembered is None:
-        remembered = recover_tests(path, base_branch, branch, issue.key)
-        if remembered:
-            ledger.remember_tests(rt.con, issue.key, *remembered)
+    # them, and the publisher's guard and --accept-tests compare against that record. A rebase
+    # rewrites the remembered commit the same way, so a record the branch lacks is recovered too.
+    if (remembered is None or not contains(path, remembered[1])) and (
+        recovered := recover_tests(path, base_branch, branch, issue.key)
+    ):
+        remembered = recovered
+        ledger.remember_tests(rt.con, issue.key, *remembered)
     if remembered and contains(path, remembered[1]):
         (base, tester_sha), phase = remembered, "impl"
     # A run resuming at the implementer still needs the first run's amendments, or the guard
