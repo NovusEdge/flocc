@@ -3,15 +3,23 @@ import os
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from flocc.config import TRAILER, RepoConfig
 from flocc.gate import AMENDED
 from flocc.ledger import Claim
-from flocc.worktree import changed_files, git, run_bounded
+from flocc.worktree import (
+    base_checkout,
+    changed_files,
+    git,
+    run_bounded,
+    setup_in_checkout,
+)
 
 _TAIL = 3000
+# Stands in for the base checkout's path when its failure is compared with a branch's.
+BASE_CHECKOUT = "<checkout>"
 _FAILURE = re.compile(r"error|fail|traceback|panic|exit code [1-9]", re.IGNORECASE)
 _NOISE = re.compile(r"warning", re.IGNORECASE)
 # git's words for a remote branch holding commits the push lacks; `[remote rejected]` (a hook or
@@ -124,6 +132,68 @@ def pr_title(key: str, title: str, labels: tuple[str, ...] = ()) -> str:
     return f"{kind}: {title} ({key})"
 
 
+def run_check(repo: RepoConfig, wt: Path, timeout_s: float) -> PublishResult | None:
+    code, out = run_bounded(shlex.split(repo.check), wt, timeout_s)
+    if code is None:
+        detail = f"`{repo.check}` timed out after {timeout_s}s\n\n{out[-_TAIL:]}"
+        return PublishResult("check_failed", detail.strip(), log=out)
+    if code != 0:
+        return PublishResult("check_failed", failure_excerpt(out), log=out)
+    return None
+
+
+def check_at_base(
+    repo: RepoConfig,
+    worktree_root: Path,
+    setup_timeout_s: float,
+    check_timeout_s: float,
+    shared_uv_cache: bool,
+) -> tuple[str, PublishResult | None]:
+    """origin/<base>'s SHA and how the repo's check fails there; None when it passes."""
+    with base_checkout(repo, worktree_root) as (path, sha):
+        code, out = setup_in_checkout(path, setup_timeout_s, shared_uv_cache)
+        if code != 0:
+            # Not the check's failure, so its digest never matches a branch's and no hold follows.
+            why = "timed out" if code is None else f"exited {code}"
+            return sha, PublishResult(
+                "check_failed", f"./setup {why} on the base\n\n{out[-_TAIL:]}", log=out
+            )
+        failure = run_check(repo, path, check_timeout_s)
+        if failure is None:
+            return sha, None
+        # The checkout's name is random, so a branch's failure could never match the same text.
+        return sha, replace(
+            failure,
+            detail=failure.detail.replace(str(path), BASE_CHECKOUT),
+            log=failure.log.replace(str(path), BASE_CHECKOUT),
+        )
+
+
+def _without_merged_base(wt: Path, since: str, base_branch: str) -> str:
+    """`since`, or the tree it makes when merged with the base commits HEAD took in.
+
+    After a merge from the base, the two-dot diff from the tester's commit lists every file the
+    base changed; against this tree only the branch's own edits and conflict resolutions differ."""
+    try:
+        taken = git("merge-base", "HEAD", f"origin/{base_branch}", cwd=wt)
+    except subprocess.CalledProcessError:
+        return since
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", taken, since], cwd=wt, check=False
+    )
+    if ancestor.returncode == 0:
+        return since
+    # Exit 1 is a conflicted merge; its tree still holds the markers, so a resolution differs.
+    merged = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "--no-messages", since, taken],
+        cwd=wt,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return merged.stdout.split()[0] if merged.returncode in (0, 1) and merged.stdout else since
+
+
 def publish(
     claim: Claim,
     repo: RepoConfig,
@@ -141,7 +211,7 @@ def publish(
     if claim.base_sha is None or claim.tester_sha is None:
         raise ValueError(f"{claim.issue_key} has no recorded tester commit to guard")
     tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
-    since = accepted_sha or claim.tester_sha
+    since = _without_merged_base(wt, accepted_sha or claim.tester_sha, repo.base_branch)
     touched = changed_files(wt, since, "HEAD") & tester_files
     weakened = {}
     for path in touched & set(amended or {}):
@@ -157,12 +227,8 @@ def publish(
     if dirty:
         detail = f"Uncommitted changes; commit them or remove them, then finish again:\n{dirty}"
         return PublishResult("check_failed", detail[:_TAIL])
-    code, out = run_bounded(shlex.split(repo.check), wt, check_timeout_s)
-    if code is None:
-        detail = f"`{repo.check}` timed out after {check_timeout_s}s\n\n{out[-_TAIL:]}"
-        return PublishResult("check_failed", detail.strip(), log=out)
-    if code != 0:
-        return PublishResult("check_failed", failure_excerpt(out), log=out)
+    if failed := run_check(repo, wt, check_timeout_s):
+        return failed
     # Commits made with --no-verify skip the hook; noted, not blocked, since the work is sound.
     untrailed = ()
     if trailer:
@@ -289,7 +355,7 @@ def review_comment(review: str) -> str:
 
 def pr_view(claim: Claim, url: str, token: str, runner=subprocess.run) -> dict:
     out = runner(
-        ["gh", "pr", "view", url, "--json", "state,mergedAt,files"],
+        ["gh", "pr", "view", url, "--json", "state,mergedAt,files,mergeable,headRefOid"],
         # A finished claim's worktree may already be reaped.
         cwd=claim.worktree if Path(claim.worktree).exists() else None,
         env={**os.environ, "GH_TOKEN": token},

@@ -8,9 +8,11 @@ from flocc.config import RepoConfig
 from flocc.publisher import (
     COMMENT_LIMIT,
     BranchMoved,
+    check_at_base,
     comment_on_pr,
     failure_excerpt,
     pr_title,
+    pr_view,
     publish,
     review_comment,
 )
@@ -389,6 +391,33 @@ def test_failed_check(origin, tmp_path):
     assert result.status == "check_failed" and "boom" in result.detail
 
 
+def test_check_at_base_runs_setup_then_the_check_on_a_throwaway_checkout(origin, tmp_path):
+    repo = RepoConfig(origin, check="sh -c 'test -f .setup-ran && echo boom; exit 1'")
+    sha, failure = check_at_base(repo, tmp_path / "wt", 30, 30, False)
+    assert sha == git("rev-parse", "origin/main", cwd=origin)
+    assert failure is not None
+    assert failure.status == "check_failed" and "boom" in failure.detail
+    assert list((tmp_path / "wt").iterdir()) == []
+    passing = RepoConfig(origin, check="true")
+    assert check_at_base(passing, tmp_path / "wt", 30, 30, False) == (sha, None)
+
+
+def test_check_at_base_hides_the_random_checkout_path(origin, tmp_path):
+    repo = RepoConfig(origin, check="sh -c 'pwd; exit 1'")
+    _, failure = check_at_base(repo, tmp_path / "wt", 30, 30, False)
+    assert failure is not None
+    assert failure.log.strip() == "<checkout>" and failure.detail.strip() == "<checkout>"
+
+
+def test_check_at_base_reports_a_failing_setup_as_a_failure(origin, tmp_path):
+    (origin / "setup").write_text("#!/bin/sh\necho no toolchain; exit 3\n")
+    git("commit", "-qam", "break setup", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    _, failure = check_at_base(RepoConfig(origin, check="true"), tmp_path / "wt", 30, 30, False)
+    assert failure is not None
+    assert failure.status == "check_failed" and "no toolchain" in failure.log
+
+
 def test_failure_excerpt_keeps_an_early_error_over_a_passing_tail():
     out = "\n".join(
         ["lint web"] * 50
@@ -406,6 +435,73 @@ def test_failed_check_keeps_the_full_output(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'seq 5000; echo boom; exit 1'")
     result = publish(claim, repo, "t", "s", token="t", runner=Gh())
     assert result.log.startswith("1\n") and "boom" in result.detail
+
+
+def merged_claim(origin, tmp_path, base_text, resolution=None):
+    """A branch whose tester edited a.txt, with a base commit to a.txt merged in."""
+    repo = RepoConfig(origin, check="true")
+    path, branch, base = prepare_worktree(repo, tmp_path / "wt", "NF-5")
+    (path / "a.txt").write_text("a\nb\n")
+    git("commit", "-qam", "tests", cwd=path)
+    claim = make("NF-5", worktree=str(path))
+    claim.branch, claim.base_sha, claim.tester_sha = (
+        branch,
+        base,
+        git("rev-parse", "HEAD", cwd=path),
+    )
+    (origin / "a.txt").write_text(base_text)
+    git("commit", "-qam", "base moves", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    git("fetch", "-q", "origin", cwd=path)
+    subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=path, capture_output=True, check=False
+    )
+    if resolution is not None:
+        (path / "a.txt").write_text(resolution)
+        git("commit", "-qam", "merge", cwd=path)
+    return repo, path, claim
+
+
+def test_a_clean_merge_of_a_base_edit_to_a_tester_file_is_not_a_test_change(origin, tmp_path):
+    repo, _, claim = merged_claim(origin, tmp_path, "c\na\n")
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh())
+    assert result.status == "opened"
+
+
+def test_a_conflict_resolution_in_a_tester_file_is_a_test_change(origin, tmp_path):
+    repo, _, claim = merged_claim(origin, tmp_path, "x\n", resolution="x\nb\n")
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh())
+    assert result.status == "tests_touched" and "a.txt" in result.detail
+
+
+def test_an_amended_conflict_resolution_passes(origin, tmp_path):
+    repo, _, claim = merged_claim(origin, tmp_path, "x\n", resolution="x\nb\n")
+    amended = {"a.txt": {"reason": "kept both sides"}}
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), amended=amended)
+    assert result.status == "opened"
+
+
+def test_pr_view_asks_for_the_head_commit_too():
+    seen = []
+
+    def gh(argv, **kw):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+    pr_view(make("NF-5", worktree="/gone"), "https://pr/1", "t", runner=gh)
+    assert "headRefOid" in seen[0][seen[0].index("--json") + 1].split(",")
+
+
+def test_pr_view_asks_for_the_mergeable_state():
+    seen = []
+
+    def gh(argv, **kw):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, '{"mergeable": "CONFLICTING"}', "")
+
+    claim = make("NF-5", worktree="/gone")
+    assert pr_view(claim, "https://pr/1", "t", runner=gh) == {"mergeable": "CONFLICTING"}
+    assert "mergeable" in seen[0][seen[0].index("--json") + 1].split(",")
 
 
 def test_review_comment_wraps_the_review_verbatim():

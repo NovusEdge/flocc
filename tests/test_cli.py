@@ -15,6 +15,7 @@ from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.grants import Grants, set_block
 from flocc.linear import LinearError
+from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.tick import tick_lock
 from tests.fakes import FakeNotifier, FakeSessions
@@ -208,6 +209,56 @@ def test_commit_hook_still_refuses_a_peer_claim_in_the_same_repo(
     peer = make("NF-2", ("server/x.py",), worktree="/wt/NF-2")
     assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 1
     assert "server/x.py is claimed by NF-2" in capsys.readouterr().err
+
+
+def test_commit_hook_ignores_what_the_merged_side_brought_in(claims_env, origin, monkeypatch):
+    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
+    ledger.insert_claim(claims_env, make("NF-2", ("server/x.py",), worktree="/wt/NF-2"))
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=origin, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    for args in (
+        ["checkout", "-qb", "side"],
+        ["commit", "-q", "--allow-empty", "-m", "side"],
+        ["checkout", "-q", branch],
+    ):
+        subprocess.run(["git", *args], cwd=origin, check=True)
+    (origin / "server").mkdir()
+    (origin / "server" / "x.py").write_text("x")
+    subprocess.run(["git", "add", "server/x.py"], cwd=origin, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=origin, check=True)
+    subprocess.run(["git", "checkout", "-q", "side"], cwd=origin, check=True)
+    subprocess.run(["git", "merge", "--no-commit", "--no-ff", "-q", branch], cwd=origin, check=True)
+    monkeypatch.chdir(origin)
+    assert main(["hook", "pre-commit"]) == 0
+
+
+def test_commit_hook_still_checks_what_the_branch_itself_edited_before_the_merge(
+    claims_env, origin, monkeypatch
+):
+    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
+    ledger.insert_claim(claims_env, make("NF-2", ("server/x.py",), worktree="/wt/NF-2"))
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=origin, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "checkout", "-qb", "side"], cwd=origin, check=True)
+    (origin / "server").mkdir()
+    (origin / "server" / "x.py").write_text("x")
+    subprocess.run(["git", "add", "server/x.py"], cwd=origin, check=True)
+    subprocess.run(["git", "commit", "-qm", "side edit"], cwd=origin, check=True)
+    subprocess.run(["git", "checkout", "-q", branch], cwd=origin, check=True)
+    (origin / "other.py").write_text("o")
+    subprocess.run(["git", "add", "other.py"], cwd=origin, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=origin, check=True)
+    subprocess.run(["git", "checkout", "-q", "side"], cwd=origin, check=True)
+    subprocess.run(["git", "merge", "--no-commit", "--no-ff", "-q", branch], cwd=origin, check=True)
+    (origin / "touched.py").write_text("t")
+    subprocess.run(["git", "add", "touched.py"], cwd=origin, check=True)
+    monkeypatch.chdir(origin)
+    # Neither the base's other.py nor the branch's earlier server/x.py is part of this commit.
+    assert main(["hook", "pre-commit"]) == 0
+    ledger.insert_claim(claims_env, make("NF-3", ("touched.py",), worktree="/wt/NF-3"))
+    assert main(["hook", "pre-commit"]) == 1
 
 
 def test_commit_hook_never_refuses_a_shared_path(claims_env, origin, monkeypatch):
@@ -721,6 +772,22 @@ def test_canary_marks_the_repo_when_setup_fails(host_cfg, monkeypatch, capsys):
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     assert canary.get_mark(ledger.connect(cfg.ledger_path), repo)["output"] == "go: not found"
     assert "go: not found" in capsys.readouterr().err
+
+
+def test_canary_reruns_the_check_for_a_check_mark(host_cfg, monkeypatch, capsys):
+    cfg, repo = _canary(host_cfg, monkeypatch, None)
+    con = ledger.connect(cfg.ledger_path)
+    canary.mark(con, repo, "abc123def456", 1.0, "old", check="just check")
+    monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", None))
+    assert main(["--config", str(host_cfg), "canary", repo]) == 0
+    assert canary.get_mark(con, repo) is None
+    canary.mark(con, repo, "abc123def456", 1.0, "old", check="just check")
+    failure = PublishResult("check_failed", "E1 boom", log="E1 boom full")
+    monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", failure))
+    assert main(["--config", str(host_cfg), "canary", repo]) == 1
+    m = canary.get_mark(con, repo)
+    assert m is not None and m["sha"] == "def456abc123" and m["check"] == "just check"
+    assert "E1 boom" in capsys.readouterr().err
 
 
 def test_canary_forget_clears_every_mark_and_counts_them(host_cfg, capsys):

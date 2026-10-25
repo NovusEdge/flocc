@@ -211,6 +211,16 @@ def test_a_fresh_claim_gets_its_own_review_fix_round(rt):
     assert not ledger.meta_get(rt.con, "review_posted:NF-9:2")
 
 
+def test_a_fresh_claim_forgets_the_last_run_s_rebase_and_base_hold(rt):
+    kept_keys = ("rebase", "rebase_tried", "base_held", "base_released")
+    for kept in kept_keys:
+        ledger.meta_set(rt.con, f"{kept}:NF-9", "1")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    for kept in kept_keys:
+        assert not ledger.meta_get(rt.con, f"{kept}:NF-9")
+
+
 def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": False)

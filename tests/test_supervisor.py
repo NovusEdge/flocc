@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from flocc import ledger
+from flocc import canary, ledger
 from flocc.agentblock import IssueSettings, settings_to_json
 from flocc.context import state_dir
 from flocc.gate import record_session, record_stop, run_gate, run_id
@@ -1303,3 +1303,233 @@ def test_review_and_fix_launches_carry_their_own_run_id_and_remote_control(rt):
     argv = rt.sessions.started[-1][1]
     assert c.phase == "review" and env_of(argv)["FLOCC_RUN"] == f"review@{c.started_at}"
     assert "--remote-control" not in argv
+
+
+BASE_SHA = "0123456789abcdef"
+
+
+def failed(detail, log=None):
+    return PublishResult("check_failed", detail, log=detail if log is None else log)
+
+
+def base_check(rt, monkeypatch, sha=BASE_SHA, failure=None):
+    """Wires the base-branch check to a fixed result and the repo's base SHA to `sha`."""
+    runs = []
+
+    def run(repo):
+        runs.append(repo)
+        return sha, failure
+
+    rt.base_check = run
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: sha)
+    return runs
+
+
+def test_a_check_that_also_fails_on_the_base_starts_no_fix_round_and_holds_the_repo(
+    rt, monkeypatch
+):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    runs = base_check(rt, monkeypatch, failure=failed("E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert runs == ["backend"] and rt.sessions.started == []
+    c = current(rt)
+    assert c.state == "running" and c.fix_attempts == 0
+    mark = canary.get_mark(rt.con, "backend")
+    assert mark is not None and mark["sha"] == BASE_SHA and mark["check"] == "just check"
+    line = rt.linear.comments[-1]
+    assert "`just check`" in line and BASE_SHA[:9] in line and BASE_SHA not in line
+    assert [d for _, k, d in ledger.pending_digest(rt.con) if k == "NF-1"] == [line]
+    assert (state_dir(rt.cfg, "NF-1") / "done.json").exists()
+
+
+def test_a_check_that_passes_on_the_base_gets_its_fix_round(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    base_check(rt, monkeypatch, failure=None)
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and current(rt).fix_attempts == 1
+    assert canary.get_mark(rt.con, "backend") is None
+
+
+def test_a_different_failure_on_the_base_does_not_hold_the_branch(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    base_check(rt, monkeypatch, failure=failed("E9 elsewhere"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and canary.get_mark(rt.con, "backend") is None
+
+
+@pytest.mark.parametrize("exc", [subprocess.CalledProcessError(128, "git"), OSError("no disk")])
+def test_a_base_check_that_cannot_run_falls_back_to_the_fix_round(rt, monkeypatch, exc):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+
+    def broken(repo):
+        raise exc
+
+    rt.base_check = broken
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+
+
+def test_the_base_is_checked_only_before_the_first_fix_round(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    runs = base_check(rt, monkeypatch, failure=None)
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    done(rt)
+    supervise(rt, current(rt))
+    assert len(runs) == 1
+
+
+def test_a_held_claim_waits_without_publishing_until_the_base_moves(rt, monkeypatch):
+    published = []
+
+    def publish(c, t, s, **kw):
+        published.append(1)
+        return failed("E1 boom")
+
+    rt.publish_fn = publish
+    base_check(rt, monkeypatch, failure=failed("E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    assert published == [1] and current(rt).state == "running"
+    assert len(rt.linear.comments) == 1
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: "fedcba9876543210")
+    rt.publish_fn = lambda c, t, s, **kw: PublishResult("opened", url="https://pr/1")
+    supervise(rt, current(rt))
+    assert current(rt).phase == "review"
+    assert canary.get_mark(rt.con, "backend") is None
+
+
+def test_a_held_claim_keeps_waiting_when_the_remote_is_unreachable(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    base_check(rt, monkeypatch, failure=failed("E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: None)
+    rt.publish_fn = lambda c, t, s, **kw: pytest.fail("published while held")
+    supervise(rt, current(rt))
+    assert current(rt).state == "running"
+
+
+PYTEST_BRANCH = "FAILED t.py::test_a - boom\n=== 1 failed, 120 passed in 3.2s ==="
+PYTEST_BASE = "FAILED t.py::test_a - boom\n=== 1 failed, 100 passed in 2.9s ==="
+
+
+def held_after(rt, monkeypatch, branch, base):
+    rt.publish_fn = lambda c, t, s: failed(branch)
+    base_check(rt, monkeypatch, failure=failed(base))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    return canary.get_mark(rt.con, "backend") is not None
+
+
+def test_the_same_failing_tests_hold_the_repo_whatever_else_the_output_counts(rt, monkeypatch):
+    assert held_after(rt, monkeypatch, PYTEST_BRANCH, PYTEST_BASE)
+
+
+def test_a_branch_failing_more_tests_than_the_base_is_not_held(rt, monkeypatch):
+    more = "FAILED t.py::test_b - bang\n" + PYTEST_BRANCH
+    assert not held_after(rt, monkeypatch, more, PYTEST_BASE)
+
+
+def test_a_new_lint_error_of_a_kind_already_on_the_base_is_not_the_same_failure(rt, monkeypatch):
+    base = "ERROR Argument `str | None` is not assignable [bad-argument-type]\n 9 errors"
+    branch = (
+        "ERROR Argument `str | None` is not assignable [bad-argument-type]\n"
+        "ERROR Argument `int` is not assignable [bad-argument-type]\n 10 errors"
+    )
+    assert not held_after(rt, monkeypatch, branch, base)
+
+
+def test_the_same_test_failing_twice_on_the_branch_is_not_the_base_s_single_failure(
+    rt, monkeypatch
+):
+    branch = "FAILED t.py::test_a[1] - x\nFAILED t.py::test_a[1] - y\n"
+    assert not held_after(rt, monkeypatch, branch, "FAILED t.py::test_a[1] - x\n")
+
+
+def test_go_test_failures_match_by_name(rt, monkeypatch):
+    out = "--- FAIL: TestA (0.10s)\n    a_test.go:3: boom\nFAIL\tpkg\t0.2s\n"
+    assert held_after(rt, monkeypatch, out, out.replace("0.10s", "0.31s"))
+
+
+def test_outputs_without_test_ids_match_after_the_checkout_path_and_counts_are_dropped(
+    rt, monkeypatch
+):
+    branch = "/wt/NF-1/src/a.py:3: error: bad\nFound 3 errors, 12 passed"
+    base = "<checkout>/src/a.py:3: error: bad\nFound 3 errors, 40 passed"
+    assert held_after(rt, monkeypatch, branch, base)
+
+
+def test_a_dirty_tree_failure_does_not_trigger_a_base_check(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "Uncommitted changes: x.py")
+    runs = base_check(rt, monkeypatch, failure=failed("Uncommitted changes: x.py"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert runs == [] and current(rt).phase == "fix"
+
+
+def test_a_released_claim_that_fails_the_same_way_is_told_to_merge_the_new_base(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    base_check(rt, monkeypatch, failure=failed("E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: "fedcba9876543210")
+    rt.base_check = lambda repo: ("fedcba9876543210", None)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+    prompt = next(a for a in rt.sessions.started[-1][1] if "E1 boom" in a)
+    assert "has since moved to fedcba987" in prompt and BASE_SHA[:9] in prompt
+    assert "merge `origin/main`" in prompt
+
+
+def test_a_hold_lifted_by_a_passing_canary_at_the_same_sha_says_it_passes_now(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    base_check(rt, monkeypatch, failure=failed("E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    canary.clear(rt.con, "backend")
+    rt.base_check = lambda repo: (BASE_SHA, None)
+    supervise(rt, current(rt))
+    prompt = next(a for a in rt.sessions.started[-1][1] if "E1 boom" in a)
+    assert f"now passes at {BASE_SHA[:9]}" in prompt and "has since moved" not in prompt
+
+
+def test_a_different_failure_after_the_hold_gets_no_base_note(rt, monkeypatch):
+    base_check(rt, monkeypatch, failure=failed("E1 boom"))
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: "fedcba9876543210")
+    rt.base_check = lambda repo: ("fedcba9876543210", None)
+    rt.publish_fn = lambda c, t, s: failed("E7 other")
+    supervise(rt, current(rt))
+    assert not any("has since moved" in a for a in rt.sessions.started[-1][1])
+
+
+def test_a_check_fix_round_after_a_rebase_keeps_the_merge_instruction(rt):
+    ledger.meta_set(rt.con, "rebase:NF-1", "1")
+    d = state_dir(rt.cfg, "NF-1")
+    add(rt, phase="fix", tester_sha="sha-tests")
+    (d / "check-failure.md").write_text("merge origin/main please")
+    rt.publish_fn = lambda c, t, s, **kw: failed("E1 boom")
+    done(rt)
+    supervise(rt, current(rt))
+    prompt = next(a for a in rt.sessions.started[-1][1] if "E1 boom" in a)
+    assert "merge origin/main please" in prompt

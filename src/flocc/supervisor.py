@@ -1,15 +1,17 @@
 import hashlib
 import json
 import re
+import subprocess
 import sys
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
+from flocc import canary, ledger
 from flocc import grants as grants_mod
-from flocc import ledger
 from flocc.agentblock import settings_from_json
 from flocc.context import phase_prompt, state_dir
-from flocc.escalation import Escalation, scoped
+from flocc.escalation import DEDUPE_S, Escalation, scoped
 from flocc.gate import (
     ASKED,
     BACKGROUND,
@@ -23,7 +25,9 @@ from flocc.gate import (
 from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.publisher import (
+    BASE_CHECKOUT,
     BranchMoved,
+    PublishResult,
     amended_section,
     pr_title,
     read_amended,
@@ -38,6 +42,7 @@ from flocc.sessions import (
     trust_folders,
 )
 from flocc.usage import context_pct, latest_usage, read_status
+from flocc.worktree import origin_base
 
 HANDOFF_ASK = (
     "Your context is past {pct:.0f}%. Follow the handoff skill now: write handoff.md in your state"
@@ -46,6 +51,10 @@ HANDOFF_ASK = (
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
+BASE_HELD = "base_held"
+BASE_RELEASED = "base_released"
+REBASE = "rebase"
+REBASE_TRIED = "rebase_tried"
 CHECK_OUTPUT = "check-output.log"
 OWNER_ITEMS = "owner-items.md"
 QUESTION_WAIT_S = 7200
@@ -351,8 +360,69 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     return True
 
 
+def start_rebase(rt, claim: Claim, base_sha: str) -> None:
+    """One fix session that merges the base into a finished claim's conflicting PR branch."""
+    key = claim.issue_key
+    base = rt.cfg.repos[claim.repo].base_branch
+    extra = (
+        f"The PR for this issue no longer merges cleanly into {base}. Run `git fetch origin`,"
+        f" merge `origin/{base}` into this branch and resolve the conflicts without changing"
+        " behaviour: keep what the branch does and take the base's side of anything unrelated."
+        " Where a resolution changes a file the tester committed, record it with"
+        " `flocc tests-amended`. Run the check, commit the merge, then finish as usual."
+    )
+    d = state_dir(rt.cfg, key)
+    start = rt.now()
+    (d / FIX_CONTEXT).write_text(extra)
+    # A stale done.json would be read as this session finishing.
+    (d / "done.json").unlink(missing_ok=True)
+    # Before the launch, like the review fix: a tick that dies after the session starts must find
+    # the claim running in the fix phase, with its publish reusing the open PR.
+    ledger.meta_set(rt.con, f"{REBASE}:{key}", "1")
+    ledger.meta_set(rt.con, f"{REBASE_TRIED}:{key}", base_sha)
+    ledger.update_claim(
+        rt.con, key, state="running", phase="fix", fix_attempts=0, restarts=0, started_at=start
+    )
+    try:
+        launch(rt, claim, "fix", extra=extra, started_at=start)
+    except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
+        print(f"{key}: rebase not started: {exc}", file=sys.stderr)
+        cause = f"{key}:rebase-start"
+        if not ledger.alert_seen(rt.con, cause, DEDUPE_S, rt.now()):
+            ledger.add_digest(rt.con, key, f"rebase not started ({exc})", rt.now())
+            ledger.record_alert(rt.con, cause, 3, key, rt.now())
+        ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
+        ledger.meta_set(rt.con, f"{REBASE_TRIED}:{key}", "")
+        ledger.update_claim(
+            rt.con,
+            key,
+            state=claim.state,
+            phase=claim.phase,
+            fix_attempts=claim.fix_attempts,
+            restarts=claim.restarts,
+            started_at=claim.started_at,
+        )
+
+
+def block_unrebased(rt, claim: Claim, base_sha: str) -> None:
+    base = rt.cfg.repos[claim.repo].base_branch
+    line = f"the PR still conflicts with {base} at {base_sha[:9]} after a rebase attempt"
+    ledger.add_digest(rt.con, claim.issue_key, line, rt.now())
+    _block(
+        rt,
+        claim,
+        "rebase-conflict",
+        f"The rebase session ran, and {line}.",
+        f"Resolve the conflicts on the branch by hand, push it, then run flocc release"
+        f" --keep-worktree {claim.issue_key}",
+    )
+
+
 def _finish_phase(rt, claim: Claim, summary: str) -> None:
     key = claim.issue_key
+    # Before the usage record, which would add a row on every tick of the wait.
+    if not _base_hold_lifted(rt, claim):
+        return
     _record_usage(rt, key, claim.phase, "end")
     if claim.phase == "review":
         _finish_review(rt, claim)
@@ -377,16 +447,23 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         )
         return
     review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
-    if claim.phase == "fix" and review_fix and (found := _OWNER_HEADING.search(summary)):
+    rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
+    if (
+        claim.phase == "fix"
+        and review_fix
+        and not rebasing
+        and (found := _OWNER_HEADING.search(summary))
+    ):
         # Kept apart from later check-fix summaries, which would overwrite it.
         (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[found.start() :].lstrip())
     issue = rt.linear.issue(key)
     title = pr_title(key, issue.title, issue.labels)
     try:
-        # After a review fix the PR must still be open: a new one would reopen finished work.
+        # After a review fix or a rebase the PR must still be open: a new one would reopen
+        # finished work.
         result = (
             rt.publish_fn(claim, title, summary, reuse_only=True)
-            if review_fix
+            if review_fix or rebasing
             else rt.publish_fn(claim, title, summary)
         )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
@@ -395,12 +472,21 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     # Failures count only in a row: the fix phase's publish, or a rerun's, starts from zero.
     ledger.meta_set(rt.con, f"publish_failures:{key}", "0")
     if result.status == "pr_closed":
-        line = "The PR was closed or merged during the review fix; nothing more was published."
+        what = "rebase" if rebasing else "review fix"
+        line = f"The PR was closed or merged during the {what}; nothing more was published."
         owner = _owner_items(rt, claim)
         _comment_or_digest(rt, claim, f"{line}\n\n{owner}" if owner else line)
+        ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
         ledger.update_claim(rt.con, key, state="done")
     elif result.status == "opened":
-        if review_fix and result.existing:
+        if rebasing:
+            base = rt.cfg.repos[claim.repo].base_branch
+            rt.linear.comment(
+                issue.id,
+                f"Merged {base} into the branch and pushed to {result.url}. The conflict"
+                " resolution was not reviewed again.",
+            )
+        elif review_fix and result.existing:
             rt.linear.comment(issue.id, f"Review fix pushed to {result.url}; reviewing again")
         else:
             rt.linear.comment(issue.id, f"PR for review: {result.url}")
@@ -411,7 +497,12 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         if result.untrailed:
             line = f"{key}: commits without the Flocc trailer: {', '.join(result.untrailed)}"
             ledger.add_digest(rt.con, key, line, rt.now())
-        _start_review(rt, claim, issue.title, issue.description, result.url)
+        if rebasing:
+            # A merge adds no behaviour for a reviewer to judge, and the earlier review stands.
+            ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
+            ledger.update_claim(rt.con, key, state="done", phase="review")
+        else:
+            _start_review(rt, claim, issue.title, issue.description, result.url)
     elif (
         result.status == "check_failed"
         and claim.fix_attempts > 0
@@ -428,14 +519,22 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
         )
     elif result.status == "check_failed" and claim.fix_attempts < rt.cfg.check_fix_rounds:
+        # Only before the first round: a later round's failure is the branch's own.
+        # A dirty tree has no log, and its detail would never match a base failure.
+        if claim.fix_attempts == 0 and result.log and _base_fails_too(rt, claim, result):
+            return
         extra = f"The check failed with:\n\n{result.detail}"
         if result.log:
             log = state_dir(rt.cfg, key) / CHECK_OUTPUT
             log.write_text(result.log)
             extra += f"\n\nThis is an excerpt; the full output is in {log}."
+        if claim.fix_attempts == 0 and (note := _base_moved_note(rt, claim, result.detail)):
+            extra = f"{note}\n\n{extra}"
         context = state_dir(rt.cfg, key) / FIX_CONTEXT
-        if claim.fix_attempts > 0 and context.exists():
+        if context.exists() and claim.fix_attempts > 0:
             extra = f"An earlier fix round failed with:\n\n{context.read_text()}\n\n{extra}"
+        elif context.exists() and rebasing:
+            extra = f"This session was started with:\n\n{context.read_text()}\n\n{extra}"
         context.write_text(extra)
         (state_dir(rt.cfg, key) / FAILURE_HASH).write_text(_digest(result.detail))
         start = rt.now()
@@ -495,6 +594,97 @@ def _digest(detail: str) -> str:
 def _same_failure(rt, claim: Claim, detail: str) -> bool:
     path = state_dir(rt.cfg, claim.issue_key) / FAILURE_HASH
     return path.exists() and path.read_text() == _digest(detail)
+
+
+# Test-shaped IDs only: pytest node IDs and Go tests. A linter's `ERROR <message>` line has no ID,
+# and its first word would make two different errors of one kind look alike.
+_FAILED_TEST = re.compile(r"^(?:(?:FAILED|ERROR) (\S+::\S+)|--- FAIL: (\S+))", re.MULTILINE)
+_SUMMARY_COUNT = re.compile(r"\b\d+ (passed|failed|skipped|deselected|xfailed|xpassed|warnings?)\b")
+
+
+def _failing_tests(text: str) -> Counter[str]:
+    return Counter(a or b for a, b in _FAILED_TEST.findall(text))
+
+
+def _same_as_base(result: PublishResult, claim: Claim, failure: PublishResult) -> bool:
+    # The branch carries the tester's extra tests and runs in its own checkout, so the counts in a
+    # summary line and the checkout path differ even when the failure is the base's.
+    mine, theirs = result.log or result.detail, failure.log or failure.detail
+    if (ids := _failing_tests(mine)) and (base_ids := _failing_tests(theirs)):
+        return ids == base_ids
+
+    def steady(text: str) -> str:
+        return _digest(_SUMMARY_COUNT.sub(r"N \1", text.replace(claim.worktree, BASE_CHECKOUT)))
+
+    return steady(mine) == steady(theirs)
+
+
+def _base_fails_too(rt, claim: Claim, result: PublishResult) -> bool:
+    """Holds the claim and its repo when the base branch fails the check the same way."""
+    if rt.base_check is None:
+        return False
+    key = claim.issue_key
+    try:
+        sha, failure = rt.base_check(claim.repo)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"{key}: base check did not run: {exc}", file=sys.stderr)
+        return False
+    if failure is None or not _same_as_base(result, claim, failure):
+        return False
+    repo = rt.cfg.repos[claim.repo]
+    canary.mark(rt.con, claim.repo, sha, rt.now(), failure.log or failure.detail, check=repo.check)
+    # done.json stays: once the hold lifts, the next tick publishes again.
+    held = {"sha": sha, "digest": _digest(result.detail)}
+    ledger.meta_set(rt.con, f"{BASE_HELD}:{key}", json.dumps(held))
+    line = (
+        f"`{repo.check}` fails the same way on {repo.base_branch} at {sha[:9]}, so no fix round"
+        f" started; {claim.repo} is held until {repo.base_branch} moves or flocc canary"
+        f" {claim.repo} passes, then {key} publishes again"
+    )
+    ledger.add_digest(rt.con, key, line, rt.now())
+    try:
+        rt.linear.comment(claim.issue_id, line)
+    except LinearError as exc:
+        print(f"{key}: base-broken comment not posted: {exc}", file=sys.stderr)
+    return True
+
+
+def _base_hold_lifted(rt, claim: Claim) -> bool:
+    key = f"{BASE_HELD}:{claim.issue_key}"
+    held = ledger.meta_get(rt.con, key)
+    if not held:
+        return True
+    repo = rt.cfg.repos[claim.repo]
+    if canary.hold_reason(rt.con, claim.repo, repo.base_branch, origin_base(repo), rt.now()):
+        return False
+    # Read by the fix round if the branch, still on the old base, fails the same way again.
+    ledger.meta_set(rt.con, f"{BASE_RELEASED}:{claim.issue_key}", held)
+    ledger.meta_set(rt.con, key, "")
+    return True
+
+
+def _base_moved_note(rt, claim: Claim, detail: str) -> str:
+    key = f"{BASE_RELEASED}:{claim.issue_key}"
+    try:
+        released = json.loads(ledger.meta_get(rt.con, key) or "")
+    except ValueError:
+        return ""
+    ledger.meta_set(rt.con, key, "")
+    if not isinstance(released, dict) or released.get("digest") != _digest(detail):
+        return ""
+    repo = rt.cfg.repos[claim.repo]
+    was = str(released.get("sha"))[:9]
+    now = (origin_base(repo) or "a newer commit")[:9]
+    moved = (
+        f"{repo.base_branch} now passes at {now}"
+        if now == was
+        else f"{repo.base_branch} has since moved to {now}"
+    )
+    return (
+        f"This failure was on {repo.base_branch} at {was}, and {moved}. Run `git fetch origin`, merge"
+        f" `origin/{repo.base_branch}` into this branch, then run the check again before changing"
+        " anything else."
+    )
 
 
 def _check_question(rt, claim: Claim, d: Path, name: str) -> None:

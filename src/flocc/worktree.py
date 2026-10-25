@@ -193,33 +193,19 @@ def head_at_base(repo: RepoConfig, path: Path) -> str | None:
     return base if head == base else None
 
 
-def setup_at_base(
-    repo: RepoConfig, worktree_root: Path, timeout_s: float, shared_uv_cache: bool
-) -> tuple[int | None, str, str]:
+@contextlib.contextmanager
+def base_checkout(repo: RepoConfig, worktree_root: Path):
+    """A throwaway detached checkout of origin/<base>, yielded as (path, sha)."""
     git("fetch", "-q", "origin", repo.base_branch, cwd=repo.path)
     sha = git("rev-parse", f"origin/{repo.base_branch}", cwd=repo.path)
     worktree_root.mkdir(parents=True, exist_ok=True)
-    root = worktree_root.resolve()
     # A fresh name each run: a killed canary leaves its directory, and reap_worktrees does not
     # know this prefix.
-    path = Path(tempfile.mkdtemp(prefix=".canary-", dir=root))
+    path = Path(tempfile.mkdtemp(prefix=".canary-", dir=worktree_root.resolve()))
     path.rmdir()
     git("worktree", "add", "-q", "--detach", str(path), sha, cwd=repo.path)
     try:
-        if not (path / "setup").exists():
-            return 0, "no ./setup", sha
-        cache = root / (".uv-cache" if shared_uv_cache else ".uv-cache-canary")
-        code, out = _run_setup(path, cache, timeout_s, keep_cache=shared_uv_cache)
-        # The poller marks a setup that leaves files git sees, so passing one here would lift a
-        # hold the next issue sets again.
-        added = _status(path) if code == 0 else []
-        if added:
-            return (
-                1,
-                "./setup left files git sees; gitignore them:\n" + "\n".join(added[:_LISTED]),
-                sha,
-            )
-        return code, out, sha
+        yield path, sha
     finally:
         subprocess.run(
             ["git", "worktree", "remove", "--force", str(path)],
@@ -228,6 +214,29 @@ def setup_at_base(
             check=False,
         )
         shutil.rmtree(path, ignore_errors=True)
+
+
+def setup_in_checkout(
+    path: Path, timeout_s: float, shared_uv_cache: bool
+) -> tuple[int | None, str]:
+    if not (path / "setup").exists():
+        return 0, "no ./setup"
+    cache = path.parent / (".uv-cache" if shared_uv_cache else ".uv-cache-canary")
+    code, out = _run_setup(path, cache, timeout_s, keep_cache=shared_uv_cache)
+    # The poller marks a setup that leaves files git sees, so passing one here would lift a
+    # hold the next issue sets again.
+    added = _status(path) if code == 0 else []
+    if added:
+        return 1, "./setup left files git sees; gitignore them:\n" + "\n".join(added[:_LISTED])
+    return code, out
+
+
+def setup_at_base(
+    repo: RepoConfig, worktree_root: Path, timeout_s: float, shared_uv_cache: bool
+) -> tuple[int | None, str, str]:
+    with base_checkout(repo, worktree_root) as (path, sha):
+        code, out = setup_in_checkout(path, timeout_s, shared_uv_cache)
+        return code, out, sha
 
 
 def _run_setup(

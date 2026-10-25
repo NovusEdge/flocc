@@ -24,10 +24,12 @@ def admit(
     cfg: Config,
     now: float,
     free_disk_gb: float | None = None,
+    held: frozenset[str] = frozenset(),
 ) -> Decision:
     if free_disk_gb is not None and free_disk_gb < cfg.min_free_disk_gb:
         return Decision(False, f"disk free {free_disk_gb:.1f} GB < min_free_disk_gb")
-    running = [c for c in live if c.state == "running"]
+    # A claim held on a broken base runs no session; it still holds its paths below.
+    running = [c for c in live if c.state == "running" and c.issue_key not in held]
     if len(running) >= cfg.session_cap:
         return Decision(False, f"session cap {cfg.session_cap} reached")
     # Usage within a window only grows, and latest_usage zeroes a window whose reset has passed,

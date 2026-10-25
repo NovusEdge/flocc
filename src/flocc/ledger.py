@@ -324,6 +324,12 @@ def forget_tests(con, issue_key: str) -> None:
         )
 
 
+def held_keys(con) -> frozenset[str]:
+    """Issues whose finished work waits on a broken base branch (see supervisor.BASE_HELD)."""
+    rows = con.execute("SELECT key FROM meta WHERE key LIKE 'base_held:%' AND value != ''")
+    return frozenset(r["key"].split(":", 1)[1] for r in rows)
+
+
 def meta_set(con, key: str, value: str) -> None:
     with transaction(con):
         con.execute(
