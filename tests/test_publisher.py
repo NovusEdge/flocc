@@ -181,6 +181,23 @@ def test_amended_label_is_added_to_an_existing_pr(origin, tmp_path):
     assert [c[3] for c in _edits(gh)] == ["https://github.com/o/r/pull/4"]
 
 
+@pytest.mark.parametrize("existing", ["", "https://github.com/o/r/pull/4\n"])
+def test_a_label_the_edit_rejects_does_not_fail_the_publish(origin, tmp_path, existing):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    gh = Gh(existing=existing)
+
+    def runner(argv, **kw):
+        if argv[:3] == ["gh", "pr", "edit"]:
+            raise subprocess.CalledProcessError(1, argv, stderr="could not add label: not found")
+        return gh(argv, **kw)
+
+    result = publish(
+        claim, _labelled(repo), "t", "s", token="t", runner=runner, amended=_amend(path)
+    )
+    assert result.status == "opened" and result.url
+    assert "not found" in result.label_error
+
+
 def test_no_amendments_adds_no_label(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path)
     gh = Gh()

@@ -36,6 +36,7 @@ class PublishResult:
     untrailed: tuple[str, ...] = ()  # short SHAs of branch commits without the Flocc trailer
     log: str = ""  # the check's full output, when it ran and failed
     existing: bool = False  # "opened" by finding the PR that was already open
+    label_error: str = ""  # why the amended-tests label was not added to the open PR
 
 
 def failure_excerpt(out: str, limit: int = _TAIL) -> str:
@@ -221,22 +222,28 @@ def publish(
         text=True,
     )
 
-    def label(url: str) -> None:
+    def label(url: str) -> str:
+        """The reason the label was not added, or ''. The PR is open either way: a failure here
+        would rerun the check and block a published PR, over a missing label or a token scope."""
         if not (amended and repo.amended_label):
-            return
-        runner(
-            ["gh", "pr", "edit", url, "--add-label", repo.amended_label],
-            cwd=wt,
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+            return ""
+        try:
+            runner(
+                ["gh", "pr", "edit", url, "--add-label", repo.amended_label],
+                cwd=wt,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            return (exc.stderr or str(exc)).strip()
+        return ""
 
     if existing.stdout.strip():
-        label(existing.stdout.strip())
+        url = existing.stdout.strip()
         return PublishResult(
-            "opened", url=existing.stdout.strip(), untrailed=untrailed, existing=True
+            "opened", url=url, untrailed=untrailed, existing=True, label_error=label(url)
         )
     if reuse_only:
         # A review fix round: the owner closed or merged the PR meanwhile, and a new one on the
@@ -264,8 +271,7 @@ def publish(
         text=True,
     )
     url = pr.stdout.strip().splitlines()[-1]
-    label(url)
-    return PublishResult("opened", url=url, untrailed=untrailed)
+    return PublishResult("opened", url=url, untrailed=untrailed, label_error=label(url))
 
 
 COMMENT_HEADER = "🤖 flocc review\n\n"
