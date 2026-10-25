@@ -91,20 +91,32 @@ def _has_ref(repo: Path, ref: str) -> bool:
 
 def _sync_branch(path: Path, branch: str) -> None:
     """Brings a kept branch up to GitHub's copy, so the resume decision and the push see one history."""
-    if not git("ls-remote", "origin", f"refs/heads/{branch}", cwd=path):
-        return
-    git("fetch", "-q", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", cwd=path)
     remote = f"origin/{branch}"
+    tracked = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", f"refs/remotes/{remote}"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    git("fetch", "-q", "origin", f"+refs/heads/{branch}:refs/remotes/{remote}", cwd=path)
     if contains(path, remote):
         return
     # Someone rebased or pushed on GitHub: the push at the end would be rejected, after the
     # sessions spent their usage.
-    if not contains(path, "HEAD", remote):
-        raise BranchDiverged(
-            f"{branch} on this host and on GitHub have both gained commits; reconcile them, then"
-            " run flocc release --keep-worktree"
-        )
-    git("merge", "-q", "--ff-only", remote, cwd=path)
+    if contains(path, "HEAD", remote):
+        git("merge", "-q", "--ff-only", remote, cwd=path)
+        return
+    # A rewritten branch loses nothing when HEAD is at or behind what this host last saw on
+    # GitHub, and the tree is clean. Without a tracking ref nothing says what was published.
+    if tracked and contains(path, "HEAD", tracked) and not git("status", "--porcelain", cwd=path):
+        git("reset", "-q", "--hard", remote, cwd=path)
+        return
+    raise BranchDiverged(
+        f"{branch} here has commits or changes GitHub's copy lacks, and GitHub's copy has commits"
+        " this one lacks; keep what is needed from this worktree, then run"
+        " flocc release --keep-worktree"
+    )
 
 
 def prepare_worktree(
@@ -124,6 +136,7 @@ def prepare_worktree(
     # otherwise look live below and leave no directory to run in.
     git("worktree", "prune", cwd=repo.path)
     listed = git("worktree", "list", "--porcelain", cwd=repo.path).splitlines()
+    on_remote = bool(git("ls-remote", "origin", f"refs/heads/{branch}", cwd=repo.path))
     # A released run leaves its branch, and with --keep-worktree its worktree; a rerun continues
     # on them, where `worktree add -b` would fail.
     if f"worktree {path}" not in listed:
@@ -133,12 +146,13 @@ def prepare_worktree(
             start = f"origin/{repo.base_branch}"
             # Another host ran this issue before: a branch cut fresh from the base would be
             # rejected at the end of the run, after the sessions spent their usage.
-            if git("ls-remote", "origin", f"refs/heads/{branch}", cwd=repo.path):
+            if on_remote:
                 refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
                 git("fetch", "-q", "origin", refspec, cwd=repo.path)
                 start = f"origin/{branch}"
             git("worktree", "add", "-q", "-b", branch, str(path), start, cwd=repo.path)
-    _sync_branch(path, branch)
+    if on_remote:
+        _sync_branch(path, branch)
     base = git("rev-parse", "HEAD", cwd=path)
     if (path / "setup").exists():
         # A kept worktree may hold the previous run's uncommitted work; only what setup adds counts.

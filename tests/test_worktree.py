@@ -126,6 +126,37 @@ def test_prepare_refuses_a_kept_branch_that_diverged_from_the_remote(origin, tmp
         prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
 
 
+def _pushed_then_rewritten_on_github(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    _commit(path, "mine.txt")
+    git("push", "-q", "origin", "HEAD:refs/heads/agent/nf-3", cwd=path)
+    other = _other_host(tmp_path)
+    theirs = _commit(other, "theirs.txt")
+    _push(other)
+    return path, theirs
+
+
+def test_prepare_resets_a_branch_rewritten_on_github_when_nothing_is_unpushed(origin, tmp_path):
+    path, theirs = _pushed_then_rewritten_on_github(origin, tmp_path)
+    _, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert base == theirs and not (path / "mine.txt").exists()
+
+
+def test_prepare_refuses_a_rewritten_branch_when_commits_would_be_lost(origin, tmp_path):
+    path, _ = _pushed_then_rewritten_on_github(origin, tmp_path)
+    _commit(path, "unpushed.txt")
+    with pytest.raises(BranchDiverged, match="agent/nf-3"):
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert (path / "unpushed.txt").exists()
+
+
+def test_prepare_refuses_a_rewritten_branch_with_uncommitted_changes(origin, tmp_path):
+    path, _ = _pushed_then_rewritten_on_github(origin, tmp_path)
+    (path / "mine.txt").write_text("edited\n")
+    with pytest.raises(BranchDiverged, match="agent/nf-3"):
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+
+
 def test_recover_tests_reads_a_branch_that_was_not_pushed(origin, tmp_path):
     path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     fork = git("rev-parse", "HEAD", cwd=path)
