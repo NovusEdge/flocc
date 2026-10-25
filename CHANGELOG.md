@@ -4,6 +4,26 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## 0.12.0 (2026-10-25)
+
+Fewer runs stop for the owner on problems outside the issue's own code.
+
+- When the check fails, flocc runs the same check on the base branch. If the base fails the same
+  way, the repo is held as main-broken, as a failed `./setup` is, and no fix round is spent. Held
+  claims don't count against `session_cap`. When the hold lifts, a claim that still fails the same
+  way is told to merge the base.
+- An open PR that conflicts with its base gets one session to merge the base and resolve the
+  conflicts, then a push to the same PR. It goes through admission and the trigger-label check,
+  and gets one attempt per base commit.
+- A repo setting `amended_label` names a label (nimblefox uses `tests-amended`) that the publish
+  token adds to a PR whose tester files were amended. If GitHub rejects the label, a digest line
+  records it and the review still starts.
+- A rerun syncs its kept branch with GitHub first: it fast-forwards when behind, and resets when
+  the branch was rewritten on GitHub and nothing here is unpushed. It stops with a reason when
+  local work would be lost. It then finds the tester's commits by trailer, so a rerun after a
+  rebase resumes at the implementer instead of starting a new tester.
+- `flocc ship` waits for the A2A server to record its head before checking it.
+
 ## 0.11.0 (2026-10-24)
 
 Agents on flocc hosts can reach each other, and the owner can reach any of them from a Claude
