@@ -1,12 +1,13 @@
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
 
+from flocc import canary, ledger
 from flocc import grants as grants_mod
-from flocc import ledger
 from flocc.agentblock import settings_from_json
 from flocc.context import phase_prompt, state_dir
 from flocc.escalation import Escalation, scoped
@@ -38,6 +39,7 @@ from flocc.sessions import (
     trust_folders,
 )
 from flocc.usage import context_pct, latest_usage, read_status
+from flocc.worktree import origin_base
 
 HANDOFF_ASK = (
     "Your context is past {pct:.0f}%. Follow the handoff skill now: write handoff.md in your state"
@@ -46,6 +48,7 @@ HANDOFF_ASK = (
 _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
+BASE_HELD = "base_held"
 CHECK_OUTPUT = "check-output.log"
 OWNER_ITEMS = "owner-items.md"
 QUESTION_WAIT_S = 7200
@@ -353,6 +356,9 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
 
 def _finish_phase(rt, claim: Claim, summary: str) -> None:
     key = claim.issue_key
+    # Before the usage record, which would add a row on every tick of the wait.
+    if not _base_hold_lifted(rt, claim):
+        return
     _record_usage(rt, key, claim.phase, "end")
     if claim.phase == "review":
         _finish_review(rt, claim)
@@ -425,6 +431,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
         )
     elif result.status == "check_failed" and claim.fix_attempts < rt.cfg.check_fix_rounds:
+        # Only before the first round: a later round's failure is the branch's own.
+        if claim.fix_attempts == 0 and _base_fails_too(rt, claim, result.detail):
+            return
         extra = f"The check failed with:\n\n{result.detail}"
         if result.log:
             log = state_dir(rt.cfg, key) / CHECK_OUTPUT
@@ -492,6 +501,46 @@ def _digest(detail: str) -> str:
 def _same_failure(rt, claim: Claim, detail: str) -> bool:
     path = state_dir(rt.cfg, claim.issue_key) / FAILURE_HASH
     return path.exists() and path.read_text() == _digest(detail)
+
+
+def _base_fails_too(rt, claim: Claim, detail: str) -> bool:
+    """Holds the claim and its repo when the base branch fails the check the same way."""
+    if rt.base_check is None:
+        return False
+    key = claim.issue_key
+    try:
+        sha, failure = rt.base_check(claim.repo)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"{key}: base check did not run: {exc}", file=sys.stderr)
+        return False
+    if failure is None or _digest(failure.detail) != _digest(detail):
+        return False
+    repo = rt.cfg.repos[claim.repo]
+    canary.mark(rt.con, claim.repo, sha, rt.now(), failure.log or failure.detail, check=repo.check)
+    # done.json stays: once the hold lifts, the next tick publishes again.
+    ledger.meta_set(rt.con, f"{BASE_HELD}:{key}", "1")
+    line = (
+        f"`{repo.check}` fails the same way on {repo.base_branch} at {sha[:9]}, so no fix round"
+        f" started; {claim.repo} is held until {repo.base_branch} moves or flocc canary"
+        f" {claim.repo} passes, then {key} publishes again"
+    )
+    ledger.add_digest(rt.con, key, line, rt.now())
+    try:
+        rt.linear.comment(claim.issue_id, line)
+    except LinearError as exc:
+        print(f"{key}: base-broken comment not posted: {exc}", file=sys.stderr)
+    return True
+
+
+def _base_hold_lifted(rt, claim: Claim) -> bool:
+    key = f"{BASE_HELD}:{claim.issue_key}"
+    if not ledger.meta_get(rt.con, key):
+        return True
+    repo = rt.cfg.repos[claim.repo]
+    if canary.hold_reason(rt.con, claim.repo, repo.base_branch, origin_base(repo), rt.now()):
+        return False
+    ledger.meta_set(rt.con, key, "")
+    return True
 
 
 def _check_question(rt, claim: Claim, d: Path, name: str) -> None:

@@ -15,6 +15,7 @@ from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.grants import Grants, set_block
 from flocc.linear import LinearError
+from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.tick import tick_lock
 from tests.fakes import FakeNotifier, FakeSessions
@@ -721,6 +722,22 @@ def test_canary_marks_the_repo_when_setup_fails(host_cfg, monkeypatch, capsys):
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     assert canary.get_mark(ledger.connect(cfg.ledger_path), repo)["output"] == "go: not found"
     assert "go: not found" in capsys.readouterr().err
+
+
+def test_canary_reruns_the_check_for_a_check_mark(host_cfg, monkeypatch, capsys):
+    cfg, repo = _canary(host_cfg, monkeypatch, None)
+    con = ledger.connect(cfg.ledger_path)
+    canary.mark(con, repo, "abc123def456", 1.0, "old", check="just check")
+    monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", None))
+    assert main(["--config", str(host_cfg), "canary", repo]) == 0
+    assert canary.get_mark(con, repo) is None
+    canary.mark(con, repo, "abc123def456", 1.0, "old", check="just check")
+    failure = PublishResult("check_failed", "E1 boom", log="E1 boom full")
+    monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", failure))
+    assert main(["--config", str(host_cfg), "canary", repo]) == 1
+    m = canary.get_mark(con, repo)
+    assert m["sha"] == "def456abc123" and m["check"] == "just check"
+    assert "E1 boom" in capsys.readouterr().err
 
 
 def test_canary_forget_clears_every_mark_and_counts_them(host_cfg, capsys):

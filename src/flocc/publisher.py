@@ -9,7 +9,13 @@ from pathlib import Path
 from flocc.config import TRAILER, RepoConfig
 from flocc.gate import AMENDED
 from flocc.ledger import Claim
-from flocc.worktree import changed_files, git, run_bounded
+from flocc.worktree import (
+    base_checkout,
+    changed_files,
+    git,
+    run_bounded,
+    setup_in_checkout,
+)
 
 _TAIL = 3000
 _FAILURE = re.compile(r"error|fail|traceback|panic|exit code [1-9]", re.IGNORECASE)
@@ -123,6 +129,35 @@ def pr_title(key: str, title: str, labels: tuple[str, ...] = ()) -> str:
     return f"{kind}: {title} ({key})"
 
 
+def run_check(repo: RepoConfig, wt: Path, timeout_s: float) -> PublishResult | None:
+    code, out = run_bounded(shlex.split(repo.check), wt, timeout_s)
+    if code is None:
+        detail = f"`{repo.check}` timed out after {timeout_s}s\n\n{out[-_TAIL:]}"
+        return PublishResult("check_failed", detail.strip(), log=out)
+    if code != 0:
+        return PublishResult("check_failed", failure_excerpt(out), log=out)
+    return None
+
+
+def check_at_base(
+    repo: RepoConfig,
+    worktree_root: Path,
+    setup_timeout_s: float,
+    check_timeout_s: float,
+    shared_uv_cache: bool,
+) -> tuple[str, PublishResult | None]:
+    """origin/<base>'s SHA and how the repo's check fails there; None when it passes."""
+    with base_checkout(repo, worktree_root) as (path, sha):
+        code, out = setup_in_checkout(path, setup_timeout_s, shared_uv_cache)
+        if code != 0:
+            # Not the check's failure, so its digest never matches a branch's and no hold follows.
+            why = "timed out" if code is None else f"exited {code}"
+            return sha, PublishResult(
+                "check_failed", f"./setup {why} on the base\n\n{out[-_TAIL:]}", log=out
+            )
+        return sha, run_check(repo, path, check_timeout_s)
+
+
 def publish(
     claim: Claim,
     repo: RepoConfig,
@@ -156,12 +191,8 @@ def publish(
     if dirty:
         detail = f"Uncommitted changes; commit them or remove them, then finish again:\n{dirty}"
         return PublishResult("check_failed", detail[:_TAIL])
-    code, out = run_bounded(shlex.split(repo.check), wt, check_timeout_s)
-    if code is None:
-        detail = f"`{repo.check}` timed out after {check_timeout_s}s\n\n{out[-_TAIL:]}"
-        return PublishResult("check_failed", detail.strip(), log=out)
-    if code != 0:
-        return PublishResult("check_failed", failure_excerpt(out), log=out)
+    if failed := run_check(repo, wt, check_timeout_s):
+        return failed
     # Commits made with --no-verify skip the hook; noted, not blocked, since the work is sound.
     untrailed = ()
     if trailer:

@@ -21,7 +21,7 @@ from flocc.poller import (
     restart_timed_out,
     route_escalations,
 )
-from flocc.publisher import comment_on_pr, pr_view, publish, read_amended
+from flocc.publisher import check_at_base, comment_on_pr, pr_view, publish, read_amended
 from flocc.runtime import Runtime
 from flocc.sessions import Sessions
 from flocc.supervisor import supervise
@@ -81,6 +81,15 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
     def comment_pr(claim, url, body):
         comment_on_pr(claim, url, body, token)
 
+    def base_check(repo):
+        return check_at_base(
+            cfg.repos[repo],
+            cfg.worktree_root,
+            cfg.setup_timeout_s,
+            cfg.check_timeout_s,
+            cfg.shared_uv_cache,
+        )
+
     return Runtime(
         cfg=cfg,
         con=con,
@@ -96,6 +105,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         review_diff=review_diff,
         comment_pr=comment_pr,
         pr_view=lambda claim, url: pr_view(claim, url, token),
+        base_check=base_check,
     )
 
 

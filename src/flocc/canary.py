@@ -10,8 +10,10 @@ def _key(repo: str) -> str:
     return f"main_broken:{repo}"
 
 
-def mark(con, repo: str, sha: str, now: float, output: str) -> None:
+def mark(con, repo: str, sha: str, now: float, output: str, check: str | None = None) -> None:
     value = {"sha": sha, "at": now, "output": output[-OUTPUT_CHARS:]}
+    if check:
+        value["check"] = check
     ledger.meta_set(con, _key(repo), json.dumps(value))
 
 
@@ -48,4 +50,7 @@ def hold_reason(
     if now - float(m["at"]) >= HOLD_S or (current_sha is not None and current_sha != m["sha"]):
         clear(con, repo)
         return None
-    return f"./setup fails on {base_branch} at {m['sha'][:9]}; after fixing it, run flocc canary {repo}"
+    what = f"`{m['check']}`" if m.get("check") else "./setup"
+    return (
+        f"{what} fails on {base_branch} at {m['sha'][:9]}; after fixing it, run flocc canary {repo}"
+    )

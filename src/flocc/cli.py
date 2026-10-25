@@ -556,7 +556,7 @@ def cmd_release(args) -> int:
 
 
 def cmd_canary(args) -> int:
-    from flocc import canary, worktree
+    from flocc import canary, publisher, worktree
     from flocc.tick import tick_lock
 
     cfg, _ = _config(args)
@@ -585,10 +585,26 @@ def cmd_canary(args) -> int:
             raise SystemExit(128 + signum)
 
         saved = {sig: signal.signal(sig, _exit) for sig in (signal.SIGTERM, signal.SIGHUP)}
+        mark = canary.get_mark(con, args.repo)
+        check = cfg.repos[args.repo].check if mark and mark.get("check") else None
         try:
-            code, out, sha = worktree.setup_at_base(
-                cfg.repos[args.repo], cfg.worktree_root, cfg.setup_timeout_s, cfg.shared_uv_cache
-            )
+            if check:
+                sha, failure = publisher.check_at_base(
+                    cfg.repos[args.repo],
+                    cfg.worktree_root,
+                    cfg.setup_timeout_s,
+                    cfg.check_timeout_s,
+                    cfg.shared_uv_cache,
+                )
+                code = 1 if failure else 0
+                out = failure.log or failure.detail if failure else ""
+            else:
+                code, out, sha = worktree.setup_at_base(
+                    cfg.repos[args.repo],
+                    cfg.worktree_root,
+                    cfg.setup_timeout_s,
+                    cfg.shared_uv_cache,
+                )
         except (subprocess.SubprocessError, OSError) as exc:
             why = getattr(exc, "stderr", None) or exc
             print(f"canary: {args.repo}'s base was not checked out: {why}", file=sys.stderr)
@@ -596,16 +612,18 @@ def cmd_canary(args) -> int:
         finally:
             for sig, handler in saved.items():
                 signal.signal(sig, handler)
+        ran = f"`{check}`" if check else "./setup"
         if code == 0:
             canary.clear(con, args.repo)
             print(
-                f"canary: ./setup passes on {args.repo} at {sha[:9]}; its issues are no longer held"
+                f"canary: {ran} passes on {args.repo} at {sha[:9]}; its issues are no longer held"
             )
             return 0
-        canary.mark(con, args.repo, sha, time.time(), out)
+        canary.mark(con, args.repo, sha, time.time(), out, check=check)
         what = "timed out" if code is None else f"exited {code}"
         print(
-            f"canary: ./setup {what} on {args.repo} at {sha[:9]}; its issues stay held\n"
+            f"canary: {ran} {what if not check else 'fails'} on {args.repo} at {sha[:9]};"
+            f" its issues stay held\n"
             f"{out[-canary.OUTPUT_CHARS :]}",
             file=sys.stderr,
         )

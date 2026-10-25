@@ -8,6 +8,7 @@ from flocc.config import RepoConfig
 from flocc.publisher import (
     COMMENT_LIMIT,
     BranchMoved,
+    check_at_base,
     comment_on_pr,
     failure_excerpt,
     pr_title,
@@ -322,6 +323,24 @@ def test_failed_check(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'echo boom; exit 1'")
     result = publish(claim, repo, "t", "s", token="t", runner=Gh())
     assert result.status == "check_failed" and "boom" in result.detail
+
+
+def test_check_at_base_runs_setup_then_the_check_on_a_throwaway_checkout(origin, tmp_path):
+    repo = RepoConfig(origin, check="sh -c 'test -f .setup-ran && echo boom; exit 1'")
+    sha, failure = check_at_base(repo, tmp_path / "wt", 30, 30, False)
+    assert sha == git("rev-parse", "origin/main", cwd=origin)
+    assert failure.status == "check_failed" and "boom" in failure.detail
+    assert list((tmp_path / "wt").iterdir()) == []
+    passing = RepoConfig(origin, check="true")
+    assert check_at_base(passing, tmp_path / "wt", 30, 30, False) == (sha, None)
+
+
+def test_check_at_base_reports_a_failing_setup_as_a_failure(origin, tmp_path):
+    (origin / "setup").write_text("#!/bin/sh\necho no toolchain; exit 3\n")
+    git("commit", "-qam", "break setup", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    _, failure = check_at_base(RepoConfig(origin, check="true"), tmp_path / "wt", 30, 30, False)
+    assert failure.status == "check_failed" and "no toolchain" in failure.log
 
 
 def test_failure_excerpt_keeps_an_early_error_over_a_passing_tail():

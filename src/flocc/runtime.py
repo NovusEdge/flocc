@@ -29,3 +29,6 @@ class Runtime:
     free_disk_gb: Callable[[Path], float] = free_disk_gb
     # The PR's state and files; None in tests that never reach the A2A step.
     pr_view: Callable[[Claim, str], dict] | None = None
+    # Runs the repo's check on its base branch: (base SHA, failure or None). None skips the
+    # base comparison.
+    base_check: Callable[[str], tuple[str, Any]] | None = None

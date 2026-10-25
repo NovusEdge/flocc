@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from flocc import ledger
+from flocc import canary, ledger
 from flocc.agentblock import IssueSettings, settings_to_json
 from flocc.context import state_dir
 from flocc.gate import record_session, record_stop, run_gate, run_id
@@ -1293,3 +1293,113 @@ def test_review_and_fix_launches_carry_their_own_run_id_and_remote_control(rt):
     argv = rt.sessions.started[-1][1]
     assert c.phase == "review" and env_of(argv)["FLOCC_RUN"] == f"review@{c.started_at}"
     assert "--remote-control" not in argv
+
+
+def base_check(rt, monkeypatch, sha="base-1", failure=None):
+    """Wires the base-branch check to a fixed result and the repo's base SHA to `sha`."""
+    runs = []
+
+    def run(repo):
+        runs.append(repo)
+        return sha, failure
+
+    rt.base_check = run
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: sha)
+    return runs
+
+
+def test_a_check_that_also_fails_on_the_base_starts_no_fix_round_and_holds_the_repo(
+    rt, monkeypatch
+):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    runs = base_check(rt, monkeypatch, failure=PublishResult("check_failed", "E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert runs == ["backend"] and rt.sessions.started == []
+    c = current(rt)
+    assert c.state == "running" and c.fix_attempts == 0
+    mark = canary.get_mark(rt.con, "backend")
+    assert mark["sha"] == "base-1" and mark["check"] == "just check"
+    line = rt.linear.comments[-1]
+    assert "`just check`" in line and "base-1"[:9] in line
+    assert [d for _, k, d in ledger.pending_digest(rt.con) if k == "NF-1"] == [line]
+    assert (state_dir(rt.cfg, "NF-1") / "done.json").exists()
+
+
+def test_a_check_that_passes_on_the_base_gets_its_fix_round(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    base_check(rt, monkeypatch, failure=None)
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and current(rt).fix_attempts == 1
+    assert canary.get_mark(rt.con, "backend") is None
+
+
+def test_a_different_failure_on_the_base_does_not_hold_the_branch(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    base_check(rt, monkeypatch, failure=PublishResult("check_failed", "E9 elsewhere"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and canary.get_mark(rt.con, "backend") is None
+
+
+@pytest.mark.parametrize("exc", [subprocess.CalledProcessError(128, "git"), OSError("no disk")])
+def test_a_base_check_that_cannot_run_falls_back_to_the_fix_round(rt, monkeypatch, exc):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+
+    def broken(repo):
+        raise exc
+
+    rt.base_check = broken
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix"
+
+
+def test_the_base_is_checked_only_before_the_first_fix_round(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    runs = base_check(rt, monkeypatch, failure=None)
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    done(rt)
+    supervise(rt, current(rt))
+    assert len(runs) == 1
+
+
+def test_a_held_claim_waits_without_publishing_until_the_base_moves(rt, monkeypatch):
+    published = []
+
+    def publish(c, t, s, **kw):
+        published.append(1)
+        return PublishResult("check_failed", "E1 boom")
+
+    rt.publish_fn = publish
+    base_check(rt, monkeypatch, failure=PublishResult("check_failed", "E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    assert published == [1] and current(rt).state == "running"
+    assert len(rt.linear.comments) == 1
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: "base-2")
+    rt.publish_fn = lambda c, t, s, **kw: PublishResult("opened", url="https://pr/1")
+    supervise(rt, current(rt))
+    assert current(rt).phase == "review"
+    assert canary.get_mark(rt.con, "backend") is None
+
+
+def test_a_held_claim_keeps_waiting_when_the_remote_is_unreachable(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
+    base_check(rt, monkeypatch, failure=PublishResult("check_failed", "E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: None)
+    rt.publish_fn = lambda c, t, s, **kw: pytest.fail("published while held")
+    supervise(rt, current(rt))
+    assert current(rt).state == "running"
