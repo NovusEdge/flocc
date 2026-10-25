@@ -12,6 +12,7 @@ from flocc.publisher import (
     comment_on_pr,
     failure_excerpt,
     pr_title,
+    pr_view,
     publish,
     review_comment,
 )
@@ -329,6 +330,7 @@ def test_check_at_base_runs_setup_then_the_check_on_a_throwaway_checkout(origin,
     repo = RepoConfig(origin, check="sh -c 'test -f .setup-ran && echo boom; exit 1'")
     sha, failure = check_at_base(repo, tmp_path / "wt", 30, 30, False)
     assert sha == git("rev-parse", "origin/main", cwd=origin)
+    assert failure is not None
     assert failure.status == "check_failed" and "boom" in failure.detail
     assert list((tmp_path / "wt").iterdir()) == []
     passing = RepoConfig(origin, check="true")
@@ -340,6 +342,7 @@ def test_check_at_base_reports_a_failing_setup_as_a_failure(origin, tmp_path):
     git("commit", "-qam", "break setup", cwd=origin)
     git("push", "-q", "origin", "main", cwd=origin)
     _, failure = check_at_base(RepoConfig(origin, check="true"), tmp_path / "wt", 30, 30, False)
+    assert failure is not None
     assert failure.status == "check_failed" and "no toolchain" in failure.log
 
 
@@ -360,6 +363,18 @@ def test_failed_check_keeps_the_full_output(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'seq 5000; echo boom; exit 1'")
     result = publish(claim, repo, "t", "s", token="t", runner=Gh())
     assert result.log.startswith("1\n") and "boom" in result.detail
+
+
+def test_pr_view_asks_for_the_mergeable_state():
+    seen = []
+
+    def gh(argv, **kw):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, '{"mergeable": "CONFLICTING"}', "")
+
+    claim = make("NF-5", worktree="/gone")
+    assert pr_view(claim, "https://pr/1", "t", runner=gh) == {"mergeable": "CONFLICTING"}
+    assert "mergeable" in seen[0][seen[0].index("--json") + 1].split(",")
 
 
 def test_review_comment_wraps_the_review_verbatim():

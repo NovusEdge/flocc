@@ -10,7 +10,7 @@ from flocc import canary, ledger
 from flocc import grants as grants_mod
 from flocc.agentblock import settings_from_json
 from flocc.context import phase_prompt, state_dir
-from flocc.escalation import Escalation, scoped
+from flocc.escalation import DEDUPE_S, Escalation, scoped
 from flocc.gate import (
     ASKED,
     BACKGROUND,
@@ -49,6 +49,8 @@ _MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
 BASE_HELD = "base_held"
+REBASE = "rebase"
+REBASE_TRIED = "rebase_tried"
 CHECK_OUTPUT = "check-output.log"
 OWNER_ITEMS = "owner-items.md"
 QUESTION_WAIT_S = 7200
@@ -354,6 +356,71 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     return True
 
 
+def start_rebase(rt, claim: Claim, base_sha: str) -> bool:
+    """One fix session that merges the base into a finished claim's conflicting PR branch."""
+    key = claim.issue_key
+    if _over_usage_limit(rt):
+        return False
+    base = _base_of(rt, claim)
+    extra = (
+        f"The PR for this issue no longer merges cleanly into {base}. Run `git fetch origin`,"
+        f" merge `origin/{base}` into this branch and resolve the conflicts without changing"
+        " behaviour: keep what the branch does and take the base's side of anything unrelated."
+        " Run the check, commit the merge, then finish as usual."
+    )
+    d = state_dir(rt.cfg, key)
+    start = rt.now()
+    (d / FIX_CONTEXT).write_text(extra)
+    # A stale done.json would be read as this session finishing.
+    (d / "done.json").unlink(missing_ok=True)
+    # Before the launch, like the review fix: a tick that dies after the session starts must find
+    # the claim running in the fix phase, with its publish reusing the open PR.
+    ledger.meta_set(rt.con, f"{REBASE}:{key}", "1")
+    ledger.meta_set(rt.con, f"{REBASE_TRIED}:{key}", base_sha)
+    ledger.update_claim(
+        rt.con, key, state="running", phase="fix", fix_attempts=0, restarts=0, started_at=start
+    )
+    try:
+        launch(rt, claim, "fix", extra=extra, started_at=start)
+    except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
+        print(f"{key}: rebase not started: {exc}", file=sys.stderr)
+        cause = f"{key}:rebase-start"
+        if not ledger.alert_seen(rt.con, cause, DEDUPE_S, rt.now()):
+            ledger.add_digest(rt.con, key, f"rebase not started ({exc})", rt.now())
+            ledger.record_alert(rt.con, cause, 3, key, rt.now())
+        ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
+        ledger.meta_set(rt.con, f"{REBASE_TRIED}:{key}", "")
+        ledger.update_claim(
+            rt.con,
+            key,
+            state=claim.state,
+            phase=claim.phase,
+            fix_attempts=claim.fix_attempts,
+            restarts=claim.restarts,
+            started_at=claim.started_at,
+        )
+        return False
+    return True
+
+
+def _base_of(rt, claim: Claim) -> str:
+    return rt.cfg.repos[claim.repo].base_branch
+
+
+def block_unrebased(rt, claim: Claim, base_sha: str) -> None:
+    base = _base_of(rt, claim)
+    line = f"the PR still conflicts with {base} at {base_sha[:9]} after a rebase attempt"
+    ledger.add_digest(rt.con, claim.issue_key, line, rt.now())
+    _block(
+        rt,
+        claim,
+        "rebase-conflict",
+        f"The rebase session ran, and {line}.",
+        f"Resolve the conflicts on the branch by hand, push it, then run flocc release"
+        f" --keep-worktree {claim.issue_key}",
+    )
+
+
 def _finish_phase(rt, claim: Claim, summary: str) -> None:
     key = claim.issue_key
     # Before the usage record, which would add a row on every tick of the wait.
@@ -383,16 +450,23 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         )
         return
     review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
-    if claim.phase == "fix" and review_fix and (found := _OWNER_HEADING.search(summary)):
+    rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
+    if (
+        claim.phase == "fix"
+        and review_fix
+        and not rebasing
+        and (found := _OWNER_HEADING.search(summary))
+    ):
         # Kept apart from later check-fix summaries, which would overwrite it.
         (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[found.start() :].lstrip())
     issue = rt.linear.issue(key)
     title = pr_title(key, issue.title, issue.labels)
     try:
-        # After a review fix the PR must still be open: a new one would reopen finished work.
+        # After a review fix or a rebase the PR must still be open: a new one would reopen
+        # finished work.
         result = (
             rt.publish_fn(claim, title, summary, reuse_only=True)
-            if review_fix
+            if review_fix or rebasing
             else rt.publish_fn(claim, title, summary)
         )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
@@ -401,12 +475,18 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     # Failures count only in a row: the fix phase's publish, or a rerun's, starts from zero.
     ledger.meta_set(rt.con, f"publish_failures:{key}", "0")
     if result.status == "pr_closed":
-        line = "The PR was closed or merged during the review fix; nothing more was published."
+        what = "rebase" if rebasing else "review fix"
+        line = f"The PR was closed or merged during the {what}; nothing more was published."
         owner = _owner_items(rt, claim)
         _comment_or_digest(rt, claim, f"{line}\n\n{owner}" if owner else line)
+        ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
         ledger.update_claim(rt.con, key, state="done")
     elif result.status == "opened":
-        if review_fix and result.existing:
+        if rebasing:
+            rt.linear.comment(
+                issue.id, f"Merged {_base_of(rt, claim)} into the branch; pushed to {result.url}"
+            )
+        elif review_fix and result.existing:
             rt.linear.comment(issue.id, f"Review fix pushed to {result.url}; reviewing again")
         else:
             rt.linear.comment(issue.id, f"PR for review: {result.url}")
@@ -414,7 +494,12 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         if result.untrailed:
             line = f"{key}: commits without the Flocc trailer: {', '.join(result.untrailed)}"
             ledger.add_digest(rt.con, key, line, rt.now())
-        _start_review(rt, claim, issue.title, issue.description, result.url)
+        if rebasing:
+            # A merge adds no behaviour for a reviewer to judge, and the earlier review stands.
+            ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
+            ledger.update_claim(rt.con, key, state="done", phase="review")
+        else:
+            _start_review(rt, claim, issue.title, issue.description, result.url)
     elif (
         result.status == "check_failed"
         and claim.fix_attempts > 0

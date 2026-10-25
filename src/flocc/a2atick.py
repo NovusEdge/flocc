@@ -39,10 +39,10 @@ def _seed(rt, cfg: A2AConfig) -> None:
     if ledger.meta_get(rt.con, SEEDED):
         return
     for claim in ledger.live_claims(rt.con):
-        if _pr_url(rt, claim) is not None:
+        if pr_url(rt, claim) is not None:
             ledger.meta_set(rt.con, f"a2a_sent:{claim.issue_key}:open", "seeded")
     for claim in ledger.finished_claims(rt.con):
-        url = _pr_url(rt, claim)
+        url = pr_url(rt, claim)
         if url is None:
             continue
         ledger.meta_set(rt.con, f"a2a_sent:{claim.issue_key}:open", "seeded")
@@ -104,7 +104,7 @@ def _record(rt, cfg: A2AConfig) -> None:
         inbox.mark_recorded(con, msg.task_id, rt.now())
 
 
-def _pr_url(rt, claim: Claim) -> str | None:
+def pr_url(rt, claim: Claim) -> str | None:
     path = state_dir(rt.cfg, claim.issue_key) / "pr-url"
     url = path.read_text().strip() if path.exists() else ""
     return url if url and url != "unknown" else None
@@ -172,7 +172,7 @@ def _handoffs(rt, cfg: A2AConfig, claim: Claim, url: str, files: list[str], what
 
 def _opened(rt, cfg: A2AConfig) -> None:
     for claim in [*ledger.live_claims(rt.con), *ledger.finished_claims(rt.con)]:
-        url = _pr_url(rt, claim)
+        url = pr_url(rt, claim)
         if url is None:
             continue
 
@@ -186,7 +186,7 @@ def _opened(rt, cfg: A2AConfig) -> None:
 def _merged(rt, cfg: A2AConfig) -> None:
     me = cfg.hosts.get(cfg.name)
     for claim in ledger.finished_claims(rt.con):
-        url = _pr_url(rt, claim)
+        url = pr_url(rt, claim)
         if claim.state != "done" or url is None:
             continue
 

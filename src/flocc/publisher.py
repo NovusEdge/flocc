@@ -298,7 +298,7 @@ def review_comment(review: str) -> str:
 
 def pr_view(claim: Claim, url: str, token: str, runner=subprocess.run) -> dict:
     out = runner(
-        ["gh", "pr", "view", url, "--json", "state,mergedAt,files"],
+        ["gh", "pr", "view", url, "--json", "state,mergedAt,files,mergeable"],
         # A finished claim's worktree may already be reaped.
         cwd=claim.worktree if Path(claim.worktree).exists() else None,
         env={**os.environ, "GH_TOKEN": token},

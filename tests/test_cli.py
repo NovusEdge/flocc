@@ -736,7 +736,7 @@ def test_canary_reruns_the_check_for_a_check_mark(host_cfg, monkeypatch, capsys)
     monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", failure))
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     m = canary.get_mark(con, repo)
-    assert m["sha"] == "def456abc123" and m["check"] == "just check"
+    assert m is not None and m["sha"] == "def456abc123" and m["check"] == "just check"
     assert "E1 boom" in capsys.readouterr().err
 
 

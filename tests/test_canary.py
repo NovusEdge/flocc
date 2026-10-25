@@ -17,7 +17,8 @@ def test_a_mark_holds_while_main_stays_at_its_sha(tmp_path):
 def test_a_check_mark_names_the_check_and_clears_on_a_new_commit(tmp_path):
     c = con(tmp_path)
     canary.mark(c, "web", "abc123def456", 100.0, "E1 boom", check="just check")
-    assert canary.get_mark(c, "web")["check"] == "just check"
+    m = canary.get_mark(c, "web")
+    assert m is not None and m["check"] == "just check"
     reason = canary.hold_reason(c, "web", "main", "abc123def456", 200.0)
     assert (
         reason == "`just check` fails on main at abc123def; after fixing it, run flocc canary web"

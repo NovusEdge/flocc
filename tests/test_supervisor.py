@@ -1320,7 +1320,7 @@ def test_a_check_that_also_fails_on_the_base_starts_no_fix_round_and_holds_the_r
     c = current(rt)
     assert c.state == "running" and c.fix_attempts == 0
     mark = canary.get_mark(rt.con, "backend")
-    assert mark["sha"] == "base-1" and mark["check"] == "just check"
+    assert mark is not None and mark["sha"] == "base-1" and mark["check"] == "just check"
     line = rt.linear.comments[-1]
     assert "`just check`" in line and "base-1"[:9] in line
     assert [d for _, k, d in ledger.pending_digest(rt.con) if k == "NF-1"] == [line]
