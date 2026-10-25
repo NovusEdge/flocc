@@ -515,6 +515,16 @@ def test_publish_notes_commits_without_the_trailer_in_the_digest(rt):
     assert any("abc1234" in line and "trailer" in line for line in lines)
 
 
+def test_publish_notes_a_label_that_was_not_added_in_the_digest(rt):
+    rt.publish_fn = lambda c, t, s: PublishResult("opened", url="u", label_error="no such label")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    lines = [line for _, _, line in ledger.pending_digest(rt.con)]
+    assert any("no such label" in line and "label" in line for line in lines)
+    assert any(name == "NF-1-review" for name, _ in rt.sessions.started)
+
+
 def test_fix_session_is_pointed_at_the_full_check_output(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom", log="all of it")
     add(rt, phase="impl", tester_sha="sha-tests")

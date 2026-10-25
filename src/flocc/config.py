@@ -70,6 +70,9 @@ class RepoConfig:
     commit_trailer: bool | None = None  # None follows Config.commit_trailer
     # Files every issue edits (an append-only log): never claimed, never refused at commit.
     shared_paths: tuple[str, ...] = ()
+    # Added with the publish token to a PR whose implementer amended tester files, for repos whose
+    # PR check fails such PRs without it. Empty adds none; flocc never removes it.
+    amended_label: str = ""
 
 
 # No claude_config_dir: sessions must share the owner's Claude Code login and

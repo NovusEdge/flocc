@@ -19,6 +19,10 @@ class DirtyWorktree(subprocess.SubprocessError):
     pass
 
 
+class BranchDiverged(subprocess.SubprocessError):
+    pass
+
+
 def git(*args: str, cwd: Path) -> str:
     out = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
     return out.stdout.strip()
@@ -85,6 +89,36 @@ def _has_ref(repo: Path, ref: str) -> bool:
     return out.returncode == 0
 
 
+def _sync_branch(path: Path, branch: str) -> None:
+    """Brings a kept branch up to GitHub's copy, so the resume decision and the push see one history."""
+    remote = f"origin/{branch}"
+    tracked = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", f"refs/remotes/{remote}"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    git("fetch", "-q", "origin", f"+refs/heads/{branch}:refs/remotes/{remote}", cwd=path)
+    if contains(path, remote):
+        return
+    # Someone rebased or pushed on GitHub: the push at the end would be rejected, after the
+    # sessions spent their usage.
+    if contains(path, "HEAD", remote):
+        git("merge", "-q", "--ff-only", remote, cwd=path)
+        return
+    # A rewritten branch loses nothing when HEAD is at or behind what this host last saw on
+    # GitHub, and the tree is clean. Without a tracking ref nothing says what was published.
+    if tracked and contains(path, "HEAD", tracked) and not git("status", "--porcelain", cwd=path):
+        git("reset", "-q", "--hard", remote, cwd=path)
+        return
+    raise BranchDiverged(
+        f"{branch} here has commits or changes GitHub's copy lacks, and GitHub's copy has commits"
+        " this one lacks; keep what is needed from this worktree, then run"
+        " flocc release --keep-worktree"
+    )
+
+
 def prepare_worktree(
     repo: RepoConfig,
     worktree_root: Path,
@@ -102,6 +136,7 @@ def prepare_worktree(
     # otherwise look live below and leave no directory to run in.
     git("worktree", "prune", cwd=repo.path)
     listed = git("worktree", "list", "--porcelain", cwd=repo.path).splitlines()
+    on_remote = bool(git("ls-remote", "origin", f"refs/heads/{branch}", cwd=repo.path))
     # A released run leaves its branch, and with --keep-worktree its worktree; a rerun continues
     # on them, where `worktree add -b` would fail.
     if f"worktree {path}" not in listed:
@@ -111,11 +146,13 @@ def prepare_worktree(
             start = f"origin/{repo.base_branch}"
             # Another host ran this issue before: a branch cut fresh from the base would be
             # rejected at the end of the run, after the sessions spent their usage.
-            if git("ls-remote", "origin", f"refs/heads/{branch}", cwd=repo.path):
+            if on_remote:
                 refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
                 git("fetch", "-q", "origin", refspec, cwd=repo.path)
                 start = f"origin/{branch}"
             git("worktree", "add", "-q", "-b", branch, str(path), start, cwd=repo.path)
+    if on_remote:
+        _sync_branch(path, branch)
     base = git("rev-parse", "HEAD", cwd=path)
     if (path / "setup").exists():
         # A kept worktree may hold the previous run's uncommitted work; only what setup adds counts.
@@ -280,16 +317,11 @@ def contains(worktree: Path, sha: str, ref: str = "HEAD") -> bool:
     return out.returncode == 0
 
 
-def recover_tests(
-    worktree: Path, base_branch: str, branch: str, key: str
-) -> tuple[str, str] | None:
-    """(base_sha, tester_sha) of the tester's commits on origin's copy of branch, or None."""
-    remote = f"origin/{branch}"
-    if not _has_ref(worktree, f"refs/remotes/{remote}"):
-        return None
+def recover_tests(worktree: Path, base_branch: str, key: str) -> tuple[str, str] | None:
+    """(base_sha, tester_sha) of the tester's commits on the worktree's HEAD, or None."""
     # Exits 1 when the branches share no history; git() would raise and crash every poll of the issue.
     base = subprocess.run(
-        ["git", "merge-base", f"origin/{base_branch}", remote],
+        ["git", "merge-base", f"origin/{base_branch}", "HEAD"],
         cwd=worktree,
         capture_output=True,
         text=True,
@@ -303,7 +335,7 @@ def recover_tests(
         "--reverse",
         "--first-parent",
         "--format=%H%x1f%(trailers:only,unfold)%x1e",
-        f"{fork}..{remote}",
+        f"{fork}..HEAD",
         cwd=worktree,
     )
     wanted = f"{TRAILER}: {key} test"

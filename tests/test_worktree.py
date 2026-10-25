@@ -9,6 +9,7 @@ from flocc import ledger
 from flocc.cli import main
 from flocc.config import TRAILER, RepoConfig
 from flocc.worktree import (
+    BranchDiverged,
     changed_files,
     contains,
     free_disk_gb,
@@ -81,8 +82,8 @@ def _push(other):
 
 
 def _recover(origin, tmp_path):
-    path, branch, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
-    return recover_tests(path, "main", branch, "NF-3")
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    return recover_tests(path, "main", "NF-3")
 
 
 def test_prepare_continues_a_branch_only_the_remote_has(origin, tmp_path):
@@ -97,6 +98,70 @@ def test_prepare_continues_a_branch_only_the_remote_has(origin, tmp_path):
 def test_prepare_without_a_remote_branch_cuts_one_from_the_base(origin, tmp_path):
     _, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     assert base == git("rev-parse", "origin/main", cwd=origin)
+
+
+def test_prepare_fast_forwards_a_kept_branch_the_remote_moved_past(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    other = _other_host(tmp_path)
+    head = _commit(other, "t.txt", f"{TRAILER}: NF-3 test")
+    _push(other)
+    _, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert base == head and (path / "t.txt").exists()
+
+
+def test_prepare_keeps_a_local_branch_ahead_of_the_remote(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    git("push", "-q", "origin", "HEAD:refs/heads/agent/nf-3", cwd=path)
+    local = _commit(path, "t.txt")
+    assert prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")[2] == local
+
+
+def test_prepare_refuses_a_kept_branch_that_diverged_from_the_remote(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    _commit(path, "mine.txt")
+    other = _other_host(tmp_path)
+    _commit(other, "theirs.txt")
+    _push(other)
+    with pytest.raises(BranchDiverged, match="agent/nf-3"):
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+
+
+def _pushed_then_rewritten_on_github(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    _commit(path, "mine.txt")
+    git("push", "-q", "origin", "HEAD:refs/heads/agent/nf-3", cwd=path)
+    other = _other_host(tmp_path)
+    theirs = _commit(other, "theirs.txt")
+    _push(other)
+    return path, theirs
+
+
+def test_prepare_resets_a_branch_rewritten_on_github_when_nothing_is_unpushed(origin, tmp_path):
+    path, theirs = _pushed_then_rewritten_on_github(origin, tmp_path)
+    _, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert base == theirs and not (path / "mine.txt").exists()
+
+
+def test_prepare_refuses_a_rewritten_branch_when_commits_would_be_lost(origin, tmp_path):
+    path, _ = _pushed_then_rewritten_on_github(origin, tmp_path)
+    _commit(path, "unpushed.txt")
+    with pytest.raises(BranchDiverged, match="agent/nf-3"):
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    assert (path / "unpushed.txt").exists()
+
+
+def test_prepare_refuses_a_rewritten_branch_with_uncommitted_changes(origin, tmp_path):
+    path, _ = _pushed_then_rewritten_on_github(origin, tmp_path)
+    (path / "mine.txt").write_text("edited\n")
+    with pytest.raises(BranchDiverged, match="agent/nf-3"):
+        prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+
+
+def test_recover_tests_reads_a_branch_that_was_not_pushed(origin, tmp_path):
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    fork = git("rev-parse", "HEAD", cwd=path)
+    tests = _commit(path, "t.txt", f"{TRAILER}: NF-3 test")
+    assert recover_tests(path, "main", "NF-3") == (fork, tests)
 
 
 def test_recover_tests_takes_the_first_run_of_test_commits(origin, tmp_path):

@@ -244,6 +244,21 @@ def test_tests_recovered_from_the_branch_are_remembered_and_resume_the_implement
     assert ledger.remembered_tests(rt.con, "NF-9") == ("sha-fork", "sha-tests")
 
 
+def test_a_rebased_branch_recovers_the_tests_and_updates_the_record(rt, monkeypatch):
+    ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-rewritten")
+    monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: ("sha-new-base", "sha-tests"))
+    monkeypatch.setattr(
+        "flocc.poller.contains",
+        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+    )
+    rt.linear.ready = [issue()]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None
+    assert (c.phase, c.base_sha, c.tester_sha) == ("impl", "sha-new-base", "sha-tests")
+    assert ledger.remembered_tests(rt.con, "NF-9") == ("sha-new-base", "sha-tests")
+
+
 def test_remembered_tests_are_not_recovered_again(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
 
@@ -284,6 +299,33 @@ def test_a_branch_from_another_host_resumes_at_the_implementer(rt, origin, tmp_p
     assert c is not None
     assert (c.phase, c.base_sha, c.tester_sha) == ("impl", fork, tests)
     assert ledger.remembered_tests(rt.con, "NF-9") == (fork, tests)
+
+
+def test_a_branch_rebased_on_the_host_resumes_at_the_implementer(rt, origin, tmp_path, monkeypatch):
+    monkeypatch.setattr("flocc.poller.prepare_worktree", prepare_worktree)
+    monkeypatch.setattr("flocc.poller.recover_tests", recover_tests)
+    backend = replace(rt.cfg.repos["backend"], path=origin)
+    rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
+    path, _, fork = prepare_worktree(backend, rt.cfg.worktree_root, "NF-9")
+    (path / "test_x.py").write_text("assert True\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", f"tests\n\n{TRAILER}: NF-9 test", cwd=path)
+    ledger.remember_tests(rt.con, "NF-9", fork, git("rev-parse", "HEAD", cwd=path))
+    git("checkout", "-q", "--detach", "main", cwd=origin)
+    (origin / "main.txt").write_text("m\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-qm", "main moved", cwd=origin)
+    git("push", "-q", "origin", "HEAD:main", cwd=origin)
+    git("fetch", "-q", "origin", "main", cwd=path)
+    # Never pushed: origin has no copy of the branch, so only HEAD holds the rebased tests.
+    git("rebase", "-q", "origin/main", cwd=path)
+    new_base = git("rev-parse", "origin/main", cwd=path)
+    new_tests = git("rev-parse", "HEAD", cwd=path)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and (c.phase, c.tester_sha) == ("impl", new_tests)
+    assert ledger.remembered_tests(rt.con, "NF-9") == (new_base, new_tests)
 
 
 @pytest.mark.parametrize("state", ["done", "timed_out", "blocked"])

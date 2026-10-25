@@ -405,6 +405,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         else:
             rt.linear.comment(issue.id, f"PR for review: {result.url}")
             ledger.add_digest(rt.con, key, f"PR ready for review: {result.url}", rt.now())
+        if result.label_error:
+            line = f"{key}: label not added to {result.url}: {result.label_error}"
+            ledger.add_digest(rt.con, key, line, rt.now())
         if result.untrailed:
             line = f"{key}: commits without the Flocc trailer: {', '.join(result.untrailed)}"
             ledger.add_digest(rt.con, key, line, rt.now())
