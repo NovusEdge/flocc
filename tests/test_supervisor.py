@@ -1434,6 +1434,27 @@ def test_a_branch_failing_more_tests_than_the_base_is_not_held(rt, monkeypatch):
     assert not held_after(rt, monkeypatch, more, PYTEST_BASE)
 
 
+def test_a_new_lint_error_of_a_kind_already_on_the_base_is_not_the_same_failure(rt, monkeypatch):
+    base = "ERROR Argument `str | None` is not assignable [bad-argument-type]\n 9 errors"
+    branch = (
+        "ERROR Argument `str | None` is not assignable [bad-argument-type]\n"
+        "ERROR Argument `int` is not assignable [bad-argument-type]\n 10 errors"
+    )
+    assert not held_after(rt, monkeypatch, branch, base)
+
+
+def test_the_same_test_failing_twice_on_the_branch_is_not_the_base_s_single_failure(
+    rt, monkeypatch
+):
+    branch = "FAILED t.py::test_a[1] - x\nFAILED t.py::test_a[1] - y\n"
+    assert not held_after(rt, monkeypatch, branch, "FAILED t.py::test_a[1] - x\n")
+
+
+def test_go_test_failures_match_by_name(rt, monkeypatch):
+    out = "--- FAIL: TestA (0.10s)\n    a_test.go:3: boom\nFAIL\tpkg\t0.2s\n"
+    assert held_after(rt, monkeypatch, out, out.replace("0.10s", "0.31s"))
+
+
 def test_outputs_without_test_ids_match_after_the_checkout_path_and_counts_are_dropped(
     rt, monkeypatch
 ):
@@ -1464,6 +1485,19 @@ def test_a_released_claim_that_fails_the_same_way_is_told_to_merge_the_new_base(
     prompt = next(a for a in rt.sessions.started[-1][1] if "E1 boom" in a)
     assert "has since moved to fedcba987" in prompt and BASE_SHA[:9] in prompt
     assert "merge `origin/main`" in prompt
+
+
+def test_a_hold_lifted_by_a_passing_canary_at_the_same_sha_says_it_passes_now(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    base_check(rt, monkeypatch, failure=failed("E1 boom"))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    canary.clear(rt.con, "backend")
+    rt.base_check = lambda repo: (BASE_SHA, None)
+    supervise(rt, current(rt))
+    prompt = next(a for a in rt.sessions.started[-1][1] if "E1 boom" in a)
+    assert f"now passes at {BASE_SHA[:9]}" in prompt and "has since moved" not in prompt
 
 
 def test_a_different_failure_after_the_hold_gets_no_base_note(rt, monkeypatch):

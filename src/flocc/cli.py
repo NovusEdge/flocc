@@ -125,8 +125,8 @@ def cmd_hook(args) -> int:
         print("flocc: the review session is read-only; do not commit", file=sys.stderr)
         return 1
     shared = _shared_paths(args, mine.repo)
-    # A merge commit stages everything the merged side changed; only what differs from it is this
-    # branch's own edit or conflict resolution.
+    # A merge commit stages everything either side changed; only what differs from both parents is
+    # this commit's own edit or conflict resolution.
     merging = (
         subprocess.run(
             ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
@@ -136,12 +136,10 @@ def cmd_hook(args) -> int:
         ).returncode
         == 0
     )
-    against = ["MERGE_HEAD"] if merging else []
-    staged = [
-        n
-        for n in git("diff", "--cached", "--name-only", *against, cwd=top).splitlines()
-        if not ledger.is_shared(n, shared)
-    ]
+    changed = set(git("diff", "--cached", "--name-only", cwd=top).splitlines())
+    if merging:
+        changed &= set(git("diff", "--cached", "--name-only", "MERGE_HEAD", cwd=top).splitlines())
+    staged = [n for n in sorted(changed) if not ledger.is_shared(n, shared)]
     peers = ledger.in_repo(ledger.live_claims(con), mine.repo)
     clash = ledger.file_conflicts(staged, peers, exclude=mine.issue_key)
     if not clash:

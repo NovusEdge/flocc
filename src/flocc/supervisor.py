@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -592,15 +593,21 @@ def _same_failure(rt, claim: Claim, detail: str) -> bool:
     return path.exists() and path.read_text() == _digest(detail)
 
 
-_FAILED_TEST = re.compile(r"^(?:FAILED |ERROR |--- FAIL: |FAIL[ \t]+)\s*(\S+)", re.MULTILINE)
+# Test-shaped IDs only: pytest node IDs and Go tests. A linter's `ERROR <message>` line has no ID,
+# and its first word would make two different errors of one kind look alike.
+_FAILED_TEST = re.compile(r"^(?:(?:FAILED|ERROR) (\S+::\S+)|--- FAIL: (\S+))", re.MULTILINE)
 _SUMMARY_COUNT = re.compile(r"\b\d+ (passed|failed|skipped|deselected|xfailed|xpassed|warnings?)\b")
+
+
+def _failing_tests(text: str) -> Counter[str]:
+    return Counter(a or b for a, b in _FAILED_TEST.findall(text))
 
 
 def _same_as_base(result: PublishResult, claim: Claim, failure: PublishResult) -> bool:
     # The branch carries the tester's extra tests and runs in its own checkout, so the counts in a
     # summary line and the checkout path differ even when the failure is the base's.
     mine, theirs = result.log or result.detail, failure.log or failure.detail
-    if (ids := set(_FAILED_TEST.findall(mine))) and (base_ids := set(_FAILED_TEST.findall(theirs))):
+    if (ids := _failing_tests(mine)) and (base_ids := _failing_tests(theirs)):
         return ids == base_ids
 
     def steady(text: str) -> str:
@@ -663,10 +670,15 @@ def _base_moved_note(rt, claim: Claim, detail: str) -> str:
     if not isinstance(released, dict) or released.get("digest") != _digest(detail):
         return ""
     repo = rt.cfg.repos[claim.repo]
+    was = str(released.get("sha"))[:9]
     now = (origin_base(repo) or "a newer commit")[:9]
+    moved = (
+        f"{repo.base_branch} now passes at {now}"
+        if now == was
+        else f"{repo.base_branch} has since moved to {now}"
+    )
     return (
-        f"This failure was on {repo.base_branch} at {str(released.get('sha'))[:9]}, and"
-        f" {repo.base_branch} has since moved to {now}. Run `git fetch origin`, merge"
+        f"This failure was on {repo.base_branch} at {was}, and {moved}. Run `git fetch origin`, merge"
         f" `origin/{repo.base_branch}` into this branch, then run the check again before changing"
         " anything else."
     )

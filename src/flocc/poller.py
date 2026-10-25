@@ -392,7 +392,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         (d / "handoff.md").replace(d / "handoff.prev.md")
     # A fresh claim gets its own review fix round.
     ledger.meta_set(rt.con, f"review_fix:{issue.key}", "")
-    for kept in ("rebase", "rebase_tried", "base_held"):
+    for kept in ("rebase", "rebase_tried", "base_held", "base_released"):
         ledger.meta_set(rt.con, f"{kept}:{issue.key}", "")
     for round_ in (1, 2):
         ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")

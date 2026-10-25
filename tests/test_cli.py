@@ -233,6 +233,34 @@ def test_commit_hook_ignores_what_the_merged_side_brought_in(claims_env, origin,
     assert main(["hook", "pre-commit"]) == 0
 
 
+def test_commit_hook_still_checks_what_the_branch_itself_edited_before_the_merge(
+    claims_env, origin, monkeypatch
+):
+    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
+    ledger.insert_claim(claims_env, make("NF-2", ("server/x.py",), worktree="/wt/NF-2"))
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=origin, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "checkout", "-qb", "side"], cwd=origin, check=True)
+    (origin / "server").mkdir()
+    (origin / "server" / "x.py").write_text("x")
+    subprocess.run(["git", "add", "server/x.py"], cwd=origin, check=True)
+    subprocess.run(["git", "commit", "-qm", "side edit"], cwd=origin, check=True)
+    subprocess.run(["git", "checkout", "-q", branch], cwd=origin, check=True)
+    (origin / "other.py").write_text("o")
+    subprocess.run(["git", "add", "other.py"], cwd=origin, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=origin, check=True)
+    subprocess.run(["git", "checkout", "-q", "side"], cwd=origin, check=True)
+    subprocess.run(["git", "merge", "--no-commit", "--no-ff", "-q", branch], cwd=origin, check=True)
+    (origin / "touched.py").write_text("t")
+    subprocess.run(["git", "add", "touched.py"], cwd=origin, check=True)
+    monkeypatch.chdir(origin)
+    # Neither the base's other.py nor the branch's earlier server/x.py is part of this commit.
+    assert main(["hook", "pre-commit"]) == 0
+    ledger.insert_claim(claims_env, make("NF-3", ("touched.py",), worktree="/wt/NF-3"))
+    assert main(["hook", "pre-commit"]) == 1
+
+
 def test_commit_hook_never_refuses_a_shared_path(claims_env, origin, monkeypatch):
     peer = make("NF-2", ("docs/**",), worktree="/wt/NF-2")
     assert commit_hook(claims_env, origin, monkeypatch, peer, "docs/verification.md") == 0
