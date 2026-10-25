@@ -406,7 +406,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     # them, and the publisher's guard and --accept-tests compare against that record. A rebase
     # rewrites the remembered commit the same way, so a record the branch lacks is recovered too.
     if (remembered is None or not contains(path, remembered[1])) and (
-        recovered := recover_tests(path, base_branch, branch, issue.key)
+        recovered := recover_tests(path, base_branch, issue.key)
     ):
         remembered = recovered
         ledger.remember_tests(rt.con, issue.key, *remembered)
