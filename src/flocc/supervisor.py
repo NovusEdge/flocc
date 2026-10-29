@@ -110,7 +110,8 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
         disabled_plugins=_disabled_plugins(rt),
         remote_control=phase in ("impl", "fix"),
     )
-    # After everything above that can raise: the previous session's markers would be taken for the new one's.
+    # After everything above that can raise: the previous session's markers would be taken for
+    # the new one's.
     markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
     for leftover in (*_MARKERS, "status.json", PANE, STALL_ESCALATED, BACKGROUND):
         (d / leftover).unlink(missing_ok=True)

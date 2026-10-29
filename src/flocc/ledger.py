@@ -111,8 +111,9 @@ def transaction(con: sqlite3.Connection):
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
-    # Autocommit plus explicit BEGIN IMMEDIATE: the tick, flocc release and flocc canary write from
-    # separate processes, and a deferred transaction can deadlock upgrading to a write lock.
+    # Autocommit plus explicit BEGIN IMMEDIATE: the tick, flocc release, flocc canary and a
+    # session's pre-commit hook (which may migrate) write from separate processes, and a deferred
+    # transaction can deadlock upgrading to a write lock.
     con = sqlite3.connect(path, timeout=10, isolation_level=None)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")

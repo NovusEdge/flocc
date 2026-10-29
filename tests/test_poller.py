@@ -139,6 +139,16 @@ def test_unreadable_dependency_holds_only_that_issue(rt):
     assert len(rt.linear.comments) == 1 and "NF-404" in rt.linear.comments[0][1]
 
 
+@pytest.mark.parametrize("line", ["paths: src/**", "allow: Agent"])
+def test_a_retired_agent_block_key_skips_the_issue_with_one_comment(rt, line):
+    rt.linear.ready = [issue(desc=GOOD + f"\n```agent\n{line}\n```\n")]
+    poll(rt)
+    poll(rt)
+    assert len(rt.linear.comments) == 1
+    assert rt.linear.comments[0][1].startswith("Skipping: agent block: unknown keys")
+    assert ledger.get_claim(rt.con, "NF-9") is None
+
+
 def test_rerun_ignores_files_from_the_previous_claim(rt):
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
@@ -589,7 +599,7 @@ def test_a_kept_worktree_or_a_git_failure_never_marks_the_repo(rt, monkeypatch):
     assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
 
 
-def test_a_failed_escalation_leaves_no_silent_hold(rt, monkeypatch):
+def test_a_failed_notice_leaves_no_silent_hold(rt, monkeypatch):
     from flocc import canary
 
     _broken_main(rt, monkeypatch)

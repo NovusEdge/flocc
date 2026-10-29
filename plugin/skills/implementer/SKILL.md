@@ -29,7 +29,8 @@ Make the committed tests pass by implementing the behavior.
 - After each wave, write its `git diff` and test output to `waves/N.diff` and `waves/N.tests`
   in your state directory, and have one `flocc:wave-reviewer` review the wave.
 - Findings get one fix round per run, across all waves: the same `task-implementer` route, then
-  one `flocc:fix-rereviewer` on the fix diff. List the findings left after that round in your `flocc done` summary and finish; the service's reviewer reads the PR.
+  one `flocc:fix-rereviewer` on the fix diff. List the findings left after that round in your
+  `flocc done` summary and finish; the service's reviewer reads the PR.
 - When you start `source-finder` or `source-reader`, put today's date in the task.
 - Do small work yourself: a change outside the plan's tasks that fits in a few lines is not a task.
 - While a wave runs, commit your own work with `flocc commit -m '<message>' -- <paths>`,

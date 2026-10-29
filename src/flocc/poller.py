@@ -67,7 +67,8 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
         except LinearError as exc:
             print(f"release: {claim.issue_key} not moved back to Todo: {exc}", file=sys.stderr)
     ledger.delete_claim(rt.con, claim.issue_key)
-    # Alert dedupe is keyed to the old claim; a rerun that fails again for the same cause must still be told.
+    # Alert dedupe is keyed to the old claim; a rerun that fails again for the same cause must
+    # still be told.
     ledger.clear_issue_alerts(rt.con, claim.issue_key)
 
 

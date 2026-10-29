@@ -240,7 +240,8 @@ def load(path: Path) -> Config:
         raise ValueError(f"{path}: no [repos.<name>] tables")
     if not raw.get("digest_issue"):
         raise ValueError(f"{path}: digest_issue is required, the key of the pinned digest issue")
-    # Hosts keep their config.toml across upgrades, so a key a release removed must not stop the tick.
+    # Hosts keep their config.toml across upgrades, so a key a release removed must not stop
+    # the tick.
     for key in _RETIRED:
         if raw.pop(key, None) is not None:
             print(f"{path}: {key} is no longer used; delete it", file=sys.stderr)

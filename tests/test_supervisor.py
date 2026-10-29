@@ -867,7 +867,7 @@ def idle_session(rt, at=100.0 - IDLE_S, message="please run it for me"):
     return d
 
 
-def test_an_idle_session_is_escalated_once_per_idle_period(rt):
+def test_an_idle_session_is_noticed_once_per_idle_period(rt):
     d = idle_session(rt)
     supervise(rt, current(rt))
     supervise(rt, current(rt))
@@ -894,7 +894,7 @@ def test_a_session_idle_for_less_than_the_threshold_is_left_alone(rt):
     assert rt.notifier.sent == []
 
 
-def test_a_status_rewrite_does_not_postpone_the_escalation(rt):
+def test_a_status_rewrite_does_not_postpone_the_notice(rt):
     # A cache expiry or a rate-limit reset rewrites status.json while the session sits idle.
     d = idle_session(rt)
     write_status(d, usage_status())
@@ -930,7 +930,7 @@ def at(rt, t):
     rt.now = lambda: t
 
 
-def test_a_screen_unchanged_mid_turn_is_escalated_once_with_its_tail(rt):
+def test_a_screen_unchanged_mid_turn_is_noticed_once_with_its_tail(rt):
     stalled(rt)
     supervise(rt, current(rt))
     at(rt, 100.0 + rt.cfg.stall_escalate_s)
