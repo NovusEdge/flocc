@@ -9,7 +9,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
@@ -87,7 +87,7 @@ func (p *pagerState) find(after bool) {
 			return
 		}
 	}
-	p.note = "no match: " + saved.Sanitize(p.search)
+	p.note = "no match: " + safe.Sanitize(p.search)
 }
 
 func (m *Model) pagerKey(k string) (tea.Model, tea.Cmd) {
@@ -144,9 +144,9 @@ func (m *Model) pagerView() string {
 	if what == "" {
 		what = "session"
 	}
-	title := saved.Sanitize(m.cur[1]) + " " + what
+	title := safe.Sanitize(m.cur[1]) + " " + what
 	if m.pager.from == hostScreen {
-		title = saved.Sanitize(m.cur[0]) + " log"
+		title = safe.Sanitize(m.cur[0]) + " log"
 	}
 	hint := fmt.Sprintf("%.0f%%", m.pager.vp.ScrollPercent()*100)
 	if m.pager.follow {

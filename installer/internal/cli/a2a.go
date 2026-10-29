@@ -12,10 +12,10 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 )
 
@@ -78,7 +78,7 @@ func a2aFiles(st keys.Store, all []hosts.Host, ips map[string]string) (map[strin
 			return nil, answers.A2AFile{}, err
 		}
 		tokens[h.Name] = tok
-		addr := saved.HostPart(h.SSH)
+		addr := safe.HostPart(h.SSH)
 		if ip := ips[strings.ToLower(addr)]; ip != "" {
 			addr = ip
 		}

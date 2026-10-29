@@ -11,7 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
@@ -121,7 +121,7 @@ func (m *Model) hostSplit() (side bool, topH, factsH, docH int) {
 func (m *Model) hostView() string {
 	iw, _ := theme.Inner(m.w, m.h)
 	side, topH, factsH, docH := m.hostSplit()
-	name := saved.Sanitize(m.cur[0])
+	name := safe.Sanitize(m.cur[0])
 	var rows []string
 	for _, h := range m.hosts {
 		if h.host.Name == m.cur[0] {
@@ -177,7 +177,7 @@ func (m *Model) hostFacts(h hostState) []string {
 	tokens, kv := ship.TokensFact(rep)
 	rows := []string{
 		m.label(w, "version", ver),
-		m.label(w, "mode", saved.Sanitize(rep.Mode)),
+		m.label(w, "mode", safe.Sanitize(rep.Mode)),
 		m.label(w, "last tick", m.sev(tick, tv)),
 		m.label(w, "usage", usage),
 		m.label(w, "disk", m.sev(disk, dv)),
@@ -221,7 +221,7 @@ func (m *Model) doctorLines() []string {
 	slices.SortStableFunc(checks, func(a, b ship.DoctorCheck) int { return rank(a) - rank(b) })
 	nameW := 0
 	for _, c := range checks {
-		nameW = min(max(nameW, lipgloss.Width(saved.Sanitize(c.Name))), 16)
+		nameW = min(max(nameW, lipgloss.Width(safe.Sanitize(c.Name))), 16)
 	}
 	var out []string
 	for _, c := range checks {
@@ -232,7 +232,7 @@ func (m *Model) doctorLines() []string {
 		case c.Warn:
 			icon = m.th.Warn.Render("•")
 		}
-		out = append(out, icon+" "+pad(saved.Sanitize(c.Name), nameW)+"  "+m.th.Dim.Render(saved.Sanitize(c.Detail)))
+		out = append(out, icon+" "+pad(safe.Sanitize(c.Name), nameW)+"  "+m.th.Dim.Render(safe.Sanitize(c.Detail)))
 	}
 	return out
 }

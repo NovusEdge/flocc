@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 )
 
 const WirePrefix = "flocc-event "
@@ -109,11 +109,11 @@ const blockLines = 200
 // sanitized makes a decoded event safe to draw: the host is a far end, and its text can carry
 // escape sequences. KData is parsed, not drawn, and stays as sent.
 func sanitized(e Event) Event {
-	e.Name, e.Detail = saved.Sanitize(e.Name), saved.Sanitize(e.Detail)
-	e.Text, e.Err = saved.SanitizeBlock(e.Text, blockLines), saved.SanitizeBlock(e.Err, blockLines)
+	e.Name, e.Detail = safe.Sanitize(e.Name), safe.Sanitize(e.Detail)
+	e.Text, e.Err = safe.SanitizeBlock(e.Text, blockLines), safe.SanitizeBlock(e.Err, blockLines)
 	if e.Table != nil {
 		t := *e.Table
-		t.Title = saved.Sanitize(t.Title)
+		t.Title = safe.Sanitize(t.Title)
 		t.Headers = sanitizedCells(t.Headers)
 		t.Rows = make([][]string, len(e.Table.Rows))
 		for i, row := range e.Table.Rows {
@@ -127,7 +127,7 @@ func sanitized(e Event) Event {
 func sanitizedCells(cells []string) []string {
 	out := make([]string, len(cells))
 	for i, c := range cells {
-		out[i] = saved.Sanitize(c)
+		out[i] = safe.Sanitize(c)
 	}
 	return out
 }
@@ -135,7 +135,7 @@ func sanitizedCells(cells []string) []string {
 func (r *Replayer) line(line string) {
 	e, ok := decode(line)
 	if !ok {
-		r.strayLine(saved.Sanitize(line))
+		r.strayLine(safe.Sanitize(line))
 		return
 	}
 	if e.Kind != KData {

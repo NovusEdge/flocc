@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/rootpass"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -85,7 +85,7 @@ func (Root) Apply(ctx context.Context, e *Env) error {
 	// RunAll checks every step before it applies any, so a step can end not done with no error.
 	for _, s := range reports[0].Steps {
 		if !s.Done {
-			return fmt.Errorf("%s on %s: %s", saved.Sanitize(s.Name), m, saved.Sanitize(s.Detail))
+			return fmt.Errorf("%s on %s: %s", safe.Sanitize(s.Name), m, safe.Sanitize(s.Detail))
 		}
 	}
 	e.rootDone = "firewalld and Docker checked as root on " + m

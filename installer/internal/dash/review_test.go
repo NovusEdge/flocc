@@ -7,7 +7,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 )
@@ -30,34 +29,6 @@ func TestHostIssueKeyNeverReachesTheTerminalRaw(t *testing.T) {
 	m.Update(execDone{what: "ship " + evil, err: errors.New("x")})
 	if strings.Contains(m.View().Content, "\x1b[2J") {
 		t.Errorf("the toast drew the raw name:\n%q", m.View().Content)
-	}
-}
-
-func TestCardinalAttachesTheSelectedInstall(t *testing.T) {
-	m, ran := newModel(t)
-	f := canned()
-	f.cards = []ship.CardinalRow{
-		{Saved: saved.Saved{Machine: "a", User: "alice"}, Err: "x"},
-		{Saved: saved.Saved{Machine: "b", User: "bob"}, Err: "x"},
-	}
-	m.Update(f)
-	m.screen = cardinalScreen
-	key(m, "down")
-	if !strings.Contains(text(m), "❯") {
-		t.Errorf("no selection drawn:\n%s", text(m))
-	}
-	key(m, "c")
-	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "cardinal attach --user bob" {
-		t.Errorf("ran %v", *ran)
-	}
-}
-
-func TestCardinalAttachWithoutInstallsDoesNothing(t *testing.T) {
-	m, ran := newModel(t)
-	m.Update(canned())
-	m.screen = cardinalScreen
-	if cmd := key(m, "c"); cmd != nil || len(*ran) != 0 {
-		t.Errorf("c ran %v", *ran)
 	}
 }
 

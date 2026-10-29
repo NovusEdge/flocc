@@ -81,7 +81,6 @@ func (*fakeSource) Discover(context.Context) ([]ship.FleetHost, []string) { retu
 func (*fakeSource) Status(context.Context, ship.FleetHost) (*ship.Report, error) {
 	return nil, nil
 }
-func (*fakeSource) Cardinals(context.Context) ([]ship.CardinalRow, []string) { return nil, nil }
 
 func (f *fakeSource) Run(_ context.Context, h ship.FleetHost, args []string) (host.Result, error) {
 	f.mu.Lock()

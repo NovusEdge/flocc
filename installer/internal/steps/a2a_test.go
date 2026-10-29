@@ -18,6 +18,8 @@ import (
 
 const a2aHead = "3333333333333333333333333333333333333333"
 
+const userctlPrefix = "systemctl --user "
+
 func a2aEnv(t *testing.T, f *host.Fake) *Env {
 	e := testEnv(t, f)
 	e.Answers.Secrets = &answers.Secrets{A2A: &answers.A2AFile{

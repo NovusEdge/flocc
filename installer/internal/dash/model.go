@@ -9,14 +9,13 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
@@ -27,7 +26,6 @@ const pollEvery = 10 * time.Second
 type Source interface {
 	Discover(context.Context) ([]ship.FleetHost, []string)
 	Status(context.Context, ship.FleetHost) (*ship.Report, error)
-	Cardinals(context.Context) ([]ship.CardinalRow, []string)
 	Run(ctx context.Context, h ship.FleetHost, args []string) (host.Result, error)
 }
 
@@ -36,7 +34,7 @@ type Title struct{ Title, URL string }
 
 type Options struct {
 	Source Source
-	// Self is the flocc binary that attach, release, ship and cardinal attach re-run.
+	// Self is the flocc binary that attach, release and ship re-run.
 	Self string
 	In   io.Reader
 	Out  io.Writer
@@ -66,7 +64,6 @@ type row struct {
 
 type fetched struct {
 	results []Result
-	cards   []ship.CardinalRow
 	notes   []string
 	at      time.Time
 }
@@ -79,7 +76,6 @@ const (
 	fleetScreen screen = iota
 	issueScreen
 	hostScreen
-	cardinalScreen
 	pagerScreen
 )
 
@@ -98,7 +94,6 @@ type Model struct {
 
 	w, h      int
 	hosts     []hostState
-	cards     []ship.CardinalRow
 	notes     []string
 	rows      []row
 	sel       int
@@ -120,7 +115,6 @@ type Model struct {
 
 	focus   focus
 	hostSel int
-	cardSel int
 	filter  string
 	editing editKind
 
@@ -157,20 +151,9 @@ func (m *Model) startFetch() tea.Cmd {
 	m.fetching, m.startedAt = true, m.now()
 	src, ctx := m.opts.Source, m.ctx
 	return func() tea.Msg {
-		var (
-			cards []ship.CardinalRow
-			cn    []string
-			wg    sync.WaitGroup
-		)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			cards, cn = src.Cardinals(ctx)
-		}()
 		hs, notes := src.Discover(ctx)
 		res := Fetch(ctx, hs, src.Status)
-		wg.Wait()
-		return fetched{results: res, cards: cards, notes: append(notes, cn...), at: time.Now()}
+		return fetched{results: res, notes: notes, at: time.Now()}
 	}
 }
 
@@ -227,7 +210,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case execDone:
 		cmd := m.startFetch()
 		if msg.err != nil {
-			cmd = tea.Batch(cmd, m.toasts.Show(saved.Sanitize(msg.what)+": "+saved.Sanitize(msg.err.Error()), true))
+			cmd = tea.Batch(cmd, m.toasts.Show(safe.Sanitize(msg.what)+": "+safe.Sanitize(msg.err.Error()), true))
 		}
 		return m, cmd
 	case tea.KeyPressMsg:
@@ -247,13 +230,13 @@ func (m *Model) apply(f fetched) {
 	for _, r := range f.results {
 		st := hostState{host: r.Host, rep: r.Status}
 		if r.Err != nil {
-			st.err = saved.Sanitize(r.Err.Error())
+			st.err = safe.Sanitize(r.Err.Error())
 			st.rep = prev[r.Host.Name]
 		}
 		m.hosts = append(m.hosts, st)
 	}
 	slices.SortFunc(m.hosts, func(a, b hostState) int { return strings.Compare(a.host.Name, b.host.Name) })
-	m.cards, m.notes = f.cards, f.notes
+	m.notes = f.notes
 	m.loaded, m.fetching, m.fetchedAt = true, false, f.at
 	m.rebuild()
 }
@@ -267,12 +250,11 @@ func (m *Model) rebuild() {
 		claims := slices.Clone(h.rep.Claims)
 		slices.SortFunc(claims, func(a, b ship.Claim) int { return strings.Compare(a.Issue, b.Issue) })
 		for _, c := range claims {
-			c.Issue = saved.Sanitize(c.Issue)
+			c.Issue = safe.Sanitize(c.Issue)
 			m.rows = append(m.rows, row{host: h.host.Name, claim: c, stale: h.err != ""})
 		}
 	}
 	m.hostSel = max(min(m.hostSel, len(m.hosts)-1), 0)
-	m.cardSel = max(min(m.cardSel, len(m.cards)-1), 0)
 	m.reselect()
 }
 
@@ -323,8 +305,6 @@ func (m *Model) body() string {
 		return m.issueView()
 	case hostScreen:
 		return m.hostView()
-	case cardinalScreen:
-		return m.cardinalView()
 	case pagerScreen:
 		return m.pagerView()
 	}

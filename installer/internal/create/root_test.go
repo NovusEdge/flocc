@@ -81,7 +81,7 @@ func TestRootRefusesAPasswordSudoWithoutATerminal(t *testing.T) {
 }
 
 func TestRootRunsOnePassAndDrawsItsSteps(t *testing.T) {
-	r := steps.CardinalReport{Steps: []steps.ReportStep{
+	r := steps.RootReport{Steps: []steps.ReportStep{
 		{Name: "Firewalld", Detail: "incusbr0 in zone flocc-incus", Done: true},
 		{Name: "Docker", Detail: "Docker not running", Done: true}}}
 	e, u, m, local := rootMachine(t, r.Line()+"\n", nil)
@@ -107,7 +107,7 @@ func TestRootRunsOnePassAndDrawsItsSteps(t *testing.T) {
 }
 
 func TestRootFailsOnAStepNotDone(t *testing.T) {
-	r := steps.CardinalReport{Steps: []steps.ReportStep{
+	r := steps.RootReport{Steps: []steps.ReportStep{
 		{Name: "Firewalld", Detail: "ok", Done: true},
 		{Name: "Docker", Detail: "iptables DOCKER-USER lacks -i incusbr0 -j ACCEPT", Done: false}}}
 	e, _, _, _ := rootMachine(t, r.Line()+"\n", nil)
@@ -118,7 +118,7 @@ func TestRootFailsOnAStepNotDone(t *testing.T) {
 }
 
 func TestRootFailsWhenThePassFails(t *testing.T) {
-	r := steps.CardinalReport{Error: "Firewalld: firewalld on this machine uses the iptables backend"}
+	r := steps.RootReport{Error: "Firewalld: firewalld on this machine uses the iptables backend"}
 	e, _, _, _ := rootMachine(t, r.Line()+"\n", errors.New("exit status 1"))
 	err := RunSteps(context.Background(), e, []Step{Root{}})
 	if err == nil || !strings.Contains(err.Error(), "iptables backend") || !strings.Contains(err.Error(), "setup.log") {

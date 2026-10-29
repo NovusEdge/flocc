@@ -9,8 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 )
 
@@ -74,13 +74,13 @@ func fetchOutput(ctx context.Context, src Source, h ship.FleetHost, gen int, tri
 		}
 	case strings.TrimSpace(res.Stdout) != "":
 		for _, l := range strings.Split(strings.TrimRight(res.Stdout, "\n"), "\n") {
-			msg.lines = append(msg.lines, saved.Sanitize(l))
+			msg.lines = append(msg.lines, safe.Sanitize(l))
 		}
 	}
 	return msg
 }
 
-func firstLine(s string) string { return saved.Sanitize(ship.FirstLine(s)) }
+func firstLine(s string) string { return safe.Sanitize(ship.FirstLine(s)) }
 
 func (m *Model) hostByName(name string) (ship.FleetHost, bool) {
 	for _, h := range m.hosts {

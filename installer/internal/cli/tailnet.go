@@ -8,8 +8,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 )
 
@@ -189,7 +189,7 @@ func (w *wizard) tagHosts(api tailnetAPI, canTag bool, devices []tailnet.Device)
 		if h.SSH == "" {
 			continue
 		}
-		node := saved.HostPart(h.SSH)
+		node := safe.HostPart(h.SSH)
 		i := slices.IndexFunc(devices, func(d tailnet.Device) bool { return strings.EqualFold(d.Name, node) })
 		if i < 0 {
 			continue

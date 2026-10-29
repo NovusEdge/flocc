@@ -75,7 +75,7 @@ func TestCheckOldUserRefuses(t *testing.T) {
 		e, f := oldUser(t)
 		user := "linear-agents"
 		if setup == nil {
-			user = "cardinal"
+			user = "nobody-flocc"
 		} else {
 			setup(e, f)
 		}

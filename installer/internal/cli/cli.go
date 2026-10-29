@@ -31,7 +31,7 @@ import (
 const usage = `flocc runs Claude sessions on Linear issues. This is its desktop command.
 
 Desktop commands:
-  flocc setup                        everything below in order: keys, a host, old versions, cardinal, logins
+  flocc setup                        everything below in order: keys, a host, old versions, logins
   flocc keys                         make, check and store the Linear key, GitHub tokens and ntfy topic
   flocc keys check                   check every stored key again
   flocc keys rotate github|linear    replace keys and push them to every host
@@ -41,8 +41,6 @@ Desktop commands:
   flocc host run -H <name> -- <command...>
   flocc ship -H <name> [--interactive]    run it inside the flocc checkout: it ships that commit
   flocc login -H <name> [--email ADDR]
-  flocc cardinal setup|login|status|attach|restart|remove [--user NAME] ...
-                                     the always-on assistant on a machine; flocc cardinal for details
 
 Host commands run on the host as the service user:
   flocc [-H <name>] <command> [args...]   e.g. flocc -H flocc-nimble doctor, flocc release NF-12
@@ -165,8 +163,6 @@ func handoffOnly(name string, rest []string) bool {
 		return false
 	case "host":
 		return len(rest) > 1 && rest[1] == "run"
-	case "cardinal":
-		return len(rest) > 1 && rest[1] == "attach"
 	}
 	return name != "all"
 }
@@ -239,8 +235,6 @@ func fullScreen(rest []string) bool {
 		return true
 	case "host":
 		return len(rest) > 1 && rest[1] == "create"
-	case "cardinal":
-		return len(rest) > 1 && (rest[1] == "setup" || rest[1] == "login")
 	}
 	return false
 }
@@ -327,13 +321,6 @@ func run(ctx context.Context, d *deps, args []string) (code int) {
 		return hostCmd(ctx, d, name, rest[1:])
 	case "keys":
 		return keysCmd(ctx, d, rest[1:])
-	case "cardinal":
-		// cardinal names its machine, not a host; a -H here would otherwise be dropped unseen.
-		if name != "" {
-			fmt.Fprintln(d.err, "flocc cardinal takes no -H; limit setup with --only <host>")
-			return 2
-		}
-		return d.cardinal(ctx, rest[1:])
 	}
 	if name == "all" {
 		return onAll(ctx, d, rest)

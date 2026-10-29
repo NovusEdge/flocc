@@ -12,10 +12,10 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -54,7 +54,7 @@ func shipWith(ctx context.Context, d *deps, name string, interactive bool) error
 			return err
 		}
 		ips := peerAddrs(ctx, d)
-		if node := saved.HostPart(h.SSH); h.SSH != "" && ips[strings.ToLower(node)] == "" {
+		if node := safe.HostPart(h.SSH); h.SSH != "" && ips[strings.ToLower(node)] == "" {
 			if _, err := netip.ParseAddr(node); err != nil {
 				d.ui.Todo(h.Name + ": no tailnet address found for " + node + ", so its A2A URL falls back to that name, which does not reach its own server; its sessions and tick cannot message their own host until a ship finds the address")
 			}

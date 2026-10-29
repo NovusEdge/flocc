@@ -54,8 +54,6 @@ func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.issueKey(k)
 	case hostScreen:
 		return m.hostKey(k)
-	case cardinalScreen:
-		return m.cardinalKey(k)
 	case pagerScreen:
 		return m.pagerKey(k)
 	}
@@ -134,20 +132,13 @@ func (m *Model) opens() bool {
 	switch m.focus {
 	case hostsPane:
 		return len(m.hosts) > 0
-	case cardinalPane:
-		return len(m.cards) > 0
 	}
 	_, ok := m.selected()
 	return ok
 }
 
-// panes are the focus order tab cycles; the cardinal pane is there only with an install.
-func (m *Model) panes() []focus {
-	if len(m.cards) == 0 {
-		return []focus{hostsPane, issuesPane}
-	}
-	return []focus{hostsPane, cardinalPane, issuesPane}
-}
+// panes are the focus order tab cycles: the hosts and issues panes, in that order.
+func (m *Model) panes() []focus { return []focus{hostsPane, issuesPane} }
 
 func (m *Model) cycle() {
 	p := m.panes()
@@ -159,8 +150,6 @@ func (m *Model) move(by int) {
 	switch m.focus {
 	case hostsPane:
 		m.hostSel = clamp(m.hostSel, len(m.hosts))
-	case cardinalPane:
-		m.cardSel = clamp(m.cardSel, len(m.cards))
 	default:
 		m.sel = clamp(m.sel, len(m.visible()))
 		m.remember()
@@ -174,8 +163,6 @@ func (m *Model) bar() []kb.Binding {
 		return m.issueBar()
 	case hostScreen:
 		return m.hostBar()
-	case cardinalScreen:
-		return m.cardinalBar()
 	case pagerScreen:
 		return m.pagerBar()
 	}

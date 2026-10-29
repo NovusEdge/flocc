@@ -10,7 +10,6 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
-	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme/themetest"
 )
 
@@ -189,51 +188,6 @@ func TestShipDimmedOutsideTheCheckout(t *testing.T) {
 	}
 }
 
-func TestCardinalScreen(t *testing.T) {
-	m := goldenModel(t, [2]int{140, 40})
-	f := canned()
-	f.at = t0.Add(1)
-	st := cardRow()
-	st.Status.Hosts = map[string]bool{"flocc-nimble": true}
-	st.Status.Login = "full\x1b[2J"
-	f.cards = []ship.CardinalRow{st, {Saved: st.Saved, Err: "no answer \x1b[2J"}}
-	m.Update(f)
-	m.focus = cardinalPane
-	key(m, "enter")
-	if m.screen != cardinalScreen {
-		t.Fatalf("screen %v", m.screen)
-	}
-	got := squeezed(m)
-	for _, want := range []string{"unit active, 0 restarts", "tmux session true, claude true", "host flocc-nimble reachable", "no answer"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("lacks %q:\n%s", want, text(m))
-		}
-	}
-	if strings.Contains(m.View().Content, "\x1b[2J") {
-		t.Error("an escape reached the frame")
-	}
-	if cmd := key(m, "c"); cmd == nil || m.command == nil {
-		t.Error("c did not hand off")
-	}
-	key(m, "esc")
-	if m.screen != fleetScreen {
-		t.Error("esc did not go back")
-	}
-}
-
-func TestCardinalAttachArgs(t *testing.T) {
-	m, ran := newModel(t)
-	f := canned()
-	f.cards = []ship.CardinalRow{cardRow()}
-	m.Update(f)
-	m.focus = cardinalPane
-	key(m, "enter")
-	key(m, "c")
-	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "cardinal attach --user cardinal" {
-		t.Errorf("ran %v", *ran)
-	}
-}
-
 func TestHostGolden(t *testing.T) {
 	for _, sz := range [][2]int{{59, 19}, {80, 24}, {140, 40}} {
 		m := goldenModel(t, [2]int{140, 40}) // keys do nothing below the minimum size, so resize after opening
@@ -249,11 +203,4 @@ func TestHostGolden(t *testing.T) {
 		}})
 		themetest.Golden(t, fmt.Sprintf("host-%dx%d", sz[0], sz[1]), text(m))
 	}
-}
-
-func TestCardinalGolden(t *testing.T) {
-	m := goldenModel(t, [2]int{80, 24})
-	m.focus = cardinalPane
-	key(m, "enter")
-	themetest.Golden(t, "cardinal-80x24", text(m))
 }
