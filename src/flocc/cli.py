@@ -454,7 +454,7 @@ def _live_session(args):
 def cmd_peek(args) -> int:
     sessions, name = _live_session(args)
     # Blank rows below the prompt count toward the capture, so ask for more than N.
-    text = sessions.capture(name, max(args.lines, 1) + 200) if sessions else ""
+    text = sessions.capture(name, max(args.lines, 1) + 200) if sessions and name else ""
     rows = text.rstrip().splitlines()
     if not rows:
         if sessions:
@@ -483,7 +483,7 @@ def cmd_press(args) -> int:
         )
         return 2
     sessions, name = _live_session(args)
-    if not sessions:
+    if not sessions or not name:
         return 3
     sessions.press(name, args.keys)
     print(f"pressed {' '.join(args.keys)} in {name}; flocc peek {args.key} shows the result")
@@ -492,7 +492,7 @@ def cmd_press(args) -> int:
 
 def cmd_say(args) -> int:
     sessions, name = _live_session(args)
-    if not sessions:
+    if not sessions or not name:
         return 3
     sessions.send(name, " ".join(args.text))
     print(f"sent to {name}; flocc peek {args.key} shows the reply")

@@ -494,7 +494,8 @@ def test_canary_clears_the_mark_when_setup_passes(host_cfg, monkeypatch, capsys)
 def test_canary_marks_the_repo_when_setup_fails(host_cfg, monkeypatch, capsys):
     cfg, repo = _canary(host_cfg, monkeypatch, (2, "go: not found", "abc123def456"))
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
-    assert canary.get_mark(ledger.connect(cfg.ledger_path), repo)["output"] == "go: not found"
+    mark = canary.get_mark(ledger.connect(cfg.ledger_path), repo)
+    assert mark is not None and mark["output"] == "go: not found"
     assert "go: not found" in capsys.readouterr().err
 
 

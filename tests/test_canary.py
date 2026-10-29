@@ -9,6 +9,7 @@ def test_a_mark_holds_while_main_stays_at_its_sha(tmp_path):
     c = con(tmp_path)
     canary.mark(c, "web", "abc123def456", 100.0, "x" * 2000 + "npm missing")
     m = canary.get_mark(c, "web")
+    assert m is not None
     assert m["sha"] == "abc123def456" and len(m["output"]) == 1500
     reason = canary.hold_reason(c, "web", "main", "abc123def456", 200.0)
     assert reason == "./setup fails on main at abc123def; after fixing it, run flocc canary web"
