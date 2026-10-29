@@ -120,7 +120,7 @@ func (s *session) Table(t Table) { s.draw(Event{Kind: KTable, Table: &t}) }
 func (s *session) Plan(groups []string) { s.draw(Event{Kind: KPlan, Text: strings.Join(groups, "\n")}) }
 func (s *session) LogPath(p string)     { s.draw(Event{Kind: KLog, Text: p}) }
 
-// Rows draws rows that were decided elsewhere (a host summary, a cardinal report) as steps.
+// Rows draws rows that were decided elsewhere (a host summary, a root report) as steps.
 func Rows(s Session, evs []Event) {
 	for _, e := range evs {
 		st := s.Step(e.Name)

@@ -20,7 +20,7 @@ func TestCreateRootIsARootPhaseWithoutAUser(t *testing.T) {
 	}
 	// Refused before anything runs (not root, or no SUDO_UID), and never as a bad --user.
 	var errb strings.Builder
-	if code := runRootPhase([]string{"--phase", "create-root"}, io.Discard, &errb); code != 2 || strings.Contains(errb.String(), "user name") {
+	if code := runRootPhase([]string{"--phase", "create-root"}, io.Discard, &errb); code != 2 || strings.Contains(errb.String(), "earlier flocc") {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 }

@@ -25,7 +25,7 @@ func TestCheckOverTheFixtures(t *testing.T) {
 	}{
 		{"empty", []string{"tagOwners", "ssh", "test"}},
 		{"default", []string{"tagOwners", "from *", "ssh", "test"}},
-		{"applied-2026-10-22", nil},
+		{"applied-2026-10-22", []string{"source of a grant"}},
 		{"custom", []string{"tagOwners", "ssh", "test"}},
 	} {
 		got, err := Check(fixture(t, tc.fixture))
@@ -54,7 +54,9 @@ func TestCheckFlagsTheTagAsASource(t *testing.T) {
 }
 
 func TestCheckNeedsTheWholeSSHRule(t *testing.T) {
-	applied := string(fixture(t, "applied-2026-10-22"))
+	// The fixture's tag grant is its own failure; drop it so each edit below is the only gap.
+	applied := strings.Replace(string(fixture(t, "applied-2026-10-22")),
+		",\n\t\t"+`{"src": ["tag:flocc-host"], "dst": ["tag:flocc-host"], "ip": ["tcp:7443"]}`, "", 1)
 	for name, edit := range map[string]func(string) string{
 		"check action": func(s string) string { return strings.Replace(s, `"accept", "src"`, `"check", "src"`, 1) },
 		"no root": func(s string) string {
