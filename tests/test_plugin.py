@@ -67,12 +67,7 @@ def test_hooks():
     ungated = [e for e in hooks["PreToolUse"] if "matcher" not in e]
     assert [h["command"] for e in ungated for h in e["hooks"]] == [clear]
     assert [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]] == [clear]
-    for event in ("PermissionDenied", "PermissionRequest"):
-        (entry,) = hooks[event]
-        assert "matcher" not in entry
-        assert [h["command"] for h in entry["hooks"]] == ["flocc permission"]
-        # Step 1's judge may use its whole 45 s; the default hook timeout would cut it off.
-        assert entry["hooks"][0]["timeout"] == 60
+    assert "PermissionDenied" not in hooks and "PermissionRequest" not in hooks
     assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "flocc gate --stopped"
     starts = [h["command"] for e in hooks["SessionStart"] for h in e["hooks"]]
     assert starts == ["flocc session-start"]
