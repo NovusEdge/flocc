@@ -1,8 +1,8 @@
 # Executor core: archetype runs on one VM, an event-woken cardinal on another
 
-Status: design, approved in conversation 2026-10-29; this file awaits the owner's review. It
-replaces the fixed tester → implementer → reviewer pipeline, the escalation and ntfy path, A2A, and
-cardinal as built in 0.9–0.12.
+Status: design, approved in conversation 2026-10-29 and revised after an Opus review the same day;
+this file awaits the owner's review. It replaces the fixed tester → implementer → reviewer
+pipeline, the escalation and ntfy path, A2A, and cardinal as built in 0.9–0.12.
 
 ## What the owner asked for
 
@@ -33,7 +33,7 @@ From those, the system must deliver:
 
 - **Execution only.** The owner writes specs, plans and the sequence. Agents carry them out and
   never plan, brainstorm or ask for design sign-off.
-- **No dialogs, no pings.** A run cannot stop on a permission dialog, and nothing pushes to the
+- **No dialogs, no pings.** A run cannot stop on a dialog or a question, and nothing pushes to the
   owner's phone. The owner hears from one place: cardinal, in the Claude app.
 - **Watchable runs.** Every session stays an interactive Claude Code session with Remote Control.
 - **Cheap supervision.** Cardinal costs nothing while nothing needs a decision.
@@ -51,14 +51,28 @@ sequence.
 
 | Archetype | Input | Can do | Must not | Done when |
 |---|---|---|---|---|
-| Executor | Issue, the spec paths it names, acceptance criteria | Edit and commit in its worktree, run the repo's tools | Change the spec or plan, edit the tester's committed files, push, touch Linear | Commits made, repo check passes locally, summary written |
-| Fixer | Existing branch plus the failed check's output or the review's findings | Same as executor | Same as executor | Check passes, or the summary lists what it could not fix under "Needs the owner" |
+| Executor | Issue, the spec paths it names, acceptance criteria | Edit and commit in its worktree, run the repo's tools | Change the spec or plan, push, touch Linear | Commits made, repo check passes locally, summary written |
+| Fixer | Existing branch plus the failed check's output, the review's findings, or cardinal's note | Same as executor | Same as executor | Check passes, or the summary lists what it could not fix under "Needs the owner" |
 | Tester | Issue and spec | Write and commit tests | Write implementation code | Committed tests that fail now and pass on a correct implementation |
-| Reviewer | PR diff, acceptance criteria, the repo's `AGENTS.md` and `CLAUDE.md` | Read only | Edit, commit | Findings ending in `Verdict: approve` or `Verdict: changes requested` |
+| Reviewer | PR diff, acceptance criteria, the repo's `AGENTS.md` and `CLAUDE.md` | Read | Edit, write, commit | Findings ending in `Verdict: approve` or `Verdict: changes requested` |
+
+When a tester ran, the executor and fixer may amend a test that contradicts the spec through
+`flocc tests-amended`, with a reason, as today. The publisher still rejects an amendment that
+weakens a test.
 
 Every archetype ends the same way: delete its scratchpad and any temp files it created, write its
-summary, run `flocc done`. An interactive session does not exit on its own, so `flocc done` stays
-the finish signal.
+summary (the reviewer writes its findings), run `flocc done`. `flocc done` replaces `review-done`.
+An agent that needs the owner writes the need under "Needs the owner" in its summary and runs
+`flocc done`; the run ends blocked.
+
+### Keeping sessions moving
+
+- The guard hook denies `AskUserQuestion`, `EnterPlanMode` and `ExitPlanMode`. Its deny reason
+  tells the agent to pick the spec's default, or write "Needs the owner" and run `flocc done`.
+- A Stop hook refuses to end the turn until `done.json` exists, with the same instruction. When
+  `stop_hook_active` shows it already refused once in this turn, it lets the stop through and
+  writes an `idle` marker; the supervisor ends that run as blocked on its next tick.
+- The implementer skill's instructions to ask with `AskUserQuestion` and the escalate skill go.
 
 ## Sequence
 
@@ -68,29 +82,53 @@ The default sequence is `executor, reviewer`. A line in the issue description ov
 Run: tester, executor, reviewer
 ```
 
-The line names archetypes in order, comma-separated, case-insensitive. `fixer` is never listed: the
+The line names archetypes in order, comma-separated, case-insensitive. `fixer` is never listed. The
 service inserts fixers itself, up to `check_fix_rounds` (default 2) after a failed check and one
-round after `changes requested`. An unknown archetype name makes the issue ineligible, and cardinal
-gets a `bad-sequence` event for it.
+round after `changes requested`; cardinal may start one fixer on a blocked or timed-out run while
+the check-fix rounds are not used up. An unknown archetype name makes the issue ineligible, and
+cardinal gets a `bad-sequence` event for it.
+
+When no tester ran, the claim records `tester_sha` as none, and the publisher skips the tester-file
+guard instead of raising.
 
 ## Executor VM: the flocc service
 
 The service does every mechanical step and makes no judgement calls.
 
-| Keep | Change | Remove |
-|---|---|---|
-| Poller, Linear client, agent-block and acceptance-criteria parsing | Poller parses `Run:`; it lists eligible issues but starts none (cardinal does) | `escalation.py`, ntfy, flocc's own Linear labels, the service digest |
-| `worktree.py`, `./setup` | Sessions start with `--permission-mode bypassPermissions` and one PreToolUse guard hook | `permission.py`, `grants.py`, auto-mode tuning, `press`, `peek`, `say` |
-| tmux sessions with Remote Control | Supervisor keeps the wall clock, `flocc done` pickup, and one restart after a crash from the issue and the branch | Supervisor pane matching, dialog handling, the 60% handoff restart |
-| `publisher.py`: check, push, draft PR, review comment | The fixed pipeline becomes the sequence above | `gate.py` and per-phase agent budgets |
-| `usage.py`, `admission.py` thresholds | `canary.py` (main-broken) emits an event instead of only holding the repo | `a2a*.py`, `mcp_a2a.py`, `inbox.py`, `tokens.py`, `a2a.toml`, `flocc-a2a.service` |
-| Ledger, one claim per issue | New: `events.py`, the `flocc events`, `start`, `fix`, `cleanup` and `digest-data` commands | Path claims, `flocc claim`, the pre-commit hook |
+### Two users
 
-The guard hook denies, without asking: `git push`, `gh pr`, `gh issue`, `gh api` with a write
-method, any write outside the session's worktree and its own state and scratch directories, and,
-for the executor and fixer, edits to files the tester committed. The service checks the tester's
-files again at publish time, as today. Bypass mode is acceptable because sessions run in a
-disposable VM whose tailnet tag reaches nothing.
+Sessions run in `bypassPermissions`, so the guard hook is a convenience, not a security boundary.
+The boundary is a second Unix user, which supersedes d30's single user:
+
+| User | Owns | Can read |
+|---|---|---|
+| `flocc` | The timer and tick, the ledger, the Linear key, the publish token, the plugin directory, the service's bare clones | Agent worktrees, through the group `flocc-work` |
+| `flocc-agent` | The tmux server, Claude Code's login and `~/.claude`, the agent's read-only GitHub token, worktrees and scratch | Nothing of `flocc`'s; the plugin directory read-only |
+
+- `flocc` reaches `flocc-agent` through one sudoers rule that allows only
+  `/usr/local/libexec/flocc-agent-run`. That wrapper takes a fixed set of subcommands: start a
+  session, send keys to a session, kill a session, run the repo's check in a worktree, prepare a
+  worktree, report the Claude login state.
+- Worktrees are clones owned by `flocc-agent`. The publisher fetches the branch from the agent's
+  clone into the service's bare clone and pushes from there, so the publish token never enters the
+  agent's environment. The repo's check, which runs untrusted code, runs as `flocc-agent`.
+- An agent can still edit its own `~/.claude/settings.json` and hooks, which only weakens its own
+  guard; it cannot reach the secrets, the ledger or the plugin directory.
+
+### Keep, change, remove
+
+| Area | Kept as is | Changed | Removed |
+|---|---|---|---|
+| Intake | Poller, Linear client, agent-block and acceptance-criteria parsing, comment steering into a live session | Poller parses `Run:`; starts the owner's queue by Linear priority and blocked-by under the tick lock, as today, except issues cardinal holds | flocc's own Linear labels |
+| Sessions | tmux with Remote Control on every archetype | `bypassPermissions`, the guard and Stop hooks, run as `flocc-agent` | `permission.py`, `grants.py`, auto-mode tuning and `permissions.toml`, `press`, `peek`, `say` |
+| Supervisor | Wall clock, `flocc done` pickup | One restart after a crash, from the issue, the branch and the last summary; `idle` marker ends the run blocked | Pane matching, dialog and stall handling, the 60% handoff restart |
+| Publish | `publisher.py`, `rebase.py` (conflict resolution on an open PR), `tests-amended` | Optional tester guard; push from the service's bare clone; `AMENDED` moves out of `gate.py` into `publisher.py`; `rebase.py` takes `pr_url` from `publisher.py` instead of `a2atick` | `gate.py`, per-phase agent budgets |
+| Health | `usage.py`, `admission.py`, `tokens.py` (GitHub token expiry, Claude login) | `canary.py` and `tokens.py` warnings become events instead of ntfy pages | `escalation.py`, ntfy, the service digest |
+| Ledger | One claim per issue | Migration adds `events` and `holds`, drops path claims | Path claims, `flocc claim`, the pre-commit hook's claim check |
+| A2A | | | `a2aclient.py`, `a2aconf.py`, `a2aserver.py`, `a2atick.py`, `mcp_a2a.py`, `inbox.py`, `a2a.toml`, `flocc-a2a.service` |
+
+The commit-msg trailer hook stays. The catalogue agents in `plugin/agents/` stay as subagent types,
+without the gate's budgets.
 
 ### Compaction
 
@@ -99,106 +137,128 @@ defaults. The launcher sets nothing, and `flocc doctor` checks for Claude Code 2
 which idle compaction needs.
 
 The handoff note at 60% context and the restart from it go: auto-compact keeps a long session
-going in place, under the same Remote Control name. What carries between archetypes is the end-of-run
-summary, which the next step in the sequence reads with the issue.
+going in place, under the same Remote Control name. What carries between archetypes is the
+end-of-run summary, which the next step in the sequence reads with the issue.
 
 ### Cleanup
 
 | Who | When | Removes |
 |---|---|---|
 | Each archetype | Last step before `flocc done` | Its scratchpad and temp files it created |
-| Service | PR merged or closed, or the issue released | The worktree; the branch stays on GitHub |
-| `flocc cleanup`, run by cardinal | Daily, with the digest | Worktrees with no live claim, orphaned temp and scratch directories, session state older than 7 days |
+| Service tick | The issue reaches Done or Canceled in Linear (a merged PR with `Fixes` moves it), or the owner releases it | The worktree and its state; the branch stays on GitHub |
+| `flocc cleanup`, run by cardinal | Daily, with the digest | Worktrees with no claim, orphaned temp and scratch directories under `flocc-agent`, session state older than 7 days |
 
-The agent never removes its worktree: the publisher pushes from it after `flocc done`, and a fixer
-or reviewer reuses it.
+The agent never removes its worktree: the publisher fetches from it after `flocc done`, and a fixer
+or reviewer reuses it. `flocc cleanup` never touches the worktree of a live claim.
+
+### Linear status
+
+The service moves an issue to In Progress when its first step starts, as today. A PR ready for the
+owner, a blocked run and a timed-out run stay In Progress, with a comment on the issue saying which
+and why. A release moves the issue back to Todo, and the next tick restarts it on the kept branch.
 
 ### Events
 
-`flocc events --follow` prints one line per batch and never exits. Batches close 2 minutes after
-their first event. It emits only what needs a decision:
+Every event has an ID and stays in the ledger until acknowledged.
 
 | Event | When |
 |---|---|
-| `queued` | Eligible issues appeared or capacity freed |
-| `ended` | A sequence step ended with no next step the service can start: PR ready for the owner, blocked, timed out |
+| `ended` | A sequence ended with no next step the service can start: PR ready for the owner, blocked, timed out |
 | `cap` | A fix cap was reached |
 | `base-broken` | A repo's base branch fails its check, once per break |
 | `bad-sequence` | An issue's `Run:` line names an unknown archetype |
+| `service-error` | A tick raised, Linear failed three ticks in a row, or a token or the Claude login is expiring or rejected |
 | `daily` | The digest hour |
 
-A failed check under the cap, a fixer start, a reviewer start after a PR, session starts and ticks
-emit nothing. Events persist in the ledger until cardinal acknowledges them with `flocc ack`, so an
-event raised while cardinal is down is delivered when it reconnects.
+A failed check under the cap, fixer and reviewer starts, routine issue starts, session starts and
+ticks emit nothing.
+
+`flocc events --follow` prints, on connect, one line holding every unacknowledged event, then one
+line per batch. A batch closes 2 minutes after its first event. An event unacknowledged 30 minutes
+after it was printed is printed again. `flocc ack ID...` is idempotent.
 
 ## Cardinal VM
 
-A small Incus VM on the same machine, separate from agent-run code. It holds one lingering tmux
-session with Remote Control on Sonnet, started fresh daily at the renewal hour.
+A small Incus VM on the same machine, separate from agent-run code, reaching the executor VM over
+the Incus bridge by ssh and nothing else (d117). It holds one lingering tmux session with Remote
+Control on Sonnet, started fresh daily at the renewal hour.
 
-- **Waking.** Cardinal's plugin declares a plugin monitor with `when: "always"` that runs
-  `flocc events --follow` over ssh. A plugin monitor runs for the whole session; a monitor started
-  from a turn has a 30-minute deadline and would need re-arming, so it is not used. The command
-  reconnects ssh in a loop and never exits.
-- **Acting.** On an event, cardinal reads that run's summary and log tail from the service, both
-  trimmed to a fixed size, then starts the next queued issue (`flocc start`), starts one more fixer
-  (`flocc fix`, refused over the cap), or sends the owner one message saying what is needed.
+- **Waking.** Cardinal's plugin declares a plugin monitor with `when: "always"` that runs a loop:
+  ssh to the executor VM and run `flocc events --follow`, reconnecting on exit. After 5 failed
+  reconnects in a row it prints one `link-down` line, then stays silent until the link returns.
+- **Acting.** On an event, cardinal reads the run with `flocc run-summary KEY`, which prints the
+  summary and a log tail trimmed to a fixed size. It then starts one fixer with a note
+  (`flocc fix KEY`, refused over the cap), holds or releases an issue (`flocc hold KEY`,
+  `flocc release KEY`), or sends the owner one message saying what is needed. It acknowledges each
+  event it handled.
 - **Asking.** "What's running" and "what needs me" are answered from `flocc status`, a table the
   service builds.
 - **Daily.** On `daily`, cardinal runs `flocc cleanup`, reads `flocc digest-data` and writes one
   digest message.
-- **Access.** Its ssh key on the executor VM has a forced command in `authorized_keys` that runs
-  only `flocc events`, `status`, `start`, `fix`, `ack`, `cleanup` and `digest-data`.
+- **Access.** Its ssh key on the executor VM has a forced command in `authorized_keys`. The command
+  reads `SSH_ORIGINAL_COMMAND`, splits it without a shell, allows only `events`, `ack`, `status`,
+  `run-summary`, `fix`, `hold`, `release`, `cleanup` and `digest-data`, and checks every issue key
+  against `^[A-Z]+-[0-9]+$`.
 
-Authority: cardinal starts only issues in the owner's queue (assigned, `claude` label, Todo, repo
-mapping, acceptance criteria, as today) and fixers within the cap. Everything else waits for the
-owner.
-
-A lazier variant exists: the service starts queued issues itself by Linear priority and capacity,
-and cardinal sees only `ended`, `cap` and `base-broken`. It was not chosen because the owner wants
-cardinal as dispatcher.
+Authority: the owner's queue is what the poller admits today (assigned, `claude` label, Todo, repo
+mapping, acceptance criteria). The service starts it; cardinal can hold any of it and can add one
+fixer within the cap. Nothing else starts without the owner.
 
 ## Failures
 
 | State | Service does | Reaches cardinal |
 |---|---|---|
-| PR opened or updated | Pushes, comments the PR link on the issue, starts the next step | Only as `ended` when no step follows |
-| Check failed | Starts a fixer under the cap | As `cap` once the cap is used |
-| Blocked (summary lists "Needs the owner", or the session died twice) | Keeps the branch and claim | `ended` |
-| Wall clock reached | Kills the session, keeps the branch | `ended` |
+| PR opened or updated | Pushes, comments the PR link on the issue, starts the next step | `ended` when no step follows |
+| Check failed | Starts a fixer under the cap | `cap` once the cap is used |
+| Blocked: "Needs the owner", an `idle` marker, or the session died twice | Keeps the branch and claim, comments on the issue | `ended` |
+| Wall clock reached | Kills the session, keeps the branch, comments on the issue | `ended` |
 | Base branch broken | Holds the repo, starts nothing there | `base-broken` |
-| Cardinal down | Runs in progress finish, events queue in the ledger | On reconnect |
+| Service failing | Keeps ticking | `service-error` |
+| Cardinal down | Runs in progress finish, events wait in the ledger | Every unacknowledged event on reconnect |
+| Link to the executor VM down | | `link-down` from cardinal's own monitor loop |
 
 ## Removed
 
-- Cardinal 0.9–0.12: `installer/internal/cardinal`, `deploy/cardinal`, `steps/cardinal_user.go`,
-  the cardinal steps in `flocc setup`, the CARDINAL table in `status -H all`, `docs/book/cardinal.md`.
-  The `cardinal` user on zer0-day-nimble is deleted by hand with the owner's sudo.
-- A2A: modules above, the a2a token minting in `flocc ship`, the tailnet peer URLs.
-- Escalation and ntfy: the escalation rubric skill, the ntfy topic in `flocc keys`.
-- The tester-file guard stays; path claims and the pre-commit hook go.
+| Area | Files |
+|---|---|
+| Cardinal 0.9–0.12 | `deploy/cardinal/`, `docs/book/cardinal.md`, `installer/cmd/flocc-setup/cardinal{,_test}.go`, `installer/internal/cardinal/`, `installer/internal/cli/cardinal{,_test}.go`, `installer/internal/dash/cardinal.go` and `testdata/cardinal-80x24.golden`, `installer/internal/steps/cardinal_{doc,files,host,login,root,status,user}{,_test}.go`, the cardinal branches of `rootpass` and `hosts`, the CARDINAL table in `status -H all` |
+| A2A | `src/flocc/{a2aclient,a2aconf,a2aserver,a2atick,mcp_a2a,inbox}.py` and their tests, `deploy/flocc-a2a.service`, `installer/internal/cli/a2a{,_test}.go`, `installer/internal/steps/a2a{,_test}.go`, token minting in `flocc ship` |
+| Escalation and ntfy | `src/flocc/escalation.py` and its test, `plugin/skills/escalate/`, `plugin/evals/escalate-*`, the ntfy topic in `flocc keys` |
+| Permissions | `src/flocc/{permission,grants,gate}.py` and their tests, `installer/internal/steps/permissions{,_test}.go` |
+| Coordination | `plugin/skills/coordinate/`, `plugin/skills/handoff/`, path claims and the claim check in the pre-commit hook |
+
+The `cardinal` user on zer0-day-nimble goes through `flocc setup`'s existing old-pieces pass
+(d126), not by hand.
 
 ## Testing
 
 - Tests of kept modules stay; tests of removed modules go with them.
-- New unit tests: `Run:` parsing, the event filter and batching, `flocc ack` redelivery, the guard
-  hook's deny list, the forced command rejecting anything outside its list, `flocc cleanup` never
-  touching a live claim's worktree.
+- New unit tests: `Run:` parsing; publishing with and without a tester; the guard hook's deny list,
+  including `gh api` with `-f` or `-F` and no `-X`, which `gh` sends as POST; the Stop hook's
+  refuse-once behaviour; event IDs, batching, redelivery on connect and after 30 minutes, and
+  idempotent `ack`; the forced command rejecting anything outside its list and any malformed key;
+  `flocc cleanup` never touching a live claim's worktree; `flocc-agent-run` rejecting unknown
+  subcommands.
+- A check that `flocc-agent` cannot read `flocc`'s secret files or write the plugin directory.
 - One live run before merge: a test issue through executor, reviewer and PR, cardinal woken by its
-  plugin monitor, and the wake visible in the Claude app.
+  plugin monitor, the wake visible in the Claude app, and no phone notification for each new
+  Remote Control session.
 
 ## Order of work
 
 Each step is one PR into a feature branch.
 
-1. Purge cardinal 0.9–0.12.
-2. Remove A2A, escalation, ntfy, broker and grants, the gate, path claims and the pre-commit hook.
-3. Bypass mode with the guard hook, smaller supervisor without the handoff restart, archetype cleanup step.
-4. `Run:` sequence and the four archetype skills.
-5. Events, `ack`, `start`, `fix`, `cleanup`, `digest-data`.
-6. Cardinal VM, its plugin and monitor.
-
-## Not documented, checked in the live run
-
-- What a plugin monitor does when its command exits. The command is written never to exit.
-- Whether monitor wakes appear in the Claude app under Remote Control.
+0. Spike, thrown away afterwards: a plugin monitor with `when: "always"` in an idle Remote Control
+   session, checking that it runs for hours, wakes the session on a line, shows in the Claude app,
+   and what happens when its command exits. If it fails, this design stops and returns to the
+   owner.
+1. Drain: flocc-nimble stays stopped; release every live claim. Ledger migration for `events`,
+   `holds` and dropping path claims.
+2. Purge cardinal 0.9–0.12.
+3. Remove A2A, escalation, ntfy, the broker and grants, the gate, path claims, and the escalate,
+   coordinate and handoff skills.
+4. Two users, `flocc-agent-run`, bypass mode with the guard and Stop hooks, smaller supervisor,
+   optional tester guard, archetype cleanup step.
+5. `Run:` sequence and the four archetype skills.
+6. Events, `ack`, `run-summary`, `fix`, `hold`, `cleanup`, `digest-data`.
+7. Cardinal VM, its plugin, monitor loop and forced command.
