@@ -24,17 +24,10 @@ Make the committed tests pass by implementing the behavior.
 - When auto mode refuses a check command, do not ask for it to be run. Commit with
   `flocc commit`; the repo's own pre-commit hook still runs. Finish with
   `flocc done`; the service runs the full check after it.
-- Run `flocc context` and read "Grants" before planning; it lists what you may do beyond
-  the defaults. Grants that change launch flags (general-purpose agents, workflows) apply from the
-  next session start; until then the gate refuses them, even when "Grants" lists them.
 - Plan first: write `plan.md` in your state directory with numbered tasks, the paths each task
   touches, and its tests. Tasks that share a path go in different waves; a wave holds at most four
-  tasks. Fit the plan to your launch budget, the phase's total launches (10 unless a grant says
-  otherwise; a workflow counts as one): one plan review,
-  one implementer per task, one reviewer per wave, one fix and its re-review, plus any
-  `code-mapper` launch and the `source-finder` / `source-reader` pair, which count too. If the plan
-  does not fit, shrink it: merge small tasks or do them inline. Escalate only when the issue
-  itself is too large, and propose the split.
+  tasks. Keep the plan small: one plan review, one implementer per task, one reviewer per wave,
+  one fix and its re-review. Merge small tasks or do them inline rather than adding agents.
 - With four or more tasks, have `flocc:plan-reviewer` read the plan once before building,
   and fix what it finds. With fewer, check the plan against the acceptance criteria yourself.
 - Write each task's brief to `briefs/task-N.md` in your state directory: its requirements, the
@@ -43,18 +36,14 @@ Make the committed tests pass by implementing the behavior.
 - After each wave, write its `git diff` and test output to `waves/N.diff` and `waves/N.tests`
   in your state directory, and have one `flocc:wave-reviewer` review the wave.
 - Findings get one fix round per run, across all waves: the same `task-implementer` route, then
-  one `flocc:fix-rereviewer` on the fix diff. A second round needs a `fix-rounds` grant;
-  without one, list the findings left after the first round in your `flocc done` summary and
-  finish; the service's reviewer reads the PR.
+  one `flocc:fix-rereviewer` on the fix diff. List the findings left after that round in your `flocc done` summary and finish; the service's reviewer reads the PR.
 - When you start `source-finder` or `source-reader`, put today's date in the task.
 - Do small work yourself: a change outside the plan's tasks that fits in a few lines is not a task.
 - While a wave runs, commit your own work with `flocc commit -m '<message>' -- <paths>`,
   never a bare `git commit`, which would take the implementers' half-done files.
-- Start general-purpose agents and workflows only when "Grants" lists them. Never start
+- Start only the `flocc:` agents named here. Never start general-purpose agents, workflows or
   teammates, never pass `model`, `effort`, `isolation`, `name` or `team_name` when starting an
-  agent, and never run `claude` from the shell; no grant allows these. The gate refuses agent and workflow launches it does not
-  allow and says whether a grant can help; a permission rule, not the gate, blocks `claude` in
-  the shell.
+  agent, and never run `claude` from the shell; the session settings block these.
 - Run the repo's check (usually `just check`) before finishing.
 - Never push or open a PR; the service does that.
 - Finish with `flocc done --summary '<what changed and why, for the PR body>'`.

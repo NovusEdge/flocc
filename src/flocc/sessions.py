@@ -5,7 +5,6 @@ from pathlib import Path
 
 from flocc.agentblock import IssueSettings
 from flocc.config import Config
-from flocc.grants import Grants
 
 SOCKET = "flocc"
 # --no-verify skips the pre-commit claim check and the commit-msg trailer. Flag order varies, so
@@ -16,11 +15,10 @@ _DENY = [
     "Bash(git commit * --no-verify*)",
     "Bash(git commit * -n *)",
     "Bash(git commit * -n)",
-    # A second claude process is a session the gate and the usage caps never see.
+    # A second claude process is a session the usage caps never see.
     "Bash(claude:*)",
+    "Agent(general-purpose)",
 ]
-_GENERAL_DENY = "Agent(general-purpose)"
-NO_GRANTS = Grants()
 _KEEP = ("HOME", "USER", "PATH", "LANG", "TERM")
 # $0 is the token file. Reading it inside the pane keeps the token off the tmux and ps command
 # lines, and a missing file stops the session instead of leaving gh to find other credentials.
@@ -99,21 +97,17 @@ def claude_argv(
     env: dict[str, str],
     claude_exe: str,
     exe: str,
-    grants: Grants = NO_GRANTS,
     disabled_plugins: tuple[str, ...] = (),
     remote_control: bool = True,
 ) -> list[str]:
     servers = {s: cfg.mcp_servers[s] for s in settings.mcp}
-    deny = list(_DENY)
-    if "general-purpose" not in grants.agents:
-        deny.append(_GENERAL_DENY)
-    permissions: dict = {"deny": deny, "allow": [*cfg.permission_allow]}
+    permissions: dict = {"deny": list(_DENY), "allow": [*cfg.permission_allow]}
     session_settings: dict = {
         "statusLine": {"type": "command", "command": f"{exe} statusline"},
         "autoContinueAtUsageLimit": True,
         "attribution": False,
         "permissions": permissions,
-        "disableWorkflows": not grants.workflows,
+        "disableWorkflows": True,
     }
     if disabled_plugins:
         session_settings["enabledPlugins"] = {p: False for p in disabled_plugins}

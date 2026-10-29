@@ -8,7 +8,6 @@ import pytest
 
 from flocc.agentblock import IssueSettings
 from flocc.config import load
-from flocc.grants import Grants
 from flocc.sessions import (
     Sessions,
     allowed_plugins,
@@ -169,12 +168,6 @@ def test_settings_deny_general_purpose_and_nested_claude_but_allow_questions():
     assert "Agent(general-purpose)" in deny and "Bash(claude:*)" in deny
     assert "AskUserQuestion" not in deny
     assert s["disableWorkflows"] is True
-
-
-def test_grants_lift_the_matching_launch_flags():
-    s = settings_of(argv_with(grants=Grants(agents=("general-purpose",), workflows=("w",))))
-    assert "Agent(general-purpose)" not in s["permissions"]["deny"]
-    assert s["disableWorkflows"] is False
 
 
 def test_unlisted_plugins_are_disabled():

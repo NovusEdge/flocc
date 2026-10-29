@@ -5,7 +5,6 @@ import tomllib
 from pathlib import Path
 
 from flocc.context import phase_prompt
-from flocc.gate import CATALOGUE
 
 PLUGIN = Path(__file__).parent.parent / "plugin"
 SPEC = {
@@ -26,7 +25,7 @@ def frontmatter(path: Path) -> dict[str, str]:
 
 
 def test_every_catalogue_agent_has_a_file_with_its_model_and_effort():
-    assert set(CATALOGUE) == SPEC.keys()
+    assert {p.stem for p in (PLUGIN / "agents").glob("*.md")} == SPEC.keys()
     for name, (model, effort) in SPEC.items():
         fm = frontmatter(PLUGIN / "agents" / f"{name}.md")
         assert (fm["name"], fm["model"], fm["effort"]) == (name, model, effort)
@@ -50,25 +49,12 @@ def test_reviewers_and_mappers_cannot_edit_or_run_shell():
 
 def test_hooks():
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
-    pre = hooks["PreToolUse"][0]
-    assert pre["matcher"] == "Agent|Task|Workflow|AskUserQuestion"
-    assert pre["hooks"][0]["command"] == "flocc gate"
-    assert pre["hooks"][0]["onFailure"] == "block"
-    assert hooks["PostToolUse"][0]["matcher"] == "AskUserQuestion"
-    assert hooks["PostToolUse"][0]["hooks"][0]["command"] == "flocc gate --answered"
-    # A question cut short by an error or an interrupt never reaches PostToolUse, and an
-    # `asking` left behind would hold Linear replies and the handoff for the whole session.
-    assert hooks["PostToolUseFailure"][0]["matcher"] == "AskUserQuestion"
-    assert hooks["PostToolUseFailure"][0]["hooks"][0]["command"] == "flocc gate --answered"
-    stop = [h["command"] for h in hooks["Stop"][0]["hooks"]]
-    assert stop == ["flocc stop"]
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"}
+    assert [h["command"] for h in hooks["Stop"][0]["hooks"]] == ["flocc stop"]
     # The idle marker means "the last event was a Stop", so any later activity removes it.
     clear = '[ -z "$FLOCC_STATE" ] || rm -f "$FLOCC_STATE/idle"'
-    ungated = [e for e in hooks["PreToolUse"] if "matcher" not in e]
-    assert [h["command"] for e in ungated for h in e["hooks"]] == [clear]
+    assert [h["command"] for e in hooks["PreToolUse"] for h in e["hooks"]] == [clear]
     assert [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]] == [clear]
-    assert "PermissionDenied" not in hooks and "PermissionRequest" not in hooks
-    assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "flocc gate --stopped"
     starts = [h["command"] for e in hooks["SessionStart"] for h in e["hooks"]]
     assert starts == ["flocc session-start"]
 

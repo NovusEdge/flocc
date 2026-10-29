@@ -8,7 +8,6 @@ from flocc import ledger
 from flocc.config import TRAILER, RepoConfig, load
 from flocc.context import state_dir
 from flocc.escalation import Notifier
-from flocc.grants import Grants, for_phase, set_block
 from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
 from flocc.poller import (
     clean_scratchpads,
@@ -509,101 +508,16 @@ def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
     assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
 
 
-def test_a_reply_is_held_while_a_question_is_open_and_delivered_after(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [
-            Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True),
-        ]
-    }
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "asking").write_text("{}")
-    before = ledger.get_claim(rt.con, "NF-1")
-    forward_comments(rt)
-    after = ledger.get_claim(rt.con, "NF-1")
-    assert rt.sessions.sent == [] and before is not None and after is not None
-    assert after.last_comment_at == before.last_comment_at
-    assert not (d / "grants.json").exists()
-    (d / "asking").unlink()
-    forward_comments(rt)
-    assert [body for _, body in rt.sessions.sent] == [
-        "The owner replied on Linear: allow: launches 4"
-    ]
-    assert for_phase(d / "grants.json", "test").launches == 4
-
-
-def test_an_open_question_does_not_hold_other_claims(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    ledger.insert_claim(rt.con, make("NF-2", ()))
-    rt.linear.replies = {
-        "id-NF-2": [Comment("c1", "use B", "2026-10-09T10:00:00Z", mine=True)],
-    }
-    rt.sessions.alive_names.update({"NF-1-test", "NF-2-test"})
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "asking").write_text("{}")
-    forward_comments(rt)
-    assert rt.sessions.sent == [("NF-2-test", "The owner replied on Linear: use B")]
-
-
-def test_owner_and_steer_author_allow_comments_grant_for_the_running_phase(rt):
-    rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [
-            Comment("c1", "go ahead\nallow: launches 4", "2026-10-09T10:00:00Z", mine=True),
-            Comment("c2", "allow: agent code-mapper", "2026-10-09T10:01:00Z", author="hermes-id"),
-            Comment("c3", "allow: agent general-purpose", "2026-10-09T10:02:00Z", author="x"),
-        ]
-    }
-    rt.sessions.alive_names.add("NF-1-test")
-    forward_comments(rt)
-    path = state_dir(rt.cfg, "NF-1") / "grants.json"
-    assert for_phase(path, "test") == Grants(launches=4, agents=("code-mapper",))
-    assert for_phase(path, "impl").launches is None
-    assert rt.sessions.sent[0][1].startswith("The owner replied on Linear: go ahead")
-
-
-def test_bad_allow_comment_is_answered_once_and_keeps_grants(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [
-            Comment("c1", "allow: launches 9", "2026-10-09T10:00:00Z", mine=True),
-            Comment("c2", "allow: launches lots", "2026-10-09T10:01:00Z", mine=True),
-        ]
-    }
-    rt.sessions.alive_names.add("NF-1-test")
-    forward_comments(rt)
-    # Real Linear returns each comment once (last_comment_at advances); PollLinear ignores it.
-    assert for_phase(state_dir(rt.cfg, "NF-1") / "grants.json", "test").launches == 9
-    replies = [body for _, body in rt.linear.comments if "launches lots" in body]
-    assert len(replies) == 1
-
-
-def test_grants_wait_for_a_live_session(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True)]
-    }
-    forward_comments(rt)  # session down: nothing applied, nothing advanced
-    assert not (state_dir(rt.cfg, "NF-1") / "grants.json").exists()
-
-
 def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir(parents=True)
-    from_before = Grants(launches=5)
-    set_block(d / "grants.json", from_before)
-    names = ("scratchpads", "compacted", "asking", "tests-amended.json")
+    names = ("scratchpads", "compacted", "idle", "tests-amended.json")
     for name in names:
         (d / name).write_text("x")
     rt.linear.ready = [issue()]
     poll(rt)
     for name in names:
         assert not (d / name).exists()
-    assert for_phase(d / "grants.json", "impl").launches is None
 
 
 def test_escalations_sent_before_a_failure_are_not_resent(rt):

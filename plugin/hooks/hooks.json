@@ -16,32 +16,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Agent|Task|Workflow|AskUserQuestion",
-        "hooks": [
-          { "type": "command", "command": "flocc gate", "timeout": 10, "onFailure": "block" }
-        ]
-      },
-      {
         "hooks": [ { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" } ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [ { "type": "command", "command": "flocc gate --answered" } ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [ { "type": "command", "command": "flocc gate --answered" } ]
       }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "flocc stop" } ] }
-    ],
-    "SubagentStop": [
-      { "hooks": [ { "type": "command", "command": "flocc gate --stopped" } ] }
     ]
   }
 }

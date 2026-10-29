@@ -15,7 +15,7 @@ func TestHostIssueKeyNeverReachesTheTerminalRaw(t *testing.T) {
 	const evil = "NF-9\x1b[2J"
 	m, _ := newModel(t)
 	f := canned()
-	f.results[1].Status = report(1, claim(evil, "test", "running", 18, 1, 60))
+	f.results[1].Status = report(1, claim(evil, "test", "running", 18, 60))
 	m.Update(f)
 	key(m, "r")
 	if strings.Contains(m.View().Content, "\x1b[2J") {
@@ -145,7 +145,7 @@ func TestLogsForAnIssueWithNoLinesNamesIt(t *testing.T) {
 
 func TestCountsArePluralised(t *testing.T) {
 	m, _ := newModel(t)
-	rep := report(1, claim("NF-402", "test", "running", 18, 1, 60))
+	rep := report(1, claim("NF-402", "test", "running", 18, 60))
 	rep.SessionCap = 1
 	m.Update(fetched{results: []Result{{Host: ship.FleetHost{Name: "flocc-2"}, Status: rep}}, at: t0})
 	if got := text(m); !strings.Contains(got, "flocc 1 host · 1 issue") {

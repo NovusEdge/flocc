@@ -265,7 +265,7 @@ func TestAttachAndReleaseDimOffTheIssuesPane(t *testing.T) {
 func TestHostileStringsAreSanitised(t *testing.T) {
 	hostile := "\x1b[2J" + strings.Repeat("x", 300)
 	f := canned()
-	f.results[1].Status = report(1, claim("NF-402", "test", "running", 18, 1, 60, hostile))
+	f.results[1].Status = report(1, claim("NF-402", "test", "running", 18, 60, hostile))
 	f.results[0].Host.Name = "flocc\x1b[2J-nimble"
 	for _, sz := range [][2]int{{80, 24}, {140, 40}} {
 		m, _ := newModel(t)

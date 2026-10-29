@@ -27,5 +27,4 @@ Write tests for the issue's acceptance criteria and nothing else.
   the code you learned that the implementer would otherwise rediscover.
 - Finish with `flocc done --summary '<which criteria each test covers>'`.
 - To look up how an unfamiliar library or API behaves, use `flocc:source-finder` and then
-  `flocc:source-reader`, with today's date in the task; you have two launches. Start no
-  other agents.
+  `flocc:source-reader`, with today's date in the task. Start no other agents.

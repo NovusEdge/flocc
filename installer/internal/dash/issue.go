@@ -149,7 +149,7 @@ func (m *Model) issueFacts(r row) []string {
 	return []string{
 		m.label(7, "phase", m.phaseLine(c)),
 		m.label(7, "state", state),
-		m.label(7, "session", fmt.Sprintf("%s%scontext %s%slaunches %d/%d", session, theme.Sep, ctx, theme.Sep, c.Launches, c.LaunchLimit)),
+		m.label(7, "session", fmt.Sprintf("%s%scontext %s", session, theme.Sep, ctx)),
 		m.label(7, "host", where),
 	}
 }

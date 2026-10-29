@@ -457,8 +457,8 @@ func TestDrawPutsPlainTablesAndNotesOnTheSession(t *testing.T) {
 func TestAHostWithoutAVersionedReportIsMarkedBehind(t *testing.T) {
 	var old, current Report
 	json.Unmarshal([]byte(`{"mode":"live","session_cap":2}`), &old)
-	json.Unmarshal([]byte(`{"v":1,"mode":"live","session_cap":2,"claims":[{"issue":"NF-1","state":"running","phase":"impl","launches":1,"launch_limit":2,"activity":[{"at":1700000000,"text":"reading"}]}]}`), &current)
-	if c := current.Claims[0]; len(c.Activity) != 1 || c.Activity[0].Text != "reading" || c.Launches != 1 || c.LaunchLimit != 2 {
+	json.Unmarshal([]byte(`{"v":1,"mode":"live","session_cap":2,"claims":[{"issue":"NF-1","state":"running","phase":"impl","activity":[{"at":1700000000,"text":"reading"}]}]}`), &current)
+	if c := current.Claims[0]; len(c.Activity) != 1 || c.Activity[0].Text != "reading" {
 		t.Fatalf("%+v", current.Claims)
 	}
 	tables, _ := fleetTables([]Row{

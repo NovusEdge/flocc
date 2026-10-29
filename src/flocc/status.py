@@ -10,8 +10,6 @@ from pathlib import Path
 
 from flocc import ledger, usage
 from flocc.config import Config
-from flocc.gate import BUDGETS, launches_used, run_id
-from flocc.grants import for_phase
 from flocc.sessions import session_name
 from flocc.tokens import claude_login
 
@@ -166,10 +164,6 @@ def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
     state_dir = cfg.state_root / claim.issue_key
     status = usage.read_status(state_dir)
     updated = _mtime(state_dir / "status.json")
-    run = run_id(claim.phase, claim.started_at)
-    budget = BUDGETS.get(claim.phase)
-    granted = for_phase(state_dir / "grants.json", claim.phase).launches
-    limit = granted if granted is not None else (budget.launches if budget else 0)
     return {
         "issue": claim.issue_key,
         "state": claim.state,
@@ -178,8 +172,6 @@ def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
         "updated_age_s": None if updated is None else max(0.0, now - updated),
         "tmux_alive": sessions.alive(session_name(claim.issue_key, claim.phase)),
         "context_pct": usage.context_pct(status) if status else None,
-        "launches": launches_used(state_dir, run),
-        "launch_limit": limit,
     }
 
 

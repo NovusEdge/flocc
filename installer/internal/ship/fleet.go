@@ -88,10 +88,8 @@ type Claim struct {
 	TmuxAlive  bool     `json:"tmux_alive"`
 	ContextPct *float64 `json:"context_pct"`
 	// Absent from a host whose claim has no status file yet.
-	UpdatedAge  *float64       `json:"updated_age_s"`
-	Launches    int            `json:"launches"`
-	LaunchLimit int            `json:"launch_limit"`
-	Activity    []ActivityLine `json:"activity"`
+	UpdatedAge *float64       `json:"updated_age_s"`
+	Activity   []ActivityLine `json:"activity"`
 }
 
 // ActivityLine is one journal line that names the claim's issue; At is Unix seconds.

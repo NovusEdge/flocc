@@ -17,7 +17,6 @@ from flocc.agentblock import (
 from flocc.config import trailer_enabled
 from flocc.context import state_dir, write_context
 from flocc.escalation import DEDUPE_S, Escalation, scoped
-from flocc.grants import GrantError, add_comment, allow_lines, parse_allow
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.sessions import session_name
@@ -397,18 +396,8 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     for round_ in (1, 2):
         ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")
     (d / "owner-items.md").unlink(missing_ok=True)
-    # A previous claim's grants, scratchpads, compaction and question belong to that run; the
-    # agent block's grants are written again at launch.
-    for stale in (
-        "grants.json",
-        "scratchpads",
-        "compacted",
-        "asking",
-        "asking-escalated",
-        "idle",
-        "idle-escalated",
-        "asked-seconds",
-    ):
+    # A previous claim's scratchpads, compaction and idle marker belong to that run.
+    for stale in ("scratchpads", "compacted", "idle", "idle-escalated"):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the
@@ -522,18 +511,6 @@ def route_escalations(rt) -> dict[str, LinearError]:
     return failed
 
 
-def _apply_grants(rt, claim: Claim, body: str) -> None:
-    path = state_dir(rt.cfg, claim.issue_key) / "grants.json"
-    for line in allow_lines(body):
-        try:
-            add_comment(path, parse_allow(line), claim.phase)
-        except GrantError as exc:
-            try:
-                rt.linear.comment(claim.issue_id, f"{BOT_PREFIX} grant not applied: {exc}")
-            except LinearError as err:
-                print(f"{claim.issue_key}: grant reply not posted: {err}", file=sys.stderr)
-
-
 def forward_comments(rt) -> dict[str, LinearError]:
     """Returns the Linear failures by issue key, like route_escalations."""
     failed = {}
@@ -559,17 +536,10 @@ def forward_comments(rt) -> dict[str, LinearError]:
                 who = None
             if who and not comment.body.startswith(BOT_PREFIX):
                 # A dead session is relaunched by the next tick's supervisor, which delivers
-                # this reply and the ones after it. While a question is open, typing into the
-                # pane could select an option in the dialog, so the reply waits for the answer.
-                if (
-                    not rt.sessions.alive(name)
-                    or (state_dir(rt.cfg, claim.issue_key) / "asking").exists()
-                ):
+                # this reply and the ones after it.
+                if not rt.sessions.alive(name):
                     break
                 rt.sessions.send(name, f"{who} replied on Linear: {comment.body}")
-                # After delivery: a dead session breaks out above with last_comment_at unmoved, so
-                # the comment is seen again and neither applied nor answered twice.
-                _apply_grants(rt, claim, comment.body)
             ledger.update_claim(rt.con, claim.issue_key, last_comment_at=comment.created_at)
     return failed
 

@@ -43,7 +43,7 @@ func TestIssueScreenShowsPhasesAndFacts(t *testing.T) {
 		"NF-240 · Fix the poller tick",
 		"phase    test ✓ → impl ✓ → review ✓ → fix ✗",
 		"state    blocked 24h",
-		"session  none · context 7% · launches 0/2",
+		"session  none · context 7%",
 		"host     flocc-nimble · started 3d ago · updated 24h ago",
 		"o open in Linear", "L full screen",
 	} {
@@ -66,7 +66,7 @@ func TestPhaseLineForOtherPhases(t *testing.T) {
 	key(m, "esc")
 	f := canned()
 	f.at = t0.Add(time.Second)
-	f.results[0].Status = report(1, claim("NF-240", "triage", "running", 7, 0, 1))
+	f.results[0].Status = report(1, claim("NF-240", "triage", "running", 7, 1))
 	m.Update(f)
 	openIssue(t, m, "NF-240")
 	if l := line(m, "phase"); !strings.Contains(l, "triage ⠋") || strings.Contains(l, "→") {

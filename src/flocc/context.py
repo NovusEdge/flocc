@@ -19,7 +19,6 @@ decision the spec leaves open, through the escalate skill.
 - `flocc review-done` after writing review.md, in the review phase only.
 - `flocc handoff-ready` after writing handoff.md when asked to hand off.
 - `flocc commit -m '<message>' -- <paths>` to commit only those paths.
-- "Grants" below lists what you may do beyond the defaults; the gate refuses anything else.
 """
 
 

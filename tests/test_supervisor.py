@@ -9,13 +9,11 @@ import pytest
 from flocc import canary, ledger
 from flocc.agentblock import IssueSettings, settings_to_json
 from flocc.context import state_dir
-from flocc.gate import record_session, record_stop, run_gate, run_id
-from flocc.grants import Grants, add_comment, for_phase
 from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.publisher import BranchMoved, PublishResult
 from flocc.runtime import Runtime
-from flocc.supervisor import QUESTION_WAIT_S, LaunchError, supervise
+from flocc.supervisor import LaunchError, supervise
 from flocc.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
@@ -780,67 +778,6 @@ def test_wall_clock(rt):
     assert key == "NF-1" and "flocc release NF-1" in line
 
 
-def test_an_open_question_holds_off_the_wall_clock(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    rt.now = lambda: 100.0 + 3601
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text(
-        json.dumps({"at": 100.0 + 3600, "question": "Q?"})
-    )
-    supervise(rt, current(rt))
-    assert current(rt).state == "running" and "NF-1-test" not in rt.sessions.killed
-    (state_dir(rt.cfg, "NF-1") / "asking").unlink()
-    supervise(rt, current(rt))
-    assert current(rt).state == "timed_out"
-
-
-def test_the_time_a_question_was_open_is_credited_to_the_wall_clock(rt):
-    add(rt, wall_clock_s=3 * 3600)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asked-seconds").write_text("10800")
-    rt.now = lambda: 100.0 + 4 * 3600
-    supervise(rt, current(rt))
-    assert current(rt).state == "running"
-    rt.now = lambda: 100.0 + 6 * 3600 + 1
-    supervise(rt, current(rt))
-    assert current(rt).state == "timed_out"
-
-
-def test_a_question_left_open_forever_times_out_after_the_wait(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    asked = 100.0 + 3500
-    (d / "asking").write_text(json.dumps({"at": asked, "question": "Q?"}))
-    # Asked just before the limit: the page goes out after QUESTION_WAIT_S, and the owner still
-    # gets as long again to answer it.
-    rt.now = lambda: asked + QUESTION_WAIT_S + 600
-    supervise(rt, current(rt))
-    assert current(rt).state == "running"
-    rt.now = lambda: asked + 2 * QUESTION_WAIT_S + 1
-    supervise(rt, current(rt))
-    assert current(rt).state == "timed_out"
-
-
-def test_a_torn_question_marker_does_not_hold_off_the_wall_clock(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text("{torn")
-    rt.now = lambda: 100.0 + 3601
-    supervise(rt, current(rt))
-    assert current(rt).state == "timed_out"
-
-
-def test_an_open_question_never_holds_off_the_review_limit(rt):
-    rt.cfg = replace(rt.cfg, review_wall_clock_s=60)
-    review_session(rt, text=None)
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text(json.dumps({"at": 100.0, "question": "Q?"}))
-    rt.now = lambda: 100.0 + 61
-    supervise(rt, current(rt))
-    assert current(rt).state == "done"
-
-
 def test_high_context_requests_handoff_once(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
@@ -919,21 +856,6 @@ def env_of(argv):
     return dict(x.split("=", 1) for x in argv[2:end])
 
 
-def test_phase_sessions_share_one_run_id_across_relaunches(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    done(rt)
-    supervise(rt, current(rt))
-    started = current(rt).started_at
-    env = env_of(rt.sessions.started[-1][1])
-    assert env["FLOCC_RUN"] == f"impl@{started}"
-    assert env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "1"
-    assert env["CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS"] == "1"
-    rt.sessions.alive_names.clear()
-    supervise(rt, current(rt))  # a crash relaunch of the same phase
-    assert env_of(rt.sessions.started[-1][1])["FLOCC_RUN"] == f"impl@{started}"
-
-
 def test_only_implementer_and_fix_sessions_use_remote_control(rt):
     add(rt)
     supervise(rt, current(rt))  # tester relaunch
@@ -942,17 +864,6 @@ def test_only_implementer_and_fix_sessions_use_remote_control(rt):
     done(rt)
     supervise(rt, current(rt))  # implementer
     assert "--remote-control" in rt.sessions.started[-1][1]
-
-
-def test_launch_records_block_grants_without_beating_comment_grants(rt):
-    add(rt, settings_json=settings_to_json(IssueSettings(allow="launches 12")))
-    path = state_dir(rt.cfg, "NF-1") / "grants.json"
-    from_comment = Grants(launches=20)
-    add_comment(path, from_comment, "impl")
-    rt.sessions.alive_names.add("NF-1-test")
-    done(rt)
-    supervise(rt, current(rt))
-    assert for_phase(path, "impl").launches == 20
 
 
 def test_unlisted_installed_plugins_are_disabled_at_launch(rt):
@@ -979,10 +890,10 @@ def test_no_handoff_before_the_first_compaction(rt):
     assert len(rt.sessions.sent) == 1 and "handoff" in rt.sessions.sent[0][1]
 
 
-def test_relaunch_clears_compaction_and_question_markers(rt):
+def test_relaunch_clears_compaction_and_idle_markers(rt):
     add(rt)
     d = state_dir(rt.cfg, "NF-1")
-    names = ("compacted", "asking", "asking-escalated", "idle", "idle-escalated")
+    names = ("compacted", "idle", "idle-escalated")
     for name in names:
         (d / name).write_text("{}")
     supervise(rt, current(rt))  # not alive: relaunch
@@ -1032,38 +943,6 @@ def test_a_status_rewrite_does_not_postpone_the_escalation(rt):
     os.utime(d / "status.json", (time.time(), time.time()))
     supervise(rt, current(rt))
     assert len(rt.notifier.sent) == 1
-
-
-def agent_call(name):
-    return {"tool_name": "Agent", "tool_input": {"subagent_type": f"flocc:{name}"}}
-
-
-def test_a_session_waiting_on_background_agents_is_left_alone(rt):
-    d = idle_session(rt)
-    run = run_id("test", current(rt).started_at)
-    record_session(d, run, 0.0, "test")
-    assert run_gate(agent_call("source-finder"), d, "test", run, 1.0) is None
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-    record_stop(d, run, 2.0, "source-finder", "test")
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 1
-
-
-def test_a_session_that_already_escalated_and_waits_is_left_alone(rt):
-    d = idle_session(rt)
-    (d / "idle").write_text(
-        json.dumps({"at": 100.0 - IDLE_S, "message": "m", "waiting_on_owner": True})
-    )
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_an_idle_session_with_an_open_question_is_left_to_the_question_check(rt):
-    d = idle_session(rt)
-    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
 
 
 @pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
@@ -1124,21 +1003,10 @@ def test_a_status_line_rewrite_does_not_restart_the_stall_clock(rt):
     assert len(rt.notifier.sent) == 1
 
 
-@pytest.mark.parametrize("marker", ["idle", "asking"])
-def test_an_ended_turn_or_open_question_is_not_a_stall(rt, marker):
+@pytest.mark.parametrize("marker", ["idle"])
+def test_an_ended_turn_is_not_a_stall(rt, marker):
     d = stalled(rt)
     (d / marker).write_text(json.dumps({"at": 100.0 + rt.cfg.stall_escalate_s, "message": "m"}))
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_still_screen_while_background_agents_run_is_not_a_stall(rt):
-    d = stalled(rt)
-    run = run_id("test", current(rt).started_at)
-    record_session(d, run, 0.0, "test")
-    assert run_gate(agent_call("source-finder"), d, "test", run, 1.0) is None
     supervise(rt, current(rt))
     at(rt, 100.0 + rt.cfg.stall_escalate_s)
     supervise(rt, current(rt))
@@ -1180,129 +1048,23 @@ def test_a_relaunch_forgets_the_last_screen(rt):
     assert not (d / "pane.json").exists()
 
 
-def test_a_stale_question_is_escalated_once(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(
-        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
-    )
-    supervise(rt, current(rt))
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.tier == 2 and "A or B?" in esc.summary
-
-
-def test_no_handoff_is_requested_while_a_question_is_open(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    write_status(d, usage_status(ctx=70))
-    (d / "compacted").touch()
-    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
-    supervise(rt, current(rt))
-    assert rt.sessions.sent == [] and not (d / "handoff-requested").exists()
-    (d / "asking").unlink()
-    supervise(rt, current(rt))
-    assert len(rt.sessions.sent) == 1 and (d / "handoff-requested").exists()
-
-
-def test_a_tester_question_escalation_points_at_the_pane(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(
-        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
-    )
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.action == (
-        "Answer it in its pane on the host (tmux -L flocc attach -t NF-1-test);"
-        " a reply on this issue is delivered after the question is answered."
-    )
-
-
-def test_an_implementer_question_escalation_points_at_the_app(rt):
-    add(rt, phase="impl", tester_sha="sha-tests")
-    rt.sessions.alive_names.add("NF-1")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(
-        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
-    )
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.action == (
-        "Answer it in the Claude app (Remote Control session NF-1);"
-        " a reply on this issue is delivered after the question is answered."
-    )
-
-
-def test_a_fresh_question_is_not_escalated(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
 def settings_of(argv):
     return json.loads(argv[argv.index("--settings") + 1])
 
 
-def test_launch_applies_block_grants_to_the_session(rt):
-    add(rt, settings_json=settings_to_json(IssueSettings(allow="agent general-purpose")))
-    rt.sessions.alive_names.add("NF-1-test")
-    done(rt)
-    supervise(rt, current(rt))
-    deny = settings_of(rt.sessions.started[-1][1])["permissions"]["deny"]
-    assert "Agent(general-purpose)" not in deny
-    raw = json.loads((state_dir(rt.cfg, "NF-1") / "grants.json").read_text())
-    assert raw["block"]["agents"] == ["general-purpose"]
-
-
-def test_launch_tells_the_gate_which_grants_the_session_started_with(rt):
-    add(rt, settings_json=settings_to_json(IssueSettings(allow="agent general-purpose")))
-    path = state_dir(rt.cfg, "NF-1") / "grants.json"
-    add_comment(path, Grants(workflows=("big-build",), agents=("code-mapper",)), "impl")
-    rt.sessions.alive_names.add("NF-1-test")
-    done(rt)
-    supervise(rt, current(rt))
-    env = env_of(rt.sessions.started[-1][1])
-    assert env["FLOCC_LAUNCH_GRANTS"] == "agent:general-purpose,workflow:big-build"
-
-
-def test_launch_without_flag_grants_sets_an_empty_value(rt):
-    add(rt)
-    supervise(rt, current(rt))
-    assert env_of(rt.sessions.started[-1][1])["FLOCC_LAUNCH_GRANTS"] == ""
-
-
-@pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
-def test_a_malformed_question_file_is_ignored(rt, content):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text(content)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_review_and_fix_launches_carry_their_own_run_id_and_remote_control(rt):
+def test_only_fix_launches_get_remote_control(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
     add(rt, phase="impl", tester_sha="sha-tests")
     done(rt)
     supervise(rt, current(rt))  # check fails: fix
-    c = current(rt)
     argv = rt.sessions.started[-1][1]
-    assert c.phase == "fix" and env_of(argv)["FLOCC_RUN"] == f"fix@{c.started_at}"
-    assert "--remote-control" in argv
+    assert current(rt).phase == "fix" and "--remote-control" in argv
+    assert "FLOCC_RUN" not in env_of(argv)
     rt.publish_fn = lambda c, t, s: PublishResult("opened", url="https://pr/1")
     done(rt)
     supervise(rt, current(rt))  # PR opens: review
-    c = current(rt)
     argv = rt.sessions.started[-1][1]
-    assert c.phase == "review" and env_of(argv)["FLOCC_RUN"] == f"review@{c.started_at}"
-    assert "--remote-control" not in argv
+    assert current(rt).phase == "review" and "--remote-control" not in argv
 
 
 BASE_SHA = "0123456789abcdef"

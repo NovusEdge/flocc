@@ -2,8 +2,6 @@ import json
 import re
 from dataclasses import asdict, dataclass
 
-from flocc.grants import GrantError, parse_allow
-
 _OPEN = re.compile(r"^```agent[ \t]*$", re.MULTILINE)
 _BLOCK = re.compile(r"^```agent[ \t]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
 _CRITERIA = re.compile(
@@ -12,7 +10,7 @@ _CRITERIA = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _DURATION = re.compile(r"^(\d+)([smh])$")
-_KEYS = {"model", "effort", "wall_clock", "paths", "depends_on", "mcp", "allow"}
+_KEYS = {"model", "effort", "wall_clock", "paths", "depends_on", "mcp"}
 
 
 class BlockError(ValueError):
@@ -27,7 +25,6 @@ class IssueSettings:
     paths: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     mcp: tuple[str, ...] = ()
-    allow: str | None = None
 
 
 def _normalise(text: str | None) -> str:
@@ -54,12 +51,6 @@ def parse_settings(description: str | None) -> IssueSettings:
     unknown = values.keys() - _KEYS
     if unknown:
         raise BlockError(f"agent block: unknown keys {sorted(unknown)}")
-    allow = values.get("allow") or None
-    if allow is not None:
-        try:
-            parse_allow(allow)
-        except GrantError as exc:
-            raise BlockError(f"agent block: {exc}") from exc
     return IssueSettings(
         model=values.get("model") or None,
         effort=values.get("effort") or None,
@@ -67,7 +58,6 @@ def parse_settings(description: str | None) -> IssueSettings:
         paths=_list(values.get("paths", "")),
         depends_on=_list(values.get("depends_on", "")),
         mcp=_list(values.get("mcp", "")),
-        allow=allow,
     )
 
 
@@ -103,5 +93,4 @@ def settings_from_json(text: str) -> IssueSettings:
         paths=tuple(raw.get("paths", ())),
         depends_on=tuple(raw.get("depends_on", ())),
         mcp=tuple(raw.get("mcp", ())),
-        allow=raw.get("allow"),
     )

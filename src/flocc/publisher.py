@@ -8,7 +8,6 @@ from pathlib import Path
 
 from flocc.config import TRAILER, RepoConfig
 from flocc.context import state_dir
-from flocc.gate import AMENDED
 from flocc.ledger import Claim
 from flocc.worktree import (
     base_checkout,
@@ -18,6 +17,7 @@ from flocc.worktree import (
     setup_in_checkout,
 )
 
+AMENDED = "tests-amended.json"
 _TAIL = 3000
 # Stands in for the base checkout's path when its failure is compared with a branch's.
 BASE_CHECKOUT = "<checkout>"
