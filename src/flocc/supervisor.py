@@ -31,14 +31,10 @@ from flocc.sessions import (
     session_name,
     trust_folders,
 )
-from flocc.usage import context_pct, latest_usage, read_status
+from flocc.usage import latest_usage
 from flocc.worktree import origin_base
 
-HANDOFF_ASK = (
-    "Your context is past {pct:.0f}%. Follow the handoff skill now: write handoff.md in your state"
-    " directory, then run flocc handoff-ready. A fresh session will continue from it."
-)
-_MARKERS = ("done.json", "handoff-ready", "handoff-requested")
+_MARKERS = ("done.json",)
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
 BASE_HELD = "base_held"
@@ -114,10 +110,9 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
         disabled_plugins=_disabled_plugins(rt),
         remote_control=phase in ("impl", "fix"),
     )
-    # After everything above that can raise. The previous session's markers would be taken for
-    # the new one's, and its context reading would ask the new session to hand off at once.
+    # After everything above that can raise: the previous session's markers would be taken for the new one's.
     markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
-    for leftover in (*_MARKERS, "status.json", "compacted", PANE, STALL_ESCALATED, BACKGROUND):
+    for leftover in (*_MARKERS, "status.json", PANE, STALL_ESCALATED, BACKGROUND):
         (d / leftover).unlink(missing_ok=True)
     clear_idle(d)
     # Both keys: for a worktree, trust may be keyed on the main checkout's root instead.
@@ -754,10 +749,6 @@ def supervise(rt, claim: Claim) -> None:
         rt.sessions.kill(name)
         _finish_phase(rt, claim, summary)
         return
-    if (d / "handoff-ready").exists():
-        rt.sessions.kill(name)
-        _relaunch(rt, claim)
-        return
     if not rt.sessions.alive(name):
         if claim.restarts >= 1 and claim.phase == "review":
             _review_skipped(rt, claim, f"the session died twice ({name})")
@@ -787,16 +778,5 @@ def supervise(rt, claim: Claim) -> None:
         _record_usage(rt, key, claim.phase, "end")
         ledger.update_claim(rt.con, key, state="timed_out")
         return
-    pct = context_pct(read_status(d) or {})
-    requested = d / "handoff-requested"
-    # One compaction first: the handoff applies only once the session has compacted.
-    if (
-        pct is not None
-        and pct >= rt.cfg.context_restart_pct
-        and (d / "compacted").exists()
-        and not requested.exists()
-    ):
-        rt.sessions.send(name, HANDOFF_ASK.format(pct=pct))
-        requested.touch()
     _check_idle(rt, claim, d, name)
     _check_stall(rt, claim, d, name)

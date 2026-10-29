@@ -16,7 +16,6 @@ under a line that starts with "Needs the owner".
 - `flocc context` to see this text again.
 - `flocc done --summary '<one paragraph>'` when this phase is finished.
 - `flocc review-done` after writing review.md, in the review phase only.
-- `flocc handoff-ready` after writing handoff.md when asked to hand off.
 - `flocc commit -m '<message>' -- <paths>` to commit only those paths.
 """
 

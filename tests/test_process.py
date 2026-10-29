@@ -51,12 +51,8 @@ def test_fake_claude_through_tmux(tmp_cfg, tmux_server, origin, tmp_path):
     ledger.insert_claim(rt.con, c)
     state = state_dir(tmp_cfg, "NF-1")
     state.mkdir()
-    (state / "fake-mode").write_text("handoff")
-    launch(rt, c, "test")
-    wait_for(lambda: (state / "handoff-ready").exists())
     (state / "fake-mode").write_text("crash")
-    supervise(rt, current(rt))  # handoff: relaunched, and this one crashes
-    assert not (state / "handoff-ready").exists()
+    launch(rt, c, "test")
     wait_for(lambda: not sessions.alive("NF-1-test"))
     (state / "fake-mode").write_text("done")
     supervise(rt, current(rt))  # dead: the one restart

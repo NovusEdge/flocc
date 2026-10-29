@@ -39,13 +39,10 @@ def test_context_cli_prints_context_and_handoff(tmp_cfg, monkeypatch, capsys):
     assert "CTX" in out and "NOTE" in out and "NF-2" not in out
 
 
-def test_done_and_handoff_ready(tmp_path, monkeypatch):
+def test_done_writes_the_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
     assert main(["done", "--summary", "tests written"]) == 0
     assert json.loads((tmp_path / "done.json").read_text())["summary"] == "tests written"
-    assert main(["handoff-ready"]) == 1
-    (tmp_path / "handoff.md").write_text("note")
-    assert main(["handoff-ready"]) == 0 and (tmp_path / "handoff-ready").exists()
 
 
 def test_phase_prompts_name_the_skill():

@@ -5,9 +5,6 @@ case "$mode" in
   done)
     git commit -q --allow-empty -m "fake tests"
     flocc done --summary "fake $FLOCC_PHASE" ;;
-  handoff)
-    echo "fake note" > "$FLOCC_STATE/handoff.md"
-    flocc handoff-ready ;;
   crash)
     exit 3 ;;
 esac

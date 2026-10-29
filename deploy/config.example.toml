@@ -34,8 +34,6 @@ setup_timeout_s = 900
 # default_wall_clock_s = 10800
 # Review phase wall-clock stop, in seconds.
 # review_wall_clock_s = 3600
-# Restart a session when its context passes this pct.
-# context_restart_pct = 60.0
 # Comment on the issue when a session has ended its turn and stayed quiet this many seconds.
 # idle_escalate_s = 1800.0
 # Fix sessions a failed check gets before the claim blocks.

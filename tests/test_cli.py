@@ -192,15 +192,14 @@ def test_tests_amended_refuses_a_file_the_tester_did_not_write(claims_env, tmp_p
     assert not (state / "tests-amended.json").exists()
 
 
-def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
+def test_session_start_on_compaction_lists_the_scratchpad(tmp_path, monkeypatch, capsys):
     session_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
-    (tmp_path / "status.json").write_text("{}")
     payload = {"source": "compact", "scratchpad_dir": "/tmp/claude-1000/x/s1/scratchpad"}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert main(["session-start"]) == 0
-    assert (tmp_path / "compacted").exists() and not (tmp_path / "status.json").exists()
     assert (tmp_path / "scratchpads").read_text().splitlines() == [payload["scratchpad_dir"]]
+    assert not (tmp_path / "compacted").exists()
 
 
 def test_session_start_on_startup_prints_the_context(tmp_path, monkeypatch, capsys):

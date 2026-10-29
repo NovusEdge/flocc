@@ -90,7 +90,6 @@ def test_failed_start_puts_the_markers_back(rt):
     rt.sessions.alive_names.add("NF-1-test")
     done(rt, "tests written")
     d = state_dir(rt.cfg, "NF-1")
-    (d / "handoff-requested").touch()
     before = (d / "done.json").read_text()
     working = rt.sessions.start
 
@@ -100,7 +99,7 @@ def test_failed_start_puts_the_markers_back(rt):
     rt.sessions.start = down
     with pytest.raises(subprocess.CalledProcessError):
         supervise(rt, current(rt))
-    assert (d / "done.json").read_text() == before and (d / "handoff-requested").exists()
+    assert (d / "done.json").read_text() == before
     c = current(rt)
     assert c.phase == "test" and c.restarts == 0
     rt.sessions.start = working
@@ -686,13 +685,10 @@ def test_fix_session_keeps_the_check_output_across_restarts(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
     add(rt, phase="impl", tester_sha="sha-tests")
     done(rt)
-    supervise(rt, current(rt))
-    (state_dir(rt.cfg, "NF-1") / "handoff-ready").touch()
-    supervise(rt, current(rt))
-    assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
+    supervise(rt, current(rt))  # check fails: fix starts
     rt.sessions.alive_names.clear()
-    supervise(rt, current(rt))
-    assert len(rt.sessions.started) == 3
+    supervise(rt, current(rt))  # the fix session died: relaunched once
+    assert len(rt.sessions.started) == 2
     assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
 
 
@@ -777,31 +773,6 @@ def test_wall_clock(rt):
     assert key == "NF-1" and "flocc release NF-1" in line
 
 
-def test_high_context_requests_handoff_once(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    (state_dir(rt.cfg, "NF-1") / "compacted").touch()
-    write_status(state_dir(rt.cfg, "NF-1"), usage_status(ctx=70))
-    supervise(rt, current(rt))
-    supervise(rt, current(rt))
-    assert len(rt.sessions.sent) == 1 and "handoff" in rt.sessions.sent[0][1]
-
-
-def test_handoff_ready_restarts_same_phase_with_a_clean_slate(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    write_status(d, usage_status(ctx=70))
-    (d / "handoff-ready").touch()
-    (d / "handoff-requested").touch()
-    supervise(rt, current(rt))
-    assert rt.sessions.killed == ["NF-1-test"] and rt.sessions.started[0][0] == "NF-1-test"
-    for name in ("handoff-ready", "handoff-requested", "status.json"):
-        assert not (d / name).exists()
-    supervise(rt, current(rt))
-    assert rt.sessions.sent == [], "the old session's 70% must not ask the new one to hand off"
-
-
 def test_comment_already_posted_is_not_posted_again(rt):
     review_session(rt)
     rt.linear.comment = lambda issue_id, text: (_ for _ in ()).throw(LinearError("x"))
@@ -877,22 +848,10 @@ def test_unlisted_installed_plugins_are_disabled_at_launch(rt):
     assert settings["enabledPlugins"] == {"glowup@glowup": False}
 
 
-def test_no_handoff_before_the_first_compaction(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    write_status(d, usage_status(ctx=70))
-    supervise(rt, current(rt))
-    assert rt.sessions.sent == []
-    (d / "compacted").touch()
-    supervise(rt, current(rt))
-    assert len(rt.sessions.sent) == 1 and "handoff" in rt.sessions.sent[0][1]
-
-
-def test_relaunch_clears_compaction_and_idle_markers(rt):
+def test_relaunch_clears_the_idle_markers(rt):
     add(rt)
     d = state_dir(rt.cfg, "NF-1")
-    names = ("compacted", "idle", "idle-escalated")
+    names = ("idle", "idle-escalated")
     for name in names:
         (d / name).write_text("{}")
     supervise(rt, current(rt))  # not alive: relaunch

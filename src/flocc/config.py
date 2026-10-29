@@ -46,7 +46,7 @@ _PERMISSION_KEYS = {
     "judge_max_per_run": "judge_max_per_run",
 }
 
-_RETIRED = ("ntfy_url",)
+_RETIRED = ("ntfy_url", "context_restart_pct")
 _PATH_KEYS = (
     "state_root",
     "worktree_root",
@@ -94,7 +94,6 @@ class Config:
     session_cap: int = 2
     five_hour_max_pct: float = 80.0
     weekly_max_pct: float = 80.0
-    context_restart_pct: float = 60.0
     idle_escalate_s: float = 1800.0
     check_fix_rounds: int = 2
     stall_escalate_s: float = 1200.0

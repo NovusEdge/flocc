@@ -493,7 +493,7 @@ def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
 def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir(parents=True)
-    names = ("scratchpads", "compacted", "idle", "tests-amended.json")
+    names = ("scratchpads", "idle", "tests-amended.json")
     for name in names:
         (d / name).write_text("x")
     rt.linear.ready = [issue()]

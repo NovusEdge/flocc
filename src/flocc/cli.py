@@ -195,10 +195,6 @@ def cmd_stop(args) -> int:
 def _session_bookkeeping(state: Path) -> None:
     state.mkdir(parents=True, exist_ok=True)
     payload = _hook_input()
-    if payload.get("source") == "compact":
-        # status.json still holds the pre-compaction reading; the supervisor would hand off at once.
-        (state / "compacted").touch()
-        (state / "status.json").unlink(missing_ok=True)
     pad = payload.get("scratchpad_dir")
     if isinstance(pad, str) and pad:
         known = state / "scratchpads"
@@ -232,15 +228,6 @@ def cmd_review_done(args) -> int:
         return 1
     (state / "done.json").write_text(json.dumps({"summary": "review", "at": time.time()}))
     print("review marked done; the service posts it on its next run")
-    return 0
-
-
-def cmd_handoff_ready(args) -> int:
-    state = _state_dir()
-    if not (state / "handoff.md").exists():
-        print(f"handoff-ready: write {state / 'handoff.md'} first", file=sys.stderr)
-        return 1
-    (state / "handoff-ready").touch()
     return 0
 
 
@@ -594,7 +581,6 @@ COMMANDS = {
     "commit": cmd_commit,
     "done": cmd_done,
     "review-done": cmd_review_done,
-    "handoff-ready": cmd_handoff_ready,
     "tick": cmd_tick,
     "run": cmd_run,
     "release": cmd_release,
@@ -637,14 +623,13 @@ def build_parser() -> argparse.ArgumentParser:
     add("context", "Print the issue's context")
     add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
     add("stop", "Hook (Stop): record background tasks and the idle stop")
-    add("session-start", "Hook: record compaction and the scratchpad, print the context")
+    add("session-start", "Hook: record the scratchpad, print the context")
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")
     com.add_argument("-m", dest="message", required=True, help="commit message")
     com.add_argument("paths", nargs=argparse.REMAINDER, help="-- then the paths to commit")
     done = add("done", "Mark the work done")
     done.add_argument("--summary", required=True, help="what was done")
     add("review-done", "Mark the review done (reads review.md)")
-    add("handoff-ready", "Mark handoff.md ready")
     add("tick", "Run one service tick")
     add("run", "Run ticks in a loop")
     rel = add("release", "Clear a claim and kill its session")

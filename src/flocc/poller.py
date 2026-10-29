@@ -373,8 +373,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         rt.config_path,
         trailer=trailer_enabled(cfg, cfg.repos[repo]),
     )
-    # The previous claim's notes would be read as this session's handoff, and would satisfy
-    # handoff-ready before the new session wrote its own. Kept for the owner.
+    # The previous claim's tester notes would be read as this claim's. Kept for the owner.
     if (d / "handoff.md").exists():
         (d / "handoff.md").replace(d / "handoff.prev.md")
     # A fresh claim gets its own review fix round.
@@ -384,8 +383,8 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     for round_ in (1, 2):
         ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")
     (d / "owner-items.md").unlink(missing_ok=True)
-    # A previous claim's scratchpads, compaction and idle marker belong to that run.
-    for stale in ("scratchpads", "compacted", "idle", "idle-escalated"):
+    # A previous claim's scratchpads and idle marker belong to that run.
+    for stale in ("scratchpads", "idle", "idle-escalated"):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the

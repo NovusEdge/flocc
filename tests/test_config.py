@@ -13,7 +13,6 @@ def test_example_loads_with_defaults():
     assert cfg.digest_hour == 18
     assert cfg.default_wall_clock_s == 10800
     assert cfg.review_wall_clock_s == 3600
-    assert cfg.context_restart_pct == 60.0
     assert cfg.idle_escalate_s == 1800.0
     assert cfg.review_model == "opus"
     assert cfg.five_hour_max_pct == 80.0
@@ -237,6 +236,14 @@ def test_an_ordinary_allow_rule_is_accepted(tmp_path, rule):
 def test_a_bad_permissions_file_fails_at_load(tmp_path, text, word):
     with pytest.raises(ValueError, match=word):
         load(with_permissions(tmp_path, text))
+
+
+def test_context_restart_pct_is_retired(tmp_path, capsys):
+    p = tmp_path / "config.toml"
+    p.write_text("context_restart_pct = 60.0\n" + EXAMPLE.read_text())
+    cfg = load(p)
+    assert not hasattr(cfg, "context_restart_pct")
+    assert "context_restart_pct is no longer used" in capsys.readouterr().err
 
 
 def test_retired_top_level_keys_are_ignored_with_a_warning(tmp_path, capsys):
