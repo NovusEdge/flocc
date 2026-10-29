@@ -102,22 +102,7 @@ type Secrets struct {
 	AgentToken   string `toml:"agent_token"`
 	PublishToken string `toml:"publish_token"`
 	// A one-off tagged key the desktop minted, for a host that joins the tailnet in this run.
-	TailscaleAuthKey string   `toml:"tailscale_auth_key,omitempty"`
-	A2A              *A2AFile `toml:"a2a,omitempty"`
-}
-
-// A2AFile is ~/.config/flocc/a2a.toml, which flocc's A2A server, MCP server and tick read: on a host
-// its own token and every token it accepts, on the desktop the owner's token.
-type A2AFile struct {
-	Name   string             `toml:"name"`
-	Token  string             `toml:"token"`
-	Accept map[string]string  `toml:"accept,omitempty"`
-	Hosts  map[string]A2APeer `toml:"hosts"`
-}
-
-type A2APeer struct {
-	URL   string   `toml:"url"`
-	Repos []string `toml:"repos"`
+	TailscaleAuthKey string `toml:"tailscale_auth_key,omitempty"`
 }
 
 // Values is every secret that is set, for redacting logs and output.
@@ -129,12 +114,6 @@ func (s *Secrets) Values() []string {
 	for _, x := range []string{s.LinearKey, s.AgentToken, s.PublishToken, s.TailscaleAuthKey} {
 		if x != "" {
 			v = append(v, x)
-		}
-	}
-	if s.A2A != nil {
-		v = append(v, s.A2A.Token)
-		for tok := range s.A2A.Accept {
-			v = append(v, tok)
 		}
 	}
 	return v

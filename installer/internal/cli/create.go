@@ -63,19 +63,7 @@ func (h hostInstaller) AddHost(ctx context.Context, name, ssh, machine string) e
 	return hostAdd(ctx, h.d, name, ssh, machine)
 }
 
-// Ship also tells the owner which other hosts hold an a2a.toml that predates the new one: they
-// reject its token until they are shipped again.
-func (h hostInstaller) Ship(ctx context.Context, name string) error {
-	if err := shipHost(ctx, h.d, name); err != nil {
-		return err
-	}
-	for _, other := range listHosts(h.d) {
-		if other.SSH != "" && other.Name != name {
-			h.d.ui.Todo("flocc ship -H " + other.Name + " so it accepts A2A messages from " + name)
-		}
-	}
-	return nil
-}
+func (h hostInstaller) Ship(ctx context.Context, name string) error { return shipHost(ctx, h.d, name) }
 
 func (h hostInstaller) Login(ctx context.Context, name string) error {
 	return loginHost(ctx, h.d, name)

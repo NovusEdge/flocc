@@ -202,10 +202,3 @@ func TestTailscaleAuthKeyIsASecretAndNeverSaved(t *testing.T) {
 		t.Errorf("%v %+v", err, back.Secrets)
 	}
 }
-
-func TestSecretsValuesIncludeEveryA2AToken(t *testing.T) {
-	s := &Secrets{A2A: &A2AFile{Token: "t1", Accept: map[string]string{"t2": "owner"}}}
-	if v := s.Values(); !slices.Contains(v, "t1") || !slices.Contains(v, "t2") {
-		t.Fatalf("values %q", v)
-	}
-}

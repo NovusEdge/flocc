@@ -23,10 +23,10 @@ func TestCheckOverTheFixtures(t *testing.T) {
 		fixture string
 		want    []string // substrings, one per missing item
 	}{
-		{"empty", []string{"tagOwners", "ssh", "test", "A2A"}},
-		{"default", []string{"tagOwners", "from *", "ssh", "test", "A2A"}},
+		{"empty", []string{"tagOwners", "ssh", "test"}},
+		{"default", []string{"tagOwners", "from *", "ssh", "test"}},
 		{"applied-2026-10-22", nil},
-		{"custom", []string{"tagOwners", "ssh", "test", "A2A"}},
+		{"custom", []string{"tagOwners", "ssh", "test"}},
 	} {
 		got, err := Check(fixture(t, tc.fixture))
 		if err != nil {
@@ -81,56 +81,10 @@ func TestCheckNeedsTheWholeSSHRule(t *testing.T) {
 	}
 }
 
-// a2aLess passes Check except for the A2A grant.
-const a2aLess = `{"tagOwners":{"tag:flocc-host":["autogroup:admin"]},
-"ssh":[{"action":"accept","src":["autogroup:member"],"dst":["tag:flocc-host"],"users":["root","autogroup:nonroot"]}],
-"tests":[{"src":"tag:flocc-host","deny":["desktop:22"]}]}`
-
-func withGrant(grant string) []byte {
-	return []byte(strings.Replace(a2aLess, `"ssh"`, `"grants":[`+grant+`],"ssh"`, 1))
-}
-
-func TestCheckWantsTheA2AGrant(t *testing.T) {
-	got, err := Check([]byte(a2aLess))
-	if err != nil || len(got) != 1 || got[0] != needA2A {
-		t.Errorf("missing = %q, err = %v", []string(got), err)
-	}
-}
-
-func TestTheA2AGrantIsNotATagSource(t *testing.T) {
-	got, err := Check(withGrant(`{"src":["tag:flocc-host"],"dst":["tag:flocc-host"],"ip":["tcp:7443"]}`))
-	if err != nil || len(got) != 0 {
-		t.Errorf("missing = %q, err = %v", []string(got), err)
-	}
-}
-
-func TestAWiderTagGrantStillFails(t *testing.T) {
-	for name, ip := range map[string]string{"wildcard": `"*"`, "extra port": `"tcp:7443","tcp:22"`} {
-		got, err := Check(withGrant(`{"src":["tag:flocc-host"],"dst":["tag:flocc-host"],"ip":[` + ip + `]}`))
-		if err != nil || !slices.Contains(got, hasTagSource) {
-			t.Errorf("%s: missing = %q, err = %v", name, []string(got), err)
-		}
-	}
-}
-
-func TestAnAclWithTheA2AShapeIsNotTheA2AGrant(t *testing.T) {
-	p := strings.Replace(a2aLess, `"ssh"`, `"acls":[{"src":["tag:flocc-host"],"dst":["tag:flocc-host"],"ip":["tcp:7443"]}],"ssh"`, 1)
-	got, err := Check([]byte(p))
-	if err != nil || !slices.Contains(got, needA2A) || !slices.Contains(got, hasTagSource) {
-		t.Errorf("missing = %q, err = %v", []string(got), err)
-	}
-}
-
-func TestMergeAddsTheA2AGrantAndDenies7443(t *testing.T) {
-	out, added, err := Merge([]byte(`{}`), "owner@example.com", owners)
+func TestMergeDenies7443(t *testing.T) {
+	out, _, err := Merge([]byte(`{}`), "owner@example.com", owners)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !slices.Contains(added, needA2A) {
-		t.Errorf("added = %q", []string(added))
-	}
-	if n := strings.Count(compact(t, out), `{"dst":["tag:flocc-host"],"ip":["tcp:7443"],"src":["tag:flocc-host"]}`); n != 1 {
-		t.Errorf("A2A grant appears %d times:\n%s", n, out)
 	}
 	var doc struct{ Tests []struct{ Deny []string } }
 	if err := json.Unmarshal(out, &doc); err != nil {
@@ -180,7 +134,7 @@ func TestMergeIntoTheDefaultPassesCheckAndNarrowsTheGrant(t *testing.T) {
 	}
 	var grants []struct{ Src, Dst, IP []string }
 	json.Unmarshal(doc["grants"], &grants)
-	if len(grants) != 2 || !slices.Equal(grants[0].Src, []string{"autogroup:member"}) ||
+	if len(grants) != 1 || !slices.Equal(grants[0].Src, []string{"autogroup:member"}) ||
 		!slices.Equal(grants[0].Dst, []string{"*"}) || !slices.Equal(grants[0].IP, []string{"*"}) {
 		t.Errorf("grants = %s", doc["grants"])
 	}
@@ -260,7 +214,7 @@ func TestGenerateMatchesTheSpecShape(t *testing.T) {
 	if doc.Hosts["laptop"] != "100.64.0.1" || doc.Hosts["desktop"] != "100.64.0.2" || len(doc.Hosts) != 2 {
 		t.Errorf("hosts = %v", doc.Hosts)
 	}
-	if len(doc.Grants) != 2 || doc.Grants[0].Src[0] != "autogroup:member" || doc.Grants[1].Src[0] != Tag {
+	if len(doc.Grants) != 1 || doc.Grants[0].Src[0] != "autogroup:member" {
 		t.Errorf("grants = %v", doc.Grants)
 	}
 	if !slices.Equal(doc.Tests[0].Deny, []string{"desktop:22", "desktop:443", "desktop:7443", "laptop:22", "laptop:443", "laptop:7443"}) {

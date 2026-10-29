@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path, PurePosixPath
 
-from flocc import gate, inbox, ledger, permission, usage
+from flocc import gate, ledger, permission, usage
 from flocc.config import TRAILER, default_config_path, load
 from flocc.escalation import Escalation, validate
 from flocc.grants import for_phase
@@ -260,10 +260,7 @@ def cmd_context(args) -> int:
     mine = next((c for c in live if c.issue_key == state.name), None)
     peers = [c for c in live if mine and c.repo == mine.repo and c.issue_key != state.name]
     names = ", ".join(session_name(c.issue_key, c.phase) for c in peers) or "none"
-    print(
-        f"## Peers in this repo\n\n{names}. The flocc-a2a tool `agents` lists every host's"
-        " issues; message one with `send`.\n"
-    )
+    print(f"## Peers in this repo\n\n{names}.\n")
     g = for_phase(state / "grants.json", os.environ.get("FLOCC_PHASE", ""))
     items = [f"launches {g.launches}"] if g.launches is not None else []
     items += [f"agent {a}" for a in g.agents] + [f"workflow {w}" for w in g.workflows]
@@ -348,36 +345,7 @@ def cmd_idle(args) -> int:
     return 0
 
 
-def _context_out(event: str, text: str) -> None:
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
-
-
-def cmd_inbox(args) -> int:
-    from flocc import delivery
-
-    # A failure must not block the call or the prompt it rides on; the rows wait for the next hook.
-    try:
-        payload = _hook_input()
-        if payload.get("agent_id"):
-            return 0
-        event = str(payload.get("hook_event_name") or "PostToolUse")
-        state = _state_dir()
-        if event == "SessionStart":
-            text = delivery.session_text(state, time.time())
-        elif delivery.ending(state):
-            return 0
-        else:
-            text = delivery.take(state, time.time())
-        if text:
-            _context_out(event, text)
-    except Exception as exc:  # noqa: BLE001
-        print(f"flocc inbox delivered nothing: {exc}", file=sys.stderr)
-    return 0
-
-
 def cmd_stop(args) -> int:
-    from flocc import delivery
-
     # Exit 2 on Stop blocks the stop; bookkeeping failures exit 1 as cmd_gate and cmd_idle do.
     try:
         state = _state_dir()
@@ -385,7 +353,7 @@ def cmd_stop(args) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"flocc stop could not read its input: {exc}", file=sys.stderr)
         return 1
-    # The inbox and note_idle still run when this fails, so the supervisor sees the session idle.
+    # note_idle still runs when this fails, so the supervisor sees the session idle.
     failed = 0
     try:
         gate.clear_question(state, time.time())
@@ -393,16 +361,6 @@ def cmd_stop(args) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"flocc stop could not record the answer: {exc}", file=sys.stderr)
         failed = 1
-    if (state / inbox.MARKER).exists() and not delivery.ending(state):
-        try:
-            text = delivery.take(state, time.time())
-        except Exception as exc:  # noqa: BLE001
-            print(f"flocc stop delivered nothing: {exc}", file=sys.stderr)
-            text = ""
-        if text:
-            # Continues the turn; Claude Code's stop_hook_active protection bounds the loop.
-            _context_out("Stop", text)
-            return 0
     try:
         gate.note_idle(state, payload, time.time())
     except Exception as exc:  # noqa: BLE001
@@ -691,8 +649,6 @@ def cmd_status(args) -> int:
         print(f"  usage 5h {_pct(u['five_hour_pct'])}  wk {_pct(u['weekly_pct'])}")
     if report["disk"]:
         print(f"  disk {report['disk']['free_bytes'] / 2**30:.1f} GiB free")
-    if report.get("a2a"):
-        print(f"  a2a service {report['a2a']}")
     return 0
 
 
@@ -837,48 +793,8 @@ def _age(seconds: float) -> str:
     return f"{seconds / 86400:.0f}d"
 
 
-def cmd_a2a(args) -> int:
-    from flocc.a2aconf import NotConfigured, load
-    from flocc.worktree import git
-
-    cfg, _ = _config(args)
-    try:
-        load()
-    except NotConfigured as exc:
-        # Exit 0: the unit restarts only on failure, and a host shipped without A2A has nothing
-        # to serve.
-        print(f"a2a serve: {exc}; run flocc ship from the desktop", file=sys.stderr)
-        return 0
-    host = args.bind
-    if host is None:
-        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, check=False)
-        host = out.stdout.split()[0] if out.returncode == 0 and out.stdout.split() else None
-    if host is None:
-        print("a2a serve: no tailnet address yet; systemd restarts this", file=sys.stderr)
-        return 1
-    try:
-        from flocc import a2aserver
-    except ImportError:
-        print(
-            "a2a serve: install flocc with the a2a extra: uv tool install '.[a2a]'", file=sys.stderr
-        )
-        return 1
-    a2aserver.write_served(cfg, git("rev-parse", "HEAD", cwd=cfg.plugin_dir.parent))
-    a2aserver.serve(cfg, host, args.port)
-    return 0
-
-
-def cmd_mcp_a2a(args) -> int:
-    from flocc import mcp_a2a
-
-    return mcp_a2a.main()
-
-
 COMMANDS = {
-    "inbox": cmd_inbox,
     "stop": cmd_stop,
-    "a2a": cmd_a2a,
-    "mcp-a2a": cmd_mcp_a2a,
     "statusline": cmd_statusline,
     "escalate": cmd_escalate,
     "hook": cmd_hook,
@@ -925,11 +841,6 @@ def build_parser() -> argparse.ArgumentParser:
     def add(name, text):
         return sub.add_parser(name, help=text, description=text)
 
-    a2a = add("a2a", "Serve this host's A2A endpoint on the tailnet")
-    a2a.add_argument("action", choices=["serve"], help="what to do")
-    a2a.add_argument("--bind", default=None, help="address to bind (default: tailscale ip -4)")
-    a2a.add_argument("--port", type=int, default=7443, help="port to bind")
-    add("mcp-a2a", "Run the flocc-a2a MCP server on stdio")
     add("statusline", "Record session usage from stdin and print the status line")
     esc = add("escalate", "Record an escalation for the service to route")
     esc.add_argument("--tier", type=int, required=True, help="escalation tier")
@@ -955,8 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
     which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
     which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
     add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
-    add("inbox", "Hook: hand this session its pending A2A messages")
-    add("stop", "Hook (Stop): answered-question check, then mail, else record the idle stop")
+    add("stop", "Hook (Stop): answered-question check, then record the idle stop")
     add("permission", "Hook: log an auto-mode block or prompt")
     add("session-start", "Hook: record compaction and the scratchpad, print the context")
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")

@@ -22,8 +22,6 @@ def test_context_lists_issue_and_commands(tmp_cfg):
         "flocc escalate",
         "flocc claim",
         "flocc context",
-        "flocc-a2a tools",
-        "coordinate skill",
     ):
         assert needle in text
 

@@ -27,7 +27,7 @@ class Runtime:
     review_diff: Callable[[Claim], str]
     comment_pr: Callable[[Claim, str, str], None]
     free_disk_gb: Callable[[Path], float] = free_disk_gb
-    # The PR's state and files; None in tests that never reach the A2A step.
+    # The PR's state, head and mergeability; None in tests that never reach the rebase step.
     pr_view: Callable[[Claim, str], dict] | None = None
     # Runs the repo's check on its base branch: (base SHA, failure or None). None skips the
     # base comparison.

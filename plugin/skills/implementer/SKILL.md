@@ -59,12 +59,6 @@ Make the committed tests pass by implementing the behavior.
 - Never push or open a PR; the service does that.
 - Finish with `flocc done --summary '<what changed and why, for the PR body>'`.
 
-## Changes other issues use
-
-After changing something other issues use (an API, a shared test helper, a schema, CI), call the
-`notify` tool for the repo with the changed paths, so live agents hear of it before they trip on
-it.
-
 ## Fix phase
 
 When the service starts you to fix a failed check or a review's findings, the plan, the plan review, waves and wave

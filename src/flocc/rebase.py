@@ -3,10 +3,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from flocc import ledger
-from flocc.a2atick import pr_url
 from flocc.admission import admit
 from flocc.agentblock import settings_from_json
 from flocc.poller import main_hold, still_wanted
+from flocc.publisher import pr_url
 from flocc.supervisor import REBASE_TRIED, block_unrebased, start_rebase
 from flocc.usage import latest_usage
 from flocc.worktree import origin_base

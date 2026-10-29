@@ -83,22 +83,6 @@ def systemd_tick(run=subprocess.run) -> dict | None:
     return {"at": at, "exit": None if running else props.get("ExecMainStatus")}
 
 
-def _a2a_state(run) -> str | None:
-    env = {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
-    try:
-        out = run(
-            ["systemctl", "--user", "is-active", "flocc-a2a.service"],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout.strip() or None
-
-
 def _read_ledger(path: Path) -> tuple[list[ledger.Claim], dict[str, str], str | None]:
     # Not ledger.connect: that creates the file, switches the journal mode and runs the schema.
     # mode=ro still creates the -shm and -wal files beside a WAL ledger, but never changes the
@@ -273,7 +257,6 @@ def collect(
             "age_s": max(0.0, now - latest.observed_at),
         },
         "disk": _disk(cfg.state_root),
-        "a2a": _a2a_state(run) if mode == "systemd" else None,
         # null: not asked. "unknown": asked, and claude gave no answer, which is not a logout.
         "claude_login": None
         if claude is None

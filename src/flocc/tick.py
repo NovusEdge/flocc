@@ -7,7 +7,7 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
-from flocc import a2atick, ledger, rebase
+from flocc import ledger, rebase
 from flocc.config import Config, trailer_enabled
 from flocc.context import state_dir
 from flocc.escalation import Escalation, Notifier, ntfy_push
@@ -199,8 +199,6 @@ def tick(cfg: Config, config_path: Path) -> int:
             rebase.step(rt)
         except Exception:  # noqa: BLE001 - a rebase that cannot start must not stop the digest
             traceback.print_exc()
-        # After poll, so an issue started this tick counts as live for the record comments.
-        a2atick.step(rt)
         # Before the digest, so a warning written today goes out with today's digest.
         check_tokens(rt)
         check_claude_login(rt)

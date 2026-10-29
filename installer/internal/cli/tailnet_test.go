@@ -32,7 +32,6 @@ func tsStatus(tagged bool) string {
 const (
 	defaultPolicy = `{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}],"ssh":[{"action":"check","src":["autogroup:member"],"dst":["autogroup:self"],"users":["autogroup:nonroot","root"]}]}`
 	goodPolicy    = `{"tagOwners":{"tag:flocc-host":["autogroup:admin"]},
-"grants":[{"src":["tag:flocc-host"],"dst":["tag:flocc-host"],"ip":["tcp:7443"]}],
 "ssh":[{"action":"accept","src":["autogroup:member"],"dst":["tag:flocc-host"],"users":["root","autogroup:nonroot"]}],
 "tests":[{"src":"tag:flocc-host","deny":["desktop:22"]}]}`
 )

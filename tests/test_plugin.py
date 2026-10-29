@@ -62,16 +62,11 @@ def test_hooks():
     assert hooks["PostToolUseFailure"][0]["hooks"][0]["command"] == "flocc gate --answered"
     stop = [h["command"] for h in hooks["Stop"][0]["hooks"]]
     assert stop == ["flocc stop"]
-    pending = '[ -z "$FLOCC_STATE" ] || [ ! -e "$FLOCC_STATE/inbox-pending" ] || flocc inbox'
-    post = [e for e in hooks["PostToolUse"] if "matcher" not in e]
-    assert [h["command"] for e in post for h in e["hooks"]] == [pending]
-    assert [h["timeout"] for e in post for h in e["hooks"]] == [5]
     # The idle marker means "the last event was a Stop", so any later activity removes it.
     clear = '[ -z "$FLOCC_STATE" ] || rm -f "$FLOCC_STATE/idle"'
     ungated = [e for e in hooks["PreToolUse"] if "matcher" not in e]
     assert [h["command"] for e in ungated for h in e["hooks"]] == [clear]
-    prompt = [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]]
-    assert prompt == [clear, pending]
+    assert [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]] == [clear]
     for event in ("PermissionDenied", "PermissionRequest"):
         (entry,) = hooks[event]
         assert "matcher" not in entry
@@ -80,7 +75,7 @@ def test_hooks():
         assert entry["hooks"][0]["timeout"] == 60
     assert hooks["SubagentStop"][0]["hooks"][0]["command"] == "flocc gate --stopped"
     starts = [h["command"] for e in hooks["SessionStart"] for h in e["hooks"]]
-    assert starts == ["flocc session-start", '[ -z "$FLOCC_STATE" ] || flocc inbox']
+    assert starts == ["flocc session-start"]
 
 
 def test_the_idle_clearing_hook_removes_only_the_marker(tmp_path):

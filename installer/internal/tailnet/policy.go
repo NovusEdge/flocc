@@ -31,9 +31,7 @@ const (
 	needDeny     = "test that " + Tag + " cannot reach the owner's devices"
 	hasTagSource = Tag + " is the source of a grant or acl; remove it so hosts reach nothing"
 	hasWildcard  = "a grant from * lets tagged hosts reach your devices"
-	needA2A      = "grant from " + Tag + " to " + Tag + " on tcp:7443, for A2A between hosts"
 	memberGroup  = "autogroup:member"
-	a2aPort      = "tcp:7443"
 )
 
 type sshRule struct {
@@ -52,12 +50,6 @@ type srcRule struct {
 	Src []string `json:"src"`
 	Dst []string `json:"dst"`
 	IP  []string `json:"ip"`
-}
-
-// isA2A is the one rule with the tag as its source that the policy may hold: hosts reach each
-// other's A2A port and nothing else.
-func (r srcRule) isA2A() bool {
-	return slices.Equal(r.Src, []string{Tag}) && slices.Equal(r.Dst, []string{Tag}) && slices.Equal(r.IP, []string{a2aPort})
 }
 
 func (r sshRule) admitsHosts() bool {
@@ -153,7 +145,7 @@ type facts struct {
 	top                 object
 	owners              object
 	hasOwner, tagSource bool
-	wildSource, hasA2A  bool
+	wildSource          bool
 	ssh                 []sshRule
 	tests               []accessTest
 }
@@ -176,9 +168,7 @@ func read(policy []byte) (facts, error) {
 			return f, err
 		}
 		for _, r := range rules {
-			a2a := key == "grants" && r.isA2A()
-			f.hasA2A = f.hasA2A || a2a
-			f.tagSource = f.tagSource || (slices.Contains(r.Src, Tag) && !a2a)
+			f.tagSource = f.tagSource || slices.Contains(r.Src, Tag)
 			f.wildSource = f.wildSource || slices.Contains(r.Src, "*")
 		}
 	}
@@ -205,9 +195,6 @@ func (f facts) missing() Missing {
 	}
 	if !slices.ContainsFunc(f.tests, accessTest.deniesHosts) {
 		m = append(m, needDeny)
-	}
-	if !f.hasA2A {
-		m = append(m, needA2A)
 	}
 	return m
 }
@@ -285,13 +272,6 @@ func Merge(policy []byte, owner string, devices []Device) ([]byte, Missing, erro
 			return nil, nil, err
 		}
 		added = append(added, needSSH)
-	}
-	if !f.hasA2A {
-		grant := map[string]any{"src": []string{Tag}, "dst": []string{Tag}, "ip": []string{a2aPort}}
-		if top, err = appendRaw(top, "grants", grant); err != nil {
-			return nil, nil, err
-		}
-		added = append(added, needA2A)
 	}
 	if !slices.ContainsFunc(f.tests, accessTest.deniesHosts) {
 		own := ownerDevices(devices)

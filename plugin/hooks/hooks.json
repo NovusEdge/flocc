@@ -3,16 +3,14 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "flocc session-start" },
-          { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || flocc inbox", "timeout": 5 }
+          { "type": "command", "command": "flocc session-start" }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" },
-          { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || [ ! -e \"$FLOCC_STATE/inbox-pending\" ] || flocc inbox", "timeout": 5 }
+          { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" }
         ]
       }
     ],
@@ -31,9 +29,6 @@
       {
         "matcher": "AskUserQuestion",
         "hooks": [ { "type": "command", "command": "flocc gate --answered" } ]
-      },
-      {
-        "hooks": [ { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || [ ! -e \"$FLOCC_STATE/inbox-pending\" ] || flocc inbox", "timeout": 5 } ]
       }
     ],
     "PostToolUseFailure": [

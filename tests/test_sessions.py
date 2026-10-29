@@ -10,7 +10,6 @@ from flocc.agentblock import IssueSettings
 from flocc.config import load
 from flocc.grants import Grants
 from flocc.sessions import (
-    A2A_TOOLS,
     Sessions,
     allowed_plugins,
     claude_argv,
@@ -23,10 +22,6 @@ from tests.paths import EXAMPLE
 
 CFG = load(EXAMPLE)
 STATE = {"FLOCC_STATE": "/s/NF-1"}
-
-
-def a2a_server(exe):
-    return {"type": "stdio", "command": exe, "args": ["mcp-a2a"], "env": STATE}
 
 
 def test_clean_env_keeps_only_the_allowlist(monkeypatch):
@@ -53,12 +48,7 @@ def test_argv_wraps_claude_in_a_clean_env():
     i = argv.index("/opt/claude")
     assert argv[i - 1] == str(CFG.agent_gh_token_file) and argv[i + 1] == "do the thing"
     assert argv[-2] == "--mcp-config"
-    assert json.loads(argv[-1]) == {
-        "mcpServers": {
-            "sentry": CFG.mcp_servers["sentry"],
-            "flocc-a2a": a2a_server("/opt/flocc"),
-        }
-    }
+    assert json.loads(argv[-1]) == {"mcpServers": {"sentry": CFG.mcp_servers["sentry"]}}
     assert argv[argv.index("--remote-control") + 1] == "NF-1"
     assert argv[argv.index("--model") + 1] == "opus"
     settings = json.loads(argv[argv.index("--settings") + 1])
@@ -218,21 +208,15 @@ def test_the_hosts_rules_and_environment_reach_the_session():
     s = settings_of(
         claude_argv(cfg, "NF-1", IssueSettings(), "p", env=STATE, claude_exe="c", exe="x")
     )
-    assert s["permissions"]["allow"] == ["Bash(uv sync --frozen)", *A2A_TOOLS]
+    assert s["permissions"]["allow"] == ["Bash(uv sync --frozen)"]
     assert "Bash(claude:*)" in s["permissions"]["deny"]
     assert s["autoMode"] == {"environment": ["$defaults", "Nothing on this VM is production."]}
 
 
-def test_no_rules_leave_auto_mode_alone_and_allow_only_the_a2a_tools():
+def test_no_rules_leave_auto_mode_alone_and_allow_nothing_extra():
     s = settings_of(argv_with())
-    assert "autoMode" not in s and s["permissions"]["allow"] == list(A2A_TOOLS)
-
-
-def test_sessions_get_the_a2a_server_and_its_tools():
-    argv = argv_with()
-    assert json.loads(argv[-1])["mcpServers"]["flocc-a2a"] == a2a_server("x")
-    allow = settings_of(argv)["permissions"]["allow"]
-    assert all(name in allow for name in A2A_TOOLS)
+    assert "autoMode" not in s and s["permissions"]["allow"] == []
+    assert json.loads(argv_with()[-1]) == {"mcpServers": {}}
 
 
 def test_capture_asks_tmux_for_plain_text():

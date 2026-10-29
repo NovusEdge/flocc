@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from flocc.config import TRAILER, RepoConfig
+from flocc.context import state_dir
 from flocc.gate import AMENDED
 from flocc.ledger import Claim
 from flocc.worktree import (
@@ -45,6 +46,12 @@ class PublishResult:
     log: str = ""  # the check's full output, when it ran and failed
     existing: bool = False  # "opened" by finding the PR that was already open
     label_error: str = ""  # why the amended-tests label was not added to the open PR
+
+
+def pr_url(rt, claim: Claim) -> str | None:
+    path = state_dir(rt.cfg, claim.issue_key) / "pr-url"
+    url = path.read_text().strip() if path.exists() else ""
+    return url if url and url != "unknown" else None
 
 
 def failure_excerpt(out: str, limit: int = _TAIL) -> str:
