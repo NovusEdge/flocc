@@ -11,8 +11,8 @@ Check each condition. The host starts an issue only when all hold.
 3. It is in an unstarted state such as Todo, in the host's team.
 4. A label or the Linear project is named exactly like a repository mapped on that host. If none matches, the service comments "No configured repo matches this issue's labels or project" once, unless `skip_unmapped = true`.
 5. The description has an `Acceptance criteria`, `Done when` or `Definition of done` heading followed by a list. If not, the service comments once and skips the issue until the description changes.
-6. The `agent` block, if any, parses. An unknown key, a `wall_clock` that is not like `90m` or `2h`, a missing closing fence or an `mcp` server the host does not configure gets a "Skipping:" comment.
-7. Admission allows it: the host is under `session_cap`, usage is below `five_hour_max_pct` and `weekly_max_pct`, free disk is above `min_free_disk_gb`, its `paths` do not overlap a live claim, and every `depends_on` issue is done. `flocc -H <host> logs` prints `held, <reason>` for an issue that waits.
+6. The `agent` block, if any, parses. An unknown key, a `wall_clock` that is not like `90m` or `2h`, a missing closing fence or an `mcp` server the host does not configure gets a "Skipping:" comment. `allow` and `paths` are unknown keys now; delete those lines from older issues.
+7. Admission allows it: the host is under `session_cap`, usage is below `five_hour_max_pct` and `weekly_max_pct`, free disk is above `min_free_disk_gb`, and every `depends_on` issue is done. `flocc -H <host> logs` prints `held, <reason>` for an issue that waits.
 
 If the host's tick has not run, `flocc -H <host> status` shows the last tick. In systemd mode the timer ticks every 3 minutes.
 
@@ -30,7 +30,7 @@ A failed check gets `check_fix_rounds` (default 2) fix sessions before the claim
 
 A rerun stops before any session starts if its kept branch and GitHub's copy both have commits the other lacks. Keep what's needed from the worktree, then release the issue again.
 
-A failed `./setup` or a worktree that is not clean after `./setup` fails the start of the issue with a tier 2 escalation. Gitignore everything `./setup` and the check write.
+A failed `./setup` or a worktree that is not clean after `./setup` fails the start of the issue, and the service comments on the issue. Gitignore everything `./setup` and the check write.
 
 ## Keys
 
@@ -55,7 +55,7 @@ A failed `./setup` or a worktree that is not clean after `./setup` fails the sta
 | A connection fails within 30 seconds without a terminal | The host needs a Tailscale check-mode approval. Run `flocc -H <name> status` in a terminal to bring up the approval link |
 | `flocc ship` exits non-zero | A doctor check failed. Each failing check prints below the summary rows with its fix. A pending Claude login alone exits 0 |
 | A plugin in `deploy/agent-plugins.txt` stops ship | Enable that plugin on your desktop |
-| A running session still has old plugins or settings | Sessions keep what they launched with. The upgrade reaches them at their next launch or handoff |
+| A running session still has old plugins or settings | Sessions keep what they launched with. The upgrade reaches them at their next launch |
 
 ## Claude login
 
@@ -64,7 +64,7 @@ A failed `./setup` or a worktree that is not clean after `./setup` fails the sta
 | The login row says `token-only` or `none` | Run `flocc login -H <name>`. A `claude setup-token` token cannot open Remote Control sessions |
 | `flocc login` waits for sessions | Running sessions rewrite `~/.claude.json` from memory and could drop the Remote Control consent. Wait for them, or stop |
 | No connected line within 60 seconds | Run `claude remote-control` as `flocc` on the host by hand to see what it waits for |
-| One push says the login lapsed | The tick pages once, and again only after a login has been seen. Run `flocc login -H <name>` |
+| The digest issue says the login lapsed | The tick reports it once, and again only after a login has been seen. Run `flocc login -H <name>` |
 | "login" shows `unknown` in setup | The host could not read its login. Setup shows it and does not act |
 
 ## Host create
@@ -95,16 +95,3 @@ Create keeps a log at `~/.cache/flocc/create-<name>.log`.
 ## Disk
 
 A full disk breaks SSH and the installer. `flocc doctor` warns below twice `min_free_disk_gb` and fails below it. See [Run a host](setup/running-a-host.md#disk-use) for the caches and how worktrees are removed.
-
-## cardinal
-
-| Symptom | Fix |
-|---|---|
-| cardinal's session ended after Ctrl-D | The service starts a fresh one about 30 seconds later |
-| A changed brief did not apply | It applies at the next daily renewal or at `flocc cardinal restart` |
-| `setup` asks for a sudo password | Only when a root outcome is missing: the user, lingering, the desktop key or the tailnet block |
-| Command failed | The error ends with the log path, `~/.cache/flocc/cardinal-<user>.log` |
-
-## An agent says a launch was refused
-
-The subagent gate refuses launches that exceed the phase's budget or are not in `plugin/agents/`. The refusal names the rule. Raise it with an `allow:` line. See [Subagents in agent sessions](setup/running-a-host.md#subagents-in-agent-sessions).

@@ -8,8 +8,8 @@ Bare `flocc` on a terminal opens the [dashboard](#the-dashboard). Without a term
 
 | Command | Does |
 |---|---|
-| `flocc setup` | Everything in order: keys, a host, old versions, cardinal, logins. See [Set up](setup/README.md#flocc-setup) |
-| `flocc keys` | Make, check and store the Linear key, GitHub tokens, ntfy topic and the optional Tailscale client. See [Keys](keys.md) |
+| `flocc setup` | Everything in order: keys, a host, old versions, logins. See [Set up](setup/README.md#flocc-setup) |
+| `flocc keys` | Make, check and store the Linear key, GitHub tokens and the optional Tailscale client. See [Keys](keys.md) |
 | `flocc keys check` | Check every stored key again |
 | `flocc keys rotate github\|linear` | Replace keys and push them to every host |
 | `flocc host add <name> [--ssh DEST \| --daytona SANDBOX]` | Write the host file. See [Add a host](setup/README.md#add-a-host) |
@@ -18,7 +18,6 @@ Bare `flocc` on a terminal opens the [dashboard](#the-dashboard). Without a term
 | `flocc host run -H <name> -- <command...>` | Run a raw command on the host over SSH, not the host's `flocc` |
 | `flocc ship -H <name> [--interactive]` | Install or upgrade the service on a host. Run it inside the flocc checkout |
 | `flocc login -H <name> [--email ADDR]` | Sign in to Claude on a host |
-| `flocc cardinal setup\|login\|status\|attach\|restart\|remove` | The always-on assistant. See [cardinal](cardinal.md) |
 | `flocc help`, `-h`, `--help` | Print the usage |
 
 `ship`, `login`, `keys` and `host` are desktop commands. The host's own `flocc` refuses them with "that is a desktop command".
@@ -47,12 +46,8 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `release <key> [--keep-worktree] [--accept-tests]` | Clear a claim and kill its session. The issue goes back to Todo. `--accept-tests` approves the tester's files as they stand on the branch and keeps the worktree |
 | `tick` | Run one service tick by hand. It takes the same lock as the timer's ticks |
 | `run` | Run ticks in a loop |
-| `permissions report [--days N]` | Count the auto-mode blocks and prompts sessions met. See [Run a host](setup/running-a-host.md#auto-mode-blocks) |
-| `escalate`, `claim`, `commit`, `done`, `review-done`, `handoff-ready`, `context` | Used by agent sessions, not by you |
-| `a2a serve [--bind ADDR] [--port N]` | Serve the host's A2A endpoint. It binds the address `tailscale ip -4` prints, port 7443, unless given. Run by `flocc-a2a.service` |
-| `inbox` | Hook for agent sessions: hand the session its pending A2A messages as additional context. Prints nothing and exits 0 on failure, so the call it rides on is not blocked |
-| `stop` | Hook for agent sessions at the end of a turn: record an answered question, deliver pending messages and continue the turn, or else record the idle stop |
-| `mcp-a2a` | Run the `flocc-a2a` MCP server on stdio. It offers the tools `agents`, `send`, `notify` and `replies`. Host sessions get it from the plugin; desktop sessions add it once, see [Getting started](getting-started.md#6-let-your-desktop-sessions-reach-the-agents) |
+| `commit`, `done`, `review-done`, `context` | Used by agent sessions, not by you |
+| `stop` | Hook for agent sessions at the end of a turn: record its background tasks and the idle stop |
 | `--version` | Print the host's version |
 
 ### Choosing the host
@@ -61,7 +56,6 @@ Without `-H`, the host is `$FLOCC_HOST`. Failing that it is the only host. For a
 
 - `-H` is taken from anywhere before `--`, so an argument that is literally `-H` goes after `--`.
 - `-H all` runs only `status`, `doctor` and `logs`, and `logs` without `-f`. `$FLOCC_HOST` cannot be `all`.
-- `flocc cardinal` takes no `-H`. Limit its setup with `--only <host>`.
 
 SSH to a host, `ship` and `login` included, shares one connection per host for ten minutes, so a Tailscale check-mode approval covers a whole run.
 
@@ -75,8 +69,8 @@ Every desktop command that does work reports through one session of steps, drawn
 
 | Mode | Looks like | Default for |
 |---|---|---|
-| full | Alternate screen: a rail of the command's sections, the current section's steps with their live output, a progress bar. Prompts open as a modal over the dimmed screen | `setup`, `host create`, `ship`, `login`, `cardinal setup`, `cardinal login`, and the dashboard |
-| inline | Running steps and any prompt below the scrollback. Each step moves up into scrollback when it ends | Short commands: `keys`, `keys check`, `cardinal restart`, one-shot `status` |
+| full | Alternate screen: a rail of the command's sections, the current section's steps with their live output, a progress bar. Prompts open as a modal over the dimmed screen | `setup`, `host create`, `ship`, `login`, and the dashboard |
+| inline | Running steps and any prompt below the scrollback. Each step moves up into scrollback when it ends | Short commands: `keys`, `keys check`, one-shot `status` |
 | plain | One line per finished step, numbered or typed prompts, no escape codes | Anything that is not a terminal |
 
 Choose one with `--full`, `--inline` or `--plain`; the last one given wins. With no flag, `FLOCC_UI=full|inline|plain` applies:
@@ -86,7 +80,7 @@ flocc setup --inline
 FLOCC_UI=plain flocc ship -H my-host
 ```
 
-A pipe, `NO_COLOR` or `TERM=dumb` gives plain whatever is set. Commands that hand the terminal to a child (forwarded host commands, `host run`, `cardinal attach`) always run plain. A full-screen run on a terminal smaller than 60 columns by 20 rows switches to inline. Below 100 columns the rail of sections sits above the steps instead of beside them.
+A pipe, `NO_COLOR` or `TERM=dumb` gives plain whatever is set. Commands that hand the terminal to a child (forwarded host commands and `host run`) always run plain. A full-screen run on a terminal smaller than 60 columns by 20 rows switches to inline. Below 100 columns the rail of sections sits above the steps instead of beside them.
 
 In full-screen:
 
@@ -100,10 +94,9 @@ When a step needs the real terminal (a `sudo` password, a Tailscale login, a bro
 
 ## The dashboard
 
-Bare `flocc`, or `flocc status --watch`, on a terminal. The fleet screen has four panes:
+Bare `flocc`, or `flocc status --watch`, on a terminal. The fleet screen has three panes:
 
 - hosts: per host, its status version, last tick, live sessions against the cap, usage and free disk.
-- cardinal: per saved install, its unit, session age, last turn and login. Shown only when an install is saved.
 - issues: every claimed issue with its Linear title, phase, state, context use and host. Titles come from the Linear key stored by `flocc keys`; without it the keys show alone, and the line above the key bar says why.
 - activity: the selected issue's recent service-log lines.
 
@@ -113,14 +106,13 @@ Each row opens into a screen of its own:
 
 - An issue: its phases, state, session and host, and the live tmux pane of its session, refreshed every 2 seconds. With no live session the pane shows the service-log lines that name the issue.
 - A host: its facts, its `doctor --json` checks and the tail of its service log.
-- cardinal: the table `flocc cardinal status` prints.
 
 A host shipped before `peek` and `logs --issue` existed shows "ship to see session output" in place of the output.
 
 | Key | Where | Does |
 |---|---|---|
 | up, down (or k, j) | any list | Move the selection |
-| tab | fleet | Move between the hosts, cardinal and issues panes |
+| tab | fleet | Move between the hosts and issues panes |
 | right, enter, l | fleet | Open the selected row |
 | / | fleet | Filter issues by key, title, host or state; `esc` clears it |
 | a | issues pane, issue screen | `flocc -H <host> attach <issue>` |
@@ -130,7 +122,6 @@ A host shipped before `peek` and `logs --issue` existed shows "ship to see sessi
 | d | host screen | Run doctor again |
 | s | host screen | `flocc ship -H <host>`; dimmed when the dashboard did not start inside a git checkout |
 | l | host screen | The service log in the pager |
-| c | cardinal screen | Attach read-only to the selected install |
 | esc, left | any screen | Back |
 | ? | anywhere | List the keys |
 | q | fleet | Quit; Ctrl-C quits anywhere |
@@ -139,7 +130,7 @@ The pager scrolls with `j`, `k`, page up and down, `g` and `G`, searches with `/
 
 Keys that do nothing on the current row stay in the key bar, dimmed. An action that fails shows its error at the top right for 4 seconds. Below 60 columns by 20 rows the dashboard says the terminal is too small and only `q` and Ctrl-C work. Panes that sit side by side stack below 100 columns. The colours follow the terminal's background, light or dark.
 
-`a`, `s` and `c` hand the terminal to the child, and so does `r` after its `y`. Each returns to the dashboard when the child exits.
+`a` and `s` hand the terminal to the child, and so does `r` after its `y`. Each returns to the dashboard when the child exits.
 
 ## The fleet table
 
@@ -164,4 +155,3 @@ Each host answers `status --json`, which only reads state: it takes no tick lock
 | `~/.config/flocc/secrets.toml` | Keys, when there is no OS keyring |
 | `~/.cache/flocc/tailnet-policy.json` | The policy setup writes for you to paste |
 | `~/.cache/flocc/create-<name>.log` | The log of a `host create` run |
-| `~/.cache/flocc/cardinal-<user>.log` | The log of a cardinal command |

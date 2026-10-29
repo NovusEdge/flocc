@@ -43,10 +43,9 @@ The order matters. Until the `ssh` accept rule for the tag exists, `ssh root@<ho
 With a client, setup reads your policy and checks that it has:
 
 - A `tagOwners` entry for `tag:flocc-host`.
-- No grant or ACL with the tag as a source, except the A2A grant below. The tag must be able to reach nothing else.
+- No grant or ACL with the tag as a source. The tag must be able to reach nothing.
 - No grant or ACL from `*`. Tailscale's default grant from `*` covers tagged nodes too, so it counts against the policy.
 - An `ssh` rule with action `accept` from `autogroup:member` to `tag:flocc-host`, for the users `root` and `autogroup:nonroot`.
-- A grant from the tag to itself on `tcp:7443` and nothing else, so hosts can reach each other's A2A endpoints.
 - A test that denies the tag ports 22, 443 and 7443 on each of your devices.
 
 When something is missing, setup merges the missing parts into your policy and writes the result to `~/.cache/flocc/tailnet-policy.json` (mode 600). Your other rules are kept as they are. Setup names what it added, and asks you to paste the file at `https://login.tailscale.com/admin/acls/file`.
@@ -59,7 +58,6 @@ The merge adds only what is missing:
 |---|---|
 | `tagOwners` | `tag:flocc-host` owned by `autogroup:admin` |
 | `ssh` | An `accept` rule from `autogroup:member` to the tag, for `root` and `autogroup:nonroot` |
-| `grants` | A grant from the tag to itself on `tcp:7443` |
 | `hosts` and `tests` | An alias for each of your untagged devices, and a test that the tag cannot reach those aliases on ports 22, 443 and 7443 |
 | `sshTests` | A test that you can SSH to the tag as `root` |
 | `src` of `*` | Narrowed to `autogroup:member` in grants and ACLs |
@@ -97,9 +95,9 @@ Setup fills `hosts`, the tests and the `sshTests` login from your tailnet.
 
 If a node already carries the tag, the policy defines it and setup leaves your policy alone.
 
-### A policy from before 0.11.0
+### A policy from 0.11.0 or 0.12.0
 
-Setup adds the A2A grant when it is missing, so paste the merged file as above. The `tests` entry that denies the tag your devices is kept as you pasted it, so add `<device>:7443` to its `deny` list for each device by hand. Without it, nothing checks that a host cannot reach a device on the A2A port.
+Those versions added a grant from the tag to itself on `tcp:7443`, for A2A between hosts. Setup now reports it as a grant with the tag as its source and does not rewrite it. Delete it from your policy and paste the policy again. The `<device>:7443` entries in the `tests` deny list stay.
 
 ## Messages you may see
 

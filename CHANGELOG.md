@@ -4,6 +4,42 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## Unreleased
+
+flocc drops cardinal, A2A and the escalation path built in 0.9 to 0.12. A run that needs you says
+so on its Linear issue.
+
+- cardinal as built in 0.9 to 0.12 is gone: `flocc cardinal` and its subcommands, cardinal's step
+  in `flocc setup`, the dashboard's cardinal pane and `c` key, the CARDINAL table in
+  `flocc status -H all` and `~/.cache/flocc/cardinal-<user>.log`. `flocc setup` offers to remove
+  the old `cardinal` user.
+- A2A is gone: `flocc-a2a.service`, `flocc a2a serve`, `flocc mcp-a2a` and its tools, the
+  `flocc inbox` hook, and the token minting and peer lists in `flocc ship`, which no longer writes
+  `~/.config/flocc/a2a.toml`. Remove the server from desktop sessions with
+  `claude mcp remove --scope user flocc-a2a`, and the tailnet grant from `tag:flocc-host` to
+  itself on `tcp:7443`, which setup now reports.
+- Escalation is gone: `flocc escalate`, the escalate skill, the tiers, ntfy pushes and the ntfy
+  topic in `flocc keys`. flocc no longer creates the `escalation` and `needs-decision` labels and
+  doctor no longer requires them. The service comments on the issue when a run blocks, prepare
+  fails, or an idle or stall notice goes unanswered. A failed tick, an expiring token and a lapsed
+  Claude login go to the digest issue and the journal.
+- The subagent gate and its launch budgets are gone, with `flocc gate`, `allow:` grants in the
+  agent block and in comments, and `launches N/M` in status and the dashboard. An `allow:` line in
+  the agent block is now an unknown key, and the issue is skipped with a comment.
+- The permission hook and `flocc permissions report` are gone. Auto mode and the host file's
+  `[permissions]` allow rules stay.
+- Path claims are gone: `flocc claim`, the pre-commit hook's claim check and the agent block's
+  `paths:` key, which is now refused as unknown. Repo config drops `shared_paths`. The pre-commit
+  hook still refuses commits from the review session.
+- The coordinate and handoff skills and the restart at 60% context are gone, with
+  `flocc handoff-ready` and `context_restart_pct`.
+- Open `AskUserQuestion` questions are no longer tracked: they do not extend the wall clock, and
+  the skills tell agents not to ask.
+- `ntfy_url`, `context_restart_pct` and `shared_paths` in `config.toml` are ignored with a warning
+  if still present.
+- The ledger gains `events` and `holds` tables and drops the claim's `paths` and
+  `escalation_offset` columns on its first open by the new version.
+
 ## 0.12.0 (2026-10-25)
 
 Fewer runs stop for the owner on problems outside the issue's own code.

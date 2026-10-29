@@ -8,6 +8,5 @@
 * [Keys](keys.md)
 * [Tailnet](tailnet.md)
 * [Commands](commands.md)
-* [cardinal](cardinal.md)
 * [Troubleshooting](troubleshooting.md)
 * [Architecture](architecture.md)

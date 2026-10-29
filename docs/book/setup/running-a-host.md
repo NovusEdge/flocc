@@ -1,6 +1,6 @@
 # Run a host
 
-This page covers what you tune after a host is shipped: how it ticks, its config, disk use, several hosts at once, auto-mode blocks and the limits on subagents.
+This page covers what you tune after a host is shipped: how it ticks, its config, disk use, several hosts at once, and auto-mode blocks.
 
 ## How a host ticks
 
@@ -26,7 +26,6 @@ The host reads `~/.config/flocc/config.toml`. `flocc ship` writes it from the ho
 | `session_cap` | 2 | Most concurrent sessions the host runs |
 | `five_hour_max_pct`, `weekly_max_pct` | 80.0 | New issues are held once usage reaches these shares of each window |
 | `default_wall_clock_s` | 10800 | Per-session time limit; an issue's `wall_clock` overrides it |
-| `context_restart_pct` | 60.0 | A session past this context use writes a handoff note and restarts |
 | `review_model` | `opus` | Model for the reviewer session |
 | `digest_hour` | 18 | Hour of the daily digest comment |
 | `min_free_disk_gb` | 2.0 | New starts are held below this free space |
@@ -34,7 +33,7 @@ The host reads `~/.config/flocc/config.toml`. `flocc ship` writes it from the ho
 | `steer_authors` | none | Linear user or app ids, not names, whose comments on a running issue steer the session like yours |
 | `shared_uv_cache` | false | One uv cache for every setup |
 
-Each `[repos.<name>]` table maps a repository. It takes `path`, `base_branch`, `draft`, `commit_trailer` and `shared_paths`. A private repository of a GitHub Free organization cannot have draft PRs, so set `draft = false` there.
+Each `[repos.<name>]` table maps a repository. It takes `path`, `base_branch`, `draft` and `commit_trailer`. A private repository of a GitHub Free organization cannot have draft PRs, so set `draft = false` there.
 
 ## Disk use
 
@@ -80,9 +79,9 @@ Use the Playwright version the repos pin. A tool in `[tools]` must be one mise c
 
 ## Auto-mode blocks
 
-Host sessions run in auto mode. When its classifier blocks a command, the agent hears why and works around it or gives up. Nothing waits for you. After three blocks in a row Claude Code shows a prompt, which denies itself after two minutes. Every block and prompt is logged per issue in `~/.local/state/flocc/<KEY>/permissions.jsonl`.
+Host sessions run in auto mode. When its classifier blocks a command, the agent hears why and works around it or gives up. Nothing waits for you. After three blocks in a row Claude Code shows a prompt, which denies itself after two minutes.
 
-`flocc -H <host> permissions report` counts them. Turn what you see into the host file's `[permissions]` table, then run `flocc ship -H <host>`. Sessions pick it up at their next launch.
+To let a command through, add it to the host file's `[permissions]` table, then run `flocc ship -H <host>`. Sessions pick it up at their next launch.
 
 ```toml
 [permissions]
@@ -95,41 +94,15 @@ allow = ["Bash(npx playwright install)", "Bash(uv sync --frozen)"]
 
 `environment` lines address whole classes of block and come first. `allow` rules are exact. A rule that wildcards an interpreter or shell (`Bash(python:*)`, `Bash(sh *)`, anything with `-c`) is dropped when the config loads, with a warning in `flocc logs`. The rest still apply.
 
-## Subagents in agent sessions
+## When a run needs you
 
-By default a session may launch only the agents in `plugin/agents/`, and only as often as its phase allows. Grants, below, can add `general-purpose` or a named workflow. The budgets (which agents, the phase's total launches, how many run at once) are in `src/flocc/gate.py`. The review phase gets none. A hook refuses any other launch and tells the agent why.
+The service comments on the issue when a run blocks, when `./setup` fails at prepare, and when an idle or stall notice goes unanswered. Problems that belong to no issue, such as a failed tick, an expiring GitHub token or a lapsed Claude login, go to the digest issue and the service log. Nothing is pushed to your phone.
 
-Every launch, allowed or refused, is appended to `<state_dir>/launches.jsonl`, and `flocc status` shows each running claim's count as `launches N/limit`.
-
-To allow more, put an `allow:` line in the issue's `agent` block, or in a comment of yours on the issue. A comment from a `steer_authors` author works too. Items are comma-separated:
-
-```
-allow: launches 14, agent code-mapper, workflow <name>, fix-rounds 2
-```
-
-- A comment is applied once the supervisor has delivered it to the live session.
-- A `launches` grant in the agent block applies to the implementer phase. From a comment it applies to the phase running when the comment arrives. `fix-rounds` raises the implementer's fix rounds.
-- `agent general-purpose` and `workflow <name>` change the session's launch flags. From a comment they take effect at the next handoff, and until then the gate refuses them with the rule `next-session`. The other items apply within one tick.
-- A granted workflow starts once per run and counts as one launch. `launches N` is the phase's total launches, workflows included.
-- Comment grants do not survive a release: a new claim discards them and rewrites only the agent block's `allow:` line. To keep a grant across a release, put it in the agent block.
-
-## Questions and escalations
-
-The implementer and fix sessions are the only ones connected to Remote Control. When one needs an answer it asks with `AskUserQuestion`, which is meant to arrive in the Claude app with a push. A question left unanswered for two hours is escalated by the service as tier 2. While a question is open, a reply on the issue is held and delivered after the question is answered, and the context handoff request waits too.
-
-Implementer and fix sessions still use `flocc escalate`, with a default, for reversible choices. Tester and reviewer sessions are not on Remote Control and escalate with `--waiting` for decisions that block them.
-
-| Tier | Examples | Linear record | Push |
-|---|---|---|---|
-| 1. Interrupt now | A secret about to be pushed, a failure blocking every run, a lapsed Claude login | `escalation` label | ntfy, high priority |
-| 2. Interrupt if idle | An irreversible decision blocking this agent | `needs-decision` label and a comment with the question, default and deadline | ntfy, normal priority, only when the session would otherwise sit idle |
-| 3. Digest | Reversible decisions made alone, draft PRs ready, failed or capped runs | One daily comment on the digest issue | None |
-| 4. Log only | Retries that succeeded | None | None |
-
-Answer a tier 2 question in a Linear comment, which the service forwards to the session, or directly through Remote Control.
+A session does not ask you questions. Where the spec leaves a choice open it takes the default, and it lists what needs you under "Needs the owner" in its `flocc done` summary, which goes into the PR body. To steer a running session, comment on the issue; the service types the comment into the session.
 
 ## Upgrade notes
 
+- `ntfy_url`, `context_restart_pct` and a repo's `shared_paths` are ignored with a warning; delete them from `config.toml`. An `agent` block with an `allow:` or `paths:` line is skipped with a "Skipping:" comment until the line is removed. The `escalation` and `needs-decision` labels are no longer used; delete them in Linear if you like.
 - `digest_issue` is required. A config without it fails to load, which fails every tick and the agents' pre-commit hook, so commits in running sessions are refused. Add it before upgrading.
 - A host must be on 0.3.0 or later before you ship 0.5.0 to it. 0.5.0 no longer reads the old names or refuses a host that still has them. A branch whose tester commits carry only the trailer from before the rename is no longer recognised, unless the host already recorded the tests. Finish or merge such issues on a 0.4.x host before upgrading it. `CHANGELOG.md` has the trailer's exact text.
 - An agent token imported from a host older than 0.5.0 needs Actions (read) and Commit statuses (read) added to its permissions.
@@ -141,7 +114,6 @@ Run this once by hand before you trust the timer with real issues.
 1. Create a scratch GitHub repository with a `justfile` whose `check` runs its tests. Map it with `flocc host add`, and create one issue in a test Linear team: labelled `claude` and the repository's label, assigned to you, in Todo, with an `## Acceptance criteria` list.
 2. Run `flocc -H my-host tick`. It takes the same lock as the timer's ticks. The issue should move to In Progress, and a `-test` session should appear in `flocc -H my-host status`.
 3. Keep ticking until a PR exists and Linear has the PR comment, then until the review has run. The PR should have a `flocc review` comment, and the issue a `Review: …` comment.
-4. Exercise escalation. In a session run `flocc escalate --tier 1 --cause smoke --summary test --action ignore`, then tick. You should get one ntfy push and the `escalation` label. Repeat the command and tick again: you should get a second comment and no second push.
-5. Exercise a rerun: block a second issue, then run `flocc release ENG-13`. The issue should be back in Todo, and the next tick restarts it on the kept branch.
+4. Exercise a rerun: block a second issue, then run `flocc release ENG-13`. The issue should be back in Todo, and the next tick restarts it on the kept branch.
 
 When every step passes, remove the scratch issue and repository mapping.
