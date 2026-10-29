@@ -379,7 +379,7 @@ def test_many_files_left_by_setup_are_listed_capped(origin, tmp_path):
     assert message.count("?? f") == 20 and "80 more" in message
 
 
-def test_hook_blocks_files_claimed_by_others(origin, tmp_path):
+def test_hook_blocks_a_commit_from_the_review_session(origin, tmp_path):
     _check_hook_blocks(origin, tmp_path, tmp_path / "wt")
 
 
@@ -395,8 +395,9 @@ def _check_hook_blocks(origin, tmp_path, root):
     path, _, base = prepare_worktree(RepoConfig(origin), root, "NF-3")
     db = tmp_path / "l.sqlite"
     con = ledger.connect(db)
-    ledger.insert_claim(con, make("NF-3", (), worktree=str(path)))
-    ledger.insert_claim(con, make("NF-4", ("src/billing/**",)))
+    review = make("NF-3", worktree=str(path))
+    review.phase = "review"
+    ledger.insert_claim(con, review)
     cfg = tmp_path / "c.toml"
     cfg.write_text(
         EXAMPLE.read_text().replace(
@@ -406,16 +407,13 @@ def _check_hook_blocks(origin, tmp_path, root):
     exe = shutil.which("flocc")
     assert exe
     install_hook(path, tmp_path / "hooks", exe, cfg)
-    (path / "src" / "billing").mkdir(parents=True)
-    (path / "src" / "billing" / "tax.py").write_text("x\n")
-    git("add", ".", cwd=path)
+    (path / "ok.txt").write_text("fine\n")
+    git("add", "ok.txt", cwd=path)
     blocked = subprocess.run(
         ["git", "commit", "-qm", "x"], cwd=path, capture_output=True, text=True, check=False
     )
-    assert blocked.returncode != 0 and "NF-4" in blocked.stderr
-    git("rm", "-q", "--cached", "src/billing/tax.py", cwd=path)
-    (path / "ok.txt").write_text("fine\n")
-    git("add", "ok.txt", cwd=path)
+    assert blocked.returncode != 0 and "read-only" in blocked.stderr
+    ledger.update_claim(con, "NF-3", phase="impl")
     git("commit", "-qm", "ok", cwd=path)
     assert changed_files(path, base, "HEAD") == {"ok.txt"}
 
@@ -572,20 +570,6 @@ def test_contains(origin, tmp_path):
     git("reset", "-q", "--hard", base, cwd=path)
     assert not contains(path, tests)
     assert not contains(path, "0" * 40)
-
-
-def test_claim_cli(tmp_path, monkeypatch, capsys):
-    db = tmp_path / "l.sqlite"
-    con = ledger.connect(db)
-    ledger.insert_claim(con, make("NF-3", ()))
-    ledger.insert_claim(con, make("NF-4", ("src/billing/**",)))
-    monkeypatch.setenv("FLOCC_STATE", str(tmp_path / "NF-3"))
-    monkeypatch.setenv("FLOCC_LEDGER", str(db))
-    assert main(["claim", "docs/*.md"]) == 0
-    assert main(["claim", "src/b*"]) == 1
-    assert "NF-4" in capsys.readouterr().err
-    mine = ledger.get_claim(con, "NF-3")
-    assert mine and mine.paths == ["docs/*.md"]
 
 
 def test_head_at_base_names_the_base_only_for_an_untouched_checkout(origin, tmp_path):

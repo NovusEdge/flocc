@@ -55,9 +55,6 @@ base_branch = "main"
 # draft = false
 # Overrides the top-level commit_trailer for this repo.
 # commit_trailer = false
-# Files every issue edits, such as an append-only log. Sessions cannot claim them, and the commit
-# hook never refuses them over a peer's claim. Exact paths or globs, relative to the repo root.
-# shared_paths = ["docs/verification.md"]
 
 [mcp_servers.sentry]
 type = "http"

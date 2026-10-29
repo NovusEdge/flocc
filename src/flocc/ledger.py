@@ -2,7 +2,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 # Version 0. A ledger moves forward through _MIGRATIONS only; PRAGMA user_version counts the
 # entries applied. Never edit an entry once it has shipped: append a new one.
@@ -70,8 +70,9 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
 )""",
     ),
     ("ALTER TABLE claims DROP COLUMN escalation_offset",),
+    ("ALTER TABLE claims DROP COLUMN paths",),
 )
-_JSON_FIELDS = ("paths", "depends_on")
+_JSON_FIELDS = ("depends_on",)
 LIVE_STATES = ("running", "blocked")
 
 
@@ -84,7 +85,6 @@ class Claim:
     branch: str
     phase: str
     state: str
-    paths: list[str]
     depends_on: list[str]
     settings_json: str
     started_at: float
@@ -111,7 +111,7 @@ def transaction(con: sqlite3.Connection):
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
-    # Autocommit plus explicit BEGIN IMMEDIATE: the tick and the pre-commit hook write from
+    # Autocommit plus explicit BEGIN IMMEDIATE: the tick, flocc release and flocc canary write from
     # separate processes, and a deferred transaction can deadlock upgrading to a write lock.
     con = sqlite3.connect(path, timeout=10, isolation_level=None)
     con.row_factory = sqlite3.Row
@@ -195,75 +195,9 @@ def update_claim(con: sqlite3.Connection, key: str, **values) -> None:
         con.execute(f"UPDATE claims SET {sets} WHERE issue_key = :_key", {**data, "_key": key})
 
 
-def in_repo(claims: list[Claim], repo: str) -> list[Claim]:
-    """Paths are relative to a repo root, so claims in another repo never clash with them."""
-    return [c for c in claims if c.repo == repo]
-
-
-def is_shared(name: str, shared: tuple[str, ...]) -> bool:
-    path = PurePosixPath(name)
-    return any(name == g or path.full_match(g) for g in shared)
-
-
-def unshared(globs: list[str], shared: tuple[str, ...]) -> list[str]:
-    return [g for g in globs if not is_shared(g, shared)]
-
-
-def add_paths(con: sqlite3.Connection, key: str, globs: list[str]) -> dict[str, str]:
-    """Adds globs to the claim unless another live claim overlaps; returns the clashes."""
-    # Read, check and write share one transaction so two agents claiming at once cannot both win.
-    with transaction(con):
-        mine = get_claim(con, key)
-        if mine is None:
-            raise KeyError(key)
-        clash = conflicting_claims(globs, in_repo(live_claims(con), mine.repo), exclude=key)
-        if not clash:
-            paths = mine.paths + [g for g in globs if g not in mine.paths]
-            con.execute("UPDATE claims SET paths = ? WHERE issue_key = ?", (json.dumps(paths), key))
-    return clash
-
-
 def delete_claim(con: sqlite3.Connection, key: str) -> None:
     with transaction(con):
         con.execute("DELETE FROM claims WHERE issue_key = ?", (key,))
-
-
-def _literal_prefix(glob: str) -> str:
-    cut = [i for i in (glob.find(c) for c in "*?[") if i >= 0]
-    return glob[: min(cut)] if cut else glob
-
-
-def globs_overlap(a: str, b: str) -> bool:
-    # Conservative: compares the literal text before the first wildcard, so it can report an
-    # overlap that real matching would not (a.py vs a.pyc) but never misses one.
-    pa, pb = _literal_prefix(a), _literal_prefix(b)
-    return pa.startswith(pb) or pb.startswith(pa)
-
-
-def conflicting_claims(paths, claims, exclude: str | None = None) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for glob in paths:
-        for claim in claims:
-            if claim.issue_key != exclude and any(globs_overlap(glob, g) for g in claim.paths):
-                out[glob] = claim.issue_key
-                break
-    return out
-
-
-def file_conflicts(files, claims, exclude: str | None) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for name in files:
-        path = PurePosixPath(name)
-        # A directory match claims everything under it, so `src/b*` covers src/billing/tax.py as
-        # globs_overlap already assumes at admission.
-        candidates = (path, *path.parents[:-1])
-        for claim in claims:
-            if claim.issue_key != exclude and any(
-                p.full_match(g) for g in claim.paths for p in candidates
-            ):
-                out[name] = claim.issue_key
-                break
-    return out
 
 
 DEDUPE_S = 24 * 3600

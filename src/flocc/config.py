@@ -69,8 +69,6 @@ class RepoConfig:
     # GitHub Free organizations cannot open draft PRs on private repos.
     draft: bool = True
     commit_trailer: bool | None = None  # None follows Config.commit_trailer
-    # Files every issue edits (an append-only log): never claimed, never refused at commit.
-    shared_paths: tuple[str, ...] = ()
     # Added with the publish token to a PR whose implementer amended tester files, for repos whose
     # PR check fails such PRs without it. Empty adds none; flocc never removes it.
     amended_label: str = ""
@@ -163,14 +161,13 @@ def default_config_path() -> Path:
 
 
 def _repo(config_path: Path, name: str, table: dict) -> RepoConfig:
-    shared = table.pop("shared_paths", [])
-    # A bare string would become a char tuple; fail at load like steer_authors.
-    if not isinstance(shared, list) or not all(isinstance(p, str) for p in shared):
-        raise ValueError(f"{config_path}: repos.{name}.shared_paths must be a list of path strings")
+    if table.pop("shared_paths", None) is not None:
+        print(
+            f"{config_path}: repos.{name}.shared_paths is no longer used; delete it",
+            file=sys.stderr,
+        )
     # Unpacked so a misspelt repo key fails like a misspelt top-level one.
-    return RepoConfig(
-        path=Path(table.pop("path")).expanduser(), shared_paths=tuple(shared), **table
-    )
+    return RepoConfig(path=Path(table.pop("path")).expanduser(), **table)
 
 
 def wildcards_an_interpreter(rule: str) -> bool:

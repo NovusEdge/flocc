@@ -10,10 +10,6 @@ Make the committed tests pass by implementing the behavior.
   `flocc tests-amended <path>... --reason "<why it was wrong>"`, and carry on; do not ask the
   owner. Never delete or skip a test to make it pass: the service rejects the run if you do. Any
   other change to a tester file also gets the run rejected.
-- Claim the files you will edit before editing them: `flocc claim '<path>'`. Claim files,
-  not trees: `**` and any glob that matches a directory are refused, a `*` within one directory
-  is fine. A rejected claim names the issue that holds it; message that session or escalate. A
-  file the repo lists as shared is edited without a claim.
 - Do not ask the owner anything, in the pane or with `AskUserQuestion`; nobody answers. Where the
   spec leaves a choice open, take its default or the smallest choice that meets the criteria. Put
   anything that needs the owner in your `flocc done` summary under a line that starts with

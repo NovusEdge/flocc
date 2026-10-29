@@ -13,8 +13,7 @@ under a line that starts with "Needs the owner".
 
 ## Commands
 
-- `flocc claim '<glob>'` before editing files outside your claimed paths.
-- `flocc context` to see this text again with the current peer list.
+- `flocc context` to see this text again.
 - `flocc done --summary '<one paragraph>'` when this phase is finished.
 - `flocc review-done` after writing review.md, in the review phase only.
 - `flocc handoff-ready` after writing handoff.md when asked to hand off.
@@ -29,10 +28,9 @@ def state_dir(cfg: Config, key: str) -> Path:
 def write_context(cfg: Config, issue: Issue, claim: Claim) -> None:
     d = state_dir(cfg, issue.key)
     d.mkdir(parents=True, exist_ok=True)
-    paths = ", ".join(claim.paths) if claim.paths else "none yet"
     (d / "context.md").write_text(
         f"# {issue.key}: {issue.title}\n\n{issue.url}\n\n{issue.description}\n\n"
-        f"## Claim\n\nBranch `{claim.branch}`. Claimed paths when the issue started: {paths}.\n\n"
+        f"## Claim\n\nBranch `{claim.branch}`.\n\n"
         f"Your state directory is {d}; write handoff.md there.\n\n{_COMMANDS}"
     )
 

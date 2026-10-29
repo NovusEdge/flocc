@@ -130,16 +130,6 @@ def test_poll_launches_tester(rt):
     assert (state_dir(rt.cfg, "NF-9") / "context.md").exists()
 
 
-def test_a_shared_path_in_the_agent_block_is_not_recorded_as_a_claim(rt):
-    backend = replace(rt.cfg.repos["backend"], shared_paths=("docs/verification.md",))
-    rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
-    block = "```agent\npaths: docs/verification.md, src/a.py\n```\n\n"
-    rt.linear.ready = [issue(desc=block + GOOD)]
-    poll(rt)
-    c = ledger.get_claim(rt.con, "NF-9")
-    assert c is not None and c.paths == ["src/a.py"]
-
-
 def test_unreadable_dependency_holds_only_that_issue(rt):
     rt.linear.ready = [issue("NF-8", desc=DEPENDS), issue()]
     poll(rt)
@@ -440,14 +430,14 @@ def test_skip_unmapped_says_so_once_when_a_relabelled_rerun_releases_its_claim(r
 
 def test_poll_respects_cap(rt):
     for key in ("NF-1", "NF-2"):
-        ledger.insert_claim(rt.con, make(key, ()))
+        ledger.insert_claim(rt.con, make(key))
     rt.linear.ready = [issue()]
     poll(rt)
     assert ledger.get_claim(rt.con, "NF-9") is None
 
 
 def test_forward_only_owner_comments(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
+    ledger.insert_claim(rt.con, make("NF-1"))
     rt.linear.replies = {
         "id-NF-1": [
             Comment("c1", f"{BOT_PREFIX} question", "2026-10-09T10:00:00Z", mine=True),
@@ -464,7 +454,7 @@ def test_forward_only_owner_comments(rt):
 
 def test_forward_steer_author_comments(rt):
     rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
-    ledger.insert_claim(rt.con, make("NF-1", ()))
+    ledger.insert_claim(rt.con, make("NF-1"))
     rt.linear.replies = {
         "id-NF-1": [
             Comment("c1", "owner says hi", "2026-10-09T10:00:00Z", mine=True),
@@ -484,7 +474,7 @@ def test_forward_steer_author_comments(rt):
 
 
 def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
+    ledger.insert_claim(rt.con, make("NF-1"))
     rt.linear.replies = {
         "id-NF-1": [
             Comment("c1", "a teammate's aside", "2026-10-09T10:00:00Z", mine=False),
@@ -719,7 +709,7 @@ def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
 
 def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkeypatch):
     for key in ("NF-1", "NF-2"):
-        ledger.insert_claim(rt.con, make(key, ()))
+        ledger.insert_claim(rt.con, make(key))
     supervised, polled = [], []
 
     def supervise(rt, claim):
@@ -737,7 +727,7 @@ def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkey
 
 def test_tick_with_a_deleted_issue_still_polls_and_pages_naming_it(rt, tmp_path, monkeypatch):
     for key in ("NF-1", "NF-2"):
-        ledger.insert_claim(rt.con, make(key, ()))
+        ledger.insert_claim(rt.con, make(key))
         d = state_dir(rt.cfg, key)
         d.mkdir(parents=True)
     rt.linear.deleted = ("NF-1",)
@@ -1015,8 +1005,8 @@ def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypa
     live_pad = root / "proj" / "s2" / "scratchpad"
     done_pad.mkdir(parents=True)
     live_pad.mkdir(parents=True)
-    ledger.insert_claim(rt.con, make("NF-1", (), state="blocked"))
-    ledger.insert_claim(rt.con, make("NF-2", ()))
+    ledger.insert_claim(rt.con, make("NF-1", state="blocked"))
+    ledger.insert_claim(rt.con, make("NF-2"))
     d1 = pads(rt, "NF-1", [done_pad])
     pads(rt, "NF-2", [live_pad])
     clean_scratchpads(rt)
@@ -1031,7 +1021,7 @@ def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
     (project / "s1" / "scratchpad").mkdir(parents=True)
     outside = tmp_path / "keep"
     outside.mkdir()
-    ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
+    ledger.insert_claim(rt.con, make("NF-1", state="done"))
     (project / "s2" / "scratchpad").mkdir(parents=True)
     listed = [root, project, project / "s1", outside, "", "/", f"{project}/../.."]
     pads(rt, "NF-1", [*listed, project / "s2" / "scratchpad"])
@@ -1055,7 +1045,7 @@ def test_cleanup_does_not_follow_links(rt, tmp_path, monkeypatch):
     out_tree.symlink_to(outside)
     via_parent = s1 / "up"
     via_parent.symlink_to(root / "proj" / "s2")
-    ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
+    ledger.insert_claim(rt.con, make("NF-1", state="done"))
     pads(rt, "NF-1", [in_tree, out_tree, via_parent / "scratchpad"])
     clean_scratchpads(rt)
     assert other.exists() and outside.exists()

@@ -19,15 +19,14 @@ def test_context_lists_issue_and_commands(tmp_cfg):
         "Fix rounding",
         "Round half-even.",
         "flocc done",
-        "flocc claim",
         "flocc context",
     ):
         assert needle in text
 
 
-def test_context_cli_prints_context_live_peers_and_handoff(tmp_cfg, monkeypatch, capsys):
+def test_context_cli_prints_context_and_handoff(tmp_cfg, monkeypatch, capsys):
     con = ledger.connect(tmp_cfg.ledger_path)
-    for claim in (make("NF-1"), make("NF-2", ("x/**",)), replace(make("NF-3"), repo="web")):
+    for claim in (make("NF-1"), make("NF-2"), replace(make("NF-3"), repo="web")):
         ledger.insert_claim(con, claim)
     state = state_dir(tmp_cfg, "NF-1")
     state.mkdir()
@@ -37,7 +36,7 @@ def test_context_cli_prints_context_live_peers_and_handoff(tmp_cfg, monkeypatch,
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_cfg.ledger_path))
     assert main(["context"]) == 0
     out = capsys.readouterr().out
-    assert "CTX" in out and "NOTE" in out and "NF-2-test" in out and "NF-3" not in out
+    assert "CTX" in out and "NOTE" in out and "NF-2" not in out
 
 
 def test_done_and_handoff_ready(tmp_path, monkeypatch):

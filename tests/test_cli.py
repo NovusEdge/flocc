@@ -97,7 +97,7 @@ def test_subcommands_have_help(capsys):
 
 def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, capsys):
     con_path = tmp_path / "hook.sqlite"
-    claim = make("NF-1", (), worktree=str(origin.resolve()))
+    claim = make("NF-1", worktree=str(origin.resolve()))
     claim.phase = "review"
     ledger.insert_claim(ledger.connect(con_path), claim)
     monkeypatch.setenv("FLOCC_LEDGER", str(con_path))
@@ -111,12 +111,7 @@ def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, 
 @pytest.fixture
 def claims_env(tmp_path, monkeypatch):
     config = tmp_path / "c.toml"
-    config.write_text(
-        EXAMPLE.read_text().replace(
-            '[repos.backend]\npath = "~/src/backend"',
-            '[repos.backend]\npath = "~/src/backend"\nshared_paths = ["docs/verification.md"]',
-        )
-    )
+    config.write_text(EXAMPLE.read_text())
     state = tmp_path / "state" / "NF-1"
     state.mkdir(parents=True)
     monkeypatch.setenv("FLOCC_STATE", str(state))
@@ -125,144 +120,13 @@ def claims_env(tmp_path, monkeypatch):
     return ledger.connect(tmp_path / "hook.sqlite")
 
 
-def test_claim_refuses_a_whole_tree(claims_env, capsys):
-    ledger.insert_claim(claims_env, make("NF-1", ()))
-    assert main(["claim", "src/a.py", "src/**"]) == 1
-    assert "src/** claims a whole tree; claim the files you will edit" in capsys.readouterr().err
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == []
-    assert main(["claim", "src/*.py"]) == 0
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == ["src/*.py"]
-
-
-def test_claim_refuses_a_glob_that_matches_a_directory(claims_env, tmp_path, capsys):
-    wt = tmp_path / "wt"
-    (wt / "server/src/api").mkdir(parents=True)
-    (wt / "server/src/main.rs").touch()
-    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(wt)))
-    for glob, directory in (
-        ("server/src", "server/src"),
-        ("server/src/", "server/src/"),
-        ("server/src/*", "server/src/api"),
-        ("server/s?c", "server/src"),
-    ):
-        assert main(["claim", "docs/a.md", glob]) == 1
-        err = capsys.readouterr().err
-        assert f"claim: {glob} matches the directory {directory}; claim the files in it" in err
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == []
-    # Files, globs over files, and a directory that does not exist yet are fine.
-    assert main(["claim", "server/src/main.rs", "server/src/*.rs", "server/new/*.rs"]) == 0
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == ["server/src/main.rs", "server/src/*.rs", "server/new/*.rs"]
-
-
-@pytest.mark.parametrize("glob", ["", "/etc/passwd", "../other/a.py", "src/../../a.py"])
-def test_claim_refuses_a_glob_outside_the_worktree(claims_env, capsys, glob):
-    ledger.insert_claim(claims_env, make("NF-1", ()))
-    assert main(["claim", glob]) == 1
-    assert "is not a path inside the worktree" in capsys.readouterr().err
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == []
-
-
-def test_claim_skips_a_shared_path(claims_env, capsys):
-    ledger.insert_claim(claims_env, make("NF-1", ()))
-    assert main(["claim", "docs/verification.md"]) == 0
-    assert "docs/verification.md is shared; edit it without claiming" in capsys.readouterr().out
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == []
-    assert main(["claim", "docs/verification.md", "src/a.py"]) == 0
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == ["src/a.py"]
-
-
-def test_claim_ignores_a_peer_in_another_repo(claims_env, capsys):
-    ledger.insert_claim(claims_env, make("NF-1", ()))
-    ledger.insert_claim(claims_env, make("NF-2", ("src/a.py",), repo="web"))
-    assert main(["claim", "src/a.py"]) == 0
-    ledger.insert_claim(claims_env, make("NF-3", ("src/b.py",)))
-    assert main(["claim", "src/b.py"]) == 1
-    assert "overlaps NF-3" in capsys.readouterr().err
-
-
-def commit_hook(claims_env, origin, monkeypatch, peer, name):
-    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
-    ledger.insert_claim(claims_env, peer)
-    (origin / name).parent.mkdir(exist_ok=True)
-    (origin / name).write_text("x")
-    subprocess.run(["git", "add", name], cwd=origin, check=True)
+def test_commit_hook_allows_any_file_outside_the_review(claims_env, origin, monkeypatch):
+    ledger.insert_claim(claims_env, make("NF-1", worktree=str(origin.resolve())))
+    ledger.insert_claim(claims_env, make("NF-2", worktree="/wt/NF-2"))
     monkeypatch.chdir(origin)
-    return main(["hook", "pre-commit"])
-
-
-def test_commit_hook_ignores_a_peer_claim_in_another_repo(claims_env, origin, monkeypatch):
-    peer = make("NF-2", ("server/x.py",), repo="web", worktree="/wt/NF-2")
-    assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 0
-
-
-def test_commit_hook_still_refuses_a_peer_claim_in_the_same_repo(
-    claims_env, origin, monkeypatch, capsys
-):
-    peer = make("NF-2", ("server/x.py",), worktree="/wt/NF-2")
-    assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 1
-    assert "server/x.py is claimed by NF-2" in capsys.readouterr().err
-
-
-def test_commit_hook_ignores_what_the_merged_side_brought_in(claims_env, origin, monkeypatch):
-    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
-    ledger.insert_claim(claims_env, make("NF-2", ("server/x.py",), worktree="/wt/NF-2"))
-    branch = subprocess.run(
-        ["git", "branch", "--show-current"], cwd=origin, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    for args in (
-        ["checkout", "-qb", "side"],
-        ["commit", "-q", "--allow-empty", "-m", "side"],
-        ["checkout", "-q", branch],
-    ):
-        subprocess.run(["git", *args], cwd=origin, check=True)
-    (origin / "server").mkdir()
-    (origin / "server" / "x.py").write_text("x")
-    subprocess.run(["git", "add", "server/x.py"], cwd=origin, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=origin, check=True)
-    subprocess.run(["git", "checkout", "-q", "side"], cwd=origin, check=True)
-    subprocess.run(["git", "merge", "--no-commit", "--no-ff", "-q", branch], cwd=origin, check=True)
-    monkeypatch.chdir(origin)
+    (origin / "server.py").write_text("x\n")
+    subprocess.run(["git", "add", "server.py"], cwd=origin, check=True)
     assert main(["hook", "pre-commit"]) == 0
-
-
-def test_commit_hook_still_checks_what_the_branch_itself_edited_before_the_merge(
-    claims_env, origin, monkeypatch
-):
-    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
-    ledger.insert_claim(claims_env, make("NF-2", ("server/x.py",), worktree="/wt/NF-2"))
-    branch = subprocess.run(
-        ["git", "branch", "--show-current"], cwd=origin, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    subprocess.run(["git", "checkout", "-qb", "side"], cwd=origin, check=True)
-    (origin / "server").mkdir()
-    (origin / "server" / "x.py").write_text("x")
-    subprocess.run(["git", "add", "server/x.py"], cwd=origin, check=True)
-    subprocess.run(["git", "commit", "-qm", "side edit"], cwd=origin, check=True)
-    subprocess.run(["git", "checkout", "-q", branch], cwd=origin, check=True)
-    (origin / "other.py").write_text("o")
-    subprocess.run(["git", "add", "other.py"], cwd=origin, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=origin, check=True)
-    subprocess.run(["git", "checkout", "-q", "side"], cwd=origin, check=True)
-    subprocess.run(["git", "merge", "--no-commit", "--no-ff", "-q", branch], cwd=origin, check=True)
-    (origin / "touched.py").write_text("t")
-    subprocess.run(["git", "add", "touched.py"], cwd=origin, check=True)
-    monkeypatch.chdir(origin)
-    # Neither the base's other.py nor the branch's earlier server/x.py is part of this commit.
-    assert main(["hook", "pre-commit"]) == 0
-    ledger.insert_claim(claims_env, make("NF-3", ("touched.py",), worktree="/wt/NF-3"))
-    assert main(["hook", "pre-commit"]) == 1
-
-
-def test_commit_hook_never_refuses_a_shared_path(claims_env, origin, monkeypatch):
-    peer = make("NF-2", ("docs/**",), worktree="/wt/NF-2")
-    assert commit_hook(claims_env, origin, monkeypatch, peer, "docs/verification.md") == 0
 
 
 def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, capsys):
@@ -296,7 +160,7 @@ def tester_claim(claims_env, tmp_path):
 
     base = commit("README", "x")
     tester = commit("gateway/tests/test_a.py", "def test_a(): ...\n")
-    claim = make("NF-1", (), worktree=str(wt))
+    claim = make("NF-1", worktree=str(wt))
     claim.base_sha, claim.tester_sha = base, tester
     ledger.insert_claim(claims_env, claim)
 

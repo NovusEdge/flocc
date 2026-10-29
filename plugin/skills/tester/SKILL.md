@@ -9,9 +9,6 @@ Write tests for the issue's acceptance criteria and nothing else.
   against a stub, or only checks that a function exists, does not count.
 - Follow the repo's existing test layout and helpers. Run the new tests; they should fail now.
 - Commit them on the issue branch with a message naming the criteria they cover.
-- Claim any file you edit outside your claimed paths first: `flocc claim '<path>'`. Claim
-  files, not trees: `**` and any glob that matches a directory are refused. A file the repo lists
-  as shared is edited without a claim.
 - Do not ask the owner anything, in the pane or with `AskUserQuestion`; nobody answers. Where the
   spec leaves a choice open, take its default or the smallest choice that meets the criteria. Put
   anything that needs the owner in your `flocc done` summary under a line that starts with

@@ -10,7 +10,7 @@ _CRITERIA = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _DURATION = re.compile(r"^(\d+)([smh])$")
-_KEYS = {"model", "effort", "wall_clock", "paths", "depends_on", "mcp"}
+_KEYS = {"model", "effort", "wall_clock", "depends_on", "mcp"}
 
 
 class BlockError(ValueError):
@@ -22,7 +22,6 @@ class IssueSettings:
     model: str | None = None
     effort: str | None = None
     wall_clock_s: int | None = None
-    paths: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     mcp: tuple[str, ...] = ()
 
@@ -35,7 +34,7 @@ def parse_settings(description: str | None) -> IssueSettings:
     text = _normalise(description)
     match = _BLOCK.search(text)
     if not match:
-        # Silently running with defaults would drop the paths and depends_on the owner wrote.
+        # Silently running with defaults would drop the depends_on the owner wrote.
         if _OPEN.search(text):
             raise BlockError("agent block: no closing ``` fence")
         return IssueSettings()
@@ -55,13 +54,12 @@ def parse_settings(description: str | None) -> IssueSettings:
         model=values.get("model") or None,
         effort=values.get("effort") or None,
         wall_clock_s=_duration(values["wall_clock"]) if "wall_clock" in values else None,
-        paths=_list(values.get("paths", "")),
         depends_on=_list(values.get("depends_on", "")),
         mcp=_list(values.get("mcp", "")),
     )
 
 
-# Split on commas, so brace globs like src/{a,b}/** are unsupported; write two globs.
+# Split on commas.
 def _list(value: str) -> tuple[str, ...]:
     value = value.strip()
     if value.startswith("[") and value.endswith("]"):
@@ -90,7 +88,6 @@ def settings_from_json(text: str) -> IssueSettings:
         model=raw.get("model"),
         effort=raw.get("effort"),
         wall_clock_s=raw.get("wall_clock_s"),
-        paths=tuple(raw.get("paths", ())),
         depends_on=tuple(raw.get("depends_on", ())),
         mcp=tuple(raw.get("mcp", ())),
     )

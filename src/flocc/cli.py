@@ -8,7 +8,7 @@ import signal
 import subprocess
 import sys
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from flocc import idle, ledger, usage
 from flocc.config import TRAILER, default_config_path, load
@@ -88,50 +88,12 @@ def cmd_hook(args) -> int:
 
     if args.name == "commit-msg":
         return _commit_msg(args.message_file, not args.no_trailer)
-    top = Path.cwd()
-    top = Path(git("rev-parse", "--show-toplevel", cwd=top))
-    con = _ledger(args)
-    mine = ledger.claim_for_worktree(con, str(top))
-    if mine is None:
-        return 0
-    if mine.phase == "review":
+    top = Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd()))
+    mine = ledger.claim_for_worktree(_ledger(args), str(top))
+    if mine is not None and mine.phase == "review":
         print("flocc: the review session is read-only; do not commit", file=sys.stderr)
         return 1
-    shared = _shared_paths(args, mine.repo)
-    # A merge commit stages everything either side changed; only what differs from both parents is
-    # this commit's own edit or conflict resolution.
-    merging = (
-        subprocess.run(
-            ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
-            cwd=top,
-            capture_output=True,
-            check=False,
-        ).returncode
-        == 0
-    )
-    changed = set(git("diff", "--cached", "--name-only", cwd=top).splitlines())
-    if merging:
-        changed &= set(git("diff", "--cached", "--name-only", "MERGE_HEAD", cwd=top).splitlines())
-    staged = [n for n in sorted(changed) if not ledger.is_shared(n, shared)]
-    peers = ledger.in_repo(ledger.live_claims(con), mine.repo)
-    clash = ledger.file_conflicts(staged, peers, exclude=mine.issue_key)
-    if not clash:
-        return 0
-    for name, owner in clash.items():
-        print(
-            f"flocc: {name} is claimed by {owner}; message that session or escalate",
-            file=sys.stderr,
-        )
-    return 1
-
-
-def _shared_paths(args, repo: str) -> tuple[str, ...]:
-    # A config that will not load must not stop a commit; the check then falls back to claims only.
-    try:
-        cfg = load(Path(args.config) if args.config else default_config_path())
-    except (OSError, ValueError, TypeError):
-        return ()
-    return cfg.repos[repo].shared_paths if repo in cfg.repos else ()
+    return 0
 
 
 def cmd_tests_amended(args) -> int:
@@ -170,71 +132,11 @@ def cmd_tests_amended(args) -> int:
     return 0
 
 
-def cmd_claim(args) -> int:
-    key = _state_dir().name
-    for glob in args.globs:
-        if "**" in glob:
-            print(
-                f"claim: {glob} claims a whole tree; claim the files you will edit"
-                " (a * within one directory is fine)",
-                file=sys.stderr,
-            )
-            return 1
-    con = _ledger(args)
-    mine = ledger.get_claim(con, key)
-    if mine is None:
-        print(f"claim: no live claim for {key}", file=sys.stderr)
-        return 1
-    shared = _shared_paths(args, mine.repo)
-    globs = []
-    for glob in args.globs:
-        if not glob or glob.startswith("/") or ".." in PurePosixPath(glob).parts:
-            print(f"claim: {glob!r} is not a path inside the worktree", file=sys.stderr)
-            return 1
-        # file_conflicts also matches a glob against every parent directory of a staged file, so
-        # a glob that matches a directory claims everything under it, whatever it is spelled.
-        tree = glob.endswith("/") or next(
-            (p for p in Path(mine.worktree).glob(glob) if p.is_dir()), None
-        )
-        if tree:
-            where = glob if tree is True else tree.relative_to(mine.worktree)
-            print(
-                f"claim: {glob} matches the directory {where}; claim the files in it",
-                file=sys.stderr,
-            )
-            return 1
-        if ledger.is_shared(glob, shared):
-            print(f"claim: {glob} is shared; edit it without claiming")
-        else:
-            globs.append(glob)
-    if not globs:
-        return 0
-    try:
-        clash = ledger.add_paths(con, key, globs)
-    except KeyError:
-        print(f"claim: no live claim for {key}", file=sys.stderr)
-        return 1
-    if clash:
-        for glob, owner in clash.items():
-            print(f"claim: {glob} overlaps {owner}'s claim", file=sys.stderr)
-        return 1
-    print("claimed")
-    return 0
-
-
 def cmd_context(args) -> int:
-    from flocc.sessions import session_name
-
     state = _state_dir()
     context = state / "context.md"
     if context.exists():
         print(context.read_text())
-    # Peers come from the live ledger, so a session sees issues admitted after it started.
-    live = ledger.live_claims(_ledger(args))
-    mine = next((c for c in live if c.issue_key == state.name), None)
-    peers = [c for c in live if mine and c.repo == mine.repo and c.issue_key != state.name]
-    names = ", ".join(session_name(c.issue_key, c.phase) for c in peers) or "none"
-    print(f"## Peers in this repo\n\n{names}.\n")
     handoff = state / "handoff.md"
     if handoff.exists():
         print(handoff.read_text())
@@ -685,7 +587,6 @@ COMMANDS = {
     "stop": cmd_stop,
     "statusline": cmd_statusline,
     "hook": cmd_hook,
-    "claim": cmd_claim,
     "tests-amended": cmd_tests_amended,
     "context": cmd_context,
     "idle": cmd_idle,
@@ -730,12 +631,10 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("name", choices=["pre-commit", "commit-msg"], help="which hook is running")
     hook.add_argument("--no-trailer", action="store_true", help="skip the commit trailer")
     hook.add_argument("message_file", nargs="?", help="commit message file (commit-msg)")
-    claim = add("claim", "Claim file globs for this issue")
-    claim.add_argument("globs", nargs="+", help="file globs to claim")
     amended = add("tests-amended", "Declare tester files you changed because a test was wrong")
     amended.add_argument("paths", nargs="+", help="repo-relative paths of the amended tester files")
     amended.add_argument("--reason", required=True, help="why the test was wrong")
-    add("context", "Print the issue's claims and context")
+    add("context", "Print the issue's context")
     add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
     add("stop", "Hook (Stop): record background tasks and the idle stop")
     add("session-start", "Hook: record compaction and the scratchpad, print the context")

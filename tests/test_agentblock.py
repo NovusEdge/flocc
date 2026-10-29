@@ -15,7 +15,6 @@ FULL = """Fix the invoice rounding.
 model: opus
 effort: high
 wall_clock: 2h
-paths: [src/billing/**, tests/billing/**]
 depends_on: [NF-120]
 mcp: [sentry]
 ```
@@ -32,7 +31,6 @@ def test_full_block():
         model="opus",
         effort="high",
         wall_clock_s=7200,
-        paths=("src/billing/**", "tests/billing/**"),
         depends_on=("NF-120",),
         mcp=("sentry",),
     )
@@ -91,3 +89,8 @@ def test_json_round_trip():
 def test_allow_is_now_an_unknown_key():
     with pytest.raises(BlockError, match="unknown keys"):
         parse_settings("```agent\nallow: launches 4\n```")
+
+
+def test_paths_is_now_an_unknown_key():
+    with pytest.raises(BlockError, match="unknown keys"):
+        parse_settings("```agent\npaths: src/**\n```")

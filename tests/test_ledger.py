@@ -6,7 +6,7 @@ from flocc import ledger
 from flocc.ledger import Claim
 
 
-def make(key="NF-1", paths=("src/a/**",), state="running", worktree=None, repo="backend"):
+def make(key="NF-1", state="running", worktree=None, repo="backend"):
     return Claim(
         issue_key=key,
         issue_id=f"id-{key}",
@@ -15,7 +15,6 @@ def make(key="NF-1", paths=("src/a/**",), state="running", worktree=None, repo="
         branch=f"agent/{key.lower()}",
         phase="test",
         state=state,
-        paths=list(paths),
         depends_on=[],
         settings_json="{}",
         started_at=0.0,
@@ -31,45 +30,13 @@ def con(tmp_path):
 def test_insert_get_update_live(con):
     ledger.insert_claim(con, make())
     ledger.insert_claim(con, make("NF-2", state="done"))
-    ledger.update_claim(con, "NF-1", phase="impl", paths=["src/a/**", "src/b.py"])
+    ledger.update_claim(con, "NF-1", phase="impl")
     got = ledger.get_claim(con, "NF-1")
     assert got is not None
-    assert got.phase == "impl" and got.paths == ["src/a/**", "src/b.py"]
+    assert got.phase == "impl"
     assert [c.issue_key for c in ledger.live_claims(con)] == ["NF-1"]
     by_tree = ledger.claim_for_worktree(con, "/wt/NF-1")
     assert by_tree is not None and by_tree.issue_key == "NF-1"
-
-
-@pytest.mark.parametrize(
-    "a,b,overlap",
-    [
-        ("src/billing/**", "src/billing/tax.py", True),
-        ("src/b*", "src/billing/**", True),
-        ("src/bill.py", "src/billing/**", False),
-        ("docs/**", "src/**", False),
-        ("**", "anything", True),
-    ],
-)
-def test_globs_overlap_cases(a, b, overlap):
-    assert ledger.globs_overlap(a, b) is overlap
-    assert ledger.globs_overlap(b, a) is overlap
-
-
-def test_conflicts_exclude_self():
-    mine, other = make("NF-1", ("src/a/**",)), make("NF-2", ("src/a/x.py",))
-    assert ledger.conflicting_claims(["src/a/**"], [mine, other], exclude="NF-1") == {
-        "src/a/**": "NF-2"
-    }
-    assert ledger.file_conflicts(["src/a/x.py", "README.md"], [mine, other], exclude="NF-1") == {
-        "src/a/x.py": "NF-2"
-    }
-
-
-def test_file_under_a_claimed_directory_conflicts():
-    prefix = make("NF-2", ("src/b*",))
-    assert ledger.file_conflicts(["src/billing/tax.py", "src/a.py"], [prefix], exclude="NF-1") == {
-        "src/billing/tax.py": "NF-2"
-    }
 
 
 def test_alert_dedupe_window(con):
@@ -87,36 +54,6 @@ def test_digest_cleared_only_up_to_what_was_posted(con):
     ledger.add_digest(con, "NF-2", "later", now=2)
     ledger.clear_digest(con, rows[-1][0])
     assert [r[1:] for r in ledger.pending_digest(con)] == [("NF-2", "later")]
-
-
-def test_add_paths_extends_a_claim_or_reports_the_owner(con):
-    ledger.insert_claim(con, make("NF-1", ("a/**",)))
-    ledger.insert_claim(con, make("NF-2", ("src/billing/**",)))
-    assert ledger.add_paths(con, "NF-1", ["docs/**", "a/**"]) == {}
-    claim = ledger.get_claim(con, "NF-1")
-    assert claim and claim.paths == ["a/**", "docs/**"]
-    assert ledger.add_paths(con, "NF-1", ["src/b*", "x/**"]) == {"src/b*": "NF-2"}
-    claim = ledger.get_claim(con, "NF-1")
-    assert claim and claim.paths == ["a/**", "docs/**"]
-    with pytest.raises(KeyError):
-        ledger.add_paths(con, "NF-9", ["z/**"])
-
-
-def test_add_paths_ignores_claims_in_other_repos(con):
-    ledger.insert_claim(con, make("NF-1", ("a/**",)))
-    ledger.insert_claim(con, make("NF-2", ("docs/verification.md",), repo="web"))
-    assert ledger.add_paths(con, "NF-1", ["docs/verification.md"]) == {}
-    ledger.insert_claim(con, make("NF-3", ("docs/**",)))
-    assert ledger.add_paths(con, "NF-1", ["docs/x.md"]) == {"docs/x.md": "NF-3"}
-
-
-def test_is_shared_matches_exact_names_and_globs():
-    shared = ("docs/verification.md", "logs/*.log")
-    assert ledger.is_shared("docs/verification.md", shared)
-    assert ledger.is_shared("logs/a.log", shared)
-    assert not ledger.is_shared("docs/other.md", shared)
-    assert not ledger.is_shared("logs/sub/a.log", shared)
-    assert not ledger.is_shared("docs/verification.md", ())
 
 
 def test_usage_log(con):
@@ -213,3 +150,12 @@ def test_the_escalation_offset_column_is_gone(tmp_path):
     con = ledger.connect(path)
     assert "escalation_offset" not in _columns(con, "claims")
     assert ledger.get_claim(con, "NF-9") is not None
+
+
+def test_the_paths_column_is_gone(tmp_path):
+    path = tmp_path / "old.sqlite"
+    _v0_ledger(path)
+    con = ledger.connect(path)
+    assert "paths" not in _columns(con, "claims")
+    claim = ledger.get_claim(con, "NF-9")
+    assert claim is not None and claim.depends_on == []
