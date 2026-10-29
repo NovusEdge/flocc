@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path, PurePosixPath
 
+# Version 0. A ledger moves forward through _MIGRATIONS only; PRAGMA user_version counts the
+# entries applied. Never edit an entry once it has shipped: append a new one.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS claims (
   issue_key TEXT PRIMARY KEY,
@@ -49,6 +51,25 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+_MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    (
+        """CREATE TABLE events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  issue_key TEXT,
+  repo TEXT,
+  detail TEXT NOT NULL DEFAULT '',
+  at REAL NOT NULL,
+  printed_at REAL,
+  acked_at REAL
+)""",
+        """CREATE TABLE holds (
+  issue_key TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  at REAL NOT NULL
+)""",
+    ),
+)
 _JSON_FIELDS = ("paths", "depends_on")
 LIVE_STATES = ("running", "blocked")
 
@@ -75,15 +96,7 @@ class Claim:
     escalation_offset: int = 0
 
 
-def connect(path: Path | str) -> sqlite3.Connection:
-    # Autocommit plus explicit BEGIN IMMEDIATE: the tick and the pre-commit hook write from
-    # separate processes, and a deferred transaction can deadlock upgrading to a write lock.
-    con = sqlite3.connect(path, timeout=10, isolation_level=None)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA busy_timeout=10000")
-    con.executescript(_SCHEMA)
-    return con
+_CLAIM_FIELDS = frozenset(f.name for f in fields(Claim))
 
 
 @contextmanager
@@ -97,8 +110,39 @@ def transaction(con: sqlite3.Connection):
     con.execute("COMMIT")
 
 
+def connect(path: Path | str) -> sqlite3.Connection:
+    # Autocommit plus explicit BEGIN IMMEDIATE: the tick and the pre-commit hook write from
+    # separate processes, and a deferred transaction can deadlock upgrading to a write lock.
+    con = sqlite3.connect(path, timeout=10, isolation_level=None)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=10000")
+    con.executescript(_SCHEMA)
+    _migrate(con)
+    return con
+
+
+def _version(con: sqlite3.Connection) -> int:
+    return con.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    if _version(con) >= len(_MIGRATIONS):
+        return
+    # Read again under the write lock: the tick and a session's hook can open an old ledger at
+    # the same moment, and the second must not apply a migration the first just applied.
+    with transaction(con):
+        start = _version(con)
+        for n, statements in enumerate(_MIGRATIONS[start:], start + 1):
+            for sql in statements:
+                con.execute(sql)
+            con.execute(f"PRAGMA user_version = {n}")
+
+
 def _from_row(row: sqlite3.Row) -> Claim:
-    data = dict(row)
+    # status reads the ledger read-only, so before the first tick after an upgrade it still sees
+    # columns a migration has yet to drop.
+    data = {k: v for k, v in dict(row).items() if k in _CLAIM_FIELDS}
     for key in _JSON_FIELDS:
         data[key] = json.loads(data[key])
     return Claim(**data)

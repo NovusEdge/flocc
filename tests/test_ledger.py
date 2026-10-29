@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from flocc import ledger
@@ -150,3 +152,56 @@ def test_an_acceptance_ends_with_its_tester_commit(con):
     ledger.accept_tests(con, "NF-1", "sha-ok")
     ledger.forget_tests(con, "NF-1")
     assert ledger.accepted_tests(con, "NF-1") is None
+
+
+V0_CLAIM = (
+    "INSERT INTO claims (issue_key, issue_id, repo, worktree, branch, phase, state, paths,"
+    " depends_on, settings_json, started_at, wall_clock_s)"
+    " VALUES ('NF-9', 'id-9', 'backend', '/wt/NF-9', 'agent/nf-9', 'impl', 'running',"
+    " '[\"src/**\"]', '[]', '{}', 1.0, 3600)"
+)
+
+
+def _v0_ledger(path):
+    raw = sqlite3.connect(path)
+    raw.executescript(ledger._SCHEMA)
+    raw.execute(V0_CLAIM)
+    raw.commit()
+    raw.close()
+
+
+def _columns(con, table):
+    return {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+
+
+def test_a_fresh_ledger_is_at_the_latest_version(con):
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(ledger._MIGRATIONS)
+    assert {"id", "kind", "issue_key", "repo", "detail", "at", "printed_at", "acked_at"} == (
+        _columns(con, "events")
+    )
+    assert {"issue_key", "reason", "at"} == _columns(con, "holds")
+
+
+def test_an_old_ledger_migrates_and_keeps_its_claims(tmp_path):
+    path = tmp_path / "old.sqlite"
+    _v0_ledger(path)
+    con = ledger.connect(path)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(ledger._MIGRATIONS)
+    claim = ledger.get_claim(con, "NF-9")
+    assert claim is not None and claim.phase == "impl" and claim.wall_clock_s == 3600
+    assert "events" in {r[0] for r in con.execute("SELECT name FROM sqlite_master")}
+
+
+def test_a_second_connection_finds_the_ledger_migrated(tmp_path):
+    path = tmp_path / "old.sqlite"
+    _v0_ledger(path)
+    first, second = ledger.connect(path), ledger.connect(path)
+    assert second.execute("PRAGMA user_version").fetchone()[0] == len(ledger._MIGRATIONS)
+    assert ledger.get_claim(first, "NF-9") is not None
+
+
+def test_a_column_the_code_no_longer_knows_is_ignored_on_read(con):
+    con.execute("ALTER TABLE claims ADD COLUMN retired TEXT")
+    ledger.insert_claim(con, make())
+    claim = ledger.get_claim(con, "NF-1")
+    assert claim is not None and not hasattr(claim, "retired")
