@@ -7,14 +7,14 @@ from flocc.linear import Issue
 _COMMANDS = """## Execution only
 
 The issue and the specs it names are the approved design. Do not brainstorm, write a plan for
-approval, or ask for design sign-off: nobody is at this session to approve it. Ask only about a
-decision the spec leaves open, through the escalate skill.
+approval, or ask for design sign-off: nobody is at this session to approve it. Where the spec
+leaves a choice open, take its default; what needs the owner goes in your `flocc done` summary
+under a line that starts with "Needs the owner".
 
 ## Commands
 
 - `flocc claim '<glob>'` before editing files outside your claimed paths.
 - `flocc context` to see this text again with the current peer list.
-- `flocc escalate ...` when you need the owner; see the escalate skill.
 - `flocc done --summary '<one paragraph>'` when this phase is finished.
 - `flocc review-done` after writing review.md, in the review phase only.
 - `flocc handoff-ready` after writing handoff.md when asked to hand off.

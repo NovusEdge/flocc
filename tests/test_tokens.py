@@ -88,7 +88,7 @@ def test_expiry_within_two_weeks_goes_to_the_digest(rt):
 def test_expiry_within_three_days_pages(rt):
     check_tokens(rt, lambda token: NOW + 2 * DAY if token == "t" else NOW + 60 * DAY)
     [esc] = rt.notifier.sent
-    assert (esc.tier, esc.scope, esc.cause) == (1, "global", "gh-token-agent")
+    assert esc.cause == "gh-token-agent"
     assert str(rt.cfg.agent_gh_token_file) in esc.action
 
 
@@ -155,7 +155,7 @@ def test_lapsed_login_pages_once_and_rearms(rt):
     check_claude_login(rt, out)
     check_claude_login(rt, out)
     [esc] = rt.notifier.sent
-    assert (esc.tier, esc.scope, esc.cause) == (1, "global", "claude-login")
+    assert esc.cause == "claude-login"
     assert "flocc login -H" in esc.action
     check_claude_login(rt, auth_run(FULL))
     check_claude_login(rt, out)
@@ -183,7 +183,6 @@ def test_tick_runs_the_login_check(rt, tmp_path, monkeypatch):
     out = auth_run(LOGGED_OUT)
     monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
     for name in (
-        "route_escalations",
         "forward_comments",
         "reap_worktrees",
         "clean_scratchpads",

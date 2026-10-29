@@ -8,7 +8,7 @@ import urllib.request
 from datetime import UTC, datetime
 
 from flocc import ledger
-from flocc.escalation import Escalation
+from flocc.notice import Notice
 
 WARN_DAYS = 14
 PAGE_DAYS = 3
@@ -73,9 +73,9 @@ def can_write_contents(token: str, slug: str, opener=urllib.request.urlopen) -> 
 
 
 def _page(rt, name: str, path, summary: str) -> None:
-    action = f"Make a new {name} token and write it to {path}"
-    esc = Escalation(1, f"gh-token-{name}", summary, action, scope="global")
-    rt.notifier.send(esc, None, None)
+    rt.notifier.send(
+        Notice(f"gh-token-{name}", summary, f"Make a new {name} token and write it to {path}")
+    )
 
 
 def check_tokens(rt, expiry=token_expiry) -> None:
@@ -139,7 +139,7 @@ def claude_login(exe: str, run=subprocess.run, timeout: float = 30) -> str | Non
 
 def check_claude_login(rt, run=subprocess.run) -> None:
     # Every new session fails without the login and running Remote Control sessions cannot
-    # recover, so the first tick that sees it lapse pages once; the flag rearms when it is back.
+    # recover, so the first tick that sees it lapse reports once; the flag rearms when it is back.
     login = claude_login(rt.claude_exe, run)
     if login is None:
         return
@@ -152,5 +152,5 @@ def check_claude_login(rt, run=subprocess.run) -> None:
         return
     summary = f"The Claude login on {socket.gethostname()} lapsed ({login}); new sessions fail."
     action = "On the desktop, run flocc login -H <this host>"
-    rt.notifier.send(Escalation(1, "claude-login", summary, action, scope="global"), None, None)
+    rt.notifier.send(Notice("claude-login", summary, action))
     ledger.meta_set(rt.con, "claude_login_lapsed", "1")

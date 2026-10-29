@@ -723,7 +723,6 @@ def test_dead_session_restarts_once_then_blocks(rt):
     rt.sessions.alive_names.clear()
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
-    assert rt.notifier.sent[-1].waiting is True
 
 
 def test_launch_trusts_the_worktree_and_its_checkout(rt):
@@ -755,8 +754,8 @@ def test_linear_error_in_block_retries_next_tick(rt):
     done(rt)
     calls = []
 
-    def flaky(esc, issue, team_id):
-        calls.append(esc)
+    def flaky(notice, issue=None):
+        calls.append(notice)
         if len(calls) == 1:
             raise LinearError("timeout")
 
@@ -914,7 +913,7 @@ def test_an_idle_session_is_escalated_once_per_idle_period(rt):
     supervise(rt, current(rt))
     supervise(rt, current(rt))
     (esc,) = rt.notifier.sent
-    assert esc.tier == 2 and esc.waiting and esc.issue_key == "NF-1"
+    assert esc.issue_key == "NF-1"
     assert esc.summary == (
         "NF-1-test has been idle for 30 min without finishing: please run it for me"
     )
@@ -979,7 +978,7 @@ def test_a_screen_unchanged_mid_turn_is_escalated_once_with_its_tail(rt):
     supervise(rt, current(rt))
     supervise(rt, current(rt))
     (esc,) = rt.notifier.sent
-    assert esc.tier == 2 and esc.waiting and esc.cause == "NF-1:stalled"
+    assert esc.cause == "NF-1:stalled"
     assert esc.summary.startswith("NF-1-test has shown the same screen for 20 min")
     assert esc.summary.endswith("```\n Do you want to proceed?\n > 1. Yes\n   2. No\n```")
     assert "flocc press NF-1 Down Enter" in esc.action
@@ -1295,3 +1294,21 @@ def test_a_check_fix_round_after_a_rebase_keeps_the_merge_instruction(rt):
     supervise(rt, current(rt))
     prompt = next(a for a in rt.sessions.started[-1][1] if "E1 boom" in a)
     assert "merge origin/main please" in prompt
+
+
+def test_block_comments_on_the_issue_without_labels(rt):
+    from flocc.notice import Notifier
+
+    rt.notifier = Notifier(rt.con, rt.linear, rt.now)
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    rt.git_head = lambda path: "sha-base"
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    assert rt.linear.comments == [
+        (
+            "The tester finished without committing tests.\n"
+            "Action: Add detail to the acceptance criteria, then run flocc release NF-1"
+        )
+    ]

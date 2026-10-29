@@ -76,7 +76,7 @@ func (w *wizard) run() {
 		return
 	}
 	// The publish token's page lists the mapped repos, so it comes after the host.
-	if !w.fillKeys([]keys.Slot{keys.Publish, keys.Ntfy}, true) || w.stopped {
+	if !w.fillKeys([]keys.Slot{keys.Publish}, true) || w.stopped {
 		return
 	}
 	machines := machinesOf(list)

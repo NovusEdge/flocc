@@ -10,10 +10,10 @@ from pathlib import Path
 from flocc import canary, ledger
 from flocc.agentblock import settings_from_json
 from flocc.context import phase_prompt, state_dir
-from flocc.escalation import DEDUPE_S, Escalation, scoped
 from flocc.idle import BACKGROUND, clear_idle, has_background
 from flocc.ledger import Claim
 from flocc.linear import LinearError
+from flocc.notice import Notice
 from flocc.publisher import (
     BASE_CHECKOUT,
     BranchMoved,
@@ -135,9 +135,9 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
 
 def _block(rt, claim: Claim, cause: str, summary: str, action: str) -> None:
     rt.sessions.kill(session_name(claim.issue_key, claim.phase))
-    esc = scoped(Escalation(2, cause, summary, action, waiting=True), claim.issue_key)
-    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
-    ledger.update_claim(rt.con, claim.issue_key, state="blocked")
+    key = claim.issue_key
+    rt.notifier.send(Notice(f"{key}:{cause}", summary, action, issue_key=key), rt.linear.issue(key))
+    ledger.update_claim(rt.con, key, state="blocked")
 
 
 def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
@@ -181,7 +181,7 @@ def _relaunch(rt, claim: Claim) -> None:
 
 
 def _review_skipped(rt, claim: Claim, why: str) -> None:
-    # A review is advice on an open PR; losing it must neither block the claim nor page anyone.
+    # A review is advice on an open PR; losing it must not block the claim.
     key = claim.issue_key
     url = _pr_url(rt, claim)
     rt.sessions.kill(session_name(key, "review"))
@@ -365,7 +365,7 @@ def start_rebase(rt, claim: Claim, base_sha: str) -> None:
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
         print(f"{key}: rebase not started: {exc}", file=sys.stderr)
         cause = f"{key}:rebase-start"
-        if not ledger.alert_seen(rt.con, cause, DEDUPE_S, rt.now()):
+        if not ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
             ledger.add_digest(rt.con, key, f"rebase not started ({exc})", rt.now())
             ledger.record_alert(rt.con, cause, 3, key, rt.now())
         ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
@@ -677,19 +677,14 @@ def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
     if has_background(d):
         return
     minutes = int((rt.now() - at) / 60)
-    esc = scoped(
-        Escalation(
-            2,
-            "idle",
-            f"{name} has been idle for {minutes} min without finishing:"
-            f" {message or 'no last message'}",
-            "Reply on this issue to steer it, or release it with"
-            f" flocc release --keep-worktree {claim.issue_key}",
-            waiting=True,
-        ),
-        claim.issue_key,
+    esc = Notice(
+        f"{claim.issue_key}:idle",
+        f"{name} has been idle for {minutes} min without finishing: {message or 'no last message'}",
+        "Reply on this issue to steer it, or release it with"
+        f" flocc release --keep-worktree {claim.issue_key}",
+        issue_key=claim.issue_key,
     )
-    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
+    rt.notifier.send(esc, rt.linear.issue(claim.issue_key))
     escalated.write_text(str(at))
 
 
@@ -733,20 +728,16 @@ def _check_stall(rt, claim: Claim, d: Path, name: str) -> None:
     )
     minutes = int((rt.now() - since) / 60)
     key = claim.issue_key
-    esc = scoped(
-        Escalation(
-            2,
-            "stalled",
-            f"{name} has shown the same screen for {minutes} min in the middle of a turn,"
-            f" most likely a dialog waiting for an answer:\n```\n{tail}\n```",
-            f"See it with flocc peek {key} and answer with flocc press {key} <keys>"
-            f" (e.g. flocc press {key} Down Enter), or release it with"
-            f" flocc release --keep-worktree {key}",
-            waiting=True,
-        ),
-        key,
+    esc = Notice(
+        f"{key}:stalled",
+        f"{name} has shown the same screen for {minutes} min in the middle of a turn,"
+        f" most likely a dialog waiting for an answer:\n```\n{tail}\n```",
+        f"See it with flocc peek {key} and answer with flocc press {key} <keys>"
+        f" (e.g. flocc press {key} Down Enter), or release it with"
+        f" flocc release --keep-worktree {key}",
+        issue_key=key,
     )
-    rt.notifier.send(esc, rt.linear.issue(key), None)
+    rt.notifier.send(esc, rt.linear.issue(key))
     escalated.write_text(str(since))
 
 

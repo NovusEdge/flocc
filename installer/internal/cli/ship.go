@@ -115,7 +115,6 @@ func answersDoc(st keys.Store, h hosts.Host, tsKey string) ([]byte, error) {
 		v[s] = got
 	}
 	a := h.Answers
-	a.NtfyTopic = v[keys.Ntfy]
 	a.Secrets = &answers.Secrets{LinearKey: v[keys.Linear], AgentToken: v[keys.Agent], PublishToken: v[keys.Publish], TailscaleAuthKey: tsKey}
 	return toml.Marshal(a)
 }

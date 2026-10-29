@@ -1,7 +1,6 @@
 package keys
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/linearapi"
-	"github.com/NovusEdge/flocc/installer/internal/qr"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/tailnet"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -40,10 +38,9 @@ type Env struct {
 	UI     ui.Session
 	Open   func(url string) // the browser
 	HTTP   *http.Client
-	// The API bases; githubapi.DefaultBase, linearapi.DefaultURL and https://ntfy.sh outside
-	// tests. An empty TailscaleAPI is https://api.tailscale.com.
-	GitHubAPI, LinearAPI, NtfyBase, TailscaleAPI string
-	NewTopic                                     func() string
+	// The API bases; githubapi.DefaultBase and linearapi.DefaultURL outside tests. An empty
+	// TailscaleAPI is https://api.tailscale.com.
+	GitHubAPI, LinearAPI, TailscaleAPI string
 }
 
 var ErrStopped = errors.New("stopped at an empty paste")
@@ -62,11 +59,7 @@ func Fill(ctx context.Context, e Env, m Mapped, slots []Slot) error {
 		if v != "" {
 			continue
 		}
-		if s == Ntfy {
-			err = fillNtfy(ctx, e)
-		} else {
-			err = fillKey(ctx, e, m, s)
-		}
+		err = fillKey(ctx, e, m, s)
 		if err != nil {
 			return err
 		}
@@ -222,12 +215,7 @@ func Take(ctx context.Context, e Env, m Mapped, vals map[Slot]Taken, slots []Slo
 		if sameKey(s, old, t.Value) {
 			continue
 		}
-		var stored bool
-		if s == Ntfy {
-			stored, err = takeNtfy(e, t, old != "")
-		} else {
-			stored, err = takeKey(ctx, e, m, s, t)
-		}
+		stored, err := takeKey(ctx, e, m, s, t)
 		if err != nil {
 			return replaced, err
 		}
@@ -279,23 +267,6 @@ func takeKey(ctx context.Context, e Env, m Mapped, s Slot, t Taken) (bool, error
 		st.Done(note)
 		return true, store(e, s, v)
 	}
-}
-
-// takeNtfy has no live check to run: the topic is only cleaned. Hosts hold it in their ship, not in
-// a secret file, so a topic that replaces another waits for the next ship.
-func takeNtfy(e Env, t Taken, replacing bool) (bool, error) {
-	topic, err := steps.CleanSecret(t.Value)
-	if err != nil {
-		e.UI.Step("Check " + Ntfy.Title() + " from " + t.From).Skip(fmt.Sprintf("%s not taken: %v", Masked(t.Value), err))
-		return false, nil
-	}
-	if err := store(e, Ntfy, topic); err != nil {
-		return false, err
-	}
-	if replacing {
-		e.UI.Todo("run flocc ship -H <host> for each host to send its pushes to the new ntfy topic, and subscribe to it in the ntfy app")
-	}
-	return true, nil
 }
 
 // Replace asks for a new value of each slot in turn and checks it as Fill does, and stores
@@ -362,7 +333,6 @@ var asking = map[Slot]string{
 	Agent:     "asking GitHub",
 	Publish:   "asking GitHub",
 	Tailscale: "asking Tailscale",
-	Ntfy:      "sending a test push",
 }
 
 // repoProblems are the repos a working token cannot serve, one line each. The fix differs: a
@@ -492,13 +462,6 @@ func Check(ctx context.Context, e Env, m Mapped) []string {
 		}
 		st.Done(note)
 	}
-	st := e.UI.Step("Check ntfy topic")
-	if t, err := e.Store.Get(Ntfy); err != nil || t == "" {
-		problems = append(problems, "ntfy topic: missing; run flocc keys")
-		st.Fail(errors.New("missing"))
-	} else {
-		st.Done("set")
-	}
 	return problems
 }
 
@@ -565,63 +528,4 @@ func Page(s Slot, m Mapped) (string, string) {
 			", but a fine-grained token serves one owner: pick the owner as Resource owner, and map only that owner's repos."
 	}
 	return "https://github.com/settings/personal-access-tokens/new?" + q.Encode(), help
-}
-
-func fillNtfy(ctx context.Context, e Env) error {
-	topic := e.NewTopic()
-	if err := e.Store.Set(Ntfy, topic); err != nil {
-		return err
-	}
-	web := "https://ntfy.sh/" + topic
-	body := "Scan this with the ntfy app on Android, or subscribe to " + web + " in the app."
-	// qr.Write ends lines in CRLF for a raw-mode terminal; a row is plain text.
-	var code bytes.Buffer
-	if err := qr.Write(&code, "ntfy://ntfy.sh/"+topic+"?display=flocc"); err == nil {
-		body += "\n" + strings.ReplaceAll(code.String(), "\r", "")
-	}
-	e.UI.Note("ntfy topic", body)
-	for {
-		if err := push(ctx, e, topic); err != nil {
-			return err
-		}
-		arrived, err := e.Prompt.Confirm("A test push went to "+web+". Did it arrive?", true)
-		if err != nil || arrived {
-			return err
-		}
-		again, err := e.Prompt.Confirm("Subscribe to "+web+" in the ntfy app. Send another test push?", true)
-		if err != nil {
-			return err
-		}
-		if !again {
-			e.UI.Todo("subscribe to " + web + " in the ntfy app before the first ship")
-			return nil
-		}
-	}
-}
-
-func push(ctx context.Context, e Env, topic string) (err error) {
-	st := e.UI.Step("Check ntfy topic")
-	st.Detail(asking[Ntfy])
-	defer func() {
-		if err != nil {
-			st.Fail(err)
-			return
-		}
-		st.Done("test push sent")
-	}()
-	req, err := http.NewRequestWithContext(ctx, "POST", e.NtfyBase+"/"+topic, strings.NewReader("test push from flocc keys"))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Title", "flocc")
-	req.Header.Set("Priority", "5")
-	resp, err := e.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("ntfy answered the test push with %s", resp.Status)
-	}
-	return nil
 }

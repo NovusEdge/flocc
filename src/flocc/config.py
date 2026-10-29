@@ -46,6 +46,7 @@ _PERMISSION_KEYS = {
     "judge_max_per_run": "judge_max_per_run",
 }
 
+_RETIRED = ("ntfy_url",)
 _PATH_KEYS = (
     "state_root",
     "worktree_root",
@@ -89,8 +90,7 @@ class Config:
     linear_key_file: Path
     agent_gh_token_file: Path
     publish_gh_token_file: Path
-    ntfy_url: str
-    # Required: tier 3 reports, wall-clock stops among them, reach the owner only through it.
+    # Required: wall-clock stops and problems with no issue reach the owner only through it.
     digest_issue: str
     digest_hour: int = 18
     session_cap: int = 2
@@ -244,6 +244,10 @@ def load(path: Path) -> Config:
         raise ValueError(f"{path}: no [repos.<name>] tables")
     if not raw.get("digest_issue"):
         raise ValueError(f"{path}: digest_issue is required, the key of the pinned digest issue")
+    # Hosts keep their config.toml across upgrades, so a key a release removed must not stop the tick.
+    for key in _RETIRED:
+        if raw.pop(key, None) is not None:
+            print(f"{path}: {key} is no longer used; delete it", file=sys.stderr)
     for key in _PATH_KEYS:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()

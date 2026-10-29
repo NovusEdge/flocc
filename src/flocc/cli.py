@@ -12,7 +12,6 @@ from pathlib import Path, PurePosixPath
 
 from flocc import idle, ledger, usage
 from flocc.config import TRAILER, default_config_path, load
-from flocc.escalation import Escalation, validate
 
 
 def _state_dir() -> Path:
@@ -31,31 +30,6 @@ def cmd_statusline(args) -> int:
 
 def _pct(value: float | None) -> str:
     return "?" if value is None else f"{value:.0f}%"
-
-
-def cmd_escalate(args) -> int:
-    state = _state_dir()
-    esc = Escalation(
-        tier=args.tier,
-        cause=args.cause,
-        summary=args.summary,
-        action=args.action or "",
-        issue_key=state.name,
-        default=args.default,
-        deadline_min=args.deadline_min,
-        waiting=args.waiting,
-        scope="global" if args.is_global else "issue",
-    )
-    try:
-        validate(esc)
-    except ValueError as exc:
-        print(f"escalate: {exc}", file=sys.stderr)
-        return 2
-    state.mkdir(parents=True, exist_ok=True)
-    with (state / "escalations.jsonl").open("a") as f:
-        f.write(esc.to_json() + "\n")
-    print("recorded; the service routes it on its next run")
-    return 0
 
 
 def _ledger(args):
@@ -710,7 +684,6 @@ def _age(seconds: float) -> str:
 COMMANDS = {
     "stop": cmd_stop,
     "statusline": cmd_statusline,
-    "escalate": cmd_escalate,
     "hook": cmd_hook,
     "claim": cmd_claim,
     "tests-amended": cmd_tests_amended,
@@ -753,15 +726,6 @@ def build_parser() -> argparse.ArgumentParser:
         return sub.add_parser(name, help=text, description=text)
 
     add("statusline", "Record session usage from stdin and print the status line")
-    esc = add("escalate", "Record an escalation for the service to route")
-    esc.add_argument("--tier", type=int, required=True, help="escalation tier")
-    esc.add_argument("--cause", required=True, help="why it is escalated")
-    esc.add_argument("--summary", required=True, help="one-line summary")
-    esc.add_argument("--action", help="what the human should do")
-    esc.add_argument("--default", help="what happens if nobody answers")
-    esc.add_argument("--deadline-min", type=int, help="minutes until the default applies")
-    esc.add_argument("--waiting", action="store_true", help="session waits for the answer")
-    esc.add_argument("--global", dest="is_global", action="store_true", help="affects all issues")
     hook = add("hook", "Git hook entry point")
     hook.add_argument("name", choices=["pre-commit", "commit-msg"], help="which hook is running")
     hook.add_argument("--no-trailer", action="store_true", help="skip the commit trailer")

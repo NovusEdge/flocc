@@ -173,7 +173,7 @@ func TestSetupTakesEnvKeysBeforeAskingForEachHalf(t *testing.T) {
 	inOrder(t, l.calls, "seed /repo",
 		fmt.Sprintf("env %v", []keys.Slot{keys.Linear, keys.Agent}), fmt.Sprintf("keys %v", []keys.Slot{keys.Linear, keys.Agent}),
 		fmt.Sprintf("env %v", []keys.Slot{keys.Tailscale}),
-		fmt.Sprintf("env %v", []keys.Slot{keys.Publish, keys.Ntfy}), fmt.Sprintf("keys %v", []keys.Slot{keys.Publish, keys.Ntfy}))
+		fmt.Sprintf("env %v", []keys.Slot{keys.Publish}), fmt.Sprintf("keys %v", []keys.Slot{keys.Publish}))
 }
 
 func TestSetupFailsTheKeysRowWhenEnvKeysFails(t *testing.T) {
@@ -207,7 +207,7 @@ func TestSetupCreatesTheFirstHostBetweenTheKeyHalves(t *testing.T) {
 		fmt.Sprintf("keys %v", []keys.Slot{keys.Linear, keys.Agent}),
 		"machine zer0-day-nimble",
 		"create zer0-day-nimble flocc-nimble",
-		fmt.Sprintf("keys %v", []keys.Slot{keys.Publish, keys.Ntfy}))
+		fmt.Sprintf("keys %v", []keys.Slot{keys.Publish}))
 	if slices.ContainsFunc(p.asked, func(q string) bool { return strings.HasPrefix(q, "Which machine holds") }) {
 		t.Fatal("asked the machine of a host create just made on one")
 	}
@@ -269,7 +269,7 @@ func TestSetupStopsAtACancelledPrompt(t *testing.T) {
 	ops.hosts = func() []hosts.Host { return []hosts.Host{{Name: "a", SSH: "root@a"}} }
 	d, out, p := setupDeps(t, nil)
 	p.errAt, p.err = "Which machine holds", huh.ErrUserAborted
-	if code := runSetup(context.Background(), d, ops); code != 1 || l.has(fmt.Sprintf("keys %v", []keys.Slot{keys.Publish, keys.Ntfy})) || !strings.Contains(out.String(), "Stopped") {
+	if code := runSetup(context.Background(), d, ops); code != 1 || l.has(fmt.Sprintf("keys %v", []keys.Slot{keys.Publish})) || !strings.Contains(out.String(), "Stopped") {
 		t.Fatalf("exit %d calls %v out %q", code, l.calls, out)
 	}
 }
@@ -600,7 +600,7 @@ func TestSetupOnAFreshDesktopRunsEveryStepInOrder(t *testing.T) {
 		fmt.Sprintf("keys %v", []keys.Slot{keys.Linear, keys.Agent}),
 		"create zer0-day-nimble flocc-nimble",
 		"read flocc-nimble",
-		fmt.Sprintf("keys %v", []keys.Slot{keys.Publish, keys.Ntfy}),
+		fmt.Sprintf("keys %v", []keys.Slot{keys.Publish}),
 		"old zer0-day-nimble")
 }
 

@@ -7,7 +7,6 @@ ledger_path = "~/.local/state/flocc/ledger.sqlite"
 linear_key_file = "~/.config/flocc/linear.key"
 agent_gh_token_file = "~/.config/flocc/gh-agent.token"
 publish_gh_token_file = "~/.config/flocc/gh-publish.token"
-ntfy_url = "https://ntfy.sh/replace-with-a-long-random-topic"
 digest_issue = "NF-1"
 check_timeout_s = 1800
 setup_timeout_s = 900
@@ -37,11 +36,11 @@ setup_timeout_s = 900
 # review_wall_clock_s = 3600
 # Restart a session when its context passes this pct.
 # context_restart_pct = 60.0
-# Escalate to the owner when a session has ended its turn and stayed quiet this many seconds.
+# Comment on the issue when a session has ended its turn and stayed quiet this many seconds.
 # idle_escalate_s = 1800.0
 # Fix sessions a failed check gets before the claim blocks.
 # check_fix_rounds = 2
-# Escalate when a session's screen has not changed for this many seconds in the middle of a turn.
+# Comment on the issue when a session's screen has not changed this many seconds mid-turn.
 # stall_escalate_s = 1200.0
 # review_model = "opus"
 # Per-phase reasoning effort (low|medium|high|xhigh|max); an issue's agentblock effort overrides.

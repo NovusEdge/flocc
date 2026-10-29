@@ -19,7 +19,6 @@ def test_context_lists_issue_and_commands(tmp_cfg):
         "Fix rounding",
         "Round half-even.",
         "flocc done",
-        "flocc escalate",
         "flocc claim",
         "flocc context",
     ):

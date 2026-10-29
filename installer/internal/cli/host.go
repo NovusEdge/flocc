@@ -217,8 +217,8 @@ func addHost(ctx context.Context, d *deps, name string, reach hosts.Host) error 
 	// Asked for after the save, so the publish token's page lists the repos just mapped.
 	m := mapped(listHosts(d))
 	return stepped(d, "Keys", func(st *ui.Step) (string, error) {
-		st.Detail("checking the publish token and ntfy topic")
-		if err := keys.Fill(ctx, e, m, []keys.Slot{keys.Publish, keys.Ntfy}); err != nil {
+		st.Detail("checking the publish token")
+		if err := keys.Fill(ctx, e, m, []keys.Slot{keys.Publish}); err != nil {
 			return "", fmt.Errorf("the host is saved; %w", err)
 		}
 		// Check has failed a row for each problem; the remedies become to-dos.
@@ -343,7 +343,7 @@ func ensureDigest(ctx context.Context, d *deps, lin *linearapi.Client, team line
 
 // ensureLabels creates the team's missing labels and says which it made.
 func ensureLabels(ctx context.Context, lin *linearapi.Client, team linearapi.Team, h hosts.Host, st *ui.Step) (string, error) {
-	names := []string{"claude", "escalation", "needs-decision"}
+	names := []string{"claude"}
 	for _, r := range h.Repos {
 		names = append(names, r.Name)
 	}
@@ -365,10 +365,9 @@ func ensureLabels(ctx context.Context, lin *linearapi.Client, team linearapi.Tea
 }
 
 // importHost copies a host's saved answers into its host file: for a host shipped before host
-// files held answers, and after an --interactive ship. The host's ntfy topic becomes the
-// desktop's when the desktop has none, so a subscription the owner already has keeps working,
-// and so does each key the desktop lacks: GitHub shows a token only once, so without this a
-// host moved to the desktop store would need new ones.
+// files held answers, and after an --interactive ship. Each key the desktop lacks is adopted from
+// the host: GitHub shows a token only once, so without this a host moved to the desktop store
+// would need new ones.
 func importHost(ctx context.Context, d *deps, name string, reach hosts.Host) error {
 	var h hosts.Host
 	var dest ship.Dest
@@ -402,22 +401,9 @@ func importHost(ctx context.Context, d *deps, name string, reach hosts.Host) err
 		return err
 	}
 	if err := stepped(d, "Save host", func(*ui.Step) (string, error) {
-		detail := "imported into " + hostFile(d, name)
-		store := d.store()
-		switch cur, err := store.Get(keys.Ntfy); {
-		case err != nil || a.NtfyTopic == "" || cur == a.NtfyTopic:
-		case cur == "":
-			if err := store.Set(keys.Ntfy, a.NtfyTopic); err != nil {
-				return "", err
-			}
-			detail += "; kept the host's ntfy topic as the desktop's"
-		default:
-			// Ship sends the desktop's topic, so the phone following the host's would go quiet.
-			d.ui.Todo(fmt.Sprintf("The desktop's ntfy topic differs from %s's; the next ship moves %s to the desktop's (https://ntfy.sh/%s).", name, name, cur))
-		}
 		h.Answers = *a
-		h.NtfyTopic, h.Secrets = "", nil
-		return detail, hosts.Save(hosts.Dir(d.home), h)
+		h.Secrets = nil
+		return "imported into " + hostFile(d, name), hosts.Save(hosts.Dir(d.home), h)
 	}); err != nil {
 		return err
 	}

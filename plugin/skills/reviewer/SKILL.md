@@ -19,8 +19,7 @@ Review the branch the implementer pushed. You change nothing: do not edit files,
   that review's findings: say which are fixed and which remain. The fixer was told to leave
   findings that need the owner alone, so those are not failures; list them once under `## Minor`.
 - Run the repo's check only if you doubt it passes; the service already ran it before the push.
-- Findings go only in `review.md`. Do not run `flocc escalate`; the PR is already open and
-  the owner reads the review.
+- Findings go only in `review.md`; the PR is already open and the owner reads the review.
 - Do not raise style points a linter would catch or changes outside the diff.
 
 Write `review.md` in your state directory, with these headings, omitting an empty one:

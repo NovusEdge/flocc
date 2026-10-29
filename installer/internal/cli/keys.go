@@ -18,7 +18,7 @@ import (
 
 func keysEnv(d *deps) keys.Env {
 	return keys.Env{Store: d.store(), Prompt: d.prompt, UI: d.ui, Open: d.open, HTTP: d.http,
-		GitHubAPI: d.githubAPI, LinearAPI: d.linearAPI, NtfyBase: d.ntfyBase, NewTopic: d.newTopic}
+		GitHubAPI: d.githubAPI, LinearAPI: d.linearAPI}
 }
 
 // mapped is every team, repo and digest issue the host files map, each once.

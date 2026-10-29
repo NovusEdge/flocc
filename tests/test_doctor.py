@@ -137,14 +137,11 @@ class DoctorLinear:
 
 def test_linear_checks(tmp_cfg):
     assert [r.status for r in doctor.linear_checks(tmp_cfg, DoctorLinear())] == ["ok", "ok"]
-    labels = doctor.linear_checks(tmp_cfg, DoctorLinear(missing=["escalation"]))[0]
-    assert labels.status == "fail" and "escalation" in labels.detail
+    labels = doctor.linear_checks(tmp_cfg, DoctorLinear(missing=["claude"]))[0]
+    assert labels.status == "fail" and "claude" in labels.detail
     fake = DoctorLinear(missing=["backend"])
     results = doctor.linear_checks(tmp_cfg, fake)
-    assert fake.label_calls == [
-        [tmp_cfg.trigger_label, "escalation", "needs-decision"],
-        list(tmp_cfg.repos),
-    ]
+    assert fake.label_calls == [[tmp_cfg.trigger_label], list(tmp_cfg.repos)]
     assert [r.status for r in results] == ["ok", "warn", "ok"]
     assert "backend" in results[1].detail and "never routed" in results[1].detail
     closed = doctor.linear_checks(tmp_cfg, DoctorLinear(digest_state="completed"))[1]
@@ -160,12 +157,6 @@ def test_report_exits_non_zero_on_a_failure(capsys):
     out = capsys.readouterr().out
     assert "FAIL  c: broken" in out and "ok    a: fine" in ok_out
     assert "2 checks, 0 failed" in ok_out and "1 checks, 1 failed" in out
-
-
-def test_ntfy_check_warns_on_placeholder():
-    cfg = load(EXAMPLE)
-    assert doctor.ntfy_check(cfg).status == "warn"
-    assert doctor.ntfy_check(replace(cfg, ntfy_url="https://ntfy.sh/realtopic")).status == "ok"
 
 
 def http_error(code):
@@ -198,7 +189,7 @@ def test_doctor_json_prints_the_checks_and_keeps_the_exit_code(tmp_path, capsys,
 
     results = [
         Result("ok", "git", "/usr/bin/git"),
-        Result("warn", "ntfy", "placeholder"),
+        Result("warn", "disk", "placeholder"),
         Result("fail", "tmux", "no server"),
     ]
     monkeypatch.setattr("flocc.doctor.collect_results", lambda cfg: results)
@@ -209,7 +200,7 @@ def test_doctor_json_prints_the_checks_and_keeps_the_exit_code(tmp_path, capsys,
     # A warning stays ok=true for older desktops and carries warn=true for newer ones.
     assert out["checks"][1:] == [
         {"name": "git", "ok": True, "detail": "/usr/bin/git"},
-        {"name": "ntfy", "ok": True, "warn": True, "detail": "placeholder"},
+        {"name": "disk", "ok": True, "warn": True, "detail": "placeholder"},
         {"name": "tmux", "ok": False, "detail": "no server"},
     ]
 
@@ -217,8 +208,8 @@ def test_doctor_json_prints_the_checks_and_keeps_the_exit_code(tmp_path, capsys,
 def test_plain_doctor_output_is_unchanged(tmp_path, capsys, monkeypatch):
     from flocc.cli import main
 
-    monkeypatch.setattr("flocc.doctor.collect_results", lambda cfg: [Result("warn", "ntfy", "x")])
+    monkeypatch.setattr("flocc.doctor.collect_results", lambda cfg: [Result("warn", "disk", "x")])
     assert main(["--config", str(EXAMPLE), "doctor"]) == 0
     assert capsys.readouterr().out == (
-        f"ok    config: {EXAMPLE}\nwarn  ntfy: x\n1 checks, 0 failed\n"
+        f"ok    config: {EXAMPLE}\nwarn  disk: x\n1 checks, 0 failed\n"
     )

@@ -22,7 +22,6 @@ from flocc.worktree import free_disk_gb
 
 # Minimum claude version whose flags the launcher needs (--name, --remote-control).
 MIN_CLAUDE = (2, 1, 293)
-_LABELS = ("escalation", "needs-decision")
 
 
 @dataclass(frozen=True)
@@ -133,7 +132,7 @@ def tmux_check(socket: str = SOCKET, run=subprocess.run) -> Result:
 
 
 def linear_checks(cfg: Config, linear) -> list[Result]:
-    names = [cfg.trigger_label, *_LABELS]
+    names = [cfg.trigger_label]
     try:
         # Separate calls: a long repo list must not be able to crowd out a required label.
         required = linear.missing_labels(cfg.team_key, names)
@@ -239,18 +238,9 @@ def report(results: list[Result]) -> int:
     return 1 if fails else 0
 
 
-def ntfy_check(cfg: Config) -> Result:
-    if "replace-with-a-long-random-topic" in cfg.ntfy_url:
-        return Result(
-            "warn", "ntfy", "still the example placeholder, escalation pushes are dropped"
-        )
-    return Result("ok", "ntfy", cfg.ntfy_url)
-
-
 def collect_results(cfg: Config) -> list[Result]:
     results = path_checks(cfg) + scope_check(cfg)
     results.append(disk_check(cfg))
-    results.append(ntfy_check(cfg))
     key = secret_file("linear key", cfg.linear_key_file)
     results.append(key)
     if key.status == "ok":

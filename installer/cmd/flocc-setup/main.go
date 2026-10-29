@@ -227,9 +227,7 @@ func run(args []string) int {
 		}
 		env.AnswersPath = savedAnswersPath(env.Home)
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
-			if err := a.OverlaySaved(saved); err != nil {
-				fmt.Fprintln(stderr, "flocc-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
-			}
+			_ = a.Overlay(saved)
 		}
 	}
 	if err := a.Overlay(in); err != nil {

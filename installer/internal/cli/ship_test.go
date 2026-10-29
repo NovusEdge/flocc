@@ -59,7 +59,7 @@ func TestShipSendsTheHostFileAndTheKeysOnStdinAndDrawsTheSummary(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 	a, err := answers.Parse(c.doc)
-	if err != nil || a.TeamKey != "NF" || a.NtfyTopic != "flocc-t" || a.Secrets.LinearKey != "lin_api_k" ||
+	if err != nil || a.TeamKey != "NF" || a.Secrets.LinearKey != "lin_api_k" ||
 		a.Secrets.AgentToken != "github_pat_agent" || a.Secrets.PublishToken != "github_pat_publish" {
 		t.Fatalf("%+v %v", a, err)
 	}

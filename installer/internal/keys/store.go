@@ -20,7 +20,6 @@ const (
 	Linear  Slot = "linear_key"
 	Agent   Slot = "agent_token"
 	Publish Slot = "publish_token"
-	Ntfy    Slot = "ntfy_topic"
 
 	// Tailscale holds "id:secret" of an OAuth client. It is optional, so it is not in Slots: ship
 	// and the answers document would refuse a desktop that never made one.
@@ -29,10 +28,10 @@ const (
 
 // Slots is the required keys in fill order: the publish token's page opens only after the agent
 // token passes.
-var Slots = []Slot{Linear, Agent, Publish, Ntfy}
+var Slots = []Slot{Linear, Agent, Publish}
 
 // fillOrder is Slots with the optional slot, which Fill asks for only when the caller names it.
-var fillOrder = []Slot{Linear, Agent, Publish, Tailscale, Ntfy}
+var fillOrder = []Slot{Linear, Agent, Publish, Tailscale}
 
 func (s Slot) Title() string {
 	switch s {
@@ -45,7 +44,7 @@ func (s Slot) Title() string {
 	case Tailscale:
 		return "Tailscale OAuth client"
 	}
-	return "ntfy topic"
+	return string(s)
 }
 
 type Store interface {

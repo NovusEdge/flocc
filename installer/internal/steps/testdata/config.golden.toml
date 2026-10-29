@@ -3,7 +3,6 @@ check_timeout_s = 1800
 digest_issue = 'NF-186'
 ledger_path = '~/.local/state/flocc/ledger.sqlite'
 linear_key_file = '~/.config/flocc/linear.key'
-ntfy_url = 'https://ntfy.sh/flocc-test'
 plugin_dir = '~/flocc/plugin'
 publish_gh_token_file = '~/.config/flocc/gh-publish.token'
 setup_timeout_s = 900

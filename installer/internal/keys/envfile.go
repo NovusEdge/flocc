@@ -24,7 +24,6 @@ var envNames = map[Slot]string{
 	Linear:    "FLOCC_LINEAR_API_KEY",
 	Agent:     "FLOCC_GITHUB_AGENT_TOKEN",
 	Publish:   "FLOCC_GITHUB_PUBLISH_TOKEN",
-	Ntfy:      "FLOCC_NTFY_TOPIC",
 	Tailscale: "FLOCC_TAILSCALE_OAUTH_SECRET",
 }
 

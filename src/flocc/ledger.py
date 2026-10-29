@@ -69,6 +69,7 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
   at REAL NOT NULL
 )""",
     ),
+    ("ALTER TABLE claims DROP COLUMN escalation_offset",),
 )
 _JSON_FIELDS = ("paths", "depends_on")
 LIVE_STATES = ("running", "blocked")
@@ -93,7 +94,6 @@ class Claim:
     base_sha: str | None = None
     tester_sha: str | None = None
     last_comment_at: str | None = None
-    escalation_offset: int = 0
 
 
 _CLAIM_FIELDS = frozenset(f.name for f in fields(Claim))
@@ -264,6 +264,9 @@ def file_conflicts(files, claims, exclude: str | None) -> dict[str, str]:
                 out[name] = claim.issue_key
                 break
     return out
+
+
+DEDUPE_S = 24 * 3600
 
 
 def alert_seen(con: sqlite3.Connection, cause: str, within_s: float, now: float) -> bool:

@@ -18,7 +18,6 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/dash"
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/host"
@@ -32,7 +31,7 @@ const usage = `flocc runs Claude sessions on Linear issues. This is its desktop 
 
 Desktop commands:
   flocc setup                        everything below in order: keys, a host, old versions, logins
-  flocc keys                         make, check and store the Linear key, GitHub tokens and ntfy topic
+  flocc keys                         make, check and store the Linear key and GitHub tokens
   flocc keys check                   check every stored key again
   flocc keys rotate github|linear    replace keys and push them to every host
   flocc host add <name> [--ssh DEST | --daytona SANDBOX]
@@ -74,8 +73,6 @@ type deps struct {
 	http      *http.Client
 	githubAPI string
 	linearAPI string
-	ntfyBase  string
-	newTopic  func() string
 
 	repoRoot func() (string, error)
 	doShip   func(context.Context, ship.Options, io.Reader) (ship.Summary, error)
@@ -94,8 +91,7 @@ func Main(args []string) int {
 	// Key pages are made on the desktop; only a host login, which a phone may finish, gets a QR code.
 	d.open = ship.Browse
 	d.http = &http.Client{Timeout: 30 * time.Second}
-	d.githubAPI, d.linearAPI, d.ntfyBase = githubapi.DefaultBase, linearapi.DefaultURL, "https://ntfy.sh"
-	d.newTopic = answers.RandomTopic
+	d.githubAPI, d.linearAPI = githubapi.DefaultBase, linearapi.DefaultURL
 	d.repoRoot = func() (string, error) {
 		out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 		return strings.TrimSpace(string(out)), err

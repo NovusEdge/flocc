@@ -29,7 +29,6 @@ func RenderConfig(example []byte, a *answers.Answers) ([]byte, error) {
 	}
 	m["team_key"] = a.TeamKey
 	m["digest_issue"] = a.DigestIssue
-	m["ntfy_url"] = "https://ntfy.sh/" + a.NtfyTopic
 	// The example's [repos.backend] and [mcp_servers.sentry] are placeholders.
 	delete(m, "mcp_servers")
 	repos := map[string]any{}
@@ -160,10 +159,6 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	if err := e.UI.ConfigForm(a, found, defaults); err != nil {
 		return err
 	}
-	// The form shows a suggestion as a placeholder; scripted runs have none.
-	if a.NtfyTopic == "" {
-		a.NtfyTopic = answers.RandomTopic()
-	}
 	// Saved before validating, so a typo does not discard everything typed.
 	if err := e.SaveAnswers(); err != nil {
 		return err
@@ -181,20 +176,6 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 	}
 	if err := os.WriteFile(e.HomePath(".config/flocc/config.toml"), rendered, 0o600); err != nil {
 		return err
-	}
-	// With answers on stdin the desktop's flocc keys already saw this topic's test push arrive.
-	if !e.SkipInteractive {
-		ntfy := "https://ntfy.sh/" + a.NtfyTopic
-		if _, err := e.Must(ctx, "curl", "-fsS", "-H", "Priority: 5", "-H", "Title: flocc", "-d", "test push from flocc-setup", ntfy); err != nil {
-			return err
-		}
-		arrived, err := e.UI.Confirm("Subscribe to "+ntfy+" in the ntfy app. Did the priority 5 test push arrive?", true)
-		if err != nil {
-			return err
-		}
-		if !arrived {
-			return errors.New("the ntfy test push did not arrive at " + ntfy + "; subscribe to it in the app and run again")
-		}
 	}
 	for _, r := range a.Repos {
 		dir := e.Real("src/" + r.Name)

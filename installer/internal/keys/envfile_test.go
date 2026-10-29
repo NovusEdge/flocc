@@ -30,7 +30,6 @@ export FLOCC_LINEAR_API_KEY="lin_api_a"
 FLOCC_GITHUB_AGENT_TOKEN='github_pat_a'
   FLOCC_GITHUB_PUBLISH_TOKEN =  github_pat_p
 
-FLOCC_NTFY_TOPIC=
 OTHER=ignored
 not a pair
 FLOCC_TAILSCALE_OAUTH_SECRET=tskey-client-s
@@ -63,9 +62,9 @@ func TestTheEnvironmentOverridesTheFileAndAnEmptyValueIsUnset(t *testing.T) {
 
 func TestTheFileCountsOnlyInTheFloccCheckout(t *testing.T) {
 	root := checkout(t, "module example.com/other", "FLOCC_LINEAR_API_KEY=lin_api_file\n")
-	env := func(k string) string { return map[string]string{"FLOCC_NTFY_TOPIC": "t"}[k] }
+	env := func(k string) string { return map[string]string{"FLOCC_LINEAR_API_KEY": "t"}[k] }
 	got := FromEnv(root, env, &bytes.Buffer{})
-	if len(got) != 1 || got[Ntfy].From != "the environment" {
+	if len(got) != 1 || got[Linear].From != "the environment" {
 		t.Fatalf("%v", got)
 	}
 	if got := FromEnv("", env, &bytes.Buffer{}); len(got) != 1 {
@@ -90,7 +89,7 @@ func TestTheTailscaleValueJoinsTheClientIDWhenBothAreSet(t *testing.T) {
 }
 
 func TestAWorldReadableEnvFileIsSetTo600WithANote(t *testing.T) {
-	root := checkout(t, floccModule, "FLOCC_NTFY_TOPIC=t\n")
+	root := checkout(t, floccModule, "FLOCC_LINEAR_API_KEY=t\n")
 	path := filepath.Join(root, ".env")
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
@@ -108,7 +107,7 @@ func TestAWorldReadableEnvFileIsSetTo600WithANote(t *testing.T) {
 func TestSeedEnvCopiesTheExampleOnceAndNeverOverwrites(t *testing.T) {
 	root := checkout(t, floccModule, "")
 	example := filepath.Join(root, ".env.example")
-	if err := os.WriteFile(example, []byte("FLOCC_NTFY_TOPIC=\n"), 0o644); err != nil {
+	if err := os.WriteFile(example, []byte("FLOCC_LINEAR_API_KEY=\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	made, err := SeedEnv(root)
@@ -117,16 +116,16 @@ func TestSeedEnvCopiesTheExampleOnceAndNeverOverwrites(t *testing.T) {
 	}
 	path := filepath.Join(root, ".env")
 	b, _ := os.ReadFile(path)
-	if st, _ := os.Stat(path); string(b) != "FLOCC_NTFY_TOPIC=\n" || st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(path); string(b) != "FLOCC_LINEAR_API_KEY=\n" || st.Mode().Perm() != 0o600 {
 		t.Fatalf("%q %o", b, st.Mode().Perm())
 	}
-	if err := os.WriteFile(path, []byte("FLOCC_NTFY_TOPIC=mine\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("FLOCC_LINEAR_API_KEY=mine\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if made, err := SeedEnv(root); made || err != nil {
 		t.Fatal(made, err)
 	}
-	if b, _ := os.ReadFile(path); string(b) != "FLOCC_NTFY_TOPIC=mine\n" {
+	if b, _ := os.ReadFile(path); string(b) != "FLOCC_LINEAR_API_KEY=mine\n" {
 		t.Fatalf("overwritten: %q", b)
 	}
 }

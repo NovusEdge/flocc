@@ -16,9 +16,9 @@ from flocc.agentblock import (
 )
 from flocc.config import trailer_enabled
 from flocc.context import state_dir, write_context
-from flocc.escalation import DEDUPE_S, Escalation, scoped
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
+from flocc.notice import Notice
 from flocc.sessions import session_name
 from flocc.supervisor import launch
 from flocc.usage import latest_usage
@@ -67,8 +67,7 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
         except LinearError as exc:
             print(f"release: {claim.issue_key} not moved back to Todo: {exc}", file=sys.stderr)
     ledger.delete_claim(rt.con, claim.issue_key)
-    # Alert dedupe is keyed to the old claim; a rerun that blocks again for the same cause must
-    # still push.
+    # Alert dedupe is keyed to the old claim; a rerun that fails again for the same cause must still be told.
     ledger.clear_issue_alerts(rt.con, claim.issue_key)
 
 
@@ -304,10 +303,6 @@ def poll(rt) -> None:
                 print(f"{issue.key}: rerun comment not posted: {exc}", file=sys.stderr)
 
 
-def _size(path: Path) -> int:
-    return path.stat().st_size if path.exists() else 0
-
-
 def _start(rt, issue: Issue, repo: str, settings) -> None:
     cfg = rt.cfg
     cause = f"{issue.key}:prepare"
@@ -339,11 +334,10 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
             base = head_at_base(cfg.repos[repo], cfg.worktree_root.resolve() / issue.key)
         if base is not None:
             base_branch = cfg.repos[repo].base_branch
-            # Marked only once the escalation is out: a mark holds every issue before _start,
-            # so one set ahead of a failed send would hold them with nobody told.
+            # Marked only once the notice is out: a mark holds every issue before _start, so one
+            # set ahead of a failed send would hold them with nobody told.
             rt.notifier.send(
-                Escalation(
-                    1,
+                Notice(
                     f"{repo}:main-broken",
                     f"./setup fails on a clean checkout of {repo}'s {base_branch} at {base[:9]},"
                     f" so its issues are held: {exc}{detail}",
@@ -352,27 +346,21 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
                     issue_key=issue.key,
                 ),
                 issue,
-                issue.team_id,
             )
             canary.mark(rt.con, repo, base, rt.now(), stderr.strip() or str(exc))
             return
-        # A tier 2 escalation labels and comments every time it is sent, and a broken ./setup
-        # fails on every poll.
-        if ledger.alert_seen(rt.con, cause, DEDUPE_S, rt.now()):
+        # A broken ./setup fails on every poll, and every send comments again.
+        if ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
             return
         rt.notifier.send(
-            Escalation(
-                2,
+            Notice(
                 cause,
                 f"Preparing the worktree failed: {exc}{detail}",
                 "Fix the repo or ./setup",
                 issue_key=issue.key,
-                waiting=True,
             ),
             issue,
-            issue.team_id,
         )
-        # The notifier records a cause only when it pushes.
         ledger.record_alert(rt.con, cause, 2, issue.key, rt.now())
         return
     # Cleared here, not with the other causes in poll(): those run before every prepare attempt.
@@ -441,9 +429,6 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         tester_sha=tester_sha,
         # Comments written before the claim are not replies to it.
         last_comment_at=datetime.fromtimestamp(rt.now(), UTC).isoformat(),
-        # A released issue's state directory keeps the previous claim's escalations; start past
-        # them. launch() deletes its old markers.
-        escalation_offset=_size(d / "escalations.jsonl"),
     )
     ledger.insert_claim(rt.con, claim)
     write_context(cfg, issue, claim)
@@ -463,56 +448,8 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         raise
 
 
-def _new_lines(path: Path, offset: int) -> list[bytes]:
-    # Only complete lines; a line still being written is picked up next tick.
-    try:
-        new = path.read_bytes()[offset:]
-    except FileNotFoundError:
-        return []
-    return new.split(b"\n")[:-1]
-
-
-def route_escalations(rt) -> dict[str, LinearError]:
-    """Returns the Linear failures by issue key; one deleted issue must not stop the others."""
-    failed = {}
-    for claim in ledger.live_claims(rt.con):
-        path = state_dir(rt.cfg, claim.issue_key) / "escalations.jsonl"
-        lines = _new_lines(path, claim.escalation_offset)
-        if not lines:
-            continue
-        offset = claim.escalation_offset
-        if claim.phase == "review":
-            # The PR is already open; a review finding must not label the issue or push the owner.
-            for line in lines:
-                text = line.decode(errors="replace")[:300]
-                ledger.add_digest(
-                    rt.con, claim.issue_key, f"review session escalated: {text}", rt.now()
-                )
-                offset += len(line) + 1
-                ledger.update_claim(rt.con, claim.issue_key, escalation_offset=offset)
-            continue
-        try:
-            issue = rt.linear.issue(claim.issue_key)
-        except LinearError as exc:
-            failed[claim.issue_key] = exc
-            continue
-        for line in lines:
-            raw = line.decode(errors="replace")
-            try:
-                esc = Escalation.from_json(raw)
-            except (ValueError, TypeError):
-                esc = Escalation(
-                    3, "malformed-escalation", f"Unreadable escalation line: {raw[:200]}"
-                )
-            rt.notifier.send(scoped(esc, claim.issue_key), issue, issue.team_id)
-            # Per line: a failure on a later one must not send this one again next tick.
-            offset += len(line) + 1
-            ledger.update_claim(rt.con, claim.issue_key, escalation_offset=offset)
-    return failed
-
-
 def forward_comments(rt) -> dict[str, LinearError]:
-    """Returns the Linear failures by issue key, like route_escalations."""
+    """Returns the Linear failures by issue key; one deleted issue must not stop the others."""
     failed = {}
     for claim in ledger.live_claims(rt.con):
         if claim.state != "running":

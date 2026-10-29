@@ -7,8 +7,8 @@ import pytest
 from flocc import ledger
 from flocc.config import TRAILER, RepoConfig, load
 from flocc.context import state_dir
-from flocc.escalation import Notifier
 from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
+from flocc.notice import Notifier
 from flocc.poller import (
     clean_scratchpads,
     forward_comments,
@@ -17,7 +17,6 @@ from flocc.poller import (
     reap_worktrees,
     repo_for,
     restart_timed_out,
-    route_escalations,
 )
 from flocc.runtime import Runtime
 from flocc.supervisor import LaunchError
@@ -79,9 +78,6 @@ class PollLinear:
         if key in self.deleted:
             raise LinearError("Entity not found: Issue")
         return issue(key)
-
-    def add_label(self, i, name):
-        pass
 
     def unstart(self, i):
         self.unstarted.append(i.key)
@@ -156,13 +152,9 @@ def test_unreadable_dependency_holds_only_that_issue(rt):
 def test_rerun_ignores_files_from_the_previous_claim(rt):
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
-    old = json.dumps({"tier": 2, "cause": "x", "summary": "s", "action": "a", "waiting": True})
-    (d / "escalations.jsonl").write_text(old + "\n")
     (d / "done.json").write_text(json.dumps({"summary": "the previous claim's"}))
     rt.linear.ready = [issue()]
     poll(rt)
-    route_escalations(rt)
-    assert rt.notifier.sent == []
     assert not (d / "done.json").exists()
 
 
@@ -520,38 +512,6 @@ def test_a_new_claim_starts_without_the_last_claims_state(rt):
         assert not (d / name).exists()
 
 
-def test_escalations_sent_before_a_failure_are_not_resent(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True)
-    lines = [json.dumps({"tier": 3, "cause": c, "summary": "s"}) for c in ("a", "b")]
-    (d / "escalations.jsonl").write_text("".join(f"{line}\n" for line in lines))
-    sent = []
-
-    def flaky(esc, issue, team_id):
-        if esc.cause == "NF-1:b" and "failed" not in sent:
-            sent.append("failed")
-            raise LinearError("down")
-        sent.append(esc.cause)
-
-    rt.notifier.send = flaky
-    with pytest.raises(LinearError):
-        route_escalations(rt)
-    route_escalations(rt)
-    assert sent == ["NF-1:a", "failed", "NF-1:b"]
-
-
-def test_route_escalations_reads_only_new_lines(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True)
-    line = json.dumps({"tier": 3, "cause": "c", "summary": "s", "issue_key": "NF-1"})
-    (d / "escalations.jsonl").write_text(line + "\nnot json\n")
-    route_escalations(rt)
-    route_escalations(rt)
-    assert [e.cause for e in rt.notifier.sent] == ["NF-1:c", "NF-1:malformed-escalation"]
-
-
 def test_digest_posts_once_per_day(rt, monkeypatch):
     ledger.add_digest(rt.con, "NF-1", "draft PR ready", 1)
     monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
@@ -590,7 +550,7 @@ def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
         raise subprocess.CalledProcessError(1, ["./setup"], stderr="setup: npm is missing\n")
 
     monkeypatch.setattr("flocc.poller.prepare_worktree", failing)
-    rt.notifier = Notifier(rt.cfg, rt.con, rt.linear, rt.now, push=lambda *a: None)
+    rt.notifier = Notifier(rt.con, rt.linear, rt.now)
     rt.linear.ready = [issue()]
     poll(rt)
     poll(rt)
@@ -637,7 +597,6 @@ def test_a_kept_worktree_or_a_git_failure_never_marks_the_repo(rt, monkeypatch):
     rt.linear.ready = [issue("NF-9"), issue("NF-10")]
     poll(rt)
     assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
-    assert all(e.tier == 2 for e in rt.notifier.sent)
 
 
 def test_a_failed_escalation_leaves_no_silent_hold(rt, monkeypatch):
@@ -645,7 +604,7 @@ def test_a_failed_escalation_leaves_no_silent_hold(rt, monkeypatch):
 
     _broken_main(rt, monkeypatch)
 
-    def down(esc, issue, team_id):
+    def down(notice, issue=None):
         raise LinearError("down")
 
     rt.notifier.send = down
@@ -662,7 +621,7 @@ def test_setup_failing_on_untouched_main_marks_the_repo_and_holds_its_issues(rt,
     poll(rt)
     assert calls == ["NF-9"]
     [esc] = rt.notifier.sent
-    assert esc.tier == 1 and esc.issue_key == "NF-9" and esc.cause.endswith("main-broken")
+    assert esc.issue_key == "NF-9" and esc.cause.endswith("main-broken")
     assert "mise: no version set for go" in esc.summary and "flocc canary" in esc.action
     assert ledger.get_claim(rt.con, "NF-10") is None
 
@@ -680,7 +639,7 @@ def test_a_setup_timeout_on_untouched_main_never_marks_the_repo(rt, monkeypatch)
     poll(rt)
     assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
     [esc] = rt.notifier.sent
-    assert esc.tier == 2 and esc.cause == "NF-9:prepare"
+    assert esc.cause == "NF-9:prepare"
 
 
 def test_setup_failing_on_the_issues_own_commits_is_the_issues(rt, monkeypatch):
@@ -688,7 +647,6 @@ def test_setup_failing_on_the_issues_own_commits_is_the_issues(rt, monkeypatch):
     rt.linear.ready = [issue("NF-9"), issue("NF-10")]
     poll(rt)
     assert calls == ["NF-9", "NF-10"]
-    assert all(e.tier == 2 for e in rt.notifier.sent)
 
 
 def test_a_new_commit_on_main_lets_the_next_issue_try_again(rt, monkeypatch):
@@ -732,13 +690,11 @@ def test_tick_pages_once_runtime_setup_failures_repeat(tmp_cfg, tmp_path, monkey
         raise RuntimeError(f"{name} is not on PATH")
 
     monkeypatch.setattr("flocc.tick._which", missing)
-    pushes = []
-    monkeypatch.setattr("flocc.tick.ntfy_push", lambda *a, **kw: pushes.append(a), raising=False)
-    for _ in range(5):
+    for _ in range(6):
         with pytest.raises(RuntimeError, match="not on PATH"):
             tick(cfg, tmp_path / "c.toml")
-    [(url, _, message, priority, *_)] = pushes
-    assert url == cfg.ntfy_url and priority == 5 and "not on PATH" in message
+    [(_, key, line)] = ledger.pending_digest(ledger.connect(cfg.ledger_path))
+    assert key is None and "not on PATH" in line
 
 
 def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
@@ -755,7 +711,7 @@ def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         tick(rt.cfg, tmp_path / "c.toml")
     [esc] = rt.notifier.sent
-    assert (esc.tier, esc.scope) == (1, "global") and "tmux: no server" in esc.summary
+    assert esc.issue_key is None and "tmux: no server" in esc.summary
     monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
     assert tick(rt.cfg, tmp_path / "c.toml") == 0
     assert ledger.meta_get(rt.con, "tick_failures") == "0"
@@ -784,8 +740,6 @@ def test_tick_with_a_deleted_issue_still_polls_and_pages_naming_it(rt, tmp_path,
         ledger.insert_claim(rt.con, make(key, ()))
         d = state_dir(rt.cfg, key)
         d.mkdir(parents=True)
-        esc = {"tier": 3, "cause": "note", "summary": "s", "action": "a"}
-        (d / "escalations.jsonl").write_text(json.dumps(esc) + "\n")
     rt.linear.deleted = ("NF-1",)
     rt.sessions.alive_names = {"NF-1-test", "NF-2-test"}
     rt.linear.replies = {"id-NF-2": [Comment("c1", "go", "2026-10-09T10:00:00Z", mine=True)]}
@@ -796,9 +750,8 @@ def test_tick_with_a_deleted_issue_still_polls_and_pages_naming_it(rt, tmp_path,
     for _ in range(5):
         assert tick(rt.cfg, tmp_path / "c.toml") == 1
     assert len(polled) == 5
-    assert [e.cause for e in rt.notifier.sent[:1]] == ["NF-2:note"]
     assert rt.sessions.sent[0] == ("NF-2-test", "The owner replied on Linear: go")
-    [page] = [e for e in rt.notifier.sent if e.tier == 1]
+    [page] = [e for e in rt.notifier.sent if e.cause == "linear-api"]
     assert "NF-1" in page.summary and "flocc release NF-1" in page.action
 
 
@@ -819,21 +772,6 @@ def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monke
     assert transports == []
     con = ledger.connect(cfg.ledger_path)
     assert ledger.live_claims(con) == [] and ledger.meta_get(con, "tick_failures") == "1"
-
-
-def test_review_session_escalations_go_to_the_digest_only(rt):
-    claim = make("NF-1", ())
-    claim.phase = "review"
-    ledger.insert_claim(rt.con, claim)
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True)
-    line = json.dumps({"tier": 1, "cause": "c", "summary": "boom", "issue_key": "NF-1"})
-    (d / "escalations.jsonl").write_text(line + "\n")
-    route_escalations(rt)
-    route_escalations(rt)
-    assert rt.notifier.sent == []
-    [(_, key, text)] = ledger.pending_digest(rt.con)
-    assert key == "NF-1" and "review session escalated" in text and "boom" in text
 
 
 def test_low_disk_holds_a_start(rt):

@@ -14,13 +14,10 @@ Make the committed tests pass by implementing the behavior.
   not trees: `**` and any glob that matches a directory are refused, a `*` within one directory
   is fine. A rejected claim names the issue that holds it; message that session or escalate. A
   file the repo lists as shared is edited without a claim.
-- When a peer's claim blocks your commit, finish everything else first, then message that peer
-  once. If the peer's reply does not free the file, or no reply has come when you would otherwise
-  end your turn, escalate instead of waiting; the owner has to release or steer the peer, so this
-  is not a question for `AskUserQuestion`:
-  `flocc escalate --tier 2 --cause claim-held:<path> --summary '<peer> holds <path>' --action '<what the owner should do>' --waiting`
-- Nobody reads your session's pane. Never end a turn waiting for the owner in plain text: to wait
-  on the owner, ask with `AskUserQuestion` (see the escalate skill).
+- Do not ask the owner anything, in the pane or with `AskUserQuestion`; nobody answers. Where the
+  spec leaves a choice open, take its default or the smallest choice that meets the criteria. Put
+  anything that needs the owner in your `flocc done` summary under a line that starts with
+  `Needs the owner`.
 - When auto mode refuses a check command, do not ask for it to be run. Commit with
   `flocc commit`; the repo's own pre-commit hook still runs. Finish with
   `flocc done`; the service runs the full check after it.

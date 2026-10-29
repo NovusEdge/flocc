@@ -240,3 +240,11 @@ def test_an_ordinary_allow_rule_is_accepted(tmp_path, rule):
 def test_a_bad_permissions_file_fails_at_load(tmp_path, text, word):
     with pytest.raises(ValueError, match=word):
         load(with_permissions(tmp_path, text))
+
+
+def test_retired_top_level_keys_are_ignored_with_a_warning(tmp_path, capsys):
+    p = tmp_path / "config.toml"
+    kept = [ln for ln in EXAMPLE.read_text().splitlines() if not ln.startswith("ntfy_url")]
+    p.write_text('ntfy_url = "https://ntfy.sh/x"\n' + "\n".join(kept) + "\n")
+    assert load(p).team_key == "NF"
+    assert "ntfy_url is no longer used" in capsys.readouterr().err

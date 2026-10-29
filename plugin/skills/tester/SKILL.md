@@ -12,12 +12,10 @@ Write tests for the issue's acceptance criteria and nothing else.
 - Claim any file you edit outside your claimed paths first: `flocc claim '<path>'`. Claim
   files, not trees: `**` and any glob that matches a directory are refused. A file the repo lists
   as shared is edited without a claim.
-- When a peer's claim blocks your commit, finish everything else first, then message that peer
-  once. If the peer's reply does not free the file, or no reply has come when you would otherwise
-  end your turn, escalate instead of waiting:
-  `flocc escalate --tier 2 --cause claim-held:<path> --summary '<peer> holds <path>' --action '<what the owner should do>' --waiting`
-- Nobody reads your session's pane. Never end a turn waiting for the owner in plain text: to wait
-  on the owner, run `flocc escalate --tier 2 ... --waiting` (see the escalate skill).
+- Do not ask the owner anything, in the pane or with `AskUserQuestion`; nobody answers. Where the
+  spec leaves a choice open, take its default or the smallest choice that meets the criteria. Put
+  anything that needs the owner in your `flocc done` summary under a line that starts with
+  `Needs the owner`.
 - When auto mode refuses a command you wanted to run, do not ask for it to be run. Commit with
   `flocc commit`; the repo's own pre-commit hook still runs, and the service runs the
   full check when the implementer finishes.

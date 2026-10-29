@@ -88,26 +88,11 @@ func (*Huh) Spin(title string, fn func() error) error {
 }
 
 func (*Huh) ConfigForm(a *answers.Answers, found []answers.Repo, defaults func(url string) (base string, draft bool)) error {
-	suggested := answers.RandomTopic()
 	if err := Form(huh.NewGroup(
 		huh.NewInput().Title("Linear team key").Value(&a.TeamKey),
-		huh.NewInput().Title("Digest issue key").Description("The pinned issue tier 3 reports go to, such as NF-186.").Value(&a.DigestIssue),
-		// A placeholder, not a value: pasting an existing topic into a prefilled field splices the two.
-		huh.NewInput().Title("ntfy topic").
-			Description("Subscribe to https://ntfy.sh/<topic> in the ntfy app. Leave empty to use the suggestion, or paste an existing topic.").
-			Placeholder(suggested).
-			Validate(func(s string) error { _, err := answers.NormalizeTopic(s); return err }).
-			Value(&a.NtfyTopic),
+		huh.NewInput().Title("Digest issue key").Description("The pinned issue the daily digest is posted to, such as NF-186.").Value(&a.DigestIssue),
 	)).Run(); err != nil {
 		return err
-	}
-	topic, err := answers.NormalizeTopic(a.NtfyTopic)
-	if err != nil {
-		return err
-	}
-	a.NtfyTopic = topic
-	if topic == "" {
-		a.NtfyTopic = suggested
 	}
 	return RepoForm(func(f *huh.Form) error { return f.Run() }, a, found, defaults)
 }

@@ -205,3 +205,11 @@ def test_a_column_the_code_no_longer_knows_is_ignored_on_read(con):
     ledger.insert_claim(con, make())
     claim = ledger.get_claim(con, "NF-1")
     assert claim is not None and not hasattr(claim, "retired")
+
+
+def test_the_escalation_offset_column_is_gone(tmp_path):
+    path = tmp_path / "old.sqlite"
+    _v0_ledger(path)
+    con = ledger.connect(path)
+    assert "escalation_offset" not in _columns(con, "claims")
+    assert ledger.get_claim(con, "NF-9") is not None

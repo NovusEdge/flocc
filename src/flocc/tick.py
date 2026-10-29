@@ -10,8 +10,8 @@ from pathlib import Path
 from flocc import ledger, rebase
 from flocc.config import Config, trailer_enabled
 from flocc.context import state_dir
-from flocc.escalation import Escalation, Notifier, ntfy_push
 from flocc.linear import Linear, LinearError, http_transport
+from flocc.notice import Notice, Notifier
 from flocc.poller import (
     clean_scratchpads,
     forward_comments,
@@ -19,7 +19,6 @@ from flocc.poller import (
     poll,
     reap_worktrees,
     restart_timed_out,
-    route_escalations,
 )
 from flocc.publisher import check_at_base, comment_on_pr, pr_view, publish, read_amended
 from flocc.runtime import Runtime
@@ -57,7 +56,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
     _require_token(cfg.agent_gh_token_file)
     con = ledger.connect(cfg.ledger_path)
     linear = Linear(http_transport(cfg.linear_key_file.read_text().strip()))
-    notifier = Notifier(cfg, con, linear, now=time.time)
+    notifier = Notifier(con, linear, now=time.time)
     token = cfg.publish_gh_token_file.read_text().strip()
 
     def publish_fn(claim, title, summary, **kw):
@@ -126,20 +125,23 @@ def tick_lock(path: Path):
 def _page_after_repeats(con, notifier, counter, cause, what, exc: Exception, action: str):
     fails = int(ledger.meta_get(con, counter) or 0) + 1
     ledger.meta_set(con, counter, str(fails))
-    if fails >= FAILS_BEFORE_PAGE:
-        summary = f"{what} has failed {fails} ticks in a row: {exc}"
-        notifier.send(Escalation(1, cause, summary, action, scope="global"), None, None)
+    now = time.time()
+    if fails < FAILS_BEFORE_PAGE or ledger.alert_seen(con, cause, ledger.DEDUPE_S, now):
+        return
+    summary = f"{what} has failed {fails} ticks in a row: {exc}"
+    notifier.send(Notice(cause, summary, action))
+    ledger.record_alert(con, cause, 0, None, now)
 
 
 def _page_unbuilt(cfg: Config, exc: Exception) -> None:
-    # The page must not need what failed. A global tier 1 with no team only pushes, so the
-    # notifier gets no Linear client; without a ledger to count in, the journal is all there is.
+    # The notice must not need what failed: with no issue it only writes the digest, so it gets
+    # no Linear client. Without a ledger to count in, the journal is all there is.
     try:
         con = ledger.connect(cfg.ledger_path)
     except Exception as err:  # noqa: BLE001
         print(f"tick: failure not counted, the ledger did not open: {err}", file=sys.stderr)
         return
-    _page_tick_failure(con, Notifier(cfg, con, None, now=time.time, push=ntfy_push), exc)
+    _page_tick_failure(con, Notifier(con, None, now=time.time), exc)
 
 
 def _page_tick_failure(con, notifier, exc: Exception) -> None:
@@ -173,19 +175,17 @@ def tick(cfg: Config, config_path: Path) -> int:
                 failed[claim.issue_key] = exc
             except Exception:  # noqa: BLE001 - one issue's failure must not stop the others
                 traceback.print_exc()
-                rt.notifier.send(
-                    Escalation(
-                        2,
-                        f"{claim.issue_key}:supervisor-error",
-                        "The supervisor failed on this issue; see journalctl -u flocc.",
-                        "Read the log",
-                        issue_key=claim.issue_key,
-                        waiting=True,
-                    ),
-                    None,
-                    None,
-                )
-        failed |= route_escalations(rt)
+                cause = f"{claim.issue_key}:supervisor-error"
+                if not ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
+                    rt.notifier.send(
+                        Notice(
+                            cause,
+                            "The supervisor failed on this issue; see journalctl -u flocc.",
+                            "Read the log",
+                            issue_key=claim.issue_key,
+                        )
+                    )
+                    ledger.record_alert(rt.con, cause, 0, claim.issue_key, rt.now())
         failed |= forward_comments(rt)
         # Before poll, which then picks the released issue up in this tick.
         restart_timed_out(rt)

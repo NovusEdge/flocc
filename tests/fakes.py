@@ -40,8 +40,8 @@ class FakeSessions:
 class FakeNotifier:
     sent: list = field(default_factory=list)
 
-    def send(self, esc, issue, team_id):
-        self.sent.append(esc)
+    def send(self, notice, issue=None):
+        self.sent.append(notice)
 
 
 @dataclass
