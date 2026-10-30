@@ -25,6 +25,9 @@
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "flocc stop" } ] }
+    ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "flocc stop --failure" } ] }
     ]
   }
 }

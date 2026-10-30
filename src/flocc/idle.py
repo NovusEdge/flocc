@@ -48,10 +48,11 @@ def note_idle(state: Path, payload: dict, now: float) -> None:
 
 
 def note_background(state: Path, payload: dict) -> None:
-    """Records the background tasks a turn ended with; the supervisor treats them as work."""
+    """Records what will wake the session again; a stop with any of it is not idle."""
     kinds = [
         str(t.get("type", "")) for t in payload.get("background_tasks") or [] if isinstance(t, dict)
     ]
+    kinds += ["cron" for c in payload.get("session_crons") or [] if isinstance(c, dict)]
     path = state / BACKGROUND
     if not kinds:
         path.unlink(missing_ok=True)

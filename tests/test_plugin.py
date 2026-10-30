@@ -50,7 +50,8 @@ def test_reviewers_and_mappers_cannot_edit_or_run_shell():
 
 def test_hooks():
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
-    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"}
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "StopFailure"}
+    assert [h["command"] for h in hooks["StopFailure"][0]["hooks"]] == ["flocc stop --failure"]
     assert [h["command"] for h in hooks["Stop"][0]["hooks"]] == ["flocc stop"]
     # The idle marker means "the last event was a Stop", so any later activity removes it.
     clear = '[ -z "$FLOCC_STATE" ] || rm -f "$FLOCC_STATE/idle"'

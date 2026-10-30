@@ -47,6 +47,11 @@ def test_background_marker_follows_the_last_stop(tmp_path):
     assert not has_background(tmp_path)
 
 
+def test_a_scheduled_wakeup_is_recorded_as_background(tmp_path):
+    note_background(tmp_path, {"background_tasks": [], "session_crons": [{"id": "c"}]})
+    assert has_background(tmp_path)
+
+
 def test_clear_idle_removes_the_marker_and_its_notice_mark(tmp_path):
     (tmp_path / "idle").write_text("{}")
     (tmp_path / "idle-escalated").write_text("1.0")

@@ -206,54 +206,71 @@ def test_session_start_prints_the_context_when_bookkeeping_fails(tmp_path, monke
     assert "CTX" in captured.out and "bookkeeping failed" in captured.err
 
 
-def test_idle_records_the_last_message(tmp_path, monkeypatch):
-    session_env(monkeypatch, tmp_path, "impl")
-    payload = {"last_assistant_message": "x" * 700, "transcript_path": "/nonexistent"}
+def stop(monkeypatch, payload, *flags):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-    assert main(["idle"]) == 0
+    return main(["stop", *flags])
+
+
+def test_stop_refuses_once_then_marks_the_session_idle(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    assert stop(monkeypatch, {"stop_hook_active": False, "last_assistant_message": "a?"}) == 0
+    refusal = json.loads(capsys.readouterr().out)
+    assert refusal["decision"] == "block" and "flocc done" in refusal["reason"]
+    assert "Needs the owner" in refusal["reason"] and not (tmp_path / "idle").exists()
+    assert stop(monkeypatch, {"stop_hook_active": True, "last_assistant_message": "x" * 700}) == 0
+    assert capsys.readouterr().out == ""
     marker = json.loads((tmp_path / "idle").read_text())
     assert marker["message"] == "x" * 600 and marker["at"] > 0
-    assert not (tmp_path / "idle.tmp").exists()
 
 
-def test_idle_falls_back_to_the_transcript(tmp_path, monkeypatch):
+def test_stop_falls_back_to_the_transcript_for_the_idle_message(tmp_path, monkeypatch):
     session_env(monkeypatch, tmp_path, "impl")
-
-    def line(kind, *blocks):
-        return json.dumps({"type": kind, "message": {"content": list(blocks)}})
-
-    text = {"type": "text", "text": "please run it for me"}
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(
-        "\n".join(
-            [
-                line("assistant", {"type": "text", "text": "older"}),
-                line("assistant", text, {"type": "tool_use", "name": "Bash"}),
-                line("user", {"type": "text", "text": "ignored"}),
-            ]
-        )
-    )
-    for payload in (
-        {"transcript_path": str(transcript)},
-        {"last_assistant_message": "", "transcript_path": str(transcript)},
-    ):
-        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-        assert main(["idle"]) == 0
-        assert json.loads((tmp_path / "idle").read_text())["message"] == "please run it for me"
-    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
-    assert main(["idle"]) == 0
-    assert json.loads((tmp_path / "idle").read_text())["message"] == ""
+    text = {"type": "text", "text": "please run it for me"}
+    transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [text]}}))
+    assert stop(monkeypatch, {"stop_hook_active": True, "transcript_path": str(transcript)}) == 0
+    assert json.loads((tmp_path / "idle").read_text())["message"] == "please run it for me"
 
 
-def test_idle_bookkeeping_failure_exits_1_never_2(tmp_path, monkeypatch, capsys):
+def test_stop_lets_a_finished_run_stop(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    (tmp_path / "done.json").write_text('{"summary": "ok"}')
+    assert stop(monkeypatch, {"stop_hook_active": False}) == 0
+    assert capsys.readouterr().out == "" and not (tmp_path / "idle").exists()
+
+
+def test_stop_lets_a_session_waiting_on_background_work_stop(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    payload = {"stop_hook_active": False, "background_tasks": [{"id": "1", "type": "shell"}]}
+    assert stop(monkeypatch, payload) == 0
+    assert capsys.readouterr().out == "" and not (tmp_path / "idle").exists()
+    assert json.loads((tmp_path / "background").read_text()) == ["shell"]
+
+
+def test_a_scheduled_wakeup_counts_as_background(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    payload = {"stop_hook_active": True, "background_tasks": [], "session_crons": [{"id": "c"}]}
+    assert stop(monkeypatch, payload) == 0
+    assert capsys.readouterr().out == "" and not (tmp_path / "idle").exists()
+
+
+def test_stop_failure_marks_idle_except_for_a_usage_limit(tmp_path, monkeypatch):
+    session_env(monkeypatch, tmp_path, "impl")
+    assert stop(monkeypatch, {"error": "rate_limit"}, "--failure") == 0
+    assert not (tmp_path / "idle").exists()
+    payload = {"error": "server_error", "last_assistant_message": "API Error: 500"}
+    assert stop(monkeypatch, payload, "--failure") == 0
+    assert json.loads((tmp_path / "idle").read_text())["message"] == "API Error: 500"
+
+
+def test_stop_bookkeeping_failure_exits_1_never_2(tmp_path, monkeypatch, capsys):
     session_env(monkeypatch, tmp_path, "impl")
 
     def boom(*a, **kw):
         raise OSError("disk gone")
 
     monkeypatch.setattr("flocc.idle.note_idle", boom)
-    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
-    assert main(["idle"]) == 1
+    assert stop(monkeypatch, {"stop_hook_active": True}) == 1
     assert "disk gone" in capsys.readouterr().err
 
 

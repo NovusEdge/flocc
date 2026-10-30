@@ -176,37 +176,46 @@ def _hook_input(strict: bool = False) -> dict:
     return {}
 
 
-def cmd_idle(args) -> int:
-    # Exit 2 on Stop blocks the stop and keeps the session running.
-    try:
-        idle.note_idle(_state_dir(), _hook_input(), time.time())
-    except Exception as exc:  # noqa: BLE001 - must not block the stop
-        print(f"flocc idle could not record the stop: {exc}", file=sys.stderr)
-        return 1
-    return 0
+STOP_REASON = (
+    "flocc done has not run, so this run is not finished. Finish the work and run flocc done,"
+    ' or write what needs the owner under a line that starts with "Needs the owner" in your'
+    " summary and run flocc done. Nobody answers questions in this session."
+)
 
 
 def cmd_stop(args) -> int:
-    # Exit 2 on Stop blocks the stop; bookkeeping failures exit 1 as cmd_idle does.
+    # Exit 2 on Stop would block the stop; bookkeeping failures exit 1 so they never do.
     try:
         state = _state_dir()
         payload = _hook_input()
     except Exception as exc:  # noqa: BLE001
         print(f"flocc stop could not read its input: {exc}", file=sys.stderr)
         return 1
-    # note_idle still runs when this fails, so the supervisor sees the session idle.
-    failed = 0
-    try:
-        idle.note_background(state, payload)
-    except Exception as exc:  # noqa: BLE001
-        print(f"flocc stop could not record the background tasks: {exc}", file=sys.stderr)
-        failed = 1
+    if args.failure:
+        # autoContinueAtUsageLimit resumes the turn after the reset.
+        if payload.get("error") == "rate_limit":
+            return 0
+        message = payload.get("last_assistant_message") or str(payload.get("error", ""))
+        payload = {"last_assistant_message": message}
+    else:
+        failed = 0
+        try:
+            idle.note_background(state, payload)
+        except Exception as exc:  # noqa: BLE001
+            print(f"flocc stop could not record the background tasks: {exc}", file=sys.stderr)
+            failed = 1
+        # Background work or a scheduled wakeup brings the session back on its own.
+        if (state / "done.json").exists() or idle.has_background(state):
+            return failed
+        if not payload.get("stop_hook_active"):
+            print(json.dumps({"decision": "block", "reason": STOP_REASON}))
+            return failed
     try:
         idle.note_idle(state, payload, time.time())
     except Exception as exc:  # noqa: BLE001
         print(f"flocc stop could not record the stop: {exc}", file=sys.stderr)
         return 1
-    return failed
+    return 0
 
 
 def _session_bookkeeping(state: Path) -> None:
@@ -594,7 +603,6 @@ COMMANDS = {
     "guard": cmd_guard,
     "tests-amended": cmd_tests_amended,
     "context": cmd_context,
-    "idle": cmd_idle,
     "session-start": cmd_session_start,
     "commit": cmd_commit,
     "done": cmd_done,
@@ -640,8 +648,8 @@ def build_parser() -> argparse.ArgumentParser:
     amended.add_argument("paths", nargs="+", help="repo-relative paths of the amended tester files")
     amended.add_argument("--reason", required=True, help="why the test was wrong")
     add("context", "Print the issue's context")
-    add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
-    add("stop", "Hook (Stop): record background tasks and the idle stop")
+    stop = add("stop", "Hook (Stop, StopFailure): refuse one early stop, then record the idle stop")
+    stop.add_argument("--failure", action="store_true", help="the turn ended on an API error")
     add("session-start", "Hook: record the scratchpad, print the context")
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")
     com.add_argument("-m", dest="message", required=True, help="commit message")
