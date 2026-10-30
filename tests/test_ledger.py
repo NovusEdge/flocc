@@ -113,9 +113,17 @@ def _columns(con, table):
 
 def test_a_fresh_ledger_is_at_the_latest_version(con):
     assert con.execute("PRAGMA user_version").fetchone()[0] == len(ledger._MIGRATIONS)
-    assert {"id", "kind", "issue_key", "repo", "detail", "at", "printed_at", "acked_at"} == (
-        _columns(con, "events")
-    )
+    assert {
+        "id",
+        "kind",
+        "issue_key",
+        "repo",
+        "detail",
+        "at",
+        "printed_at",
+        "acked_at",
+        "prints",
+    } == (_columns(con, "events"))
     assert {"issue_key", "reason", "at"} == _columns(con, "holds")
 
 

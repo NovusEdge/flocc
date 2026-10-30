@@ -514,6 +514,45 @@ def cmd_attach(args) -> int:
     os.execvp(argv[0], argv)
 
 
+def cmd_events(args) -> int:
+    from flocc import events
+
+    cfg, _ = _config(args)
+    con = ledger.connect(cfg.ledger_path)
+    if not args.follow:
+        for text in events.lines(events.unacked(con), time.time()):
+            print(text)
+        return 0
+    # sshd ends the session of a vanished client, and the follower is reparented; it notices on
+    # its next poll instead of on a write that may be hours away.
+    parent = os.getppid()
+    try:
+        events.follow(
+            con,
+            lambda text: print(text, flush=True),
+            time.time,
+            time.sleep,
+            alive=lambda: os.getppid() == parent,
+            hello=args.hello,
+        )
+    except BrokenPipeError:
+        # Python flushes stdout again at exit and would print a second traceback.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_ack(args) -> int:
+    from flocc import events
+
+    cfg, _ = _config(args)
+    n, unknown = events.ack(ledger.connect(cfg.ledger_path), args.ids, time.time())
+    missing = f"; no event {', '.join(map(str, unknown))}" if unknown else ""
+    print(f"acked {n}{missing}")
+    return 0
+
+
 def _expiry(value: str, now: float) -> str:
     if value == "never":
         return "never expires"
@@ -553,6 +592,8 @@ COMMANDS = {
     "logs": cmd_logs,
     "peek": cmd_peek,
     "attach": cmd_attach,
+    "events": cmd_events,
+    "ack": cmd_ack,
 }
 
 
@@ -619,6 +660,11 @@ def build_parser() -> argparse.ArgumentParser:
     peek.add_argument("-n", dest="lines", type=int, default=40, help="lines to print")
     attach = add("attach", "Attach read-only to an agent's tmux session")
     attach.add_argument("session", help="session name, e.g. NF-12 or NF-12-review")
+    ev = add("events", "Print unacknowledged events as JSON lines; --follow keeps printing")
+    ev.add_argument("--follow", action="store_true", help="print each batch as it closes")
+    ev.add_argument("--hello", action="store_true", help='print {"link": "up"} on connect')
+    ack = add("ack", "Acknowledge events by id; acking twice is harmless")
+    ack.add_argument("ids", nargs="+", type=int, help="event ids from flocc events")
     return parser
 
 
