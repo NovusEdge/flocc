@@ -137,6 +137,10 @@ def _block(rt, claim: Claim, cause: str, summary: str, action: str) -> None:
     ledger.update_claim(rt.con, key, state="blocked")
 
 
+def _end_done(rt, claim: Claim, **values) -> None:
+    ledger.update_claim(rt.con, claim.issue_key, state="done", **values)
+
+
 def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
     # done.json stays, so every tick retries the whole publish, check included, under the tick
     # lock; a push that is rejected for good would hold the lock that long forever.
@@ -184,7 +188,7 @@ def _review_skipped(rt, claim: Claim, why: str) -> None:
     rt.sessions.kill(session_name(key, "review"))
     ledger.add_digest(rt.con, key, f"review skipped, {why}; PR: {url}", rt.now())
     _post_owner_items(rt, claim)
-    ledger.update_claim(rt.con, key, state="done")
+    _end_done(rt, claim)
 
 
 def _pr_url(rt, claim: Claim) -> str:
@@ -207,7 +211,7 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
         (d / "pr-url").write_text(url)
         ledger.add_digest(rt.con, key, f"review skipped, usage over the limit; PR: {url}", rt.now())
         _post_owner_items(rt, claim)
-        ledger.update_claim(rt.con, key, state="done")
+        _end_done(rt, claim)
         return
     try:
         (d / "pr-url").write_text(url)
@@ -229,7 +233,7 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
         print(f"{key}: review not started: {exc}", file=sys.stderr)
         ledger.add_digest(rt.con, key, f"review not started ({exc}); PR: {url}", rt.now())
         _post_owner_items(rt, claim)
-        ledger.update_claim(rt.con, key, state="done")
+        _end_done(rt, claim)
         return
     ledger.update_claim(rt.con, key, phase="review", restarts=0, started_at=start)
 
@@ -272,7 +276,7 @@ def _finish_review(rt, claim: Claim) -> None:
     if owner:
         line += f"\n\n{owner}"
     _comment_or_digest(rt, claim, line)
-    ledger.update_claim(rt.con, key, state="done")
+    _end_done(rt, claim)
 
 
 def _comment_or_digest(rt, claim: Claim, line: str) -> None:
@@ -451,7 +455,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         owner = _owner_items(rt, claim)
         _comment_or_digest(rt, claim, f"{line}\n\n{owner}" if owner else line)
         ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
-        ledger.update_claim(rt.con, key, state="done")
+        _end_done(rt, claim)
     elif result.status == "opened":
         if rebasing:
             base = rt.cfg.repos[claim.repo].base_branch
@@ -474,9 +478,12 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         if rebasing:
             # A merge adds no behaviour for a reviewer to judge, and the earlier review stands.
             ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
-            ledger.update_claim(rt.con, key, state="done", phase="review")
-        else:
+            _end_done(rt, claim, phase="review")
+        elif "reviewer" in claim.sequence:
             _start_review(rt, claim, issue.title, issue.description, result.url)
+        else:
+            (state_dir(rt.cfg, key) / "pr-url").write_text(result.url)
+            _end_done(rt, claim)
     elif (
         result.status == "check_failed"
         and claim.fix_attempts > 0

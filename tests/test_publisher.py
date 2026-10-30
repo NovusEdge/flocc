@@ -287,6 +287,14 @@ def test_an_amendment_that_weakens_a_test_still_blocks(origin, tmp_path, before,
     )
 
 
+def test_without_a_tester_the_guard_is_skipped(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    claim.tester_sha = None
+    (path / "test_x.py").write_text("assert 1\n")
+    git("commit", "-qam", "rewrite the test file", cwd=path)
+    assert publish(claim, repo, "t", "s", token="t", runner=Gh()).status == "opened"
+
+
 def test_a_moved_or_resigned_test_is_not_removed(origin, tmp_path):
     repo, path, claim = setup_claim(origin, tmp_path)
     (path / "test_w.py").write_text("def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n")

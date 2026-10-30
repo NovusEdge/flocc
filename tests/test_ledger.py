@@ -137,6 +137,29 @@ def test_a_second_connection_finds_the_ledger_migrated(tmp_path):
     assert ledger.get_claim(first, "NF-9") is not None
 
 
+def test_a_claim_keeps_its_sequence(con):
+    c = make()
+    c.sequence = ["tester", "executor"]
+    ledger.insert_claim(con, c)
+    claim = ledger.get_claim(con, "NF-1")
+    assert claim is not None and claim.sequence == ["tester", "executor"]
+
+
+def test_an_old_claim_gets_the_default_sequence(tmp_path):
+    path = tmp_path / "l.sqlite"
+    raw = sqlite3.connect(path)
+    raw.executescript(ledger._SCHEMA)
+    raw.execute(
+        "INSERT INTO claims (issue_key, issue_id, repo, worktree, branch, phase, state, paths,"
+        " depends_on, settings_json, started_at, wall_clock_s) VALUES ('NF-1', 'i', 'backend',"
+        " '/wt/NF-1', 'agent/nf-1', 'impl', 'done', '[]', '[]', '{}', 0, 3600)"
+    )
+    raw.commit()
+    raw.close()
+    claim = ledger.get_claim(ledger.connect(path), "NF-1")
+    assert claim is not None and claim.sequence == ["executor", "reviewer"]
+
+
 def test_a_column_the_code_no_longer_knows_is_ignored_on_read(con):
     con.execute("ALTER TABLE claims ADD COLUMN retired TEXT")
     ledger.insert_claim(con, make())

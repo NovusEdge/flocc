@@ -201,6 +201,28 @@ def _without_merged_base(wt: Path, since: str, base_branch: str) -> str:
     return merged.stdout.split()[0] if merged.returncode in (0, 1) and merged.stdout else since
 
 
+def _tests_guard(
+    claim: Claim,
+    repo: RepoConfig,
+    wt: Path,
+    accepted_sha: str | None,
+    amended: dict[str, dict] | None,
+) -> PublishResult | None:
+    assert claim.base_sha is not None and claim.tester_sha is not None
+    tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
+    since = _without_merged_base(wt, accepted_sha or claim.tester_sha, repo.base_branch)
+    touched = changed_files(wt, since, "HEAD") & tester_files
+    weakened = {}
+    for path in touched & set(amended or {}):
+        if why := weakens_test(wt, since, path):
+            weakened[path] = why
+    touched -= set(amended or {})
+    if touched or weakened:
+        parts = [*sorted(touched), *(f"{p} {why}" for p, why in sorted(weakened.items()))]
+        return PublishResult("tests_touched", ", ".join(parts))
+    return None
+
+
 def publish(
     claim: Claim,
     repo: RepoConfig,
@@ -215,19 +237,13 @@ def publish(
     reuse_only: bool = False,
 ) -> PublishResult:
     wt = Path(claim.worktree)
-    if claim.base_sha is None or claim.tester_sha is None:
-        raise ValueError(f"{claim.issue_key} has no recorded tester commit to guard")
-    tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
-    since = _without_merged_base(wt, accepted_sha or claim.tester_sha, repo.base_branch)
-    touched = changed_files(wt, since, "HEAD") & tester_files
-    weakened = {}
-    for path in touched & set(amended or {}):
-        if why := weakens_test(wt, since, path):
-            weakened[path] = why
-    touched -= set(amended or {})
-    if touched or weakened:
-        parts = [*sorted(touched), *(f"{p} {why}" for p, why in sorted(weakened.items()))]
-        return PublishResult("tests_touched", ", ".join(parts))
+    if claim.base_sha is None:
+        raise ValueError(f"{claim.issue_key} has no recorded base commit")
+    # No tester ran: there are no tester files to guard.
+    if claim.tester_sha is not None and (
+        touched := _tests_guard(claim, repo, wt, accepted_sha, amended)
+    ):
+        return touched
     # Only commits are pushed, and the guard above compares commits only; a check on the working
     # tree would pass on files the PR leaves out.
     dirty = git("status", "--porcelain", cwd=wt)

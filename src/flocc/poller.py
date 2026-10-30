@@ -19,6 +19,7 @@ from flocc.context import state_dir, write_context
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
+from flocc.sequence import SequenceError, parse_sequence
 from flocc.sessions import session_name
 from flocc.supervisor import LAST_SUMMARY, launch
 from flocc.usage import latest_usage
@@ -49,6 +50,11 @@ def _comment_once(rt, issue: Issue, cause: str, text: str) -> None:
         return
     rt.linear.comment(issue.id, text)
     ledger.record_alert(rt.con, cause, 3, issue.key, rt.now())
+
+
+def _bad_sequence(rt, issue: Issue, exc: SequenceError) -> None:
+    # The only place an unusable Run: line reaches the owner.
+    _comment_once(rt, issue, f"{issue.key}:bad-sequence:{exc}", f"Skipping: {exc}.")
 
 
 def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: bool = True) -> None:
@@ -262,6 +268,11 @@ def poll(rt) -> None:
             _comment_once(rt, issue, f"{issue.key}:bad-block:{exc}", f"Skipping: {exc}.")
             continue
         try:
+            sequence = parse_sequence(issue.description)
+        except SequenceError as exc:
+            _bad_sequence(rt, issue, exc)
+            continue
+        try:
             deps = rt.linear.state_types(settings.depends_on) if settings.depends_on else {}
         except LinearError as exc:
             # A mistyped or deleted key fails the lookup; hold this issue, not the whole tick.
@@ -296,7 +307,7 @@ def poll(rt) -> None:
         if not decision.ok:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)
             continue
-        _start(rt, issue, repo, settings)
+        _start(rt, issue, repo, settings, sequence)
         if rerun and ledger.get_claim(rt.con, issue.key):
             try:
                 rt.linear.comment(issue.id, "moved back to Todo; restarting from a fresh claim.")
@@ -304,7 +315,7 @@ def poll(rt) -> None:
                 print(f"{issue.key}: rerun comment not posted: {exc}", file=sys.stderr)
 
 
-def _start(rt, issue: Issue, repo: str, settings) -> None:
+def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> None:
     cfg = rt.cfg
     cause = f"{issue.key}:prepare"
     # A kept worktree may hold a previous run's uncommitted work, so its failure is the issue's.
@@ -386,7 +397,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.
-    phase, tester_sha = "test", None
+    phase, tester_sha = ("test" if "tester" in sequence else "impl"), None
     base_branch = cfg.repos[repo].base_branch
     remembered = ledger.remembered_tests(rt.con, issue.key)
     # Tests already merged into the base belong to shipped work, and a reopened issue is new
@@ -406,7 +417,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         (base, tester_sha), phase = remembered, "impl"
     # A run resuming at the implementer still needs the first run's amendments, or the guard
     # blocks them; a run that starts at the tester has none.
-    if phase == "test":
+    if tester_sha is None:
         (d / "tests-amended.json").unlink(missing_ok=True)
     claim = Claim(
         issue_key=issue.key,
@@ -422,6 +433,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         wall_clock_s=settings.wall_clock_s or cfg.default_wall_clock_s,
         base_sha=base,
         tester_sha=tester_sha,
+        sequence=list(sequence),
         # Comments written before the claim are not replies to it.
         last_comment_at=datetime.fromtimestamp(rt.now(), UTC).isoformat(),
     )

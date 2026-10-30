@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 # Version 0. A ledger moves forward through _MIGRATIONS only; PRAGMA user_version counts the
@@ -71,8 +71,11 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
     ),
     ("ALTER TABLE claims DROP COLUMN escalation_offset",),
     ("ALTER TABLE claims DROP COLUMN paths",),
+    (
+        """ALTER TABLE claims ADD COLUMN sequence TEXT NOT NULL DEFAULT '["executor", "reviewer"]'""",
+    ),
 )
-_JSON_FIELDS = ("depends_on",)
+_JSON_FIELDS = ("depends_on", "sequence")
 LIVE_STATES = ("running", "blocked")
 
 
@@ -94,6 +97,7 @@ class Claim:
     base_sha: str | None = None
     tester_sha: str | None = None
     last_comment_at: str | None = None
+    sequence: list[str] = field(default_factory=lambda: ["executor", "reviewer"])
 
 
 _CLAIM_FIELDS = frozenset(f.name for f in fields(Claim))
@@ -145,7 +149,8 @@ def _from_row(row: sqlite3.Row) -> Claim:
     # columns a migration has yet to drop.
     data = {k: v for k, v in dict(row).items() if k in _CLAIM_FIELDS}
     for key in _JSON_FIELDS:
-        data[key] = json.loads(data[key])
+        if key in data:
+            data[key] = json.loads(data[key])
     return Claim(**data)
 
 

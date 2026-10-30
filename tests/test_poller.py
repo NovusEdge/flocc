@@ -27,7 +27,8 @@ from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
 CFG = load(EXAMPLE)
-GOOD = "Do it.\n\n## Acceptance criteria\n\n- works\n"
+GOOD = "Do it.\n\nRun: tester, executor, reviewer\n\n## Acceptance criteria\n\n- works\n"
+PLAIN = "Do it.\n\n## Acceptance criteria\n\n- works\n"
 DEPENDS = "```agent\ndepends_on: [NF-404]\n```\n\n" + GOOD
 
 
@@ -128,6 +129,30 @@ def test_poll_launches_tester(rt):
     assert c.last_comment_at == "1970-01-01T00:16:40+00:00"
     assert rt.linear.started == ["NF-9"] and rt.sessions.started[0][0] == "NF-9-test"
     assert (state_dir(rt.cfg, "NF-9") / "context.md").exists()
+
+
+def test_the_default_sequence_starts_at_the_executor_with_no_tester(rt):
+    rt.linear.ready = [issue(desc=PLAIN)]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.sequence == ["executor", "reviewer"]
+    assert (c.phase, c.tester_sha) == ("impl", None) and rt.sessions.started[0][0] == "NF-9"
+
+
+def test_a_run_line_is_recorded_on_the_claim(rt):
+    rt.linear.ready = [issue(desc=PLAIN.replace("Do it.", "Do it.\n\nRun: tester, executor"))]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.sequence == ["tester", "executor"] and c.phase == "test"
+
+
+def test_an_unknown_archetype_skips_the_issue_with_one_comment(rt):
+    rt.linear.ready = [issue(desc=PLAIN + "\nRun: executor, planner\n")]
+    poll(rt)
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    (comment,) = rt.linear.comments
+    assert "unknown archetype: planner" in comment[1] and comment[1].startswith("Skipping:")
 
 
 def test_unreadable_dependency_holds_only_that_issue(rt):

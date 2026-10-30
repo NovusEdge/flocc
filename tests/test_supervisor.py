@@ -887,6 +887,16 @@ def test_a_crash_restarts_once_with_a_note_then_blocks(rt):
     assert current(rt).state == "blocked" and rt.notifier.sent[-1].cause == "NF-1:crash"
 
 
+def test_without_a_reviewer_the_run_ends_when_the_pr_opens(rt):
+    add(rt, phase="impl", sequence=["executor"])
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and current(rt).phase == "impl"
+    assert "https://pr/1" in rt.linear.comments[0]
+    assert not any(name == "NF-1-review" for name, _ in rt.sessions.started)
+
+
 def test_a_finished_step_leaves_its_summary_for_the_next(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
