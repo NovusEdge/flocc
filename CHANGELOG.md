@@ -4,7 +4,7 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
-## Unreleased
+## 0.13.0 (2026-10-30)
 
 flocc drops cardinal, A2A and the escalation path built in 0.9 to 0.12. A run that needs you says
 so on its Linear issue.
@@ -15,11 +15,16 @@ so on its Linear issue.
   fixers; it never reruns stopped or finished work. The executor VM gains an OpenSSH server on
   its pinned bridge address for that key alone, and a firewall that lets the cardinal VM reach
   nothing else on it.
+- `host create` and `host cardinal` block every VM on `incusbr0` from forwarding out of the
+  machine's `tailscale0`, with an nftables table `flocc-no-tailnet` and a boot unit
+  `flocc-no-tailnet.service`. Without it a VM reached the tailnet as the machine, and Tailscale
+  SSH let the cardinal VM in as root on the executor. On a machine that uses a Tailscale exit
+  node the block cuts all VM egress, and the step says so.
 - cardinal as built in 0.9 to 0.12 is gone: `flocc cardinal` and its subcommands, cardinal's step
   in `flocc setup`, the dashboard's cardinal pane and `c` key, the CARDINAL table in
   `flocc status -H all` and `~/.cache/flocc/cardinal-<user>.log`. `flocc setup` offers to remove
   the old `cardinal` user.
-- A2A is gone: `flocc-a2a.service`, `flocc a2a serve`, `flocc mcp-a2a` and its tools, the
+- A2A is gone: `flocc-a2a.service` (ship stops and deletes it), `flocc a2a serve`, `flocc mcp-a2a` and its tools, the
   `flocc inbox` hook, and the token minting and peer lists in `flocc ship`, which no longer writes
   `~/.config/flocc/a2a.toml`. Remove the server from desktop sessions with
   `claude mcp remove --scope user flocc-a2a`, and the tailnet grant from `tag:flocc-host` to
@@ -87,7 +92,8 @@ so on its Linear issue.
   if `flocc-agent` is in it. An existing Docker daemon is left installed and untouched. A check
   that runs the `docker` CLI itself needs it installed by hand.
 - The publisher fetches the branch from flocc-agent's worktree into the service's clone and pushes
-  from there, so the publish token never enters a session.
+  from there, so the publish token never enters a session. The fetch passes `safe.directory` to
+  `upload-pack` itself, because a local fetch drops `-c` from upload-pack's environment.
 - When an issue reaches Done or Canceled, or is released without `--keep-worktree`, its worktree,
   session files and scratchpads go; the branch stays on GitHub.
 - `worktree_root` and `plugin_dir` in `config.toml` are fixed by the layout and ignored with a
