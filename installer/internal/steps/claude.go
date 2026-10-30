@@ -14,15 +14,16 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/plugins"
 )
 
-// The gate hook's onFailure setting needs this version.
+// The hooks' StopFailure event and stop_hook_active input need this version or later.
 var minClaude = [3]int{2, 1, 295}
 
 var needsClaude = fmt.Sprintf("needs %d.%d.%d", minClaude[0], minClaude[1], minClaude[2])
 
 const settingsRel = ".claude/settings.json"
 
-// pushSettings are the /config toggles "Push when actions required" and "Push when Claude decides".
-var pushSettings = map[string]bool{"inputNeededNotifEnabled": true, "agentPushNotifEnabled": false}
+// pushSettings are the /config toggles "Push when actions required" and "Push when Claude
+// decides", and the bypass warning's acceptance, which sessions also get from --settings.
+var pushSettings = map[string]bool{"inputNeededNotifEnabled": true, "agentPushNotifEnabled": false, "skipDangerousModePermissionPrompt": true}
 
 type Claude struct{}
 

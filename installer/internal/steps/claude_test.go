@@ -28,7 +28,7 @@ func claudeEnv(t *testing.T, f *host.Fake, l plugins.List) *Env {
 	return e
 }
 
-const pushOn = `{"inputNeededNotifEnabled":true,"agentPushNotifEnabled":false}`
+const pushOn = `{"inputNeededNotifEnabled":true,"agentPushNotifEnabled":false,"skipDangerousModePermissionPrompt":true}`
 
 func writeSettings(t *testing.T, e *Env, body string) {
 	t.Helper()
@@ -187,7 +187,7 @@ func TestClaudeApplyLeavesCorrectSettingsUntouched(t *testing.T) {
 		On(claudeBin+" --version", 0, "2.1.295\n").
 		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
 	e := claudeEnv(t, f, plugins.List{})
-	const body = `{"z":"a<b","inputNeededNotifEnabled":true,"agentPushNotifEnabled":false}`
+	const body = `{"z":"a<b","inputNeededNotifEnabled":true,"agentPushNotifEnabled":false,"skipDangerousModePermissionPrompt":true}`
 	writeSettings(t, e, body)
 	if err := (Claude{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)
