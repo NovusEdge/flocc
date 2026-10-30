@@ -6,7 +6,7 @@
 
 **Architecture:** Part A (Tasks 1–7) changes how sessions behave and needs no new user: bypass mode, a deny-only PreToolUse guard, a refuse-once Stop hook, a smaller supervisor, `Run:` parsing, `flocc done` for every archetype, and four skills. Part B (Tasks 8–12) splits the host: the service talks to `flocc-agent` only through `sudo` and the fixed-subcommand wrapper `/usr/local/libexec/flocc-agent-run`, which runs `flocc-agent` (new module `flocc.agentrun`); files the agent writes are read through `flocc.agentfs`, which never follows a link; files the agent needs travel in the `start` request; the publisher fetches the branch from the agent's worktree into `refs/flocc/<KEY>` of the service's clone and pushes from there. Part C (Tasks 13–15) is the Go installer: users and sudoers in the root phase, a new `agent` phase run as `flocc-agent`, and the service phase publishing `/opt/flocc`. Every task keeps both test suites green; Part B runs in tests with `agent_run = (python, -m, flocc.agentrun)`, so no sudo is needed.
 
-**Tech Stack:** Python 3.13 stdlib, pytest, ruff, pyrefly; Go 1.27 (installer); POSIX sh (wrapper); sudo, systemd user units, tmux; Claude Code 2.1.295 or later (the installer's floor).
+**Tech Stack:** Python 3.13 stdlib, pytest, ruff, pyrefly; Go 1.27 (installer); POSIX sh (wrapper); sudo, systemd user units, tmux; rootless Podman for checks that start containers; Claude Code 2.1.295 or later (the installer's floor).
 
 **Spec:** `docs/superpowers/specs/2026-10-29-executor-core-design.md` ("Order of work" steps 4–5). Read plan 1 (`docs/superpowers/plans/2026-10-29-executor-core-1-removals.md`) sections "Interfaces plan 1 leaves for plans 2 and 3" and "Where this plan departs from the spec" first.
 
@@ -49,6 +49,12 @@ Claude Code caps stop-hook continuations at 8 in a row. `StopFailure` runs inste
 
 `--permission-mode bypassPermissions` starts bypass mode. The first interactive start shows a warning dialog unless `skipDangerousModePermissionPrompt: true` is set; interactive sessions accept that key from a `--settings` file. Claude Code refuses bypass mode as root or under `sudo` (the pane's `env -i` drops sudo's `SUDO_*` variables). A recognised critical-path `rm` still prompts in bypass mode but the terminal prompt denies on its own after two minutes, so it cannot hold a session.
 
+Managed settings at `/etc/claude-code/managed-settings.json` apply to every user on the machine, sit above user, project, local and `--settings` files, and cannot be overridden by them. Their `permissions.deny` rules block in every mode, `bypassPermissions` included. Hooks defined there run alongside plugin hooks. `allowManagedHooksOnly` would turn the plugin's hooks off, so it is not set. The docs do not say outright that a PreToolUse hook's deny holds in bypass mode, which is why the three dialog tools are also managed deny rules: those are documented to hold.
+
+## Rootless Podman facts this plan relies on (read 2026-10-30)
+
+Testcontainers documents rootless Podman: `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock` with the user's `podman.socket` unit running, and `TESTCONTAINERS_RYUK_DISABLED=true`, because Ryuk needs a privileged container. Rootless Podman needs `/etc/subuid` and `/etc/subgid` ranges for the user (Debian and Ubuntu's `useradd` assigns them) and `XDG_RUNTIME_DIR` set, which `sudo` and `env -i` drop. Without Ryuk, a container survives a check that is killed before its teardown.
+
 ## Where this plan departs from the spec, and why
 
 - **Worktrees are `git worktree`s of a `flocc-agent`-owned clone (`~flocc-agent/src/<repo>`), not separate clones.** They are flocc-agent's files either way; the shared object store keeps disk use where it is today, and `prepare_worktree` keeps its tested logic.
@@ -60,7 +66,8 @@ Claude Code caps stop-hook continuations at 8 in a row. `StopFailure` runs inste
 - **`Run:` is validated for order, not just names:** `executor` exactly once, `tester` only before it, `reviewer` only after it. Anything else is ineligible with the same comment path as an unknown name. Loosening this later costs one set literal.
 - **"Needs the owner" blocks the run except in the review-fix round.** d161 sends a review fixer's owner items to the final Linear comment while the PR stays open, and the spec's fixer row allows listing what it could not fix; blocking there would leave a reviewed, open PR stuck in `blocked`.
 - **A third setup phase, `--phase agent`, runs as `flocc-agent`** between the root and service phases: Claude Code, its plugins, the git identity, mise and its tools, and the session tmux server are flocc-agent's now. The login phase stays `flocc`'s and reaches Claude through the wrapper's `claude` subcommand, because it needs the tick lock and `flocc status`, which only `flocc` can read.
-- **With `docker = true`, `flocc-agent` is in the `docker` group, which is root-equivalent, so the two-user boundary does not hold on that host.** Checks that start containers need it. Doctor reports it as a warning.
+- **Checks that start containers use rootless Podman as `flocc-agent`, not the Docker daemon.** The `docker` group is root-equivalent and would undo the two-user boundary, so `flocc-agent` may not be in it (the agent account check refuses every group in `PrivilegedGroups`) and doctor fails if it is. With `docker = true` (the host file key keeps its name), the root phase installs Podman and removes `flocc` from the `docker` group, the agent phase starts `flocc-agent`'s `podman.socket`, and `flocc-agent-run` points `DOCKER_HOST` at it for the checks and the panes. An existing host keeps its Docker package and daemon: the installer never stops or restarts `dockerd`, and with nobody in the group it serves no one. The `docker` CLI is not installed on a new host; a repo whose check shells out to `docker` itself needs it added by hand.
+- **The guard hook and the dialog-tool deny rules live in root-owned managed settings**, written by the root phase from `deploy/managed-settings.json`. In the plugin, or in flocc-agent's own settings, the agent could turn them off with `disableAllHooks` or by editing the file; managed settings are root's. The plugin keeps its other hooks.
 
 ## Interfaces plan 2 leaves for plan 3
 
@@ -74,6 +81,7 @@ Claude Code caps stop-hook continuations at 8 in a row. `StopFailure` runs inste
 | `agentfs.read_text(dir, name)`, `agentfs.exists`, `agentfs.mtime`, `agentfs.entries` | `src/flocc/agentfs.py` | `run-summary` log tails, `cleanup` |
 | `poller.remove_issue(rt, claim, keep_dirty=False) -> bool`: worktree, agent state and service state gone (the caller deletes the claim) | `src/flocc/poller.py` | `flocc cleanup` |
 | `Runtime.agent` | `src/flocc/runtime.py` | every new command that touches agent files |
+| `agentrun.container_env()`; `remove` prunes only stopped containers | `src/flocc/agentrun.py` | `flocc cleanup` removes testcontainers containers still running after their issue ended (Ryuk is off) |
 
 ## Review Focus
 
@@ -86,10 +94,10 @@ Claude Code caps stop-hook continuations at 8 in a row. `StopFailure` runs inste
 ## Owner steps (not run by implementers)
 
 1. **Before shipping plan 2 to flocc-nimble:** confirm the host is drained (`flocc status -H flocc-nimble` shows no claims; plan 1 released them). The service phase's "Old worktrees" step refuses to run otherwise.
-2. **Ship once:** `flocc ship -H flocc-nimble`. The root phase creates `flocc-agent`, `flocc-work`, the wrapper, the sudoers rule and `/opt/flocc`, moves `~flocc/.claude` and `~flocc/.claude.json` to `flocc-agent` (so the Claude login and Remote Control consent move with them), moves Docker membership to `flocc-agent`, and restarts `flocc`'s user manager so it gains `flocc-work`. The agent phase installs Claude Code and the plugins for `flocc-agent` and starts its tmux server. The service phase publishes `/opt/flocc`, removes `~flocc/worktrees` and the old `flocc-tmux.service`, and runs doctor.
+2. **Ship once:** `flocc ship -H flocc-nimble`. The root phase creates `flocc-agent`, `flocc-work`, the wrapper, the sudoers rule and `/opt/flocc`, moves `~flocc/.claude` and `~flocc/.claude.json` to `flocc-agent` (so the Claude login and Remote Control consent move with them), writes `/etc/claude-code/managed-settings.json`, installs Podman and takes `flocc` out of the `docker` group, and restarts `flocc`'s user manager so it gains `flocc-work`. The agent phase installs Claude Code and the plugins for `flocc-agent`, starts its tmux server and its `podman.socket`. The service phase publishes `/opt/flocc`, removes `~flocc/worktrees` and the old `flocc-tmux.service`, and runs doctor.
 3. **If doctor reports the Claude login missing** (a host whose login did not move): `flocc login -H flocc-nimble`.
-4. **Check the boundary on the host:** doctor's `agent boundary` line is `ok`; `sudo -u flocc-agent cat /home/flocc/.config/flocc/linear.key` fails with "Permission denied".
-5. **One supervised run** on a test issue with `Run: executor, reviewer`, watched in the Claude app: the session starts in bypass mode with no dialog, the PR opens, the review posts, the worktree goes when the issue is moved to Done. The spec's full live run (cardinal included) is after plan 3.
+4. **Check the boundary on the host:** doctor's `agent boundary`, `agent docker`, `managed settings` and `containers` lines are `ok`; `sudo -u flocc-agent cat /home/flocc/.config/flocc/linear.key` fails with "Permission denied"; `sudo -iu flocc-agent podman run --rm docker.io/library/alpine true` exits 0.
+5. **One supervised run** on a test issue with `Run: executor, reviewer`, on a repo whose check starts a testcontainers container, watched in the Claude app: the session starts in bypass mode with no dialog, the check's container starts under Podman, the PR opens, the review posts, the worktree goes when the issue is moved to Done. In the same session, ask it through Remote Control to run `git push` and to use `AskUserQuestion`: both must be denied with the guard's reason. Then add `"disableAllHooks": true` to `~flocc-agent/.claude/settings.json`, start another run, and repeat: the managed guard must still deny. Remove the key afterwards. The spec's full live run (cardinal included) is after plan 3.
 
 ---
 
@@ -622,7 +630,7 @@ Replace the `"PreToolUse"` entry in `plugin/hooks/hooks.json` with:
     ],
 ```
 
-The matcher keeps a Python start off every Read, Grep and Glob call.
+The matcher keeps a Python start off every Read, Grep and Glob call. The guard entry is here only until Task 13 moves it into root-owned managed settings, where flocc-agent cannot turn it off.
 
 - [ ] **Step 7: Run the tests**
 
@@ -3380,12 +3388,72 @@ In `tests/test_poller.py`:
 
 In `tests/test_cli.py`, the canary tests that monkeypatched `flocc.publisher.check_at_base` or `flocc.worktree.setup_at_base` now monkeypatch `flocc.agent.Agent.check_base` (`lambda self, repo: (sha, failure)`) and `flocc.agent.Agent.setup_base` (`lambda self, repo: (code, out, sha)`). In `tests/test_worktree.py`, any `recover_tests` call keeps its three positional arguments.
 
-- [ ] **Step 9: Run the tests**
+- [ ] **Step 9: Point checks and panes at flocc-agent's Podman socket**
+
+Testcontainers in a check, and any container a session starts, reach rootless Podman through `DOCKER_HOST`. `sudo` and the pane's `env -i` both drop `XDG_RUNTIME_DIR`, so `flocc-agent-run` sets all three variables itself, once per call for the checks it runs and in the pane's `env -i` list. A host without the socket gets none of them, so a check there fails on the missing Docker socket exactly as before.
+
+Add to `tests/test_agentrun.py`:
+
+```python
+def test_container_env_points_at_the_podman_socket(tmp_path, monkeypatch):
+    sock = tmp_path / "podman" / "podman.sock"
+    sock.parent.mkdir()
+    sock.touch()
+    monkeypatch.setattr("flocc.agentrun._runtime_dir", lambda: tmp_path)
+    assert agentrun.container_env() == {
+        "XDG_RUNTIME_DIR": str(tmp_path),
+        "DOCKER_HOST": f"unix://{sock}",
+        "TESTCONTAINERS_RYUK_DISABLED": "true",
+    }
+
+
+def test_no_socket_means_no_container_env(tmp_path, monkeypatch):
+    monkeypatch.setattr("flocc.agentrun._runtime_dir", lambda: tmp_path)
+    assert agentrun.container_env() == {}
+
+
+def test_the_pane_gets_the_container_env_after_env_i(monkeypatch):
+    monkeypatch.setattr("flocc.agentrun.container_env", lambda: {"DOCKER_HOST": "unix:///s"})
+    argv = ["/usr/bin/env", "-i", "HOME=/h", "claude", "--name", "NF-1"]
+    assert agentrun.with_container_env(argv) == [
+        "/usr/bin/env", "-i", "DOCKER_HOST=unix:///s", "HOME=/h", "claude", "--name", "NF-1",
+    ]
+    assert agentrun.with_container_env(["claude"]) == ["claude"]
+```
+
+In `src/flocc/agentrun.py`, add after `under_home`:
+
+```python
+def _runtime_dir() -> Path:
+    return Path(f"/run/user/{os.getuid()}")
+
+
+def container_env() -> dict[str, str]:
+    sock = _runtime_dir() / "podman" / "podman.sock"
+    if not sock.exists():
+        return {}
+    return {
+        "XDG_RUNTIME_DIR": str(_runtime_dir()),
+        "DOCKER_HOST": f"unix://{sock}",
+        # Ryuk needs a privileged container, which rootless Podman does not give it.
+        "TESTCONTAINERS_RYUK_DISABLED": "true",
+    }
+
+
+def with_container_env(argv: list[str]) -> list[str]:
+    if argv[:2] != ["/usr/bin/env", "-i"]:
+        return argv
+    return [*argv[:2], *(f"{k}={v}" for k, v in container_env().items()), *argv[2:]]
+```
+
+In `start`, change `argv = with_disabled_plugins(...)` to `argv = with_container_env(with_disabled_plugins([str(a) for a in req["argv"]], req.get("plugins")))`. In `main`, after `os.umask(0o027)`, add `os.environ.update(container_env())`, so `prepare`'s `./setup` and `check`'s commands inherit it through `run_bounded`.
+
+- [ ] **Step 10: Run the tests**
 
 Run: `uv run pytest -q && uv run pyrefly check && uvx --from shellcheck-py shellcheck deploy/flocc-agent-run`
 Expected: PASS.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 uv run ruff check src tests && uv run ruff format --check src tests
@@ -3543,10 +3611,18 @@ def remove(req: dict) -> dict:
             if (pad := scratch_path(line)) is not None:
                 shutil.rmtree(pad, ignore_errors=True)
     shutil.rmtree(state, ignore_errors=True)
+    _prune_containers()
     return {"removed": True, "dirty": False}
+
+
+def _prune_containers() -> None:
+    # Only stopped ones: a running container may belong to another issue's check. Ryuk is off,
+    # so a check killed mid-run leaves its containers behind until this runs.
+    if container_env() and shutil.which("podman"):
+        subprocess.run(["podman", "container", "prune", "-f"], capture_output=True, check=False, timeout=120)
 ```
 
-and add `"remove": remove` to `HANDLERS`.
+and add `"remove": remove` to `HANDLERS`. In `tests/test_agentrun.py`, add a test that `remove` runs `podman container prune -f` when `container_env` is non-empty and `shutil.which("podman")` answers (monkeypatch both and `subprocess.run`), and runs nothing podman-related when `container_env` returns `{}`.
 
 In `src/flocc/agent.py`, add:
 
@@ -3643,11 +3719,12 @@ The Claude login, the session list and the tmux server are flocc-agent's now. `c
 - Modify: `src/flocc/agent.py` (`claude_argv`, `probe`)
 - Modify: `src/flocc/tokens.py` (`claude_login`, `check_claude_login`)
 - Modify: `src/flocc/status.py` (`collect`), `src/flocc/doctor.py`, `src/flocc/cli.py` (`cmd_status`, `_live_session`, `cmd_attach`, `cmd_doctor`)
+- Create: `deploy/managed-settings.json`
 - Test: `tests/test_agentrun.py`, `tests/test_tokens.py`, `tests/test_status.py`, `tests/test_doctor.py`, `tests/test_cli.py`
 
 **Interfaces:**
 - Consumes: Task 9's `Agent`, `AgentSessions`, `agentrun.session_name`.
-- Produces: wrapper subcommands `claude` and `probe`; `agentrun.CLAUDE_ALLOWED`; `Agent.claude_argv() -> list[str]` (`[*agent_run, "claude"]`); `Agent.probe(read: list[str], write: list[str]) -> dict` (`{"read": {path: bool}, "write": {path: bool}, "tmux": bool, "groups": [str]}`); `tokens.claude_login(claude: list[str], run=subprocess.run, timeout=30)`; `status.collect(cfg, sessions, ..., claude: list[str] | None = None)`; `doctor.agent_checks(cfg, config_path, agent) -> list[Result]`; `doctor.claude_checks(claude: list[str] | None, run=subprocess.run)`; `doctor.run_doctor(cfg, config_path)`, `doctor.collect_results(cfg, config_path, agent=None)`.
+- Produces: wrapper subcommands `claude` and `probe`; `agentrun.CLAUDE_ALLOWED`; `Agent.claude_argv() -> list[str]` (`[*agent_run, "claude"]`); `Agent.probe(read: list[str], write: list[str]) -> dict` (`{"read": {path: bool}, "write": {path: bool}, "tmux": bool, "groups": [str], "containers": bool}`); `doctor.MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")`, `doctor.managed_check(path=MANAGED_SETTINGS) -> Result`; `tokens.claude_login(claude: list[str], run=subprocess.run, timeout=30)`; `status.collect(cfg, sessions, ..., claude: list[str] | None = None)`; `doctor.agent_checks(cfg, config_path, agent) -> list[Result]`; `doctor.claude_checks(claude: list[str] | None, run=subprocess.run)`; `doctor.run_doctor(cfg, config_path)`, `doctor.collect_results(cfg, config_path, agent=None)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3689,14 +3766,33 @@ def test_the_boundary_check_fails_when_flocc_agent_can_read_a_secret(tmp_cfg, tm
     assert boundary.status == "fail" and key in boundary.detail
 
 
-def test_the_boundary_check_passes_and_warns_about_docker(tmp_cfg, tmp_path):
+def test_the_docker_group_fails_the_boundary(tmp_cfg, tmp_path):
     agent = FakeAgent(tmp_cfg)
     agent.probe_result = {"read": {"/x": False}, "write": {"/opt/flocc/plugin": False},
-                          "tmux": False, "groups": ["flocc-agent", "docker"]}
+                          "tmux": False, "groups": ["flocc-agent", "docker"], "containers": False}
     by_name = {r.name: r for r in agent_checks(tmp_cfg, tmp_path / "c.toml", agent)}
     assert by_name["agent boundary"].status == "ok"
-    assert by_name["agent docker"].status == "warn" and "root-equivalent" in by_name["agent docker"].detail
+    assert by_name["agent docker"].status == "fail" and "root-equivalent" in by_name["agent docker"].detail
+    assert by_name["containers"].status == "ok" and "no Podman socket" in by_name["containers"].detail
     assert by_name["tmux"].status == "fail"
+
+
+def test_a_clean_agent_passes_every_line(tmp_cfg, tmp_path):
+    agent = FakeAgent(tmp_cfg)
+    agent.probe_result = {"read": {}, "write": {}, "tmux": True, "groups": ["flocc-agent"], "containers": True}
+    by_name = {r.name: r for r in agent_checks(tmp_cfg, tmp_path / "c.toml", agent)}
+    assert by_name["agent docker"].status == "ok"
+    assert "Podman socket" in by_name["containers"].detail
+
+
+def test_managed_settings_must_carry_the_guard_and_the_dialog_denies(tmp_path):
+    path = tmp_path / "managed-settings.json"
+    assert managed_check(path).status == "fail"
+    path.write_text("{}")
+    assert managed_check(path).status == "fail"
+    shipped = Path(__file__).parent.parent / "deploy" / "managed-settings.json"
+    path.write_text(shipped.read_text())
+    assert managed_check(path).status == "ok"
 
 
 def test_an_unanswered_wrapper_fails_the_agent_check(tmp_cfg, tmp_path):
@@ -3780,6 +3876,7 @@ def probe(req: dict) -> dict:
         "write": {str(p): writable(str(p)) for p in req.get("write") or []},
         "tmux": _tmux_up(),
         "groups": sorted({group(g) for g in os.getgroups()}),
+        "containers": bool(container_env()),
     }
 ```
 
@@ -3858,15 +3955,64 @@ def agent_checks(cfg: Config, config_path: Path, agent) -> list[Result]:
         detail = "flocc-agent cannot read the secrets or the ledger, nor write the plugin directory"
         results.append(Result("ok", "agent boundary", detail))
     if "docker" in seen.get("groups", []):
-        detail = "flocc-agent is in the docker group, which is root-equivalent: the two-user boundary does not hold on this host"
-        results.append(Result("warn", "agent docker", detail))
+        detail = (
+            "flocc-agent is in the docker group, which is root-equivalent; checks use its Podman"
+            " socket instead: gpasswd -d flocc-agent docker"
+        )
+        results.append(Result("fail", "agent docker", detail))
+    else:
+        results.append(Result("ok", "agent docker", "flocc-agent is not in the docker group"))
+    if seen.get("containers"):
+        results.append(Result("ok", "containers", "checks reach flocc-agent's Podman socket"))
+    else:
+        detail = "no Podman socket for flocc-agent; checks that start containers fail (docker = true in the host file sets it up)"
+        results.append(Result("ok", "containers", detail))
     if seen.get("tmux"):
         results.append(Result("ok", "tmux", "flocc-agent's session server is up"))
     else:
         detail = "flocc-agent has no session server; flocc ship -H <this host> starts it"
         results.append(Result("fail", "tmux", detail))
     return results
+
+
+MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
+_DIALOG_TOOLS = {"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"}
+
+
+def managed_check(path: Path = MANAGED_SETTINGS) -> Result:
+    remedy = "flocc ship -H <this host> writes it in the root phase"
+    try:
+        data = json.loads(path.read_text())
+        deny = set(data["permissions"]["deny"])
+        commands = [h["command"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return Result("fail", "managed settings", f"{path} unreadable or incomplete ({exc}); {remedy}")
+    if not _DIALOG_TOOLS <= deny or not any(c.endswith("flocc guard") for c in commands):
+        return Result("fail", "managed settings", f"{path} lacks the guard or the dialog denies; {remedy}")
+    return Result("ok", "managed settings", "the guard and the dialog denies are root's")
 ```
+
+Call it from `collect_results`: `results.append(managed_check())` after `agent_checks`. Import `managed_check` in `tests/test_doctor.py`. Tests that call `collect_results` monkeypatch `flocc.doctor.managed_check` to `lambda: Result("ok", "managed settings", "")`; patching `MANAGED_SETTINGS` would not reach the default argument, which is bound at definition.
+
+Create `deploy/managed-settings.json`, which Task 13 installs as root:
+
+```json
+{
+  "permissions": {
+    "deny": ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(AskUserQuestion|EnterPlanMode|ExitPlanMode|Bash|Edit|Write|NotebookEdit|mcp__.*)$",
+        "hooks": [ { "type": "command", "command": "/opt/flocc/bin/flocc guard" } ]
+      }
+    ]
+  }
+}
+```
+
+The dialog tools stay in the guard's matcher although the deny rules already block them: the guard's deny carries `KEEP_MOVING` to the model, the rule's does not. The path is absolute because the hook runs for any user who starts `claude` on the host, whatever its `PATH`.
 
 - Change `collect_results(cfg)` to `collect_results(cfg: Config, config_path: Path, agent=None)`: `agent = agent or Agent(cfg)`; replace `results += claude_checks(shutil.which("claude"))` and `results.append(tmux_check())` with `results += claude_checks(agent.claude_argv())` and `results += agent_checks(cfg, config_path, agent)`. `run_doctor(cfg, config_path)` and `doctor_json(cfg, config_path)` pass `config_path` on. Update `tests/test_doctor.py` call sites of `collect_results` and `run_doctor` to pass a path and a `FakeAgent`.
 
@@ -3879,7 +4025,7 @@ Expected: PASS.
 
 ```bash
 uv run ruff check src tests && uv run ruff format --check src tests
-git add deploy/flocc-agent-run src tests
+git add deploy/flocc-agent-run deploy/managed-settings.json src tests
 git commit -s -m "Status, peek, attach and doctor through flocc-agent-run; check the boundary"
 ```
 
@@ -3889,18 +4035,20 @@ git commit -s -m "Status, peek, attach and doctor through flocc-agent-run; check
 
 The three host phases after this part: `root` (as root) → `agent` (as `flocc-agent`) → `service` (as `flocc`); `login` stays `flocc`'s. Constants live in `installer/internal/steps/user.go` and match the Global Constraints' layout.
 
-### Task 13: Root phase: flocc-agent, the wrapper, sudoers, /opt/flocc and the login move
+### Task 13: Root phase: flocc-agent, the wrapper, sudoers, managed settings, Podman and the login move
 
 **Files:**
 - Modify: `deploy/embed.go`, `deploy/embed_test.go`, `deploy/flocc-tmux.service`, `deploy/flocc.service`
 - Modify: `installer/internal/steps/user.go` (constants)
 - Create: `installer/internal/steps/agent_user.go`, `installer/internal/steps/agent_user_test.go`
-- Modify: `installer/internal/steps/docker.go`, `installer/internal/steps/docker_test.go`
-- Modify: `installer/internal/steps/list.go` (`RootSteps`)
+- Delete: `installer/internal/steps/docker.go`, `installer/internal/steps/docker_test.go`
+- Create: `installer/internal/steps/containers.go`, `installer/internal/steps/containers_test.go`
+- Modify: `installer/internal/steps/list.go` (`RootSteps`), `installer/internal/answers/answers.go` (`Docker` comment)
+- Modify: `plugin/hooks/hooks.json` (the guard moves out), `tests/test_plugin.py::test_hooks`
 
 **Interfaces:**
-- Consumes: `deploy/flocc-agent-run`, `deploy/flocc-agent.sudoers` (Task 9).
-- Produces: `steps.AgentUser = "flocc-agent"`, `steps.WorkGroup = "flocc-work"`, `steps.AgentHome = "/home/flocc-agent"`, `steps.AgentRun = "/usr/local/libexec/flocc-agent-run"`, `steps.OptDir = "/opt/flocc"`; steps `AgentAccount{}`, `AgentAccess{}`, `ClaudeHome{}`; `deploy.Units = []string{"flocc.service", "flocc.timer"}` (the service's), `deploy.AgentUnits = []string{"flocc-tmux.service"}`; `deploy.Files` also embeds `flocc-agent-run` and `flocc-agent.sudoers`.
+- Consumes: `deploy/flocc-agent-run`, `deploy/flocc-agent.sudoers` (Task 9); `deploy/managed-settings.json` (Task 12).
+- Produces: `steps.AgentUser = "flocc-agent"`, `steps.WorkGroup = "flocc-work"`, `steps.AgentHome = "/home/flocc-agent"`, `steps.AgentRun = "/usr/local/libexec/flocc-agent-run"`, `steps.OptDir = "/opt/flocc"`, `steps.ManagedSettingsFile = "/etc/claude-code/managed-settings.json"`; steps `AgentAccount{}`, `AgentAccess{}`, `ClaudeHome{}`, `Containers{}` (replaces `HostDocker{}`); `deploy.Units = []string{"flocc.service", "flocc.timer"}` (the service's), `deploy.AgentUnits = []string{"flocc-tmux.service"}`; `deploy.Files` also embeds `flocc-agent-run`, `flocc-agent.sudoers` and `managed-settings.json`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3976,6 +4124,24 @@ func TestAgentAccessInstallsTheWrapperAndAValidatedRule(t *testing.T) {
 	if !f.Ran("visudo -cf " + sudoersFile + ".new") {
 		t.Fatalf("rule not validated: %v", f.Calls)
 	}
+	want, _ = deploy.Files.ReadFile("managed-settings.json")
+	got, _ = os.ReadFile(e.Path(ManagedSettingsFile))
+	if string(got) != string(want) {
+		t.Fatal("managed settings not written")
+	}
+	if st, _ := os.Stat(e.Path(ManagedSettingsFile)); st == nil || st.Mode().Perm() != 0o644 {
+		t.Fatalf("managed settings: %v", st)
+	}
+}
+
+func TestAgentAccountRefusesTheDockerGroup(t *testing.T) {
+	f := host.NewFake()
+	f.On("id -u flocc-agent", 0, "1001\n").On("id -nG flocc", 0, "flocc flocc-work\n")
+	f.On("id -nG flocc-agent", 0, "flocc-agent docker\n")
+	done, detail, _ := (AgentAccount{}).Check(context.Background(), testEnv(t, f))
+	if done || detail != "flocc-agent is in group docker" {
+		t.Fatalf("%v %q", done, detail)
+	}
 }
 
 func TestAgentAccessLeavesNoRuleWhenVisudoRejectsIt(t *testing.T) {
@@ -4035,11 +4201,135 @@ func TestTheUnitsAreSplitBetweenTheUsers(t *testing.T) {
 }
 ```
 
-In `installer/internal/steps/docker_test.go`, change the expectations to: the check passes only when `id -nG flocc-agent` lists `docker` and `id -nG flocc` does not; Apply runs `usermod -aG docker flocc-agent` and, when `flocc` is a member, `gpasswd -d flocc docker`.
+`git rm installer/internal/steps/docker.go installer/internal/steps/docker_test.go`, then create `installer/internal/steps/containers_test.go`:
+
+```go
+package steps
+
+import (
+	"context"
+	"os"
+	"testing"
+
+	"github.com/NovusEdge/flocc/installer/internal/host"
+)
+
+func containersEnv(t *testing.T, f *host.Fake) *Env {
+	e := testEnv(t, f)
+	e.Distro.Manager = host.Apt
+	e.Answers.Docker = true
+	return e
+}
+
+func podmanHost(serviceGroups string) *host.Fake {
+	return host.NewFake().
+		On("sh -c command -v podman", 0, "/usr/bin/podman").
+		On("id -nG flocc", 0, serviceGroups)
+}
+
+func TestContainersAreDoneWhenNotAskedFor(t *testing.T) {
+	if ok, detail, _ := (Containers{}).Check(context.Background(), testEnv(t, host.NewFake())); !ok || detail != "none asked for" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestContainersSkipHostsWithoutApt(t *testing.T) {
+	e := containersEnv(t, host.NewFake())
+	e.Distro.Manager = host.Pacman
+	if ok, detail, _ := (Containers{}).Check(context.Background(), e); !ok || detail != "apt hosts only" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestContainersAreNotDoneWithoutPodman(t *testing.T) {
+	if ok, detail, _ := (Containers{}).Check(context.Background(), containersEnv(t, host.NewFake())); ok || detail != "podman is not installed" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestContainersNeedSubordinateIDsForTheAgent(t *testing.T) {
+	e := containersEnv(t, podmanHost("flocc flocc-work"))
+	os.MkdirAll(e.Path("/etc"), 0o755)
+	os.WriteFile(e.Path("/etc/subuid"), []byte("flocc:100000:65536\n"), 0o644)
+	os.WriteFile(e.Path("/etc/subgid"), []byte("flocc:100000:65536\n"), 0o644)
+	if ok, detail, _ := (Containers{}).Check(context.Background(), e); ok || detail != "flocc-agent has no /etc/subuid range" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestContainersAreNotDoneWhileTheServiceIsInTheDockerGroup(t *testing.T) {
+	e := containersEnv(t, podmanHost("flocc flocc-work docker"))
+	writeSubIDs(t, e)
+	if ok, detail, _ := (Containers{}).Check(context.Background(), e); ok || detail != "flocc is still in the docker group" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestContainersAreDone(t *testing.T) {
+	e := containersEnv(t, podmanHost("flocc flocc-work"))
+	writeSubIDs(t, e)
+	if ok, detail, _ := (Containers{}).Check(context.Background(), e); !ok || detail != "rootless Podman for flocc-agent" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestContainersApplyInstallsPodmanAddsIDsAndLeavesDockerdAlone(t *testing.T) {
+	f := host.NewFake().OnName("apt-get", 0, "").OnName("usermod", 0, "").OnName("gpasswd", 0, "").
+		On("id -nG flocc", 0, "flocc docker")
+	e := containersEnv(t, f)
+	os.MkdirAll(e.Path("/etc"), 0o755)
+	os.WriteFile(e.Path("/etc/subuid"), []byte("flocc:100000:65536\n"), 0o644)
+	os.WriteFile(e.Path("/etc/subgid"), []byte("flocc:100000:65536\n"), 0o644)
+	if err := (Containers{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"apt-get install -y podman uidmap slirp4netns",
+		"usermod --add-subuids 165536-231071 --add-subgids 165536-231071 flocc-agent",
+		"gpasswd -d flocc docker",
+	} {
+		if !f.Ran(want) {
+			t.Errorf("did not run %q; ran %v", want, f.Calls)
+		}
+	}
+	dockerUntouched(t, f.Calls)
+}
+
+func writeSubIDs(t *testing.T, e *Env) {
+	t.Helper()
+	os.MkdirAll(e.Path("/etc"), 0o755)
+	for _, f := range []string{"/etc/subuid", "/etc/subgid"} {
+		os.WriteFile(e.Path(f), []byte("flocc-agent:165536:65536\n"), 0o644)
+	}
+}
+```
+
+`dockerUntouched` is the package's alias for `dockerguard.Untouched` (`create_docker_test.go`).
+
+In `tests/test_plugin.py::test_hooks`, replace the `(clearing, guarding) = hooks["PreToolUse"]` assertions from Task 2 with:
+
+```python
+    (clearing,) = hooks["PreToolUse"]
+    assert "matcher" not in clearing and [h["command"] for h in clearing["hooks"]] == [clear]
+
+
+def test_the_guard_is_in_managed_settings():
+    managed = json.loads((ROOT / "deploy" / "managed-settings.json").read_text())
+    (guarding,) = managed["hooks"]["PreToolUse"]
+    assert [h["command"] for h in guarding["hooks"]] == ["/opt/flocc/bin/flocc guard"]
+    for tool in ("AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "Bash", "Edit", "Write"):
+        assert re.search(guarding["matcher"], tool)
+    assert re.search(guarding["matcher"], "mcp__linear__save_issue")
+    assert not re.search(guarding["matcher"], "Read")
+    assert {"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"} <= set(managed["permissions"]["deny"])
+    assert "allowManagedHooksOnly" not in managed
+```
+
+(`ROOT` is the repo root; use the name `tests/test_plugin.py` already has for it, or `Path(__file__).parent.parent`.)
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `go test ./installer/internal/steps/ -run 'AgentAccount|AgentAccess|ClaudeHome|Units|Docker' ./deploy/...`
+Run: `go test ./installer/internal/steps/ -run 'AgentAccount|AgentAccess|ClaudeHome|Units|Containers' ./deploy/... && uv run pytest -q tests/test_plugin.py`
 Expected: FAIL (undefined `AgentAccount`, `deploy.AgentUnits`).
 
 - [ ] **Step 3: Deploy files**
@@ -4047,13 +4337,14 @@ Expected: FAIL (undefined `AgentAccount`, `deploy.AgentUnits`).
 `deploy/embed.go`:
 
 ```go
-// Package deploy embeds the unit files, the agent wrapper, its sudoers rule and the config
-// template, so the installer ships the copies in this commit and no others.
+// Package deploy embeds the unit files, the agent wrapper, its sudoers rule, Claude Code's
+// managed settings and the config template, so the installer ships the copies in this commit
+// and no others.
 package deploy
 
 import "embed"
 
-//go:embed flocc.service flocc.timer flocc-tmux.service config.example.toml flocc-agent-run flocc-agent.sudoers
+//go:embed flocc.service flocc.timer flocc-tmux.service config.example.toml flocc-agent-run flocc-agent.sudoers managed-settings.json
 var Files embed.FS
 
 // Units are the service user's; AgentUnits are flocc-agent's.
@@ -4063,7 +4354,7 @@ var (
 )
 ```
 
-In `deploy/embed_test.go`, change the loop to `for _, name := range append(append(append([]string{}, Units...), AgentUnits...), "config.example.toml", "flocc-agent-run", "flocc-agent.sudoers") {`.
+In `deploy/embed_test.go`, change the loop to `for _, name := range append(append(append([]string{}, Units...), AgentUnits...), "config.example.toml", "flocc-agent-run", "flocc-agent.sudoers", "managed-settings.json") {`.
 
 `deploy/flocc-tmux.service`:
 
@@ -4103,6 +4394,8 @@ const (
 	AgentHome = "/home/" + AgentUser
 	AgentRun  = "/usr/local/libexec/flocc-agent-run"
 	OptDir    = "/opt/flocc"
+	// Claude Code reads it for every user and lets no user setting override it.
+	ManagedSettingsFile = "/etc/claude-code/managed-settings.json"
 )
 ```
 
@@ -4136,7 +4429,8 @@ func inGroup(ctx context.Context, e *Env, user, group string) bool {
 }
 
 // AgentAccount is flocc-agent: it runs the sessions and the repos' code, and can read nothing of
-// flocc's. flocc reads flocc-agent's worktrees and state through the group flocc-work.
+// flocc's. flocc reads flocc-agent's worktrees and state through the group flocc-work. Any group
+// in PrivilegedGroups, docker included, would give the agent root and with it flocc's secrets.
 type AgentAccount struct{}
 
 func (AgentAccount) Name() string { return "Agent user" }
@@ -4146,7 +4440,7 @@ func (AgentAccount) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return false, "no " + AgentUser + " user", nil
 	}
 	for _, g := range strings.Fields(e.Output(ctx, "id", "-nG", AgentUser)) {
-		if slices.Contains(privileged, g) || g == ServiceUser || g == WorkGroup {
+		if slices.Contains(PrivilegedGroups, g) || g == ServiceUser || g == WorkGroup {
 			return false, AgentUser + " is in group " + g, nil
 		}
 	}
@@ -4179,7 +4473,7 @@ func (AgentAccount) Apply(ctx context.Context, e *Env) error {
 		}
 	}
 	for _, g := range strings.Fields(e.Output(ctx, "id", "-nG", AgentUser)) {
-		if slices.Contains(privileged, g) || g == ServiceUser || g == WorkGroup {
+		if slices.Contains(PrivilegedGroups, g) || g == ServiceUser || g == WorkGroup {
 			return fmt.Errorf("%s is in group %s, which reaches past its sessions; remove it with gpasswd -d %s %s and run again", AgentUser, g, AgentUser, g)
 		}
 	}
@@ -4216,8 +4510,9 @@ func (AgentAccount) Apply(ctx context.Context, e *Env) error {
 	return nil
 }
 
-// AgentAccess installs the wrapper, the one sudoers rule that reaches it, and /opt/flocc, where
-// the service publishes the plugin and the flocc build flocc-agent runs.
+// AgentAccess installs the wrapper, the one sudoers rule that reaches it, Claude Code's managed
+// settings (the guard hook and the dialog denies, which flocc-agent cannot turn off), and
+// /opt/flocc, where the service publishes the plugin and the flocc build flocc-agent runs.
 type AgentAccess struct{}
 
 func (AgentAccess) Name() string { return "Agent access" }
@@ -4225,7 +4520,11 @@ func (AgentAccess) Name() string { return "Agent access" }
 var accessFiles = []struct {
 	path, src string
 	mode      os.FileMode
-}{{AgentRun, "flocc-agent-run", 0o755}, {sudoersFile, "flocc-agent.sudoers", 0o440}}
+}{
+	{AgentRun, "flocc-agent-run", 0o755},
+	{sudoersFile, "flocc-agent.sudoers", 0o440},
+	{ManagedSettingsFile, "managed-settings.json", 0o644},
+}
 
 func (AgentAccess) Check(ctx context.Context, e *Env) (bool, string, error) {
 	for _, f := range accessFiles {
@@ -4266,6 +4565,13 @@ func (AgentAccess) Apply(ctx context.Context, e *Env) error {
 		return errors.Join(err, os.Remove(e.Path(tmp)))
 	}
 	if err := os.Rename(e.Path(tmp), e.Path(sudoersFile)); err != nil {
+		return err
+	}
+	managed, _ := deploy.Files.ReadFile("managed-settings.json")
+	if err := os.MkdirAll(e.Path(filepath.Dir(ManagedSettingsFile)), 0o755); err != nil {
+		return err
+	}
+	if err := writeAtomic(e.Path(ManagedSettingsFile), managed, 0o644); err != nil {
 		return err
 	}
 	_, err := e.Must(ctx, "install", "-d", "-o", ServiceUser, "-g", ServiceUser, "-m", "755", OptDir)
@@ -4322,58 +4628,136 @@ func (ClaudeHome) Apply(ctx context.Context, e *Env) error {
 
 `writeAtomic` already exists in the package (`claude.go` uses it); if it does not set the mode on an existing file, add `os.Chmod(e.Path(AgentRun), 0o755)` after the call.
 
-In `installer/internal/steps/docker.go`: in `Check`, replace the membership test with
+`installer/internal/steps/containers.go`:
 
 ```go
-	if !inGroup(ctx, e, AgentUser, "docker") {
-		return false, AgentUser + " is not in the docker group", nil
+package steps
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/NovusEdge/flocc/installer/internal/host"
+)
+
+// subIDCount is the range useradd gives a new user on Debian and Ubuntu.
+const subIDCount = 65536
+
+// Containers gives flocc-agent rootless Podman for checks that start containers (testcontainers);
+// the agent phase starts its podman.socket and flocc-agent-run points DOCKER_HOST at it. It is
+// not Docker, the create-host step that opens the firewall for Docker on the VM's bridge.
+//
+// The docker group is root-equivalent, so neither user may be in it. A host that had the Docker
+// step keeps its docker.io package and daemon: nothing here stops or restarts dockerd, and with
+// nobody in the group it serves no one.
+type Containers struct{}
+
+func (Containers) Name() string { return "Containers" }
+
+func (Containers) Check(ctx context.Context, e *Env) (bool, string, error) {
+	switch {
+	case !e.Answers.Docker:
+		return true, "none asked for", nil
+	case e.Distro.Manager != host.Apt:
+		return true, "apt hosts only", nil
+	case !e.Ok(ctx, "sh", "-c", "command -v podman"):
+		return false, "podman is not installed", nil
+	}
+	for _, f := range []string{"/etc/subuid", "/etc/subgid"} {
+		if !hasSubIDs(e.Path(f), AgentUser) {
+			return false, AgentUser + " has no " + f + " range", nil
+		}
 	}
 	if inGroup(ctx, e, ServiceUser, "docker") {
 		return false, ServiceUser + " is still in the docker group", nil
 	}
-```
+	return true, "rootless Podman for " + AgentUser, nil
+}
 
-and change the two `detail` strings' "service user" to "flocc-agent". In `Apply`, replace the final `usermod` with:
-
-```go
-	if _, err := e.Must(ctx, "usermod", "-aG", "docker", AgentUser); err != nil {
+func (Containers) Apply(ctx context.Context, e *Env) error {
+	install := host.Cmd{Name: "apt-get", Args: []string{"install", "-y", "podman", "uidmap", "slirp4netns"}, Env: []string{"DEBIAN_FRONTEND=noninteractive"}}
+	if err := e.SpinCmd(ctx, install); err != nil {
 		return err
+	}
+	if !hasSubIDs(e.Path("/etc/subuid"), AgentUser) || !hasSubIDs(e.Path("/etc/subgid"), AgentUser) {
+		// One range past every range already given out, in both files, so the two stay equal.
+		start := max(nextFree(e.Path("/etc/subuid")), nextFree(e.Path("/etc/subgid")), 100000)
+		ids := fmt.Sprintf("%d-%d", start, start+subIDCount-1)
+		if _, err := e.Must(ctx, "usermod", "--add-subuids", ids, "--add-subgids", ids, AgentUser); err != nil {
+			return err
+		}
 	}
 	if inGroup(ctx, e, ServiceUser, "docker") {
 		_, err := e.Must(ctx, "gpasswd", "-d", ServiceUser, "docker")
 		return err
 	}
 	return nil
+}
+
+// hasSubIDs reports whether an /etc/subuid-style file gives user a non-empty range.
+func hasSubIDs(path, user string) bool {
+	b, _ := os.ReadFile(path)
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Split(strings.TrimSpace(line), ":")
+		if len(f) != 3 || f[0] != user {
+			continue
+		}
+		_, err1 := strconv.Atoi(f[1])
+		count, err2 := strconv.Atoi(f[2])
+		if err1 == nil && err2 == nil && count > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// nextFree is one past the end of the highest range in the file; 0 when it has none.
+func nextFree(path string) int {
+	b, _ := os.ReadFile(path)
+	end := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Split(strings.TrimSpace(line), ":")
+		if len(f) != 3 {
+			continue
+		}
+		start, err1 := strconv.Atoi(f[1])
+		count, err2 := strconv.Atoi(f[2])
+		if err1 == nil && err2 == nil {
+			end = max(end, start+count)
+		}
+	}
+	return end
+}
 ```
 
-Replace the type's doc comment's second paragraph with:
-
-```go
-// The checks run as flocc-agent, so flocc-agent gets the group. The docker group is
-// root-equivalent: on a host with Docker, flocc-agent can reach root and with it flocc's secrets,
-// so the two-user boundary does not hold there (doctor warns). The group reaches flocc-agent's
-// sessions only after its systemd user manager restarts.
-```
+In `installer/internal/answers/answers.go`, change the `Docker` field's comment to `// Docker gives flocc-agent rootless Podman for checks that start containers (testcontainers), on apt hosts. The key keeps its old name so existing host files still load.`
 
 In `installer/internal/steps/list.go`, change `RootSteps` to:
 
 ```go
 func RootSteps() []Step {
-	return []Step{Packages{}, Browsers{}, Tailscale{}, User{}, AgentAccount{}, AgentAccess{}, ClaudeHome{}, HostDocker{}, Scratch{}}
+	return []Step{Packages{}, Browsers{}, Tailscale{}, User{}, AgentAccount{}, AgentAccess{}, ClaudeHome{}, Containers{}, Scratch{}}
 }
 ```
 
+`Containers` runs after `AgentAccount`, which creates the user `usermod --add-subuids` names. Grep for other `HostDocker` references (`grep -rn HostDocker installer`) and rename them.
+
+In `plugin/hooks/hooks.json`, delete the second `PreToolUse` entry (the `flocc guard` one Task 2 added); the idle-clearing entry stays. The guard now runs from managed settings only, so it runs once per call.
+
 - [ ] **Step 5: Run the tests**
 
-Run: `go test ./deploy/... ./installer/...`
+Run: `go test ./deploy/... ./installer/... && uv run pytest -q tests/test_plugin.py`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 gofmt -l deploy installer && go vet ./...
-git add deploy installer
-git commit -s -m "Root phase: flocc-agent, flocc-work, the wrapper and its sudoers rule"
+git add deploy installer plugin/hooks/hooks.json tests/test_plugin.py
+git commit -s -m "Root phase: flocc-agent, the wrapper, managed settings and rootless Podman"
 ```
 
 ---
@@ -4389,7 +4773,7 @@ git commit -s -m "Root phase: flocc-agent, flocc-work, the wrapper and its sudoe
 
 **Interfaces:**
 - Consumes: Task 13's constants and `deploy.AgentUnits`.
-- Produces: `steps.AgentSteps() []Step` = `Identity{}, Mise{}, Claude{}, Tools{}, AgentTmux{}`; `stageFor(user string) string`; `handoff(ctx, r, stage, user string, args []string, doc []byte) error`; `handoffArgs(phase string, fromStdin bool) []string`.
+- Produces: `steps.AgentSteps() []Step` = `Identity{}, Mise{}, Claude{}, Tools{}, AgentTmux{}, PodmanSocket{}`; `stageFor(user string) string`; `handoff(ctx, r, stage, user string, args []string, doc []byte) error`; `handoffArgs(phase string, fromStdin bool) []string`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4449,6 +4833,30 @@ func TestAgentTmuxKeepsAServerUpInLoopMode(t *testing.T) {
 	}
 }
 
+func TestPodmanSocketIsStartedForFloccAgent(t *testing.T) {
+	f := host.NewFake().OnName("systemctl", 0, "")
+	e := testEnv(t, f)
+	e.Answers.Docker = true
+	e.Distro.Manager = host.Apt
+	if err := (PodmanSocket{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("systemctl --user enable --now podman.socket") {
+		t.Fatal(f.Calls)
+	}
+}
+
+func TestPodmanSocketIsSkippedWithoutContainersOrSystemd(t *testing.T) {
+	e := testEnv(t, host.NewFake())
+	if ok, detail, _ := (PodmanSocket{}).Check(context.Background(), e); !ok || detail != "none asked for" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+	e.Answers.Docker, e.Distro.Manager, e.Mode = true, host.Apt, Loop
+	if ok, detail, _ := (PodmanSocket{}).Check(context.Background(), e); !ok || detail != "needs systemd; checks get no container socket" {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
 func TestAgentSessionsSkipTheBypassWarning(t *testing.T) {
 	if !pushSettings["skipDangerousModePermissionPrompt"] {
 		t.Fatal("the bypass warning would stop the first session")
@@ -4495,7 +4903,7 @@ Adjust the existing `handoff` and `handoffArgs` tests in `main_test.go` to the n
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `go test ./installer/internal/steps/ -run 'Mise|AgentTmux|BypassWarning' ./installer/cmd/flocc-setup/...`
+Run: `go test ./installer/internal/steps/ -run 'Mise|AgentTmux|PodmanSocket|BypassWarning' ./installer/cmd/flocc-setup/...`
 Expected: FAIL.
 
 - [ ] **Step 3: The agent-phase steps**
@@ -4588,7 +4996,34 @@ func (AgentTmux) Apply(ctx context.Context, e *Env) error {
 	}
 	return nil
 }
+
+// PodmanSocket starts flocc-agent's podman.socket, the Docker-compatible API that
+// flocc-agent-run points DOCKER_HOST at. The unit ships with the podman package the root phase
+// installed; socket activation starts the API on the first connection.
+type PodmanSocket struct{}
+
+func (PodmanSocket) Name() string { return "Container socket" }
+
+func (PodmanSocket) Check(ctx context.Context, e *Env) (bool, string, error) {
+	switch {
+	case !e.Answers.Docker || e.Distro.Manager != host.Apt:
+		return true, "none asked for", nil
+	case e.Mode != Systemd:
+		return true, "needs systemd; checks get no container socket", nil
+	}
+	if r, err := e.Run.Run(ctx, e.userctl("is-active", "--quiet", "podman.socket")); err != nil || r.Code != 0 {
+		return false, "podman.socket not running", nil
+	}
+	return true, "podman.socket running", nil
+}
+
+func (PodmanSocket) Apply(ctx context.Context, e *Env) error {
+	_, err := e.MustCmd(ctx, e.userctl("enable", "--now", "podman.socket"))
+	return err
+}
 ```
+
+Add `"github.com/NovusEdge/flocc/installer/internal/host"` to `agent_phase.go`'s imports.
 
 In `installer/internal/steps/list.go`, add:
 
@@ -4596,7 +5031,7 @@ In `installer/internal/steps/list.go`, add:
 // AgentSteps run as flocc-agent, before the service phase, whose doctor reads their outcome
 // through flocc-agent-run.
 func AgentSteps() []Step {
-	return []Step{Identity{}, Mise{}, Claude{}, Tools{}, AgentTmux{}}
+	return []Step{Identity{}, Mise{}, Claude{}, Tools{}, AgentTmux{}, PodmanSocket{}}
 }
 ```
 
@@ -5008,6 +5443,8 @@ Append to the bullets under `## Unreleased` in `CHANGELOG.md`:
 - A PreToolUse guard denies `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `git push`,
   GitHub writes through `gh` (`gh api` with `-f`/`-F` and no `-X` counts as a POST) and Linear
   tools, and keeps the reviewer to `review.md`. It replaces the pre-commit hook's review check.
+  The guard and deny rules for the three dialog tools live in root-owned
+  `/etc/claude-code/managed-settings.json`, which the sessions cannot change or turn off.
 - A turn that ends without `flocc done` is refused once; ending again marks the session idle and
   the run ends blocked, with a comment on the issue. An API error other than a usage limit does
   the same. The idle and stall notices, `flocc press`, `flocc say`, `idle_escalate_s` and
@@ -5023,8 +5460,12 @@ Append to the bullets under `## Unreleased` in `CHANGELOG.md`:
   `/opt/flocc`. The service reaches it only through `sudo` and
   `/usr/local/libexec/flocc-agent-run`. `flocc setup` and `flocc ship` create the user, the
   `flocc-work` group and the sudoers rule, move an existing Claude login to `flocc-agent`, and run
-  a new `agent` phase. With `docker = true`, `flocc-agent` is in the docker group, which is
-  root-equivalent; doctor warns.
+  a new `agent` phase.
+- With `docker = true`, checks that start containers use rootless Podman as `flocc-agent`
+  (`DOCKER_HOST` points at its `podman.socket`; testcontainers' Ryuk is off). Neither user may be
+  in the `docker` group, which is root-equivalent: ship takes `flocc` out of it and doctor fails
+  if `flocc-agent` is in it. An existing Docker daemon is left installed and untouched. A check
+  that runs the `docker` CLI itself needs it installed by hand.
 - The publisher fetches the branch from flocc-agent's worktree into the service's clone and pushes
   from there, so the publish token never enters a session.
 - When an issue reaches Done or Canceled, or is released without `--keep-worktree`, its worktree,
@@ -5035,14 +5476,14 @@ Append to the bullets under `## Unreleased` in `CHANGELOG.md`:
 
 - [ ] **Step 2: The book**
 
-Run `grep -rn -i -E "permissions\.toml|auto mode|flocc press|flocc say|review-done|implementer|handoff\.md|idle_escalate|stall_escalate|~/worktrees|flocc-tmux|AskUserQuestion" docs/book docs/vm-setup.md README.md`. For each hit, state the new behaviour from the CHANGELOG bullets above in that page's own style: `commands.md` drops `press`, `say` and `review-done`, and describes `flocc done`, `flocc guard`, `flocc stop --failure` and the `Run:` line; `architecture.md` gets a short "Two users" section with the Global Constraints' layout table and the sentence that the guard is a convenience and the user boundary is the security line; `troubleshooting.md` replaces the stall and press advice with "a blocked run says why on its issue; reply there and move it back to Todo", and adds "`sudo: a password is required` from flocc-agent-run: the sudoers rule is missing; run flocc ship"; `running-a-host.md` and `vm-setup.md` list the three setup phases and that `flocc login` signs in `flocc-agent`. Keep each page's existing headings.
+Run `grep -rn -i -E "permissions\.toml|auto mode|flocc press|flocc say|review-done|implementer|handoff\.md|idle_escalate|stall_escalate|~/worktrees|flocc-tmux|AskUserQuestion" docs/book docs/vm-setup.md README.md`. For each hit, state the new behaviour from the CHANGELOG bullets above in that page's own style: `commands.md` drops `press`, `say` and `review-done`, and describes `flocc done`, `flocc guard`, `flocc stop --failure` and the `Run:` line; `architecture.md` gets a short "Two users" section with the Global Constraints' layout table, the sentence that the guard is a convenience and the user boundary is the security line, and one paragraph on managed settings and rootless Podman (why neither user is in the docker group), and its "Access and trust" paragraph that says agents could read the Linear key is rewritten to the two-user boundary; `troubleshooting.md` replaces the stall and press advice with "a blocked run says why on its issue; reply there and move it back to Todo", and adds "`sudo: a password is required` from flocc-agent-run: the sudoers rule is missing; run flocc ship"; `running-a-host.md` and `vm-setup.md` list the three setup phases and that `flocc login` signs in `flocc-agent`. Keep each page's existing headings.
 
 - [ ] **Step 3: The ledger**
 
 With the docket skill (`/home/novusedge/.claude/plugins/cache/NovusEdge/docket/0.31.0/bin/docket`), from the worktree:
-- Record decisions, each with `scope` set to the files named: the guard's deny list (`src/flocc/guard.py`, `plugin/hooks/hooks.json`); the refuse-once Stop hook and the StopFailure marker (`src/flocc/cli.py`, `src/flocc/supervisor.py`); `Run:` order validation and the archetype-to-phase mapping (`src/flocc/sequence.py`); "Needs the owner" blocks except in the review-fix round (`src/flocc/supervisor.py`), referencing d161; the eleven wrapper subcommands and the token in the request (`src/flocc/agentrun.py`, `deploy/flocc-agent-run`); reading agent files through `agentfs` and never running git in an agent repo except `fetch` with `safe.directory=*` (`src/flocc/agentfs.py`, `src/flocc/worktree.py`, `src/flocc/publisher.py`); the agent setup phase and the login moving to flocc-agent (`installer/`).
+- Record decisions, each with `scope` set to the files named: the guard's deny list (`src/flocc/guard.py`, `deploy/managed-settings.json`); the guard and dialog denies in managed settings, not the plugin, and no `allowManagedHooksOnly` (`deploy/managed-settings.json`, `installer/internal/steps/agent_user.go`); rootless Podman for flocc-agent instead of the docker group, Ryuk off, stopped containers pruned on remove, dockerd never touched (`installer/internal/steps/containers.go`, `src/flocc/agentrun.py`), referencing d176; the refuse-once Stop hook and the StopFailure marker (`src/flocc/cli.py`, `src/flocc/supervisor.py`); `Run:` order validation and the archetype-to-phase mapping (`src/flocc/sequence.py`); "Needs the owner" blocks except in the review-fix round (`src/flocc/supervisor.py`), referencing d161; the eleven wrapper subcommands and the token in the request (`src/flocc/agentrun.py`, `deploy/flocc-agent-run`); reading agent files through `agentfs` and never running git in an agent repo except `fetch` with `safe.directory=*` (`src/flocc/agentfs.py`, `src/flocc/worktree.py`, `src/flocc/publisher.py`); the agent setup phase and the login moving to flocc-agent (`installer/`).
 - Supersede d156 (press and say) and d179 (the stall notice) with the guard and Stop-hook decisions; correct d167 (background tasks now stop the Stop hook from refusing or marking idle; the supervisor's idle and stall checks are gone); correct d33, d81 and d65 to say the trust, onboarding and plugin disabling happen in `flocc-agent-run start` as flocc-agent; correct d59 (reaping now also removes the session files and the claim).
-- Record a claim that a PreToolUse deny applies in `bypassPermissions`, with evidence "docs read 2026-10-30; confirmed in owner step 5" left for the owner to confirm.
+- Record a claim that a PreToolUse deny applies in `bypassPermissions`, and one that a user-level `disableAllHooks` leaves managed hooks running, each with evidence "docs read 2026-10-30; confirmed in owner step 5" left for the owner to confirm.
 
 Then:
 
