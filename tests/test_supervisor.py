@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from flocc import canary, ledger
+from flocc import canary, events, ledger
 from flocc.agentblock import IssueSettings, settings_to_json
 from flocc.agentfs import AgentFileError
 from flocc.context import agent_dir, state_dir
@@ -13,7 +13,7 @@ from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.publisher import BranchMoved, PublishResult
 from flocc.runtime import Runtime
-from flocc.supervisor import LaunchError, supervise
+from flocc.supervisor import BLOCKED, LaunchError, supervise
 from flocc.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
@@ -67,6 +67,53 @@ def usage_status(ctx=10.0):
         "rate_limits": {"five_hour": window, "seven_day": window},
         "context_window": {"used_percentage": ctx},
     }
+
+
+def test_a_block_is_an_ended_event_and_writes_why(rt):
+    add(rt)
+    rt.git_head = lambda path: "sha-base"
+    done(rt)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent[0].event == "ended"
+    text = (state_dir(rt.cfg, "NF-1") / BLOCKED).read_text()
+    assert text.startswith("no-tests\n\n") and "without committing tests" in text
+
+
+def test_a_used_fix_cap_is_a_cap_event(rt):
+    add(rt, phase="fix", fix_attempts=rt.cfg.check_fix_rounds)
+    rt.sessions.alive_names.add("NF-1")
+    rt.publish_fn = lambda claim, title, summary, **kw: PublishResult("check_failed", "E boom")
+    done(rt, "fixed")
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and rt.notifier.sent[-1].event == "cap"
+
+
+def test_a_finished_sequence_is_an_ended_event_with_the_pr(rt):
+    add(rt, phase="impl", sequence=["executor"])
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    [e] = events.unacked(rt.con)
+    assert e.kind == "ended" and e.issue_key == "NF-1" and "https://pr/1" in e.detail
+
+
+def test_a_finished_rebase_emits_no_event(rt):
+    add(rt, phase="fix")
+    ledger.meta_set(rt.con, "rebase:NF-1", "1")
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Merged main.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and events.unacked(rt.con) == []
+
+
+def test_a_timed_out_run_is_an_ended_event_and_a_comment(rt):
+    add(rt, phase="impl", started_at=0.0, wall_clock_s=10)
+    rt.sessions.alive_names.add("NF-1")
+    supervise(rt, current(rt))
+    assert current(rt).state == "timed_out"
+    [e] = events.unacked(rt.con)
+    assert e.kind == "ended" and e.detail.startswith("timed out")
+    assert "wall-clock limit" in rt.linear.comments[-1]
 
 
 def test_review_md_that_is_a_link_is_never_posted(rt, tmp_path):

@@ -74,7 +74,12 @@ def can_write_contents(token: str, slug: str, opener=urllib.request.urlopen) -> 
 
 def _page(rt, name: str, path, summary: str) -> None:
     rt.notifier.send(
-        Notice(f"gh-token-{name}", summary, f"Make a new {name} token and write it to {path}")
+        Notice(
+            f"gh-token-{name}",
+            summary,
+            f"Make a new {name} token and write it to {path}",
+            event="service-error",
+        )
     )
 
 
@@ -156,5 +161,5 @@ def check_claude_login(rt, run=subprocess.run) -> None:
         return
     summary = f"The Claude login on {socket.gethostname()} lapsed ({login}); new sessions fail."
     action = "On the desktop, run flocc login -H <this host>"
-    rt.notifier.send(Notice("claude-login", summary, action))
+    rt.notifier.send(Notice("claude-login", summary, action, event="service-error"))
     ledger.meta_set(rt.con, "claude_login_lapsed", "1")

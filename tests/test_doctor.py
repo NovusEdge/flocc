@@ -210,16 +210,14 @@ class DoctorLinear:
 
 
 def test_linear_checks(tmp_cfg):
-    assert [r.status for r in doctor.linear_checks(tmp_cfg, DoctorLinear())] == ["ok", "ok"]
+    assert [r.status for r in doctor.linear_checks(tmp_cfg, DoctorLinear())] == ["ok"]
     labels = doctor.linear_checks(tmp_cfg, DoctorLinear(missing=["claude"]))[0]
     assert labels.status == "fail" and "claude" in labels.detail
     fake = DoctorLinear(missing=["backend"])
     results = doctor.linear_checks(tmp_cfg, fake)
     assert fake.label_calls == [[tmp_cfg.trigger_label], list(tmp_cfg.repos)]
-    assert [r.status for r in results] == ["ok", "warn", "ok"]
+    assert [r.status for r in results] == ["ok", "warn"]
     assert "backend" in results[1].detail and "never routed" in results[1].detail
-    closed = doctor.linear_checks(tmp_cfg, DoctorLinear(digest_state="completed"))[1]
-    assert closed.status == "warn"
     [down] = doctor.linear_checks(tmp_cfg, DoctorLinear(down=True))
     assert down.status == "fail" and "Authentication" in down.detail
 

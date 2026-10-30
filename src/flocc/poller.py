@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from flocc import canary, ledger
+from flocc import canary, events, ledger
 from flocc.admission import admit
 from flocc.agentblock import (
     BlockError,
@@ -19,7 +19,7 @@ from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
 from flocc.sequence import SequenceError, parse_sequence
 from flocc.sessions import session_name
-from flocc.supervisor import LAST_SUMMARY, launch
+from flocc.supervisor import BLOCKED, LAST_SUMMARY, launch
 from flocc.usage import latest_usage
 from flocc.worktree import (
     DirtyWorktree,
@@ -41,11 +41,12 @@ def repo_for(issue: Issue, cfg) -> str | None:
     return None
 
 
-def _comment_once(rt, issue: Issue, cause: str, text: str) -> None:
+def _comment_once(rt, issue: Issue, cause: str, text: str) -> bool:
     if ledger.alert_seen(rt.con, cause, COMMENT_ONCE_S, rt.now()):
-        return
+        return False
     rt.linear.comment(issue.id, text)
     ledger.record_alert(rt.con, cause, 3, issue.key, rt.now())
+    return True
 
 
 def remove_issue(rt, claim: Claim, *, keep_dirty: bool = False) -> bool:
@@ -64,7 +65,8 @@ def remove_issue(rt, claim: Claim, *, keep_dirty: bool = False) -> bool:
 
 def _bad_sequence(rt, issue: Issue, exc: SequenceError) -> None:
     # The only place an unusable Run: line reaches the owner.
-    _comment_once(rt, issue, f"{issue.key}:bad-sequence:{exc}", f"Skipping: {exc}.")
+    if _comment_once(rt, issue, f"{issue.key}:bad-sequence:{exc}", f"Skipping: {exc}."):
+        events.emit(rt.con, "bad-sequence", rt.now(), issue_key=issue.key, detail=str(exc))
 
 
 def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: bool = True) -> None:
@@ -327,12 +329,13 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     d = state_dir(cfg, issue.key)
     # A fresh claim gets its own review fix round.
     ledger.meta_set(rt.con, f"review_fix:{issue.key}", "")
-    for kept in ("rebase", "rebase_tried", "base_held", "base_released"):
+    for kept in ("rebase", "rebase_tried", "base_held", "base_released", "cardinal_fix"):
         ledger.meta_set(rt.con, f"{kept}:{issue.key}", "")
     for round_ in (1, 2):
         ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")
     (d / "owner-items.md").unlink(missing_ok=True)
     (d / LAST_SUMMARY).unlink(missing_ok=True)
+    (d / BLOCKED).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # executor: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.
@@ -433,14 +436,10 @@ def _local_hour_and_date(now: float) -> tuple[int, str]:
     return t.tm_hour, time.strftime("%Y-%m-%d", t)
 
 
-def maybe_digest(rt) -> None:
+def maybe_daily(rt) -> None:
     hour, today = _local_hour_and_date(rt.now())
-    if hour < rt.cfg.digest_hour or ledger.meta_get(rt.con, "digest_date") == today:
+    if hour < rt.cfg.digest_hour or ledger.meta_get(rt.con, "daily_date") == today:
         return
-    rows = ledger.pending_digest(rt.con)
-    if rows:
-        body = "\n".join(f"- {key or 'service'}: {line}" for _, key, line in rows)
-        digest = rt.linear.issue(rt.cfg.digest_issue)
-        rt.linear.comment(digest.id, f"Digest for {today}\n\n{body}")
-        ledger.clear_digest(rt.con, rows[-1][0])
-    ledger.meta_set(rt.con, "digest_date", today)
+    events.emit(rt.con, "daily", rt.now(), detail=today)
+    events.prune(rt.con, rt.now())
+    ledger.meta_set(rt.con, "daily_date", today)

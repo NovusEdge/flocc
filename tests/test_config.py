@@ -91,11 +91,10 @@ def test_missing_repos_is_an_error(tmp_path):
         load(p)
 
 
-def test_missing_digest_issue_is_an_error(tmp_path):
+def test_a_config_without_digest_issue_loads(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text(EXAMPLE.read_text().replace('digest_issue = "NF-1"\n', ""))
-    with pytest.raises(ValueError, match="digest_issue"):
-        load(p)
+    assert load(p).digest_issue == ""
 
 
 def test_unknown_key_is_an_error(tmp_path):

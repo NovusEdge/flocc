@@ -135,14 +135,7 @@ def linear_checks(cfg: Config, linear) -> list[Result]:
     if unrouted:
         detail = f"no label on {cfg.team_key} for: {', '.join(unrouted)}; issues for them are never routed"
         results.append(Result("warn", "repo labels", detail))
-    try:
-        digest = linear.issue(cfg.digest_issue)
-    except LinearError as exc:
-        return [*results, Result("fail", "digest issue", f"{cfg.digest_issue}: {exc}")]
-    if digest.state_type in ("completed", "canceled"):
-        detail = f"{cfg.digest_issue} is {digest.state_type}; reopen it"
-        return [*results, Result("warn", "digest issue", detail)]
-    return [*results, Result("ok", "digest issue", f"{cfg.digest_issue} {digest.title}")]
+    return results
 
 
 def repo_checks(cfg: Config, run=subprocess.run) -> tuple[list[Result], str | None]:

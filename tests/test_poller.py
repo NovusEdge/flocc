@@ -4,14 +4,14 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
-from flocc import ledger
+from flocc import events, ledger
 from flocc.config import TRAILER, load
 from flocc.context import state_dir
 from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
 from flocc.notice import Notifier
 from flocc.poller import (
     forward_comments,
-    maybe_digest,
+    maybe_daily,
     poll,
     reap_worktrees,
     release_claim,
@@ -544,22 +544,45 @@ def test_a_new_claim_starts_without_the_last_claims_state(rt):
         assert not (d / name).exists()
 
 
-def test_digest_posts_once_per_day(rt, monkeypatch):
-    ledger.add_digest(rt.con, "NF-1", "draft PR ready", 1)
+def test_the_daily_event_is_emitted_once_per_day(rt, monkeypatch):
     monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
-    maybe_digest(rt)
-    maybe_digest(rt)
-    assert len(rt.linear.comments) == 1 and "draft PR ready" in rt.linear.comments[0][1]
+    maybe_daily(rt)
+    maybe_daily(rt)
+    assert [(e.kind, e.detail) for e in events.unacked(rt.con)] == [("daily", "2026-10-09")]
+    assert rt.linear.comments == []
 
 
-def test_digest_is_kept_when_posting_fails(rt, monkeypatch):
-    ledger.add_digest(rt.con, "NF-1", "draft PR ready", 1)
-    monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
-    rt.linear.comment_fails = True
-    with pytest.raises(LinearError):
-        maybe_digest(rt)
-    assert len(ledger.pending_digest(rt.con)) == 1
-    assert ledger.meta_get(rt.con, "digest_date") is None
+def test_no_daily_event_before_the_digest_hour(rt, monkeypatch):
+    monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (7, "2026-10-09"))
+    maybe_daily(rt)
+    assert events.unacked(rt.con) == []
+
+
+def test_a_bad_run_line_is_one_bad_sequence_event(rt):
+    bad = "Run: planner, executor\n\n## Acceptance criteria\n\n- works\n"
+    rt.linear.ready = [issue(desc=bad)]
+    poll(rt)
+    poll(rt)
+    [e] = events.unacked(rt.con)
+    assert e.kind == "bad-sequence" and e.issue_key == "NF-9" and "planner" in e.detail
+
+
+def test_linear_is_a_service_error_after_three_failed_ticks(rt):
+    from flocc.tick import LINEAR_FAILS_BEFORE_EVENT, _page_after_repeats
+
+    for _ in range(LINEAR_FAILS_BEFORE_EVENT):
+        _page_after_repeats(
+            rt.con,
+            rt.notifier,
+            "linear_failures",
+            "linear-api",
+            "Linear",
+            LinearError("down"),
+            "Check the key",
+            LINEAR_FAILS_BEFORE_EVENT,
+        )
+    [page] = rt.notifier.sent
+    assert page.event == "service-error" and "3 ticks" in page.summary
 
 
 def test_tick_lock_is_exclusive(tmp_path):
@@ -739,14 +762,12 @@ def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
         raise RuntimeError("tmux: no server running")
 
     monkeypatch.setattr("flocc.tick.poll", tmux_down)
-    for _ in range(4):
+    for _ in range(5):
         with pytest.raises(RuntimeError):
             tick(rt.cfg, tmp_path / "c.toml")
-    assert rt.notifier.sent == []
-    with pytest.raises(RuntimeError):
-        tick(rt.cfg, tmp_path / "c.toml")
     [esc] = rt.notifier.sent
     assert esc.issue_key is None and "tmux: no server" in esc.summary
+    assert esc.event == "service-error"
     monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
     assert tick(rt.cfg, tmp_path / "c.toml") == 0
     assert ledger.meta_get(rt.con, "tick_failures") == "0"

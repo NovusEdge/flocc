@@ -155,7 +155,7 @@ def test_lapsed_login_pages_once_and_rearms(rt):
     check_claude_login(rt, out)
     check_claude_login(rt, out)
     [esc] = rt.notifier.sent
-    assert esc.cause == "claude-login"
+    assert esc.cause == "claude-login" and esc.event == "service-error"
     assert "flocc login -H" in esc.action
     check_claude_login(rt, auth_run(FULL))
     check_claude_login(rt, out)
@@ -186,12 +186,12 @@ def test_tick_runs_the_login_check(rt, tmp_path, monkeypatch):
         "forward_comments",
         "reap_worktrees",
         "poll",
-        "maybe_digest",
+        "maybe_daily",
     ):
         monkeypatch.setattr(f"flocc.tick.{name}", lambda r: set())
     assert tick(rt.cfg, tmp_path / "c.toml") == 0
     [esc] = rt.notifier.sent
-    assert esc.cause == "claude-login"
+    assert esc.cause == "claude-login" and esc.event == "service-error"
 
 
 def test_check_tokens_records_each_expiry_for_status(rt):

@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
-from flocc import agentfs, canary, ledger
+from flocc import agentfs, canary, events, ledger
 from flocc.agentblock import settings_from_json
 from flocc.context import agent_dir, phase_prompt, state_dir
 from flocc.idle import BACKGROUND
@@ -39,6 +39,8 @@ OWNER_ITEMS = "owner-items.md"
 POSTED_REVIEW = "review-posted.md"
 LAST_SUMMARY = "last-summary.md"
 TESTER = "tester.json"
+# Why the run last blocked, for flocc run-summary; the notice itself went to the issue.
+BLOCKED = "blocked.md"
 # Service files a session reads, copied into its state directory at every start.
 _HANDOFF = (
     "context.md",
@@ -139,14 +141,26 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...]
     )
 
 
-def _block(rt, claim: Claim, cause: str, summary: str, action: str) -> None:
+def _block(rt, claim: Claim, cause: str, summary: str, action: str, kind: str = "ended") -> None:
     rt.sessions.kill(session_name(claim.issue_key, claim.phase))
     key = claim.issue_key
-    rt.notifier.send(Notice(f"{key}:{cause}", summary, action, issue_key=key), rt.linear.issue(key))
+    notice = Notice(f"{key}:{cause}", summary, action, issue_key=key, event=kind)
+    d = state_dir(rt.cfg, key)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / BLOCKED).write_text(f"{cause}\n\n{notice.text()}\n")
+    rt.notifier.send(notice, rt.linear.issue(key))
     ledger.update_claim(rt.con, key, state="blocked")
 
 
-def _end_done(rt, claim: Claim, **values) -> None:
+def _end_done(rt, claim: Claim, *, emit: bool = True, **values) -> None:
+    if emit:
+        url = _pr_url(rt, claim)
+        detail = f"done: PR {url}" if url != "unknown" else "done, no PR"
+        # Before the claim update: a tick that dies between the two finishes the claim again on
+        # the next tick, and a duplicate event is acked away, where a lost one is never seen.
+        events.emit(
+            rt.con, "ended", rt.now(), issue_key=claim.issue_key, repo=claim.repo, detail=detail
+        )
     ledger.update_claim(rt.con, claim.issue_key, state="done", **values)
 
 
@@ -472,7 +486,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         owner = _owner_items(rt, claim)
         _comment_or_digest(rt, claim, f"{line}\n\n{owner}" if owner else line)
         ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
-        _end_done(rt, claim)
+        _end_done(rt, claim, emit=not rebasing)
     elif result.status == "opened":
         if rebasing:
             base = rt.cfg.repos[claim.repo].base_branch
@@ -495,7 +509,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         if rebasing:
             # A merge adds no behaviour for a reviewer to judge, and the earlier review stands.
             ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
-            _end_done(rt, claim, phase="review")
+            _end_done(rt, claim, emit=False, phase="review")
         elif "reviewer" in claim.sequence:
             _start_review(rt, claim, issue.title, issue.description, result.url)
         else:
@@ -555,6 +569,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             "check-failed",
             f"The check still fails after {rounds}:\n{result.detail}",
             f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
+            kind="cap",
         )
     else:
         _block(
@@ -713,6 +728,13 @@ def _timed_out(rt, claim: Claim, name: str) -> None:
     ledger.add_digest(rt.con, key, line, rt.now())
     _record_usage(rt, key, claim.phase, "end")
     ledger.update_claim(rt.con, key, state="timed_out")
+    events.emit(
+        rt.con, "ended", rt.now(), issue_key=key, repo=claim.repo, detail=f"timed out: {line}"
+    )
+    try:
+        rt.linear.comment(claim.issue_id, f"The {ARCHETYPE[claim.phase]} {line}.")
+    except LinearError as exc:
+        print(f"{key}: timeout comment not posted: {exc}", file=sys.stderr)
 
 
 def supervise(rt, claim: Claim) -> None:

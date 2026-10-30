@@ -53,8 +53,6 @@ class Config:
     linear_key_file: Path
     agent_gh_token_file: Path
     publish_gh_token_file: Path
-    # Required: wall-clock stops and problems with no issue reach the owner only through it.
-    digest_issue: str
     digest_hour: int = 18
     session_cap: int = 2
     five_hour_max_pct: float = 80.0
@@ -82,6 +80,8 @@ class Config:
     # Linear user or bot/app ids whose comments on a running issue are forwarded into the live
     # session like the owner's own, letting another agent steer. Empty forwards only the owner's.
     steer_authors: tuple[str, ...] = ()
+    # Written by flocc setup and no longer read: cardinal writes the digest.
+    digest_issue: str = ""
     # The two-user layout: the same on every host, created by flocc setup and not configurable.
     agent_user: str = "flocc-agent"
     agent_home: Path = Path("/home/flocc-agent")
@@ -143,8 +143,6 @@ def load(path: Path) -> Config:
     repos = {name: _repo(path, name, r) for name, r in raw.pop("repos", {}).items()}
     if not repos:
         raise ValueError(f"{path}: no [repos.<name>] tables")
-    if not raw.get("digest_issue"):
-        raise ValueError(f"{path}: digest_issue is required, the key of the pinned digest issue")
     # Hosts keep their config.toml across upgrades, so a key a release removed must not stop
     # the tick.
     for key in _RETIRED:

@@ -14,7 +14,7 @@ from flocc.linear import Linear, LinearError, http_transport
 from flocc.notice import Notice, Notifier
 from flocc.poller import (
     forward_comments,
-    maybe_digest,
+    maybe_daily,
     poll,
     reap_worktrees,
     restart_timed_out,
@@ -25,7 +25,9 @@ from flocc.supervisor import supervise
 from flocc.tokens import check_claude_login, check_tokens
 from flocc.worktree import agent_ref, fetch_agent_branch, git, origin_base
 
-FAILS_BEFORE_PAGE = 5
+# The spec's service-error: a tick that raised, and Linear failing three ticks in a row.
+TICK_FAILS_BEFORE_EVENT = 1
+LINEAR_FAILS_BEFORE_EVENT = 3
 
 
 class IssueLinearErrors(LinearError):
@@ -114,14 +116,15 @@ def tick_lock(path: Path):
         yield True
 
 
-def _page_after_repeats(con, notifier, counter, cause, what, exc: Exception, action: str):
+def _page_after_repeats(con, notifier, counter, cause, what, exc: Exception, action: str, after):
     fails = int(ledger.meta_get(con, counter) or 0) + 1
     ledger.meta_set(con, counter, str(fails))
     now = time.time()
-    if fails < FAILS_BEFORE_PAGE or ledger.alert_seen(con, cause, ledger.DEDUPE_S, now):
+    if fails < after or ledger.alert_seen(con, cause, ledger.DEDUPE_S, now):
         return
-    summary = f"{what} has failed {fails} ticks in a row: {exc}"
-    notifier.send(Notice(cause, summary, action))
+    tick_word = "tick" if fails == 1 else "ticks"
+    summary = f"{what} has failed {fails} {tick_word} in a row: {exc}"
+    notifier.send(Notice(cause, summary, action, event="service-error"))
     ledger.record_alert(con, cause, 0, None, now)
 
 
@@ -145,6 +148,7 @@ def _page_tick_failure(con, notifier, exc: Exception) -> None:
         "The tick",
         exc,
         "Read journalctl --user -u flocc",
+        TICK_FAILS_BEFORE_EVENT,
     )
 
 
@@ -175,6 +179,7 @@ def tick(cfg: Config, config_path: Path) -> int:
                             "The supervisor failed on this issue; see journalctl -u flocc.",
                             "Read the log",
                             issue_key=claim.issue_key,
+                            event="service-error",
                         )
                     )
                     ledger.record_alert(rt.con, cause, 0, claim.issue_key, rt.now())
@@ -192,7 +197,7 @@ def tick(cfg: Config, config_path: Path) -> int:
         # Before the digest, so a warning written today goes out with today's digest.
         check_tokens(rt)
         check_claude_login(rt)
-        maybe_digest(rt)
+        maybe_daily(rt)
         if failed:
             raise IssueLinearErrors(failed)
         ledger.meta_set(rt.con, "linear_failures", "0")
@@ -204,7 +209,14 @@ def tick(cfg: Config, config_path: Path) -> int:
             commands = ", ".join(f"flocc release {k}" for k in exc.keys)
             action += f"; if an issue was deleted, run {commands}"
         _page_after_repeats(
-            rt.con, rt.notifier, "linear_failures", "linear-api", "Linear", exc, action
+            rt.con,
+            rt.notifier,
+            "linear_failures",
+            "linear-api",
+            "Linear",
+            exc,
+            action,
+            LINEAR_FAILS_BEFORE_EVENT,
         )
         return 1
     except Exception as exc:

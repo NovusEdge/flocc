@@ -1,6 +1,6 @@
 import json
 
-from flocc import ledger
+from flocc import events, ledger
 
 HOLD_S = 24 * 3600
 OUTPUT_CHARS = 1500
@@ -10,11 +10,21 @@ def _key(repo: str) -> str:
     return f"main_broken:{repo}"
 
 
+# The commit last reported broken. A mark lapses after HOLD_S and comes back at the same commit
+# while the break lasts; only a pass (clear) or forget_all ends the break.
+def _event_key(repo: str) -> str:
+    return f"base_broken_event:{repo}"
+
+
 def mark(con, repo: str, sha: str, now: float, output: str, check: str | None = None) -> None:
     value = {"sha": sha, "at": now, "output": output[-OUTPUT_CHARS:]}
     if check:
         value["check"] = check
     ledger.meta_set(con, _key(repo), json.dumps(value))
+    if ledger.meta_get(con, _event_key(repo)) != sha:
+        what = f"`{check}`" if check else "./setup"
+        events.emit(con, "base-broken", now, repo=repo, detail=f"{what} fails at {sha[:9]}")
+        ledger.meta_set(con, _event_key(repo), sha)
 
 
 def get_mark(con, repo: str) -> dict | None:
@@ -28,6 +38,7 @@ def get_mark(con, repo: str) -> dict | None:
 
 def clear(con, repo: str) -> None:
     ledger.meta_set(con, _key(repo), "")
+    ledger.meta_set(con, _event_key(repo), "")
 
 
 def forget_all(con) -> int:
@@ -35,6 +46,8 @@ def forget_all(con) -> int:
         "SELECT key FROM meta WHERE key LIKE 'main_broken:%' AND value != ''"
     ).fetchall()
     for row in rows:
+        ledger.meta_set(con, row["key"], "")
+    for row in con.execute("SELECT key FROM meta WHERE key LIKE 'base_broken_event:%'").fetchall():
         ledger.meta_set(con, row["key"], "")
     return len(rows)
 
@@ -48,7 +61,7 @@ def hold_reason(
     # A fix on the host moves no commit, so a mark also lapses with time; the next issue's
     # ./setup then tests main again.
     if now - float(m["at"]) >= HOLD_S or (current_sha is not None and current_sha != m["sha"]):
-        clear(con, repo)
+        ledger.meta_set(con, _key(repo), "")
         return None
     what = f"`{m['check']}`" if m.get("check") else "./setup"
     return (
