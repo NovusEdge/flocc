@@ -887,6 +887,29 @@ def test_a_crash_restarts_once_with_a_note_then_blocks(rt):
     assert current(rt).state == "blocked" and rt.notifier.sent[-1].cause == "NF-1:crash"
 
 
+@pytest.mark.parametrize("phase, alive", [("impl", "NF-1"), ("test", "NF-1-test")])
+def test_needs_the_owner_ends_the_run_blocked(rt, phase, alive):
+    add(rt, phase=phase)
+    rt.sessions.alive_names.add(alive)
+    done(rt, "Did half.\n\nNeeds the owner: which currency is the default?")
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and not published
+    (notice,) = rt.notifier.sent
+    assert notice.cause == "NF-1:needs-owner" and "which currency" in notice.summary
+
+
+def test_a_review_fixer_s_owner_items_do_not_block(rt):
+    add(rt, phase="fix")
+    ledger.meta_set(rt.con, "review_fix:NF-1", "1")
+    rt.sessions.alive_names.add("NF-1")
+    rt.publish_fn = lambda *a, **kw: PublishResult("opened", url="https://pr/1", existing=True)
+    done(rt, "Fixed two.\n\nNeeds the owner: run the migration by hand.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "running" and current(rt).phase == "review"
+
+
 def test_without_a_reviewer_the_run_ends_when_the_pr_opens(rt):
     add(rt, phase="impl", sequence=["executor"])
     rt.sessions.alive_names.add("NF-1")

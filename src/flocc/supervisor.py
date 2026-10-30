@@ -23,6 +23,7 @@ from flocc.publisher import (
     read_amended,
     review_comment,
 )
+from flocc.sequence import ARCHETYPE
 from flocc.sessions import (
     allowed_plugins,
     claude_argv,
@@ -405,6 +406,21 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     if claim.phase == "review":
         _finish_review(rt, claim)
         return
+    review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
+    rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
+    found = _OWNER_HEADING.search(summary)
+    # A review fixer's owner items ride to the final comment instead: the PR is open and a
+    # second review follows.
+    if found and not review_fix and not rebasing:
+        _block(
+            rt,
+            claim,
+            "needs-owner",
+            f"The {ARCHETYPE[claim.phase]} needs you:\n{summary[found.start() :].strip()}"[:3000],
+            "Reply on this issue, then move it back to Todo; the rerun continues on the kept"
+            " branch",
+        )
+        return
     if claim.phase == "test":
         head = rt.git_head(claim.worktree)
         if head == claim.base_sha:
@@ -424,14 +440,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=start
         )
         return
-    review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
-    rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
-    if (
-        claim.phase == "fix"
-        and review_fix
-        and not rebasing
-        and (found := _OWNER_HEADING.search(summary))
-    ):
+    if claim.phase == "fix" and review_fix and not rebasing and found:
         # Kept apart from later check-fix summaries, which would overwrite it.
         (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[found.start() :].lstrip())
     issue = rt.linear.issue(key)

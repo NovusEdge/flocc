@@ -241,19 +241,19 @@ def cmd_session_start(args) -> int:
 
 def cmd_done(args) -> int:
     state = _state_dir()
-    (state / "done.json").write_text(json.dumps({"summary": args.summary, "at": time.time()}))
-    print("phase marked done; the service takes over on its next run")
-    return 0
-
-
-def cmd_review_done(args) -> int:
-    state = _state_dir()
-    review = state / "review.md"
-    if not review.exists() or not review.read_text().strip():
-        print(f"review-done: write {review} first", file=sys.stderr)
-        return 1
-    (state / "done.json").write_text(json.dumps({"summary": "review", "at": time.time()}))
-    print("review marked done; the service posts it on its next run")
+    if os.environ.get("FLOCC_PHASE") == "review":
+        review = state / "review.md"
+        if not review.exists() or not review.read_text().strip():
+            print(f"done: write {review} first; the service posts it", file=sys.stderr)
+            return 1
+        summary = "review"
+    elif not (args.summary or "").strip():
+        print("done: pass --summary '<what you did, for the PR body>'", file=sys.stderr)
+        return 2
+    else:
+        summary = args.summary
+    (state / "done.json").write_text(json.dumps({"summary": summary, "at": time.time()}))
+    print("marked done; the service takes over on its next run")
     return 0
 
 
@@ -572,7 +572,6 @@ COMMANDS = {
     "session-start": cmd_session_start,
     "commit": cmd_commit,
     "done": cmd_done,
-    "review-done": cmd_review_done,
     "tick": cmd_tick,
     "run": cmd_run,
     "release": cmd_release,
@@ -618,9 +617,8 @@ def build_parser() -> argparse.ArgumentParser:
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")
     com.add_argument("-m", dest="message", required=True, help="commit message")
     com.add_argument("paths", nargs=argparse.REMAINDER, help="-- then the paths to commit")
-    done = add("done", "Mark the work done")
-    done.add_argument("--summary", required=True, help="what was done")
-    add("review-done", "Mark the review done (reads review.md)")
+    done = add("done", "Mark this step done (the reviewer's review.md, or --summary)")
+    done.add_argument("--summary", default=None, help="what was done, for the PR body")
     add("tick", "Run one service tick")
     add("run", "Run ticks in a loop")
     rel = add("release", "Clear a claim and kill its session")

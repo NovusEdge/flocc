@@ -46,12 +46,10 @@ def test_done_writes_the_summary(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "done.json").read_text())["summary"] == "tests written"
 
 
-def test_phase_prompts_name_the_skill():
-    assert "tester skill" in phase_prompt("test", "NF-1")
-    assert "handoff.md" in phase_prompt("test", "NF-1")
-    assert "implementer skill" in phase_prompt("impl", "NF-1")
-    impl = phase_prompt("impl", "NF-1")
-    assert "without changing them" not in impl
-    assert "flocc tests-amended" in impl and "never delete or skip" in impl
-    fix = phase_prompt("fix", "NF-1", extra="E1 boom")
-    assert "check failed" in fix and fix.endswith("E1 boom")
+def test_phase_prompts_name_the_archetype_skill():
+    for phase, skill in (("test", "tester"), ("impl", "executor"), ("fix", "fixer")):
+        prompt = phase_prompt(phase, "NF-1")
+        assert f"flocc {skill} skill" in prompt and "flocc done" in prompt
+    review = phase_prompt("review", "NF-1")
+    assert "flocc reviewer skill" in review and "review.md" in review
+    assert phase_prompt("fix", "NF-1", extra="E1 boom").endswith("E1 boom")

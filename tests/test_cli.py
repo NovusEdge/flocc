@@ -111,19 +111,26 @@ def claims_env(tmp_path, monkeypatch):
     return ledger.connect(tmp_path / "hook.sqlite")
 
 
-def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
-    assert main(["review-done"]) == 1
-    (tmp_path / "review.md").write_text(" \n")
-    assert main(["review-done"]) == 1
-    assert not (tmp_path / "done.json").exists()
-    (tmp_path / "review.md").write_text("Verdict: approve\n")
-    assert main(["review-done"]) == 0 and (tmp_path / "done.json").exists()
-
-
 def session_env(monkeypatch, tmp_path, phase="review"):
     monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
     monkeypatch.setenv("FLOCC_PHASE", phase)
+
+
+def test_done_in_the_review_phase_needs_the_review(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "review")
+    assert main(["done"]) == 1
+    (tmp_path / "review.md").write_text(" \n")
+    assert main(["done"]) == 1 and not (tmp_path / "done.json").exists()
+    (tmp_path / "review.md").write_text("Verdict: approve\n")
+    assert main(["done"]) == 0
+    assert json.loads((tmp_path / "done.json").read_text())["summary"] == "review"
+
+
+def test_done_elsewhere_needs_a_summary(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    assert main(["done"]) == 2 and "--summary" in capsys.readouterr().err
+    assert main(["done", "--summary", "did it"]) == 0
+    assert main(["review-done"]) == 2
 
 
 def tester_claim(claims_env, tmp_path):

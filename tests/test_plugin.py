@@ -79,4 +79,4 @@ def test_the_idle_clearing_hook_removes_only_the_marker(tmp_path):
 
 
 def test_fix_prompt_points_at_the_fix_section():
-    assert "Fix phase" in phase_prompt("fix", "NF-1", "check output")
+    assert "fixer skill" in phase_prompt("fix", "NF-1", "check output")
