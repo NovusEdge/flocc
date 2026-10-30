@@ -1,4 +1,5 @@
 import fcntl
+import re
 import subprocess
 import sys
 import time
@@ -123,7 +124,7 @@ def _page_after_repeats(con, notifier, counter, cause, what, exc: Exception, act
     if fails < after or ledger.alert_seen(con, cause, ledger.DEDUPE_S, now):
         return
     tick_word = "tick" if fails == 1 else "ticks"
-    summary = f"{what} has failed {fails} {tick_word} in a row: {exc}"
+    summary = f"{what} has failed {fails} {tick_word} in a row: {_cause(exc)}"
     notifier.send(Notice(cause, summary, action, event="service-error"))
     ledger.record_alert(con, cause, 0, None, now)
 
@@ -152,11 +153,15 @@ def _page_tick_failure(con, notifier, exc: Exception) -> None:
     )
 
 
+_URL_CREDENTIALS = re.compile(r"://[^/\s@]+@")
+
+
 def _cause(exc: Exception) -> str:
     """The exception's type and first message line, on one line, for an event a reader triages
     without the journal."""
     first = (str(exc).strip().splitlines() or [""])[0]
-    return " ".join(f"{type(exc).__name__}: {first}".split())[:200]
+    masked = _URL_CREDENTIALS.sub("://***@", first)
+    return " ".join(f"{type(exc).__name__}: {masked}".split())[:200]
 
 
 def tick(cfg: Config, config_path: Path) -> int:

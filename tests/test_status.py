@@ -356,8 +356,12 @@ def test_issue_lines_drops_the_sudo_and_pam_lines_of_agent_calls(cfg):
         "1.0 host sudo[9]:    flocc : PWD=/home/flocc ; USER=flocc-agent ; COMMAND=/x/flocc-agent-run alive NF-5",
         "1.1 host sudo[9]: pam_unix(sudo:session): session opened for user flocc-agent NF-5",
         "1.2 host flocc[7]: NF-5 alive",
+        "1.3 host sudo[9]:    flocc : command not allowed ; COMMAND=/x/flocc-agent-run NF-5",
     )
-    assert issue_lines(cfg, "NF-5", 5, mode="systemd", run=run) == [(1, "NF-5 alive")]
+    assert [t for _, t in issue_lines(cfg, "NF-5", 5, mode="systemd", run=run)] == [
+        "NF-5 alive",
+        "   flocc : command not allowed ; COMMAND=/x/flocc-agent-run NF-5",
+    ]
 
 
 def test_status_activity_falls_back_to_run_log_tail(cfg):

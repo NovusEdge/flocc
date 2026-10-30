@@ -119,7 +119,9 @@ _ACTIVITY_LINES = 2000
 _ACTIVITY_KEPT = 5
 _JOURNAL_LINE = re.compile(r"^(\d+(?:\.\d+)?)\s+\S+\s+(?:([\w.@-]+)\[\d+\]: )?(.*)$")
 # `-u flocc` also returns the sudo and PAM lines of every flocc-agent-run call.
-_NOT_FLOCC = {"sudo"}
+# Only the routine ones go: a refused command or a password prompt still shows. The filter runs
+# after journalctl's -n window, so a busy host's sudo lines shrink the lines that remain.
+_ROUTINE_SUDO = re.compile(r"^\s*\S+ : PWD=|^pam_unix\(sudo:session\): session (?:opened|closed)")
 
 
 def _recent_lines(cfg: Config, mode: str, run) -> list[tuple[int, str]]:
@@ -138,7 +140,7 @@ def _recent_lines(cfg: Config, mode: str, run) -> list[tuple[int, str]]:
         return [
             (int(float(m.group(1))), m.group(3))
             for m in parsed
-            if m and m.group(2) not in _NOT_FLOCC and not m.group(3).startswith("pam_")
+            if m and not (m.group(2) == "sudo" and _ROUTINE_SUDO.match(m.group(3)))
         ]
     log = cfg.state_root / "run.log"
     # run.log lines carry no timestamp, so they all take the file's last write time.

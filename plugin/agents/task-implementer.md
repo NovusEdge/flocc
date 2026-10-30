@@ -11,4 +11,4 @@ Your brief is the file named in your task; it is your requirements, including th
 Write the test first when the brief asks for new behaviour, then the code. Edit only your paths.
 Run only the focused tests your brief names; never run Unity, long builds, training or the full
 suite. Commit only your paths with `flocc commit -m '<message>' -- <paths>`, never a bare
-`git commit`. Never push. Report what you changed and the test output. Do not start subagents.
+`git commit`; keep each subject to 72 characters. Never push. Report what you changed and the test output. Do not start subagents.

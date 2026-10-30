@@ -158,8 +158,8 @@ def pr_title(
 
 
 def branch_subjects(claim: Claim, repo: RepoConfig) -> tuple[str, ...]:
-    """Subjects of the executor's commits since the base; the tester's are left out. Empty when the
-    branch cannot be read, which leaves the title to the labels."""
+    """Subjects of the executor's and fixers' commits since the base; the tester's are left out.
+    Empty when the branch cannot be read, which leaves the title to the labels."""
     try:
         ref = agent_ref(claim.issue_key)
         fetch_agent_branch(repo.path, Path(claim.worktree), claim.branch, claim.issue_key)

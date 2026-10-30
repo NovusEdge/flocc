@@ -301,9 +301,13 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
             isinstance(exc, subprocess.CalledProcessError) and exc.cmd == ["./setup"]
         )
         # Anything else (a git fetch or worktree add, a missing file) is flocc's own step failing.
-        repo_side = isinstance(exc, DirtyWorktree | BranchDiverged) or getattr(
-            exc, "cmd", None
-        ) == ["./setup"]
+        # A setup that times out or cannot be executed (OSError naming it) is the repo's too.
+        repo_side = (
+            setup_failed
+            or isinstance(exc, BranchDiverged)
+            or getattr(exc, "cmd", None) == ["./setup"]
+            or (isinstance(exc, OSError) and exc.filename == "./setup")
+        )
         base = getattr(exc, "at_base", None) if setup_failed and not reused else None
         if base is not None:
             base_branch = cfg.repos[repo].base_branch

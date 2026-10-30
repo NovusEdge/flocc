@@ -11,7 +11,8 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 - The executor keeps a fact the issue's wording would silently remove, or lists the conflict under
   `Needs the owner`, and both it and the fixer keep commit subjects to 72 characters.
 - The supervisor-error event names the exception's type and first line.
-- `flocc run-summary` leaves the sudo and PAM lines out of its service log.
+- `flocc run-summary` leaves the routine sudo and PAM lines out of its service log, and
+  `flocc status` activity drops the same lines.
 - A prepare failure outside the repo's `./setup` says it is a flocc error and points to the
   service log, instead of "Fix the repo or ./setup".
 
