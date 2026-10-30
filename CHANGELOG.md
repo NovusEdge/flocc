@@ -37,10 +37,6 @@ so on its Linear issue.
 - The subagent gate and its launch budgets are gone, with `flocc gate`, `allow:` grants in the
   agent block and in comments, and `launches N/M` in status and the dashboard. An `allow:` line in
   the agent block is now an unknown key, and the issue is skipped with a comment.
-- Fixed: a plugin hook answering "ask" (curt does for `cat`, `head` and `tail`) no longer stalls an
-  unattended session on a dialog. Managed settings gain a `PermissionRequest` hook,
-  `flocc permission-deny`, that denies it and tells the agent to do it another way; `flocc doctor`
-  checks for it. `context.md` now names the session's own state directory, not the service's.
 - The permission hook and `flocc permissions report` are gone.
 - Path claims are gone: `flocc claim`, the pre-commit hook's claim check and the agent block's
   `paths:` key, which is now refused as unknown. Repo config drops `shared_paths`.
@@ -60,6 +56,10 @@ so on its Linear issue.
   tools, and keeps the reviewer to `review.md`. It replaces the pre-commit hook's review check.
   The guard and deny rules for the three dialog tools live in root-owned
   `/etc/claude-code/managed-settings.json`, which the sessions cannot change or turn off.
+- Nobody answers a permission dialog in a session, so a `PermissionRequest` hook in the same
+  managed settings, `flocc permission-deny`, denies every one and tells the agent to do it another
+  way. Without it a plugin hook that answers "ask" (curt does for `cat`, `head` and `tail`) stalls
+  the session even in `bypassPermissions`. Doctor checks for the hook.
 - A turn that ends without `flocc done` is refused once; ending again marks the session idle and
   the run ends blocked, with a comment on the issue. An API error other than a usage limit does
   the same. The idle and stall notices, `flocc press`, `flocc say`, `idle_escalate_s` and
@@ -85,7 +85,8 @@ so on its Linear issue.
   `/opt/flocc`. The service reaches it only through `sudo` and
   `/usr/local/libexec/flocc-agent-run`. `flocc setup` and `flocc ship` create the user, the
   `flocc-work` group and the sudoers rule, move an existing Claude login to `flocc-agent`, and run
-  a new `agent` phase.
+  a new `agent` phase. The service walks into `flocc-agent`'s `710` home with `O_PATH`, which
+  needs only search permission, and `context.md` names the session's own state directory.
 - With `docker = true`, checks that start containers use rootless Podman as `flocc-agent`
   (`DOCKER_HOST` points at its `podman.socket`; testcontainers' Ryuk is off). Neither user may be
   in the `docker` group, which is root-equivalent: ship takes `flocc` out of it and doctor fails
