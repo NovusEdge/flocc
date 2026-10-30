@@ -1,0 +1,6 @@
+[Unit]
+Description=Start cardinal's session fresh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user restart cardinal.service

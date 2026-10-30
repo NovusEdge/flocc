@@ -1,0 +1,9 @@
+[Unit]
+Description=cardinal's daily fresh start
+
+[Timer]
+OnCalendar=*-*-* {{hour}}:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

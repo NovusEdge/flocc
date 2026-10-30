@@ -103,3 +103,58 @@ def test_the_executor_wrapper_quotes_every_argument(tmp_path):
         [PLUGIN / "bin" / "executor", *args], env=env, capture_output=True, text=True, check=True
     )
     assert shlex.split(out.stdout) == args
+
+
+CARDINAL = ROOT / "deploy" / "cardinal"
+EXECUTOR = "/opt/cardinal/plugin/bin/executor"
+
+
+def test_four_skills_each_with_a_name_and_a_description():
+    names = []
+    for skill in sorted((PLUGIN / "skills").glob("*/SKILL.md")):
+        head = skill.read_text().split("---")[1]
+        fields = dict(line.split(": ", 1) for line in head.strip().splitlines())
+        assert fields["name"] == skill.parent.name and fields["description"].startswith("Use when")
+        names.append(fields["name"])
+    assert names == ["digest", "dispatch", "status", "triage"]
+
+
+def test_the_skills_reach_the_executor_only_through_the_wrapper():
+    for skill in (PLUGIN / "skills").glob("*/SKILL.md"):
+        text = skill.read_text()
+        assert EXECUTOR in text and "ssh " not in text
+
+
+def test_the_triage_skill_covers_every_event_kind_and_the_link():
+    text = (PLUGIN / "skills" / "triage" / "SKILL.md").read_text()
+    for kind in ("ended", "cap", "base-broken", "bad-sequence", "service-error", "daily"):
+        assert f"`{kind}`" in text
+    assert '"link"' in text and f"{EXECUTOR} ack" in text and "release" not in text
+
+
+def test_the_dispatch_skill_never_reruns_work():
+    text = (PLUGIN / "skills" / "dispatch" / "SKILL.md").read_text()
+    assert "lifts a hold and nothing else" in text and "tell the owner" in text
+
+
+def test_managed_settings_allow_the_wrapper_and_skills_and_deny_reads():
+    s = json.loads((CARDINAL / "managed-settings.json").read_text())["permissions"]
+    assert s["defaultMode"] == "dontAsk"
+    assert s["allow"] == [f"Bash({EXECUTOR}:*)", "Skill"]
+    assert s["deny"] == ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit", "Write"]
+    assert s["disableBypassPermissionsMode"] == "disable"
+
+
+def test_the_unit_runs_sonnet_in_the_empty_session_directory():
+    unit = (CARDINAL / "cardinal.service").read_text()
+    for part in (
+        "-c /var/lib/flocc-cardinal/session",
+        "--model sonnet",
+        "--remote-control cardinal",
+        "--permission-mode dontAsk",
+        "--plugin-dir /opt/cardinal/plugin",
+        "{{executor}}",
+    ):
+        assert part in unit
+    assert "%" not in unit.replace("%h", "")
+    assert "OnCalendar=*-*-* {{hour}}:00:00" in (CARDINAL / "cardinal-renew.timer").read_text()
