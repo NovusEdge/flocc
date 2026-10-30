@@ -22,6 +22,7 @@ from flocc.sessions import session_name
 from flocc.supervisor import BLOCKED, LAST_SUMMARY, launch
 from flocc.usage import latest_usage
 from flocc.worktree import (
+    BranchDiverged,
     DirtyWorktree,
     agent_ref,
     contains,
@@ -299,6 +300,10 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         setup_failed = isinstance(exc, DirtyWorktree) or (
             isinstance(exc, subprocess.CalledProcessError) and exc.cmd == ["./setup"]
         )
+        # Anything else (a git fetch or worktree add, a missing file) is flocc's own step failing.
+        repo_side = isinstance(exc, DirtyWorktree | BranchDiverged) or getattr(
+            exc, "cmd", None
+        ) == ["./setup"]
         base = getattr(exc, "at_base", None) if setup_failed and not reused else None
         if base is not None:
             base_branch = cfg.repos[repo].base_branch
@@ -324,7 +329,9 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
             Notice(
                 cause,
                 f"Preparing the worktree failed: {exc}{detail}",
-                "Fix the repo or ./setup",
+                "Fix the repo or ./setup"
+                if repo_side
+                else "This is a flocc error, not the repo's: read the service log (flocc logs)",
                 issue_key=issue.key,
             ),
             issue,

@@ -620,6 +620,20 @@ def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
     assert len(rt.linear.comments) == 1 and "setup: npm is missing" in rt.linear.comments[0][1]
 
 
+def test_prepare_action_blames_the_repo_for_setup_and_flocc_for_the_rest(rt):
+    def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
+        if key == "NF-9":
+            raise subprocess.CalledProcessError(1, ["./setup"], stderr="npm is missing")
+        raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="not a repository")
+
+    rt.agent.prepare_fn = failing
+    rt.linear.ready = [issue("NF-9"), issue("NF-10")]
+    poll(rt)
+    actions = {n.issue_key: n.action for n in rt.notifier.sent}
+    assert actions["NF-9"] == "Fix the repo or ./setup"
+    assert "flocc error" in actions["NF-10"] and "flocc logs" in actions["NF-10"]
+
+
 def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
     def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
