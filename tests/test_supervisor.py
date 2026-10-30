@@ -1,7 +1,5 @@
 import json
-import os
 import subprocess
-import time
 from dataclasses import replace
 
 import pytest
@@ -17,8 +15,6 @@ from flocc.supervisor import LaunchError, supervise
 from flocc.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
-
-IDLE_S = 1800.0
 
 
 @pytest.fixture
@@ -848,162 +844,55 @@ def test_unlisted_installed_plugins_are_disabled_at_launch(rt):
     assert settings["enabledPlugins"] == {"glowup@glowup": False}
 
 
-def test_relaunch_clears_the_idle_markers(rt):
+def test_relaunch_clears_the_idle_marker(rt):
     add(rt)
     d = state_dir(rt.cfg, "NF-1")
-    names = ("idle", "idle-escalated")
-    for name in names:
-        (d / name).write_text("{}")
-    supervise(rt, current(rt))  # not alive: relaunch
-    for name in names:
-        assert not (d / name).exists()
-
-
-def idle_session(rt, at=100.0 - IDLE_S, message="please run it for me"):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "idle").write_text(json.dumps({"at": at, "message": message}))
-    return d
-
-
-def test_an_idle_session_is_noticed_once_per_idle_period(rt):
-    d = idle_session(rt)
-    supervise(rt, current(rt))
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.issue_key == "NF-1"
-    assert esc.summary == (
-        "NF-1-test has been idle for 30 min without finishing: please run it for me"
-    )
-    assert "release --keep-worktree NF-1" in esc.action
-    (d / "idle").write_text(json.dumps({"at": 50.0 - IDLE_S, "message": "again"}))
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 2 and "again" in rt.notifier.sent[1].summary
-
-
-def test_an_idle_session_with_no_message_says_so(rt):
-    idle_session(rt, message="")
-    supervise(rt, current(rt))
-    assert rt.notifier.sent[0].summary.endswith("without finishing: no last message")
-
-
-def test_a_session_idle_for_less_than_the_threshold_is_left_alone(rt):
-    idle_session(rt, at=100.0 - IDLE_S + 1)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_status_rewrite_does_not_postpone_the_notice(rt):
-    # A cache expiry or a rate-limit reset rewrites status.json while the session sits idle.
-    d = idle_session(rt)
-    write_status(d, usage_status())
-    os.utime(d / "status.json", (time.time(), time.time()))
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 1
-
-
-@pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
-def test_a_malformed_idle_file_is_ignored(rt, content):
-    d = idle_session(rt)
-    (d / "idle").write_text(content)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-DIALOG = """\
- Do you want to proceed?
- > 1. Yes
-   2. No
-NF-1 · ctx 8% · 5h 20% · wk 25%
-"""
-
-
-def stalled(rt, pane=DIALOG):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    rt.sessions.panes["NF-1-test"] = pane
-    return state_dir(rt.cfg, "NF-1")
-
-
-def at(rt, t):
-    rt.now = lambda: t
-
-
-def test_a_screen_unchanged_mid_turn_is_noticed_once_with_its_tail(rt):
-    stalled(rt)
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.cause == "NF-1:stalled"
-    assert esc.summary.startswith("NF-1-test has shown the same screen for 20 min")
-    assert esc.summary.endswith("```\n Do you want to proceed?\n > 1. Yes\n   2. No\n```")
-    assert "flocc press NF-1 Down Enter" in esc.action
-
-
-def test_a_changing_screen_restarts_the_stall_clock(rt):
-    stalled(rt)
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    rt.sessions.panes["NF-1-test"] = "✻ Running… (20m 1s)\n"
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_status_line_rewrite_does_not_restart_the_stall_clock(rt):
-    stalled(rt)
-    supervise(rt, current(rt))
-    rt.sessions.panes["NF-1-test"] = DIALOG.replace("5h 20%", "5h 0%")
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 1
-
-
-@pytest.mark.parametrize("marker", ["idle"])
-def test_an_ended_turn_is_not_a_stall(rt, marker):
-    d = stalled(rt)
-    (d / marker).write_text(json.dumps({"at": 100.0 + rt.cfg.stall_escalate_s, "message": "m"}))
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_idle_with_background_tasks_is_busy(rt):
-    d = idle_session(rt)
-    (d / "background").write_text('["shell"]')
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_stale_background_marker_does_not_hide_a_stall(rt):
-    d = stalled(rt)
-    (d / "background").write_text('["shell"]')
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 1
-
-
-def test_a_still_screen_at_a_usage_limit_is_not_a_stall(rt):
-    d = stalled(rt)
-    full = {"used_percentage": 100.0, "resets_at": 4_000_000_000}
-    write_status(d, {"rate_limits": {"five_hour": full, "seven_day": full}})
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_relaunch_forgets_the_last_screen(rt):
-    d = stalled(rt)
-    supervise(rt, current(rt))
-    assert (d / "pane.json").exists()
+    (d / "idle").write_text("{}")
     rt.sessions.alive_names.clear()
+    ledger.update_claim(rt.con, "NF-1", restarts=0)
+    from flocc.supervisor import launch
+
+    launch(rt, current(rt), "test")
+    assert not (d / "idle").exists()
+
+
+def test_an_idle_marker_ends_the_run_blocked(rt):
+    add(rt, phase="impl")
+    rt.sessions.alive_names.add("NF-1")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "idle").write_text(json.dumps({"at": 50.0, "message": "Which option do you want?"}))
     supervise(rt, current(rt))
-    assert not (d / "pane.json").exists()
+    assert current(rt).state == "blocked" and rt.sessions.killed == ["NF-1"]
+    (notice,) = rt.notifier.sent
+    assert notice.cause == "NF-1:idle" and "Which option do you want?" in notice.summary
+
+
+def test_an_idle_reviewer_skips_the_review_without_blocking(rt):
+    add(rt, phase="review")
+    rt.sessions.alive_names.add("NF-1-review")
+    (state_dir(rt.cfg, "NF-1") / "idle").write_text(json.dumps({"at": 50.0, "message": ""}))
+    supervise(rt, current(rt))
+    assert current(rt).state == "done"
+    assert any("review skipped" in line for _, _, line in ledger.pending_digest(rt.con))
+
+
+def test_a_crash_restarts_once_with_a_note_then_blocks(rt):
+    add(rt, phase="impl")
+    supervise(rt, current(rt))
+    name, argv = rt.sessions.started[-1]
+    assert name == "NF-1" and current(rt).restarts == 1
+    assert any("ended before flocc done" in a for a in argv)
+    rt.sessions.alive_names.discard("NF-1")
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and rt.notifier.sent[-1].cause == "NF-1:crash"
+
+
+def test_a_finished_step_leaves_its_summary_for_the_next(rt):
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    done(rt, "tests for A and B")
+    supervise(rt, current(rt))
+    assert (state_dir(rt.cfg, "NF-1") / "last-summary.md").read_text() == "tests for A and B"
 
 
 def settings_of(argv):

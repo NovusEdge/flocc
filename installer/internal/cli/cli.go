@@ -46,8 +46,6 @@ Host commands run on the host as the service user:
   Without -H: $FLOCC_HOST, then the only host, then the host holding the issue named.
   -H all runs status, doctor or logs on every host.
   flocc peek NF-12                   what the session's screen shows now
-  flocc press NF-12 Down Enter       answer a dialog it is stuck on
-  flocc say NF-12 <message>          type into the session and press Enter
 
 Off a terminal, flocc with no command prints the status of every host.
 `

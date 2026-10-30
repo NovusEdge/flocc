@@ -32,9 +32,6 @@ class FakeSessions:
     def send(self, name, text):
         self.sent.append((name, text))
 
-    def press(self, name, keys):
-        self.sent.append((name, list(keys)))
-
 
 @dataclass
 class FakeNotifier:

@@ -180,15 +180,12 @@ def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeyp
     )
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
-    (d / "handoff.md").write_text("the previous claim's notes")
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
     assert c is not None
     assert (c.phase, c.base_sha, c.tester_sha) == ("impl", "sha-old-base", "sha-tests")
     assert rt.sessions.started[0][0] == "NF-9" and rt.linear.started == ["NF-9"]
-    assert not (d / "handoff.md").exists()
-    assert (d / "handoff.prev.md").read_text() == "the previous claim's notes"
 
 
 def test_a_fresh_claim_gets_its_own_review_fix_round(rt):

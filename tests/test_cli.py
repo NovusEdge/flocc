@@ -428,32 +428,6 @@ def test_peek_exits_3_without_a_claim(host_cfg, monkeypatch, capsys):
     assert capsys.readouterr().err == "peek: no live session for NF-240\n"
 
 
-def test_press_sends_dialog_keys_to_the_issue_session(host_cfg, monkeypatch, capsys):
-    fake = _peek_host(host_cfg, monkeypatch, "x")
-    assert main(["--config", str(host_cfg), "press", "NF-240", "Down", "Enter", "2"]) == 0
-    assert fake.sent == [("NF-240-review", ["Down", "Enter", "2"])]
-    assert "pressed Down Enter 2 in NF-240-review" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("key", ["C-c", ";", "-", "Enter;kill-server"])
-def test_press_refuses_keys_that_could_end_the_session(host_cfg, monkeypatch, capsys, key):
-    fake = _peek_host(host_cfg, monkeypatch, "x")
-    assert main(["--config", str(host_cfg), "press", "NF-240", key]) == 2
-    assert fake.sent == [] and "not a key flocc sends" in capsys.readouterr().err
-
-
-def test_press_exits_3_without_a_live_session(host_cfg, monkeypatch, capsys):
-    _peek_host(host_cfg, monkeypatch, "x", alive=False)
-    assert main(["--config", str(host_cfg), "press", "NF-240", "Enter"]) == 3
-    assert capsys.readouterr().err == "press: no live session for NF-240\n"
-
-
-def test_say_types_the_message_and_enter(host_cfg, monkeypatch):
-    fake = _peek_host(host_cfg, monkeypatch, "x")
-    assert main(["--config", str(host_cfg), "say", "NF-240", "fix", "the", "nit"]) == 0
-    assert fake.sent == [("NF-240-review", "fix the nit")]
-
-
 def test_peek_exits_3_when_the_session_dies_before_the_capture(host_cfg, monkeypatch, capsys):
     fake = _peek_host(host_cfg, monkeypatch, "")
     assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3

@@ -20,7 +20,7 @@ from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
 from flocc.sessions import session_name
-from flocc.supervisor import launch
+from flocc.supervisor import LAST_SUMMARY, launch
 from flocc.usage import latest_usage
 from flocc.worktree import (
     DirtyWorktree,
@@ -373,9 +373,6 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         rt.exe,
         trailer=trailer_enabled(cfg, cfg.repos[repo]),
     )
-    # The previous claim's tester notes would be read as this claim's. Kept for the owner.
-    if (d / "handoff.md").exists():
-        (d / "handoff.md").replace(d / "handoff.prev.md")
     # A fresh claim gets its own review fix round.
     ledger.meta_set(rt.con, f"review_fix:{issue.key}", "")
     for kept in ("rebase", "rebase_tried", "base_held", "base_released"):
@@ -384,7 +381,7 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")
     (d / "owner-items.md").unlink(missing_ok=True)
     # A previous claim's scratchpads and idle marker belong to that run.
-    for stale in ("scratchpads", "idle", "idle-escalated"):
+    for stale in ("scratchpads", "idle", LAST_SUMMARY):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # implementer: a fresh tester would block on adding nothing, and the guard would lose the

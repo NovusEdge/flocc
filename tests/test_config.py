@@ -11,7 +11,6 @@ def test_example_loads_with_defaults():
     assert cfg.digest_hour == 18
     assert cfg.default_wall_clock_s == 10800
     assert cfg.review_wall_clock_s == 3600
-    assert cfg.idle_escalate_s == 1800.0
     assert cfg.review_model == "opus"
     assert cfg.five_hour_max_pct == 80.0
     assert cfg.weekly_max_pct == 80.0
@@ -125,6 +124,14 @@ def test_a_leftover_permissions_file_is_ignored_with_a_warning(tmp_path, capsys)
     cfg = load(path)
     assert not hasattr(cfg, "permission_allow")
     assert "permissions.toml is no longer read" in capsys.readouterr().err
+
+
+def test_retired_notice_keys_are_ignored(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    path.write_text("idle_escalate_s = 60.0\nstall_escalate_s = 60.0\n" + EXAMPLE.read_text())
+    load(path)
+    err = capsys.readouterr().err
+    assert "idle_escalate_s is no longer used" in err and "stall_escalate_s" in err
 
 
 def test_context_restart_pct_is_retired(tmp_path, capsys):

@@ -70,5 +70,4 @@ def has_background(state: Path) -> bool:
 
 
 def clear_idle(state: Path) -> None:
-    for name in ("idle", "idle-escalated"):
-        (state / name).unlink(missing_ok=True)
+    (state / "idle").unlink(missing_ok=True)

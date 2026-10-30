@@ -24,19 +24,20 @@ def test_context_lists_issue_and_commands(tmp_cfg):
         assert needle in text
 
 
-def test_context_cli_prints_context_and_handoff(tmp_cfg, monkeypatch, capsys):
+def test_context_cli_prints_context_and_the_last_summary(tmp_cfg, monkeypatch, capsys):
     con = ledger.connect(tmp_cfg.ledger_path)
     for claim in (make("NF-1"), make("NF-2"), replace(make("NF-3"), repo="web")):
         ledger.insert_claim(con, claim)
     state = state_dir(tmp_cfg, "NF-1")
     state.mkdir()
     (state / "context.md").write_text("CTX")
-    (state / "handoff.md").write_text("NOTE")
+    (state / "last-summary.md").write_text("NOTE")
     monkeypatch.setenv("FLOCC_STATE", str(state))
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_cfg.ledger_path))
     assert main(["context"]) == 0
     out = capsys.readouterr().out
-    assert "CTX" in out and "NOTE" in out and "NF-2" not in out
+    assert "CTX" in out and "## The previous step's summary" in out and "NOTE" in out
+    assert "NF-2" not in out
 
 
 def test_done_writes_the_summary(tmp_path, monkeypatch):

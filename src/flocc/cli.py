@@ -154,9 +154,9 @@ def cmd_context(args) -> int:
     context = state / "context.md"
     if context.exists():
         print(context.read_text())
-    handoff = state / "handoff.md"
-    if handoff.exists():
-        print(handoff.read_text())
+    last = state / "last-summary.md"
+    if last.exists():
+        print(f"## The previous step's summary\n\n{last.read_text()}")
     return 0
 
 
@@ -491,40 +491,6 @@ def cmd_peek(args) -> int:
     return 0
 
 
-# Enough to move through and answer any Claude Code dialog. Control keys stay out: C-c and C-d
-# end the Claude session, and a dialog never needs them. Single characters are letters and
-# digits only: tmux reads a lone ";" as a command separator and "-x" as a flag.
-PRESS_KEYS = frozenset(
-    {"Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "Space", "BSpace"}
-)
-
-
-def cmd_press(args) -> int:
-    bad = [k for k in args.keys if k not in PRESS_KEYS and not (len(k) == 1 and k.isalnum())]
-    if bad:
-        allowed = " ".join(sorted(PRESS_KEYS))
-        print(
-            f"press: not a key flocc sends: {' '.join(bad)}; use {allowed}, a letter or a digit",
-            file=sys.stderr,
-        )
-        return 2
-    sessions, name = _live_session(args)
-    if not sessions or not name:
-        return 3
-    sessions.press(name, args.keys)
-    print(f"pressed {' '.join(args.keys)} in {name}; flocc peek {args.key} shows the result")
-    return 0
-
-
-def cmd_say(args) -> int:
-    sessions, name = _live_session(args)
-    if not sessions or not name:
-        return 3
-    sessions.send(name, " ".join(args.text))
-    print(f"sent to {name}; flocc peek {args.key} shows the reply")
-    return 0
-
-
 def cmd_logs(args) -> int:
     from flocc.status import detect_mode, issue_lines
 
@@ -555,9 +521,9 @@ def cmd_logs(args) -> int:
 def cmd_attach(args) -> int:
     from flocc.sessions import SOCKET
 
-    # Typing into an attached pane goes nowhere, so the way out and the way to answer are shown
-    # in tmux's status line, where the attached screen does not cover them.
-    hint = "read-only · Ctrl-b d detaches, the session keeps running · answer with flocc press"
+    # Typing into an attached pane goes nowhere, so the way out is shown in tmux's status line,
+    # where the attached screen does not cover it.
+    hint = "read-only · Ctrl-b d detaches, the session keeps running"
     print(f"Attaching {args.session} {hint}", file=sys.stderr)
     argv = [
         "tmux",
@@ -615,8 +581,6 @@ COMMANDS = {
     "status": cmd_status,
     "logs": cmd_logs,
     "peek": cmd_peek,
-    "press": cmd_press,
-    "say": cmd_say,
     "attach": cmd_attach,
 }
 
@@ -683,12 +647,6 @@ def build_parser() -> argparse.ArgumentParser:
     peek = add("peek", "Print the tail of an issue's live session")
     peek.add_argument("key", help="issue key, e.g. NF-12")
     peek.add_argument("-n", dest="lines", type=int, default=40, help="lines to print")
-    press = add("press", "Press keys in an issue's live session, e.g. to answer a dialog")
-    press.add_argument("key", help="issue key, e.g. NF-12")
-    press.add_argument("keys", nargs="+", help="Enter, Escape, Up, Down, Tab, ... or one character")
-    say = add("say", "Type a message into an issue's live session and press Enter")
-    say.add_argument("key", help="issue key, e.g. NF-12")
-    say.add_argument("text", nargs="+", help="the message")
     attach = add("attach", "Attach read-only to an agent's tmux session")
     attach.add_argument("session", help="session name, e.g. NF-12 or NF-12-review")
     return parser

@@ -30,7 +30,7 @@ def write_context(cfg: Config, issue: Issue, claim: Claim) -> None:
     (d / "context.md").write_text(
         f"# {issue.key}: {issue.title}\n\n{issue.url}\n\n{issue.description}\n\n"
         f"## Claim\n\nBranch `{claim.branch}`.\n\n"
-        f"Your state directory is {d}; write handoff.md there.\n\n{_COMMANDS}"
+        f"Your state directory is {d}.\n\n{_COMMANDS}"
     )
 
 

@@ -169,6 +169,3 @@ class Sessions:
     def send(self, name: str, text: str) -> None:
         self._tmux("send-keys", "-t", f"={name}:", "-l", text)
         self._tmux("send-keys", "-t", f"={name}:", "Enter")
-
-    def press(self, name: str, keys: list[str]) -> None:
-        self._tmux("send-keys", "-t", f"={name}:", *keys)

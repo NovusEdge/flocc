@@ -10,7 +10,7 @@ from pathlib import Path
 from flocc import canary, ledger
 from flocc.agentblock import settings_from_json
 from flocc.context import phase_prompt, state_dir
-from flocc.idle import BACKGROUND, clear_idle, has_background
+from flocc.idle import BACKGROUND, clear_idle
 from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.notice import Notice
@@ -43,10 +43,11 @@ REBASE = "rebase"
 REBASE_TRIED = "rebase_tried"
 CHECK_OUTPUT = "check-output.log"
 OWNER_ITEMS = "owner-items.md"
-PANE = "pane.json"
-STALL_ESCALATED = "stall-escalated"
-STALL_LINES = 60
-STALL_TAIL = 12
+LAST_SUMMARY = "last-summary.md"
+_RESTART = (
+    "Your previous session for this step ended before flocc done. The branch holds what it"
+    " committed; check git log and git status, then carry on from there."
+)
 PUBLISH_TRIES = 3
 POST_TRIES = 3
 _VERDICT = re.compile(
@@ -113,7 +114,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
     # After everything above that can raise: the previous session's markers would be taken for
     # the new one's.
     markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
-    for leftover in (*_MARKERS, "status.json", PANE, STALL_ESCALATED, BACKGROUND):
+    for leftover in (*_MARKERS, "status.json", BACKGROUND):
         (d / leftover).unlink(missing_ok=True)
     clear_idle(d)
     # Both keys: for a worktree, trust may be keyed on the main checkout's root instead.
@@ -173,7 +174,7 @@ def _relaunch(rt, claim: Claim) -> None:
     # The check output reaches a fix session only through its prompt; a restart needs it again.
     path = state_dir(rt.cfg, claim.issue_key) / FIX_CONTEXT
     extra = path.read_text() if claim.phase == "fix" and path.exists() else ""
-    launch(rt, claim, claim.phase, extra=extra)
+    launch(rt, claim, claim.phase, extra=f"{_RESTART}\n\n{extra}".strip())
 
 
 def _review_skipped(rt, claim: Claim, why: str) -> None:
@@ -653,88 +654,40 @@ def _base_moved_note(rt, claim: Claim, detail: str) -> str:
     )
 
 
-def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
-    idle = d / "idle"
-    if not idle.exists():
-        return
+def _idle_message(d: Path) -> str | None:
+    """The last words of a session that stopped twice without flocc done; None when it did not."""
     try:
-        raw = json.loads(idle.read_text())
-        at, message = float(raw["at"]), str(raw.get("message", ""))
-    except (OSError, ValueError, KeyError, TypeError):
-        return
-    escalated = d / "idle-escalated"
-    if escalated.exists() and escalated.read_text() == str(at):
-        return
-    # Hooks remove `idle` when the session acts again, so one that is left was written by the
-    # last Stop. status.json is no wake signal: the status line also rewrites it on cache expiry
-    # and rate-limit resets, and goes quiet while the session waits on background agents.
-    if rt.now() - at < rt.cfg.idle_escalate_s:
-        return
-    if has_background(d):
-        return
-    minutes = int((rt.now() - at) / 60)
-    esc = Notice(
-        f"{claim.issue_key}:idle",
-        f"{name} has been idle for {minutes} min without finishing: {message or 'no last message'}",
-        "Reply on this issue to steer it, or release it with"
-        f" flocc release --keep-worktree {claim.issue_key}",
-        issue_key=claim.issue_key,
-    )
-    rt.notifier.send(esc, rt.linear.issue(claim.issue_key))
-    escalated.write_text(str(at))
+        raw = json.loads((d / "idle").read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return ""
+    return str(raw.get("message", "")) if isinstance(raw, dict) else ""
 
 
-def _check_stall(rt, claim: Claim, d: Path, name: str) -> None:
-    # A session mid-turn redraws its pane every second (spinner, elapsed time, streamed output),
-    # so a pane that stays the same across ticks is waiting on a dialog no hook reports. Ended
-    # turns have their own check. flocc's status line is left out: it
-    # rewrites on cache expiry and rate-limit resets while the session sits still. Background
-    # agents' tool calls clear `idle`, and a turn cut off by a usage limit writes no `idle` and
-    # sits still until the reset, so both are left alone too.
-    if (d / "idle").exists():
+def _stopped(rt, claim: Claim, name: str, message: str) -> None:
+    if claim.phase == "review":
+        _review_skipped(rt, claim, f"the reviewer stopped without flocc done ({name})")
         return
-    u = latest_usage(rt.cfg.state_root, rt.now())
-    if u is not None and max(u.five_hour_pct, u.weekly_pct) >= 100:
-        return
-    own = f"{claim.issue_key} · ctx"
-    rows = [
-        r
-        for r in rt.sessions.capture(name, STALL_LINES).splitlines()
-        if r.strip() and not r.strip().startswith(own)
-    ]
-    if not rows:
-        return
-    digest = hashlib.sha256("\n".join(rows).encode()).hexdigest()
-    pane = d / PANE
-    try:
-        seen = json.loads(pane.read_text())
-        same, since = seen["hash"] == digest, float(seen["since"])
-    except (OSError, ValueError, KeyError, TypeError):
-        same, since = False, rt.now()
-    if not same:
-        pane.write_text(json.dumps({"hash": digest, "since": rt.now()}))
-        return
-    escalated = d / STALL_ESCALATED
-    if rt.now() - since < rt.cfg.stall_escalate_s or (
-        escalated.exists() and escalated.read_text() == str(since)
-    ):
-        return
-    tail = "\n".join(
-        "".join(c if c.isprintable() else " " for c in r).rstrip() for r in rows[-STALL_TAIL:]
+    _block(
+        rt,
+        claim,
+        "idle",
+        f"{name} stopped twice without running flocc done. Its last words:\n{message or '(none)'}"[
+            :3000
+        ],
+        "Reply on this issue with what it needs, then move the issue back to Todo; the rerun"
+        " continues on the kept branch",
     )
-    minutes = int((rt.now() - since) / 60)
+
+
+def _timed_out(rt, claim: Claim, name: str) -> None:
     key = claim.issue_key
-    esc = Notice(
-        f"{key}:stalled",
-        f"{name} has shown the same screen for {minutes} min in the middle of a turn,"
-        f" most likely a dialog waiting for an answer:\n```\n{tail}\n```",
-        f"See it with flocc peek {key} and answer with flocc press {key} <keys>"
-        f" (e.g. flocc press {key} Down Enter), or release it with"
-        f" flocc release --keep-worktree {key}",
-        issue_key=key,
-    )
-    rt.notifier.send(esc, rt.linear.issue(key))
-    escalated.write_text(str(since))
+    rt.sessions.kill(name)
+    line = f"stopped at the wall-clock limit ({name}); rerun with flocc release {key}"
+    ledger.add_digest(rt.con, key, line, rt.now())
+    _record_usage(rt, key, claim.phase, "end")
+    ledger.update_claim(rt.con, key, state="timed_out")
 
 
 def supervise(rt, claim: Claim) -> None:
@@ -748,7 +701,12 @@ def supervise(rt, claim: Claim) -> None:
         except ValueError:  # still being written; the next tick reads it whole
             return
         rt.sessions.kill(name)
+        if claim.phase != "review":
+            (d / LAST_SUMMARY).write_text(summary)
         _finish_phase(rt, claim, summary)
+        return
+    if (message := _idle_message(d)) is not None:
+        _stopped(rt, claim, name, message)
         return
     if not rt.sessions.alive(name):
         if claim.restarts >= 1 and claim.phase == "review":
@@ -766,18 +724,10 @@ def supervise(rt, claim: Claim) -> None:
         _relaunch(rt, claim)
         ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
-    elapsed = rt.now() - claim.started_at
     limit = rt.cfg.review_wall_clock_s if claim.phase == "review" else claim.wall_clock_s
-    if elapsed > limit:
+    if rt.now() - claim.started_at > limit:
         if claim.phase == "review":
             _record_usage(rt, key, claim.phase, "end")
             _review_skipped(rt, claim, f"stopped at the wall-clock limit ({name})")
             return
-        rt.sessions.kill(name)
-        line = f"stopped at the wall-clock limit ({name}); rerun with flocc release {key}"
-        ledger.add_digest(rt.con, key, line, rt.now())
-        _record_usage(rt, key, claim.phase, "end")
-        ledger.update_claim(rt.con, key, state="timed_out")
-        return
-    _check_idle(rt, claim, d, name)
-    _check_stall(rt, claim, d, name)
+        _timed_out(rt, claim, name)
