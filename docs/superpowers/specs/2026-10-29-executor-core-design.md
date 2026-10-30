@@ -241,8 +241,8 @@ The `cardinal` user on zer0-day-nimble goes through `flocc setup`'s existing old
   subcommands.
 - A check that `flocc-agent` cannot read `flocc`'s secret files or write the plugin directory.
 - One live run before merge: a test issue through executor, reviewer and PR, cardinal woken by its
-  plugin monitor, the wake visible in the Claude app, and no phone notification for each new
-  Remote Control session.
+  plugin monitor, and the wake visible in the Claude app. Each new Remote Control session sends
+  one phone notification when it connects; the owner accepts that, and nothing else should notify.
 
 ## Order of work
 
