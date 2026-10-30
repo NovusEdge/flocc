@@ -1,0 +1,8 @@
+[
+  {
+    "name": "events",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/follow",
+    "description": "flocc events from the executor VM, one JSON line per batch",
+    "when": "always"
+  }
+]
