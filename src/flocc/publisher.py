@@ -139,9 +139,42 @@ def weakens_test(wt: Path, since: str, path: str, head: str = "HEAD") -> str | N
 _TITLE_TYPE = {"Bug": "fix", "Chore": "chore"}
 
 
-def pr_title(key: str, title: str, labels: tuple[str, ...] = ()) -> str:
-    kind = next((_TITLE_TYPE[x] for x in labels if x in _TITLE_TYPE), "feat")
+_COMMIT_TYPE = re.compile(
+    r"^(feat|fix|docs|chore|refactor|test|perf|build|ci|style)(?:\([^)]*\))?!?: "
+)
+
+
+def pr_title(
+    key: str, title: str, labels: tuple[str, ...] = (), subjects: tuple[str, ...] = ()
+) -> str:
+    """The branch's own commit type wins when its commits agree on one (a docs-only change reads
+    `docs:`, not the label's `feat:`); otherwise the issue's labels decide."""
+    types = {m[1] if (m := _COMMIT_TYPE.match(s)) else None for s in subjects}
+    if len(types) == 1 and None not in types:
+        (kind,) = types
+    else:
+        kind = next((_TITLE_TYPE[x] for x in labels if x in _TITLE_TYPE), "feat")
     return f"{kind}: {title} ({key})"
+
+
+def branch_subjects(claim: Claim, repo: RepoConfig) -> tuple[str, ...]:
+    """Subjects of the executor's and fixers' commits since the base; the tester's are left out.
+    Empty when the branch cannot be read, which leaves the title to the labels."""
+    try:
+        ref = agent_ref(claim.issue_key)
+        fetch_agent_branch(repo.path, Path(claim.worktree), claim.branch, claim.issue_key)
+        out = git(
+            "log",
+            f"{claim.base_sha}..{ref}",
+            "--no-merges",
+            "--format=%s",
+            "--invert-grep",
+            f"--grep=^{TRAILER}: {claim.issue_key} test$",
+            cwd=repo.path,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return ()
+    return tuple(out.splitlines())
 
 
 def run_check(repo: RepoConfig, wt: Path, timeout_s: float) -> PublishResult | None:

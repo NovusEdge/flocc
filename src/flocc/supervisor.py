@@ -19,6 +19,7 @@ from flocc.publisher import (
     BranchMoved,
     PublishResult,
     amended_section,
+    branch_subjects,
     pr_title,
     read_amended,
     review_comment,
@@ -466,7 +467,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         # Kept apart from later check-fix summaries, which would overwrite it.
         (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[found.start() :].lstrip())
     issue = rt.linear.issue(key)
-    title = pr_title(key, issue.title, issue.labels)
+    title = pr_title(
+        key, issue.title, issue.labels, branch_subjects(claim, rt.cfg.repos[claim.repo])
+    )
     try:
         # After a review fix or a rebase the PR must still be open: a new one would reopen
         # finished work.

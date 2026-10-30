@@ -21,7 +21,13 @@ from flocc.poller import (
 from flocc.runtime import Runtime
 from flocc.supervisor import LaunchError
 from flocc.tick import tick, tick_lock
-from flocc.worktree import fetch_agent_branch, git, prepare_worktree, recover_tests
+from flocc.worktree import (
+    BranchDiverged,
+    fetch_agent_branch,
+    git,
+    prepare_worktree,
+    recover_tests,
+)
 from tests.fakes import FakeAgent, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
@@ -620,6 +626,55 @@ def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
     assert len(rt.linear.comments) == 1 and "setup: npm is missing" in rt.linear.comments[0][1]
 
 
+def test_prepare_action_blames_the_repo_for_setup_and_flocc_for_the_rest(rt):
+    def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
+        if key == "NF-9":
+            raise subprocess.CalledProcessError(1, ["./setup"], stderr="npm is missing")
+        raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="not a repository")
+
+    rt.agent.prepare_fn = failing
+    rt.linear.ready = [issue("NF-9"), issue("NF-10")]
+    poll(rt)
+    actions = {n.issue_key: n.action for n in rt.notifier.sent}
+    assert actions["NF-9"] == "Fix the repo or ./setup"
+    assert "flocc error" in actions["NF-10"] and "flocc logs" in actions["NF-10"]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        subprocess.TimeoutExpired(["./setup"], 900),
+        PermissionError(13, "Permission denied", "./setup"),
+        BranchDiverged("agent/nf-9 diverged"),
+    ],
+)
+def test_prepare_action_blames_the_repo_for_a_slow_or_unrunnable_setup(rt, exc):
+    def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
+        raise exc
+
+    rt.agent.prepare_fn = failing
+    rt.linear.ready = [issue("NF-9")]
+    poll(rt)
+    [esc] = rt.notifier.sent
+    assert esc.action == "Fix the repo or ./setup"
+
+
+def test_a_repeating_tick_failure_is_one_capped_line_without_url_credentials(
+    rt, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+
+    def broken(rt):
+        raise RuntimeError("clone https://x-token:s3cret@github.com/o/r failed\n" + "y" * 400)
+
+    monkeypatch.setattr("flocc.tick.poll", broken)
+    with pytest.raises(RuntimeError):
+        tick(rt.cfg, tmp_path / "c.toml")
+    [esc] = rt.notifier.sent
+    assert "s3cret" not in esc.summary and "://***@github.com" in esc.summary
+    assert "\n" not in esc.summary and len(esc.summary) < 300
+
+
 def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
     def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
@@ -779,6 +834,22 @@ def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
     monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
     assert tick(rt.cfg, tmp_path / "c.toml") == 0
     assert ledger.meta_get(rt.con, "tick_failures") == "0"
+
+
+def test_supervisor_error_event_names_the_exception(rt, tmp_path, monkeypatch):
+    ledger.insert_claim(rt.con, make("NF-1"))
+
+    def supervise(rt, claim):
+        raise RuntimeError("first   line " + "x" * 300 + "\nsecond line")
+
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("flocc.tick.supervise", supervise)
+    monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
+    tick(rt.cfg, tmp_path / "c.toml")
+    [esc] = rt.notifier.sent
+    assert esc.event == "service-error" and esc.issue_key == "NF-1"
+    assert "(RuntimeError: first line x" in esc.summary and "\n" not in esc.summary
+    assert "second" not in esc.summary and len(esc.summary) < 300
 
 
 def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkeypatch):
