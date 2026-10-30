@@ -131,7 +131,7 @@ type Answers struct {
 	// Playwright is the version whose chromium system libraries and fonts the Browsers step
 	// installs; empty installs none.
 	Playwright string `toml:"playwright,omitempty"`
-	// Tools are mise tools and versions the Tools step sets globally for the service user.
+	// Tools are mise tools and versions the Tools step sets globally for flocc-agent.
 	Tools map[string]string `toml:"tools,omitempty"`
 	// Docker gives flocc-agent rootless Podman for checks that start containers (testcontainers),
 	// on apt hosts. The key keeps its old name so existing host files still load.
@@ -167,10 +167,15 @@ func Parse(b []byte) (*Answers, error) {
 	return nil, errors.New("answers: a value does not fit its field; check the types against the example in docs/book/setup/README.md")
 }
 
-func (a *Answers) Save(path string) error {
+// Public encodes the document without [secrets], for readers that use none.
+func (a *Answers) Public() ([]byte, error) {
 	c := *a
 	c.Secrets = nil
-	b, err := toml.Marshal(c)
+	return toml.Marshal(c)
+}
+
+func (a *Answers) Save(path string) error {
+	b, err := a.Public()
 	if err != nil {
 		return err
 	}

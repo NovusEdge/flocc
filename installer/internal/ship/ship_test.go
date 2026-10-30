@@ -468,6 +468,14 @@ func okSudo(dest string) *stageOK {
 		On("ssh -T "+dest+" "+resetStageNoPrompt, 0, "")}
 }
 
+func TestResetStageCreatesTheDirectoryPrivatelyAndNeverAcceptsAnExistingOne(t *testing.T) {
+	for _, c := range []string{resetStage, resetStageNoPrompt} {
+		if !strings.Contains(c, "mkdir -m 700 /tmp/flocc-setup") || strings.Contains(c, "mkdir -p") {
+			t.Errorf("%q", c)
+		}
+	}
+}
+
 func TestShipSendsTheAnswersOnStdinWithoutATerminal(t *testing.T) {
 	root := shipRoot(t)
 	doc := []byte("[secrets]\nlinear_key = \"lin_api_s3cret\"\n")

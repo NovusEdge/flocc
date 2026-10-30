@@ -103,6 +103,11 @@ func (AgentAccount) Apply(ctx context.Context, e *Env) error {
 			return err
 		}
 	}
+	if added && e.Mode == Loop {
+		// Same for the tmux server the loop's ticks run in; the service phase starts a fresh one.
+		// Nothing to kill when none runs, so a failure here is not one.
+		e.Ok(ctx, "runuser", "-u", ServiceUser, "--", "tmux", "-L", "flocc", "kill-server")
+	}
 	return nil
 }
 
@@ -217,6 +222,21 @@ func (ClaudeHome) Apply(ctx context.Context, e *Env) error {
 				return err
 			}
 		}
+		if f == ".claude" {
+			// These hold absolute /home/flocc paths that flocc-agent cannot read, yet the
+			// Claude step would count the plugins and marketplaces as installed.
+			rm := []string{"rm", "-rf", "--"}
+			for _, p := range stalePluginPaths {
+				rm = append(rm, filepath.Join(to, p))
+			}
+			if _, err := e.Must(ctx, rm[0], rm[1:]...); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+var stalePluginPaths = []string{
+	"plugins/installed_plugins.json", "plugins/known_marketplaces.json", "plugins/cache", "plugins/marketplaces",
 }

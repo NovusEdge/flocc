@@ -582,6 +582,14 @@ def test_commits_without_the_trailer_are_listed_not_blocked(origin, tmp_path):
     assert set(result.untrailed) == {bare, tests}
 
 
+def test_publish_refreshes_the_service_clones_base_before_the_guard(origin, tmp_path, monkeypatch):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    seen = []
+    monkeypatch.setattr("flocc.publisher.origin_base", lambda r: seen.append(r))
+    publish(claim, repo, "t", "s", token="t", runner=Gh())
+    assert seen == [repo]
+
+
 def test_trailer_check_is_skipped_when_the_trailer_is_off(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path)
     result = publish(claim, repo, "t", "s", token="t", runner=Gh(), trailer=False)

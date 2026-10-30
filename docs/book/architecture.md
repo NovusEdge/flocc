@@ -91,7 +91,7 @@ A blocked or timed-out issue keeps its claim until you release it. Release moves
 | Service | Personal API key | Fine-grained publish token with write to the mapped repositories | None |
 | Agents | None. The issue text arrives in the prompt | Read-only fine-grained agent token for `gh` | Only servers named in the issue's `mcp` list |
 
-The service runs as `flocc` and the agents as `flocc-agent`, two dedicated Unix users with no sudo, so your own account and its home are out of their reach. See [Two users](#two-users). The agent column in the table is enforced by that boundary: `flocc-agent` cannot read the Linear key, the publish token, the ledger or the config. Only the read-only agent token reaches a session, in `GH_TOKEN`.
+The service runs as `flocc` and the agents as `flocc-agent`, two dedicated Unix users; flocc's only sudo rule runs `flocc-agent-run` as `flocc-agent`, so your own account and its home are out of their reach. See [Two users](#two-users). The agent column in the table is enforced by that boundary: `flocc-agent` cannot read the Linear key, the publish token, the ledger or the config. Only the read-only agent token reaches a session, in `GH_TOKEN`.
 
 The launcher starts each session through `env -i` with only a few variables, then passes the agent's GitHub token in as `GH_TOKEN`. A session started from inside another Claude Code session would otherwise inherit its messaging socket, session ID and task list.
 

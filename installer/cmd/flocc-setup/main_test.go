@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -383,6 +384,68 @@ func TestCheckStage(t *testing.T) {
 		if checkStage(d) == nil {
 			t.Errorf("%q: want refusal", d)
 		}
+	}
+}
+
+func TestCheckStageDir(t *testing.T) {
+	uid := strconv.Itoa(os.Getuid())
+	mk := func(mode os.FileMode) string {
+		d := filepath.Join(t.TempDir(), "stage")
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, mode); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if err := checkStageDir(mk(0o750), uid); err != nil {
+		t.Errorf("a 750 stage owned by the sudo user: %v", err)
+	}
+	for _, mode := range []os.FileMode{0o770, 0o707, 0o777} {
+		if checkStageDir(mk(mode), uid) == nil {
+			t.Errorf("mode %o: want refusal", mode)
+		}
+	}
+	if os.Getuid() != 0 && checkStageDir(mk(0o700), "1") == nil {
+		t.Error("a stage owned by someone other than SUDO_UID or root: want refusal")
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(mk(0o700), link); err != nil {
+		t.Fatal(err)
+	}
+	if checkStageDir(link, uid) == nil {
+		t.Error("a symlink: want refusal")
+	}
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if checkStageDir(file, uid) == nil {
+		t.Error("a file: want refusal")
+	}
+}
+
+func TestAgentPhaseGetsNoSecrets(t *testing.T) {
+	stage := fillStage(t, "flocc-setup")
+	f := host.NewFake().OnName("chown", 0, "").OnName("chmod", 0, "").OnName("sudo", 0, "")
+	_, in, err := readAnswers(strings.NewReader(secretsDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handoffAll(context.Background(), f, stage, []byte(secretsDoc), in, true, false); err != nil {
+		t.Fatal(err)
+	}
+	agent := "sudo -iu flocc-agent /home/flocc-agent/.cache/flocc-setup/flocc-setup --phase agent --answers -"
+	service := "sudo -iu flocc /home/flocc/.cache/flocc-setup/flocc-setup --phase service --answers -"
+	if strings.Contains(f.Stdins[agent], "secrets") || strings.Contains(f.Stdins[agent], "s3cret") {
+		t.Errorf("agent phase stdin carries secrets: %q", f.Stdins[agent])
+	}
+	if !strings.Contains(f.Stdins[agent], `team_key = 'NF'`) {
+		t.Errorf("agent phase lost the public answers: %q", f.Stdins[agent])
+	}
+	if f.Stdins[service] != secretsDoc {
+		t.Errorf("service phase stdin: %q", f.Stdins[service])
 	}
 }
 

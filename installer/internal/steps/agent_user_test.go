@@ -40,6 +40,29 @@ func TestAgentAccountCreatesTheUserGroupAndDirectories(t *testing.T) {
 	}
 }
 
+func TestAgentAccountInLoopModeRestartsTheTmuxServerOnlyWhenTheGroupIsNew(t *testing.T) {
+	for _, c := range []struct {
+		serviceGroups string
+		kill          bool
+	}{{"flocc\n", true}, {"flocc flocc-work\n", false}} {
+		f := host.NewFake()
+		f.On("id -u flocc-agent", 0, "1001\n").On("id -nG flocc", 0, c.serviceGroups).On("id -nG flocc-agent", 0, "flocc-agent\n")
+		f.OnName("groupadd", 0, "").OnName("usermod", 0, "").OnName("chgrp", 0, "").OnName("chmod", 0, "")
+		f.OnName("install", 0, "").OnName("chown", 0, "").OnName("runuser", 0, "")
+		e := testEnv(t, f)
+		e.Mode = Loop
+		if err := (AgentAccount{}).Apply(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.Ran("runuser -u flocc -- tmux -L flocc kill-server"); got != c.kill {
+			t.Errorf("groups %q: killed=%v; ran %v", c.serviceGroups, got, f.Calls)
+		}
+		if f.Ran("systemctl") {
+			t.Errorf("loop mode ran systemctl: %v", f.Calls)
+		}
+	}
+}
+
 func TestAgentAccountRefusesAnAgentInAPrivilegedGroup(t *testing.T) {
 	f := host.NewFake()
 	f.On("id -u flocc-agent", 0, "1001\n").On("id -nG flocc", 0, "flocc flocc-work\n")
@@ -102,7 +125,7 @@ func TestAgentAccessLeavesNoRuleWhenVisudoRejectsIt(t *testing.T) {
 }
 
 func TestClaudeHomeMovesTheLoginToFloccAgent(t *testing.T) {
-	f := host.NewFake().OnName("mv", 0, "").OnName("chown", 0, "")
+	f := host.NewFake().OnName("mv", 0, "").OnName("chown", 0, "").OnName("rm", 0, "")
 	e := testEnv(t, f)
 	os.MkdirAll(e.Path("/home/flocc/.claude"), 0o700)
 	os.WriteFile(e.Path("/home/flocc/.claude.json"), []byte("{}"), 0o600)
@@ -117,6 +140,7 @@ func TestClaudeHomeMovesTheLoginToFloccAgent(t *testing.T) {
 		"mv -- /home/flocc/.claude /home/flocc-agent/.claude",
 		"chown -R -h flocc-agent:flocc-agent /home/flocc-agent/.claude",
 		"mv -- /home/flocc/.claude.json /home/flocc-agent/.claude.json",
+		"rm -rf -- /home/flocc-agent/.claude/plugins/installed_plugins.json /home/flocc-agent/.claude/plugins/known_marketplaces.json /home/flocc-agent/.claude/plugins/cache /home/flocc-agent/.claude/plugins/marketplaces",
 	} {
 		if !f.Ran(want) {
 			t.Errorf("did not run %q; ran %v", want, f.Calls)

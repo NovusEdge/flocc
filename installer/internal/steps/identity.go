@@ -7,7 +7,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/identity"
 )
 
-// Identity gives the service user the owner's git author, so agent commits are the owner's.
+// Identity gives flocc-agent the owner's git author, so agent commits are the owner's.
 type Identity struct{}
 
 func (Identity) Name() string { return "Git identity" }

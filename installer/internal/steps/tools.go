@@ -12,7 +12,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
-// Tools sets the host file's mise tools as the service user's global versions, so a repo's
+// Tools sets the host file's mise tools as flocc-agent's global versions, so a repo's
 // ./setup finds them through mise's shims without pinning them itself. NF-211, NF-212 and NF-260
 // failed on "No version is set for shim: go" with go installed under mise and no global version.
 type Tools struct{}

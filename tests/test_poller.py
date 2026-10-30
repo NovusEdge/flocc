@@ -139,6 +139,14 @@ def test_the_default_sequence_starts_at_the_executor_with_no_tester(rt):
     assert (c.phase, c.tester_sha) == ("impl", None) and rt.sessions.started[0][0] == "NF-9"
 
 
+def test_a_start_refreshes_the_service_clones_base(rt, monkeypatch):
+    seen = []
+    monkeypatch.setattr("flocc.poller.origin_base", lambda repo: seen.append(repo))
+    rt.linear.ready = [issue(desc=PLAIN)]
+    poll(rt)
+    assert seen == [next(iter(rt.cfg.repos.values()))]
+
+
 def test_a_run_line_is_recorded_on_the_claim(rt):
     rt.linear.ready = [issue(desc=PLAIN.replace("Do it.", "Do it.\n\nRun: tester, executor"))]
     poll(rt)
