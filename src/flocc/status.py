@@ -117,7 +117,9 @@ def _read_ledger(path: Path) -> tuple[list[ledger.Claim], dict[str, str], str | 
 # Matches `logs`; bounded so a status call stays inside the desktop's 20s budget.
 _ACTIVITY_LINES = 2000
 _ACTIVITY_KEPT = 5
-_JOURNAL_LINE = re.compile(r"^(\d+(?:\.\d+)?)\s+\S+\s+(?:[\w.@-]+\[\d+\]: )?(.*)$")
+_JOURNAL_LINE = re.compile(r"^(\d+(?:\.\d+)?)\s+\S+\s+(?:([\w.@-]+)\[\d+\]: )?(.*)$")
+# `-u flocc` also returns the sudo and PAM lines of every flocc-agent-run call.
+_NOT_FLOCC = {"sudo"}
 
 
 def _recent_lines(cfg: Config, mode: str, run) -> list[tuple[int, str]]:
@@ -133,7 +135,11 @@ def _recent_lines(cfg: Config, mode: str, run) -> list[tuple[int, str]]:
             check=False,
         ).stdout
         parsed = (_JOURNAL_LINE.match(line) for line in out.splitlines())
-        return [(int(float(m.group(1))), m.group(2)) for m in parsed if m]
+        return [
+            (int(float(m.group(1))), m.group(3))
+            for m in parsed
+            if m and m.group(2) not in _NOT_FLOCC and not m.group(3).startswith("pam_")
+        ]
     log = cfg.state_root / "run.log"
     # run.log lines carry no timestamp, so they all take the file's last write time.
     try:

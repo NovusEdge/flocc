@@ -351,6 +351,15 @@ def test_status_carries_the_version_and_each_claims_last_five_lines(cfg):
     assert row["activity"][-1]["at"] == 1006
 
 
+def test_issue_lines_drops_the_sudo_and_pam_lines_of_agent_calls(cfg):
+    run = _journal(
+        "1.0 host sudo[9]:    flocc : PWD=/home/flocc ; USER=flocc-agent ; COMMAND=/x/flocc-agent-run alive NF-5",
+        "1.1 host sudo[9]: pam_unix(sudo:session): session opened for user flocc-agent NF-5",
+        "1.2 host flocc[7]: NF-5 alive",
+    )
+    assert issue_lines(cfg, "NF-5", 5, mode="systemd", run=run) == [(1, "NF-5 alive")]
+
+
 def test_status_activity_falls_back_to_run_log_tail(cfg):
     con = ledger.connect(cfg.ledger_path)
     ledger.insert_claim(con, make("NF-1"))
