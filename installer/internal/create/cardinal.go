@@ -131,14 +131,8 @@ func (CardinalBase) Check(ctx context.Context, e *Env) (bool, string, error) {
 }
 
 func (CardinalBase) Apply(ctx context.Context, e *Env) error {
-	apt := []string{"exec", CardinalName, "--env", "DEBIAN_FRONTEND=noninteractive", "--"}
-	for _, args := range [][]string{
-		{"apt-get", "update", "-q"},
-		{"apt-get", "install", "-y", "-q", "tmux", "openssh-client", "git", "curl", "ca-certificates"},
-	} {
-		if _, err := e.must(ctx, e.incus(append(append([]string{}, apt...), args...)...)); err != nil {
-			return err
-		}
+	if err := e.aptIn(ctx, CardinalName, "tmux", "openssh-client", "git", "curl", "ca-certificates"); err != nil {
+		return err
 	}
 	if !e.ok(ctx, e.inVM(CardinalName, "id", "-u", cardinalUser)) {
 		if _, err := e.must(ctx, e.inVM(CardinalName, "useradd", "--create-home", "--shell", "/bin/bash", cardinalUser)); err != nil {

@@ -32,6 +32,24 @@ def _fix_prompt(claim: Claim, note: str) -> str:
     )
 
 
+def admit_rerun(rt, claim: Claim):
+    """Admission for another session on a finished claim, without its dependencies: they
+    finished before the PR opened."""
+    settings = replace(settings_from_json(claim.settings_json), depends_on=())
+    return admit(
+        claim.issue_key,
+        claim.repo,
+        settings,
+        ledger.live_claims(rt.con),
+        latest_usage(rt.cfg.agent_state_root, rt.now()),
+        {},
+        rt.cfg,
+        rt.now(),
+        rt.free_disk_gb(rt.cfg.worktree_root),
+        ledger.held_keys(rt.con),
+    )
+
+
 def start_fix(rt, key: str, note: str) -> Claim:
     note = note.strip()
     if not note:
@@ -56,19 +74,7 @@ def start_fix(rt, key: str, note: str) -> Claim:
         raise Refused(f"{key} is held; the owner's flocc release {key} lifts the hold")
     if not Path(claim.worktree).exists():
         raise Refused(f"{key}'s worktree is gone")
-    settings = replace(settings_from_json(claim.settings_json), depends_on=())
-    decision = admit(
-        key,
-        claim.repo,
-        settings,
-        ledger.live_claims(rt.con),
-        latest_usage(rt.cfg.agent_state_root, rt.now()),
-        {},
-        rt.cfg,
-        rt.now(),
-        rt.free_disk_gb(rt.cfg.worktree_root),
-        ledger.held_keys(rt.con),
-    )
+    decision = admit_rerun(rt, claim)
     if not decision.ok:
         raise Refused(f"not now: {decision.reason}")
     extra = _fix_prompt(claim, note)

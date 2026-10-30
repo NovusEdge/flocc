@@ -43,14 +43,7 @@ func (s Summary) JSON() string {
 
 func (s Summary) Line() string { return SummaryMarker + s.JSON() }
 
-func ParseSummaryLine(line string) (Summary, bool) {
-	var s Summary
-	rest, ok := strings.CutPrefix(line, SummaryMarker)
-	if !ok || json.Unmarshal([]byte(rest), &s) != nil {
-		return Summary{}, false
-	}
-	return s, true
-}
+func ParseSummaryLine(line string) (Summary, bool) { return parseMarked[Summary](line, SummaryMarker) }
 
 // Redact returns a copy with each secret replaced by *** in every free-text field. The desktop
 // prints Line to its own stdout, outside host.Exec's redaction, and Failed and Version carry raw

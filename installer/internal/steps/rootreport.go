@@ -40,13 +40,17 @@ func (r RootReport) JSON() string {
 
 func (r RootReport) Line() string { return RootMarker + r.JSON() }
 
-func ParseRootLine(line string) (RootReport, bool) {
-	var r RootReport
-	rest, ok := strings.CutPrefix(line, RootMarker)
-	if !ok || json.Unmarshal([]byte(rest), &r) != nil {
-		return RootReport{}, false
+func ParseRootLine(line string) (RootReport, bool) { return parseMarked[RootReport](line, RootMarker) }
+
+// parseMarked decodes the JSON that follows marker at the start of line.
+func parseMarked[T any](line, marker string) (T, bool) {
+	var v T
+	rest, ok := strings.CutPrefix(line, marker)
+	if !ok || json.Unmarshal([]byte(rest), &v) != nil {
+		var zero T
+		return zero, false
 	}
-	return r, true
+	return v, true
 }
 
 // ReportSteps checks every step again for the pass's report; pending names steps whose Apply

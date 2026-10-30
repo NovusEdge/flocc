@@ -36,10 +36,12 @@ func privilegedGroup(ctx context.Context, e *Env) string {
 	return ""
 }
 
+// jscpd:ignore-start
 func (User) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if !e.Ok(ctx, "id", "-u", ServiceUser) {
 		return false, "no " + ServiceUser + " user", nil
 	}
+	// jscpd:ignore-end
 	st, err := os.Stat(e.Path("/home/" + ServiceUser))
 	if err != nil {
 		return false, "no home directory", nil

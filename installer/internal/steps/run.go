@@ -64,6 +64,33 @@ func loopCommand(home string) string {
 	return "sh -c 'while :; do env " + ServicePath(home) + " flocc run; sleep 10; done'"
 }
 
+// staleUnit names the first of units whose installed copy is missing or differs from the shipped one.
+func staleUnit(e *Env, units []string) string {
+	for _, u := range units {
+		want, _ := deploy.Files.ReadFile(u)
+		got, err := os.ReadFile(e.HomePath(filepath.Join(".config/systemd/user", u)))
+		if err != nil || !bytes.Equal(got, want) {
+			return u
+		}
+	}
+	return ""
+}
+
+// writeUnits installs units into the user unit directory and returns that directory.
+func writeUnits(e *Env, units []string) (string, error) {
+	dir := e.HomePath(".config/systemd/user")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return dir, err
+	}
+	for _, u := range units {
+		b, _ := deploy.Files.ReadFile(u)
+		if err := os.WriteFile(filepath.Join(dir, u), b, 0o644); err != nil {
+			return dir, err
+		}
+	}
+	return dir, nil
+}
+
 func (e *Env) loopPane(ctx context.Context) string {
 	return e.Output(ctx, "tmux", "-N", "-L", "flocc", "list-panes", "-t", "=flocc-loop", "-F", "#{pane_start_command}")
 }
@@ -75,12 +102,8 @@ func (Run) Check(ctx context.Context, e *Env) (bool, string, error) {
 		}
 		return false, "loop not running", nil
 	}
-	for _, u := range deploy.Units {
-		want, _ := deploy.Files.ReadFile(u)
-		got, err := os.ReadFile(e.HomePath(filepath.Join(".config/systemd/user", u)))
-		if err != nil || !bytes.Equal(got, want) {
-			return false, u + " not installed or out of date", nil
-		}
+	if u := staleUnit(e, deploy.Units); u != "" {
+		return false, u + " not installed or out of date", nil
 	}
 	if _, err := os.Stat(e.HomePath(".config/systemd/user/flocc-tmux.service")); err == nil {
 		return false, "old flocc-tmux.service still installed", nil
@@ -93,15 +116,9 @@ func (Run) Check(ctx context.Context, e *Env) (bool, string, error) {
 
 func (Run) Apply(ctx context.Context, e *Env) error {
 	if e.Mode == Systemd {
-		dir := e.HomePath(".config/systemd/user")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		dir, err := writeUnits(e, deploy.Units)
+		if err != nil {
 			return err
-		}
-		for _, u := range deploy.Units {
-			b, _ := deploy.Files.ReadFile(u)
-			if err := os.WriteFile(filepath.Join(dir, u), b, 0o644); err != nil {
-				return err
-			}
 		}
 		// 0.12 ran the session server as this user; it is flocc-agent's now.
 		old := filepath.Join(dir, "flocc-tmux.service")
