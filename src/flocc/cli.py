@@ -349,6 +349,31 @@ def cmd_release(args) -> int:
     return 0
 
 
+def cmd_fix(args) -> int:
+    from flocc.control import Refused, start_fix
+    from flocc.supervisor import LaunchError
+    from flocc.tick import build_runtime, tick_lock
+
+    cfg, path = _config(args)
+    with tick_lock(cfg.tick_lock) as held:
+        if not held:
+            print("fix: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        rt = build_runtime(cfg, path)
+        try:
+            claim = start_fix(rt, args.key, args.note)
+        except Refused as exc:
+            print(f"fix: {exc}", file=sys.stderr)
+            return 1
+        except (LaunchError, subprocess.SubprocessError, OSError) as exc:
+            print(f"fix: the fixer did not start: {exc}", file=sys.stderr)
+            return 1
+    print(
+        f"started a fixer on {args.key}, fix round {claim.fix_attempts} of {cfg.check_fix_rounds}"
+    )
+    return 0
+
+
 def _lift_hold(cfg, key: str) -> int:
     # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
     # the timed-out restart, or a move to Todo made while it was held, would start it again.
@@ -643,6 +668,7 @@ COMMANDS = {
     "events": cmd_events,
     "ack": cmd_ack,
     "hold": cmd_hold,
+    "fix": cmd_fix,
 }
 
 
@@ -699,6 +725,9 @@ def build_parser() -> argparse.ArgumentParser:
     hold = add("hold", "Start nothing for an issue until flocc release lifts the hold")
     hold.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     hold.add_argument("--reason", default="", help="why, for flocc status")
+    fix = add("fix", "Start one fixer with a note on a blocked or timed-out run, within the cap")
+    fix.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    fix.add_argument("--note", required=True, help="what the fixer should fix")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )
