@@ -18,11 +18,13 @@ If the host's tick has not run, `flocc -H <host> status` shows the last tick. In
 
 ## An issue is blocked or timed out
 
-The claim stays until you release it. Fix what the issue's comment or the digest names, then move the issue back to Todo or run `flocc release ENG-12`. The next tick restarts it on the kept branch. A move to Todo while the run is still going does nothing.
+A blocked run says why on its issue; reply there and move it back to Todo. The claim stays until you release it. Fix what the issue's comment or the digest names, then move the issue back to Todo or run `flocc release ENG-12`. The next tick restarts it on the kept branch. A move to Todo while the run is still going does nothing.
+
+A session that ends a turn without `flocc done` is refused once and then marks itself idle, which blocks the run with a comment. The same happens after an API error other than a usage limit.
 
 A run that touched files the tester committed is refused at publish. Run `flocc release ENG-12 --accept-tests` to approve the tester's files as they stand on the branch.
 
-A tester file the implementer fixed because its test was wrong, and recorded with `flocc tests-amended <path> --reason ...`, does not block. It goes into the PR's "Amended tests" section with the reason, and the reviewer judges it. An amendment that removes or skips a test blocks, and so does any touched tester file that is not recorded.
+A tester file the executor fixed because its test was wrong, and recorded with `flocc tests-amended <path> --reason ...`, does not block. It goes into the PR's "Amended tests" section with the reason, and the reviewer judges it. An amendment that removes or skips a test blocks, and so does any touched tester file that is not recorded.
 
 If a repo requires a label on PRs with amended tests, as nimblefox's `tests-amended` does, set `amended_label` on the repo in `config.toml` and flocc adds it.
 
@@ -56,14 +58,17 @@ A failed `./setup` or a worktree that is not clean after `./setup` fails the sta
 | `flocc ship` exits non-zero | A doctor check failed. Each failing check prints below the summary rows with its fix. A pending Claude login alone exits 0 |
 | A plugin in `deploy/agent-plugins.txt` stops ship | Enable that plugin on your desktop |
 | A running session still has old plugins or settings | Sessions keep what they launched with. The upgrade reaches them at their next launch |
+| `sudo: a password is required` from `flocc-agent-run` | The sudoers rule is missing; run `flocc ship -H <name>` |
+| Doctor fails `agent boundary` | `flocc-agent` can read a secret or write `/opt/flocc`, the state directory or a service clone. Fix the modes the line names, or run `flocc ship` again |
+| Doctor fails `agent docker` | `flocc-agent` is in the `docker` group, which is root-equivalent: `gpasswd -d flocc-agent docker` |
 
 ## Claude login
 
 | Symptom | Fix |
 |---|---|
-| The login row says `token-only` or `none` | Run `flocc login -H <name>`. A `claude setup-token` token cannot open Remote Control sessions |
+| The login row says `token-only` or `none` | Run `flocc login -H <name>`, which signs in `flocc-agent`. A `claude setup-token` token cannot open Remote Control sessions |
 | `flocc login` waits for sessions | Running sessions rewrite `~/.claude.json` from memory and could drop the Remote Control consent. Wait for them, or stop |
-| No connected line within 60 seconds | Run `claude remote-control` as `flocc` on the host by hand to see what it waits for |
+| No connected line within 60 seconds | Run `claude remote-control` as `flocc-agent` on the host by hand to see what it waits for |
 | The digest issue says the login lapsed | The tick reports it once, and again only after a login has been seen. Run `flocc login -H <name>` |
 | "login" shows `unknown` in setup | The host could not read its login. Setup shows it and does not act |
 

@@ -1,10 +1,12 @@
 # Run a host
 
-This page covers what you tune after a host is shipped: how it ticks, its config, disk use, several hosts at once, and auto-mode blocks.
+This page covers what you tune after a host is shipped: how it ticks, its config, disk use, several hosts at once, and blocked tool calls.
 
 ## How a host ticks
 
-Debian, Ubuntu, Arch, Fedora and RHEL VMs run in systemd mode. A timer ticks every 3 minutes and a user unit keeps the tmux server up.
+Debian, Ubuntu, Arch, Fedora and RHEL VMs run in systemd mode. A timer ticks every 3 minutes as `flocc`, and a user unit of `flocc-agent` keeps the tmux server up.
+
+`flocc ship` sets a host up in three phases: `root` creates `flocc-agent`, the `flocc-work` group, the wrapper `/usr/local/libexec/flocc-agent-run`, its sudoers rule, the managed settings and, with `docker = true`, rootless Podman; `agent` runs as `flocc-agent` and installs Claude Code, the plugins, mise, the host file's tools and the session tmux server; `service` runs as `flocc` and publishes `/opt/flocc`, then runs doctor. See [Two users](../architecture.md#two-users).
 
 Any host whose PID 1 is not systemd runs in loop mode. `flocc run` in tmux session `flocc-loop` ticks instead, and the installer's `flocc-loop` session starts the tmux server. A process a timed-out check daemonized is not killed when its tick ends. After the host stops, `flocc ship` restarts tailscaled and the loop.
 
@@ -41,7 +43,7 @@ A worktree with its virtual environment can reach 1.4 GB, and uv's download cach
 
 - Each worktree's `./setup` runs with `UV_CACHE_DIR` pointing at `<worktree_root>/.uv-cache-<KEY>` and `UV_LINK_MODE=hardlink`. That directory is deleted when setup ends, whether it succeeds, fails or times out. Every setup therefore downloads its packages fresh, and the virtual environment keeps its own files. The cache sits on the worktree's filesystem so uv can still link instead of copy.
 - `min_free_disk_gb` holds new starts while the disk holding `worktree_root` has less free space than that. `flocc doctor` warns below twice the value and fails below it, and a doctor failure also stops a fresh install from starting the timer.
-- Each tick removes the worktree, not the branch, of a finished run whose Linear issue is completed or canceled, or no longer exists. Running and blocked claims, and issues in any other state, keep theirs, so a rerun from Todo still reuses it. A timed-out run with uncommitted changes, new files included, keeps its worktree. A removed worktree is recreated from the kept branch if the issue is rerun.
+- Each tick removes the worktree and session files, not the branch, of a finished run whose Linear issue is completed or canceled, or no longer exists. Running and blocked claims, and issues in any other state, keep theirs, so a rerun from Todo still reuses it. A timed-out run with uncommitted changes, new files included, keeps its worktree. A removed worktree is recreated from the kept branch if the issue is rerun.
 
 On a host with room to spare, `shared_uv_cache = true` replaces the throwaway caches with one `<worktree_root>/.uv-cache` kept across setups, so only the first setup of a dependency set downloads it. Nothing prunes that cache, and `min_free_disk_gb` still holds new starts when it fills the disk.
 
@@ -69,39 +71,27 @@ Three host-file keys install what repos' setups and checks need and the service 
 
 ```toml
 playwright = "1.64.0"   # chromium's system libraries and fonts, on apt hosts
-docker = true           # docker.io, the daemon, and the service user in the docker group
+docker = true           # rootless Podman for flocc-agent's container checks (on apt hosts)
 
-[tools]                 # mise global versions for the service user
+[tools]                 # mise global versions for flocc-agent
 go = "1.27.1"
 ```
 
-Use the Playwright version the repos pin. A tool in `[tools]` must be one mise can install, at an exact version or a prefix such as `1.27`; `flocc ship` sets it with `mise use -g`, and `latest` never reads back as set. The docker group is root-equivalent on the VM, and it reaches sessions only once the service user's systemd manager restarts (`systemctl restart user@<uid>` as root, when no session is running).
+Use the Playwright version the repos pin. A tool in `[tools]` must be one mise can install, at an exact version or a prefix such as `1.27`; `flocc ship` sets it with `mise use -g`, and `latest` never reads back as set. The `docker` key keeps its name for old host files. It installs Podman, gives `flocc-agent` subordinate IDs and starts its `podman.socket`, and ship takes `flocc` out of the `docker` group, which is root-equivalent. An existing Docker daemon is left installed and is never stopped or restarted. A check that runs the `docker` CLI itself needs the CLI installed by hand.
 
-## Auto-mode blocks
+## Blocked tool calls
 
-Host sessions run in auto mode. When its classifier blocks a command, the agent hears why and works around it or gives up. Nothing waits for you. After three blocks in a row Claude Code shows a prompt, which denies itself after two minutes.
-
-To let a command through, add it to the host file's `[permissions]` table, then run `flocc ship -H <host>`. Sessions pick it up at their next launch.
-
-```toml
-[permissions]
-environment = [
-  "Each session runs in a disposable VM. The worktree, ~/worktrees and /tmp are the agent's own.",
-  "Nothing on this VM is production. The agent's GitHub token is read-only.",
-]
-allow = ["Bash(npx playwright install)", "Bash(uv sync --frozen)"]
-```
-
-`environment` lines address whole classes of block and come first. `allow` rules are exact. A rule that wildcards an interpreter or shell (`Bash(python:*)`, `Bash(sh *)`, anything with `-c`) is dropped when the config loads, with a warning in `flocc logs`. The rest still apply.
+Host sessions run in `bypassPermissions`, so no permission dialog can hold one, and there is no `[permissions]` table. A guard hook in the root-owned managed settings denies the dialog tools (`AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`), `git push`, GitHub writes through `gh` and Linear tools, and it keeps the reviewer to `review.md`. The agent hears the reason and works around it. A `permissions.toml` left by an older version is ignored with a warning, and ship deletes it.
 
 ## When a run needs you
 
-The service comments on the issue when a run blocks, when `./setup` fails at prepare, and when an idle or stall notice goes unanswered. Problems that belong to no issue, such as a failed tick, an expiring GitHub token or a lapsed Claude login, go to the digest issue and the service log. Nothing is pushed to your phone.
+The service comments on the issue when a run blocks, when `./setup` fails at prepare, and when a turn ends without `flocc done`. Problems that belong to no issue, such as a failed tick, an expiring GitHub token or a lapsed Claude login, go to the digest issue and the service log. Nothing is pushed to your phone.
 
-A session does not ask you questions. Where the spec leaves a choice open it takes the default, and it lists what needs you under "Needs the owner" in its `flocc done` summary, which goes into the PR body. To steer a running session, comment on the issue; the service types the comment into the session.
+A session does not ask you questions. Where the spec leaves a choice open it takes the default, and it lists what needs you under "Needs the owner" in its `flocc done` summary. That ends the run blocked with the list on the issue; in the review fix round it goes into the final comment instead. To steer a running session, comment on the issue; the service types the comment into the session.
 
 ## Upgrade notes
 
+- `worktree_root`, `plugin_dir`, `idle_escalate_s` and `stall_escalate_s` are ignored with a warning: the two-user layout fixes the paths, and the idle and stall notices are gone. Ship needs the host drained of claims, because it removes `~flocc/worktrees`; release them first.
 - `ntfy_url`, `context_restart_pct` and a repo's `shared_paths` are ignored with a warning; delete them from `config.toml`. An `agent` block with an `allow:` or `paths:` line is skipped with a "Skipping:" comment until the line is removed. The `escalation` and `needs-decision` labels are no longer used; delete them in Linear if you like.
 - `digest_issue` is required. A config without it fails to load, which fails every tick and the agents' pre-commit hook, so commits in running sessions are refused. Add it before upgrading.
 - A host must be on 0.3.0 or later before you ship 0.5.0 to it. 0.5.0 no longer reads the old names or refuses a host that still has them. A branch whose tester commits carry only the trailer from before the rename is no longer recognised, unless the host already recorded the tests. Finish or merge such issues on a 0.4.x host before upgrading it. `CHANGELOG.md` has the trailer's exact text.

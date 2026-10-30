@@ -128,11 +128,11 @@ Ship replaces a host's key file whenever the desktop's key differs, so it also b
 flocc login -H <name> [--email you@example.com]
 ```
 
-Sessions need a full claude.ai login. A `claude setup-token` token cannot open Remote Control sessions. `flocc login` runs on the host as `flocc`, over `ssh -t`:
+Sessions need a full claude.ai login. A `claude setup-token` token cannot open Remote Control sessions. `flocc login` runs on the host as `flocc`, over `ssh -t`, and signs in `flocc-agent`, whose sessions use the login, through `flocc-agent-run claude`:
 
 1. It takes the tick lock for the whole login. If a tick is running it waits for it. If sessions are running it says so and asks whether to wait for them or stop, because running sessions rewrite `~/.claude.json` from memory and could drop the Remote Control consent. While it waits for sessions it lets the lock go, so ticks keep supervising them.
 2. Without a claude.ai login it runs `claude auth login --claudeai`. The sign-in URL opens in your desktop browser and prints as a QR code. Sign in and paste the code at the prompt in the same terminal. If `claude auth status` still does not show a claude.ai login, it stops there.
-3. It marks `~/worktrees` trusted, because sessions trust only their own worktree and `remote-control` would stop at the folder-trust dialog. It then runs `claude remote-control` once under a pty, answers its `Enable Remote Control?` prompt with `y`, waits for its connected line and stops it. If no connected line appears within 60 seconds it fails and shows the output. Run `claude remote-control` as `flocc` by hand to see what it waits for.
+3. It runs `claude remote-control` in `flocc-agent`'s `worktrees` directory once under a pty, answers its `Enable Remote Control?` prompt with `y`, waits for its connected line and stops it. If no connected line appears within 60 seconds it fails and shows the output. Run `claude remote-control` as `flocc-agent` by hand to see what it waits for.
 4. It checks `claude auth status`, runs doctor, starts the timer and prints the summary.
 
 The host must have been shipped with 0.4.0 or later.

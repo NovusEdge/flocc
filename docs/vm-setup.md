@@ -10,4 +10,4 @@ This page moved into the flocc book, which is published with GitBook. The source
 | Keys, `flocc keys`, rotating a key | [Keys](book/keys.md) |
 | The display, the dashboard, fleet view, host commands | [Commands](book/commands.md) |
 | cardinal | [cardinal](book/cardinal.md) |
-| Running more than one host, auto-mode blocks, disk use, subagents, upgrading, smoke test | [Run a host](book/setup/running-a-host.md) |
+| Running more than one host, the three setup phases (root, agent, service), blocked tool calls, disk use, subagents, upgrading, smoke test. `flocc login` signs in `flocc-agent` | [Run a host](book/setup/running-a-host.md) |

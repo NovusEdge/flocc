@@ -97,7 +97,7 @@ flocc -H my-host logs -f
 flocc -H my-host attach ENG-12      # read-only view of the session
 ```
 
-The issue moves to In Progress, a tester session writes failing tests, an implementer session makes them pass, and the service runs the check, pushes, opens a draft PR and comments the link on the issue. A reviewer session then posts a review on the PR. You merge by hand.
+The issue moves to In Progress, an executor session does the work, and the service runs the check, pushes, opens a draft PR and comments the link on the issue. A reviewer session then posts a review on the PR. You merge by hand. A `Run: tester, executor, reviewer` line in the description adds a tester session that writes failing tests first.
 
 ## Run an issue again
 

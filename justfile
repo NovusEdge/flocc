@@ -15,7 +15,7 @@ lint:
     uv run ruff format --check
     uv run ruff check
     uv run pyrefly check
-    shellcheck setup
+    shellcheck setup deploy/flocc-agent-run
     test -z "$(gofmt -l deploy installer)"
     go vet ./...
 

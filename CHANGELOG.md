@@ -20,17 +20,15 @@ so on its Linear issue.
   itself on `tcp:7443`, which setup now reports.
 - Escalation is gone: `flocc escalate`, the escalate skill, the tiers, ntfy pushes and the ntfy
   topic in `flocc keys`. flocc no longer creates the `escalation` and `needs-decision` labels and
-  doctor no longer requires them. The service comments on the issue when a run blocks, prepare
-  fails, or an idle or stall notice goes unanswered. A failed tick, an expiring token and a lapsed
-  Claude login go to the digest issue and the journal.
+  doctor no longer requires them. The service comments on the issue when a run blocks or prepare
+  fails. A failed tick, an expiring token and a lapsed Claude login go to the digest issue and the
+  journal.
 - The subagent gate and its launch budgets are gone, with `flocc gate`, `allow:` grants in the
   agent block and in comments, and `launches N/M` in status and the dashboard. An `allow:` line in
   the agent block is now an unknown key, and the issue is skipped with a comment.
-- The permission hook and `flocc permissions report` are gone. Auto mode and the host file's
-  `[permissions]` allow rules stay.
+- The permission hook and `flocc permissions report` are gone.
 - Path claims are gone: `flocc claim`, the pre-commit hook's claim check and the agent block's
-  `paths:` key, which is now refused as unknown. Repo config drops `shared_paths`. The pre-commit
-  hook still refuses commits from the review session.
+  `paths:` key, which is now refused as unknown. Repo config drops `shared_paths`.
 - The coordinate and handoff skills and the restart at 60% context are gone, with
   `flocc handoff-ready` and `context_restart_pct`.
 - Open `AskUserQuestion` questions are no longer tracked: they do not extend the wall clock, and
@@ -39,6 +37,41 @@ so on its Linear issue.
   if still present.
 - The ledger gains `events` and `holds` tables and drops the claim's `paths` and
   `escalation_offset` columns on its first open by the new version.
+- Sessions run in `bypassPermissions`. Auto mode, `permissions.toml`, the host file's
+  `[permissions]` table and its judge keys are gone; a leftover `permissions.toml` is ignored with
+  a warning and ship deletes it.
+- A PreToolUse guard denies `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `git push`,
+  GitHub writes through `gh` (`gh api` with `-f`/`-F` and no `-X` counts as a POST) and Linear
+  tools, and keeps the reviewer to `review.md`. It replaces the pre-commit hook's review check.
+  The guard and deny rules for the three dialog tools live in root-owned
+  `/etc/claude-code/managed-settings.json`, which the sessions cannot change or turn off.
+- A turn that ends without `flocc done` is refused once; ending again marks the session idle and
+  the run ends blocked, with a comment on the issue. An API error other than a usage limit does
+  the same. The idle and stall notices, `flocc press`, `flocc say`, `idle_escalate_s` and
+  `stall_escalate_s` are gone. A crash still gets one restart.
+- An issue's `Run:` line picks the archetypes, `executor, reviewer` by default, from `tester`,
+  `executor` and `reviewer`. An unknown name or order skips the issue with one comment. Without a
+  tester the publisher skips the tester-file guard. Fixers are added by the service as before.
+- Four skills, executor, fixer, tester and reviewer, replace implementer, tester and reviewer.
+  Every archetype ends with `flocc done`, which replaces `flocc review-done`. A summary with a
+  "Needs the owner" heading ends the run blocked, except in a review fix round.
+- Sessions, worktrees, the repo's `./setup` and check, and the Claude login belong to a second
+  user, `flocc-agent`, which cannot read the service's keys, ledger or config, nor write
+  `/opt/flocc`. The service reaches it only through `sudo` and
+  `/usr/local/libexec/flocc-agent-run`. `flocc setup` and `flocc ship` create the user, the
+  `flocc-work` group and the sudoers rule, move an existing Claude login to `flocc-agent`, and run
+  a new `agent` phase.
+- With `docker = true`, checks that start containers use rootless Podman as `flocc-agent`
+  (`DOCKER_HOST` points at its `podman.socket`; testcontainers' Ryuk is off). Neither user may be
+  in the `docker` group, which is root-equivalent: ship takes `flocc` out of it and doctor fails
+  if `flocc-agent` is in it. An existing Docker daemon is left installed and untouched. A check
+  that runs the `docker` CLI itself needs it installed by hand.
+- The publisher fetches the branch from flocc-agent's worktree into the service's clone and pushes
+  from there, so the publish token never enters a session.
+- When an issue reaches Done or Canceled, or is released without `--keep-worktree`, its worktree,
+  session files and scratchpads go; the branch stays on GitHub.
+- `worktree_root` and `plugin_dir` in `config.toml` are fixed by the layout and ignored with a
+  warning.
 
 ## 0.12.0 (2026-10-25)
 

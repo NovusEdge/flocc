@@ -46,9 +46,14 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `release <key> [--keep-worktree] [--accept-tests]` | Clear a claim and kill its session. The issue goes back to Todo. `--accept-tests` approves the tester's files as they stand on the branch and keeps the worktree |
 | `tick` | Run one service tick by hand. It takes the same lock as the timer's ticks |
 | `run` | Run ticks in a loop |
-| `commit`, `done`, `review-done`, `context` | Used by agent sessions, not by you |
-| `stop` | Hook for agent sessions at the end of a turn: record its background tasks and the idle stop |
+| `done`, `tests-amended`, `commit`, `context` | Used by agent sessions, not by you. Every archetype ends its run with `flocc done`, which carries its summary |
+| `guard` | PreToolUse hook, run from the managed settings: denies `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `git push`, GitHub writes through `gh` and Linear tools, and keeps the reviewer to `review.md` |
+| `stop [--failure]` | Hook for agent sessions at the end of a turn. A turn that ends without `flocc done` is refused once; ending again marks the session idle and the run ends blocked. With `--failure`, an API error other than a usage limit marks it idle at once |
 | `--version` | Print the host's version |
+
+### The `Run:` line
+
+An issue picks its archetypes with a `Run:` line in its description, such as `Run: tester, executor, reviewer`. The default is `executor, reviewer`. Names are `tester`, `executor` and `reviewer`, case-insensitive, in that order, with `executor` exactly once; the service adds fixers itself. An unknown name or a wrong order skips the issue with one comment. Without a tester, the publisher skips the tester-file guard.
 
 ### Choosing the host
 
