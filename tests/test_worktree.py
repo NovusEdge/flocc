@@ -11,6 +11,7 @@ from flocc.worktree import (
     BranchDiverged,
     changed_files,
     contains,
+    fetch_agent_branch,
     free_disk_gb,
     git,
     head_at_base,
@@ -28,6 +29,13 @@ def test_prepare_worktree(origin, tmp_path):
     assert path == tmp_path / "wt" / "NF-3" and branch == "agent/nf-3"
     assert (path / ".setup-ran").exists()
     assert git("rev-parse", "HEAD", cwd=path) == base
+
+
+def test_fetch_agent_branch_copies_the_worktree_head(origin, tmp_path):
+    # The cross-owner case needs two users; this pins the upload-pack form the fetch now uses.
+    path, branch, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+    git("commit", "-q", "--allow-empty", "-m", "agent work", cwd=path)
+    assert fetch_agent_branch(origin, path, branch, "NF-3") == git("rev-parse", "HEAD", cwd=path)
 
 
 def test_prepare_reuses_a_kept_worktree_or_branch(origin, tmp_path):
