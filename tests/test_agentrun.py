@@ -1,6 +1,8 @@
 import io
 import json
+import os
 import re
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -69,6 +71,70 @@ def test_the_branch_is_fetched_into_the_service_clone(origin, tmp_path):
     head = fetch_agent_branch(service, origin, "agent/nf-1", "NF-1")
     assert head == git("rev-parse", "HEAD", cwd=origin)
     assert git("rev-parse", agent_ref("NF-1"), cwd=service) == head
+
+
+def test_remove_takes_the_worktree_its_state_and_its_scratchpads(tmp_cfg, origin, tmp_path):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    agent = Agent(cfg)
+    path, _, _ = agent.prepare("backend", "NF-7")
+    pad = Path(f"/tmp/claude-{os.getuid()}/flocc-test-{os.getpid()}/session/scratchpad")
+    pad.mkdir(parents=True, exist_ok=True)
+    state = cfg.agent_state_root / "NF-7"
+    (state / "scratchpads").write_text(f"{pad}\n/etc\n")
+    assert agent.remove("NF-7") == {"removed": True, "dirty": False}
+    assert not path.exists() and not state.exists() and not pad.exists()
+    shutil.rmtree(pad.parent.parent, ignore_errors=True)
+
+
+def test_remove_keeps_a_dirty_worktree_when_asked(tmp_cfg, origin, tmp_path):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    agent = Agent(cfg)
+    path, _, _ = agent.prepare("backend", "NF-7")
+    (path / "work.py").write_text("x\n")
+    assert agent.remove("NF-7", keep_dirty=True) == {"removed": False, "dirty": True}
+    assert path.exists()
+
+
+def test_scratch_paths_outside_the_user_s_pads_are_refused():
+    root = f"/tmp/claude-{os.getuid()}"
+    assert agentrun.scratch_path(f"{root}/p/s/scratchpad") == Path(f"{root}/p/s/scratchpad")
+    for line in ("/etc", f"{root}/p", f"{root}/p/s/../../../etc", ""):
+        assert agentrun.scratch_path(line) is None
+
+
+def test_scratch_paths_do_not_follow_links(tmp_path):
+    root = Path(f"/tmp/claude-{os.getuid()}")
+    base = root / f"flocc-link-test-{os.getpid()}"
+    other = base / "s2" / "scratchpad"
+    other.mkdir(parents=True)
+    try:
+        link = base / "s1" / "scratchpad"
+        link.parent.mkdir()
+        link.symlink_to(other)
+        assert agentrun.scratch_path(str(link)) is None
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_remove_prunes_stopped_containers_only_with_a_podman_socket(monkeypatch):
+    ran = []
+    monkeypatch.setattr("flocc.agentrun.shutil.which", lambda name: "/usr/bin/podman")
+    monkeypatch.setattr("flocc.agentrun.subprocess.run", lambda argv, **kw: ran.append(argv))
+    monkeypatch.setattr("flocc.agentrun.container_env", dict)
+    agentrun._prune_containers()
+    assert ran == []
+    monkeypatch.setattr("flocc.agentrun.container_env", lambda: {"DOCKER_HOST": "unix:///s"})
+    agentrun._prune_containers()
+    assert ran == [["podman", "container", "prune", "-f"]]
+
+
+def test_prepare_and_check_clear_what_a_killed_setup_left(tmp_path):
+    (tmp_path / ".uv-cache-NF-1" / "wheels").mkdir(parents=True)
+    (tmp_path / ".canary-x").mkdir()
+    (tmp_path / ".uv-cache").mkdir()
+    agentrun._clean_stale(tmp_path)
+    assert not (tmp_path / ".uv-cache-NF-1").exists() and not (tmp_path / ".canary-x").exists()
+    assert (tmp_path / ".uv-cache").exists()
 
 
 def test_container_env_points_at_the_podman_socket(tmp_path, monkeypatch):

@@ -1,4 +1,3 @@
-import os
 import shutil
 import subprocess
 import sys
@@ -28,7 +27,6 @@ from flocc.worktree import (
     contains,
     fetch_agent_branch,
     git,
-    has_uncommitted_changes,
     origin_base,
     recover_tests,
 )
@@ -50,6 +48,20 @@ def _comment_once(rt, issue: Issue, cause: str, text: str) -> None:
     ledger.record_alert(rt.con, cause, 3, issue.key, rt.now())
 
 
+def remove_issue(rt, claim: Claim, *, keep_dirty: bool = False) -> bool:
+    """Removes the worktree and both state directories; the branch stays on GitHub. False when
+    nothing was removed: a dirty worktree kept by keep_dirty, or flocc-agent did not answer."""
+    try:
+        out = rt.agent.remove(claim.issue_key, keep_dirty=keep_dirty)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"{claim.issue_key}: worktree and state not removed: {exc}", file=sys.stderr)
+        return False
+    if not out.get("removed"):
+        return False
+    shutil.rmtree(state_dir(rt.cfg, claim.issue_key), ignore_errors=True)
+    return True
+
+
 def _bad_sequence(rt, issue: Issue, exc: SequenceError) -> None:
     # The only place an unusable Run: line reaches the owner.
     _comment_once(rt, issue, f"{issue.key}:bad-sequence:{exc}", f"Skipping: {exc}.")
@@ -60,10 +72,7 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
     # Each step below may already be done or impossible (a deleted issue, a worktree removed
     # by an earlier release); the claim is cleared regardless, or it blocks every tick.
     if not keep_worktree:
-        try:
-            git("worktree", "remove", "--force", claim.worktree, cwd=rt.cfg.repos[claim.repo].path)
-        except (subprocess.CalledProcessError, OSError, KeyError) as exc:
-            print(f"release: worktree {claim.worktree} not removed: {exc}", file=sys.stderr)
+        remove_issue(rt, claim)
     # Back to Todo so the next poll picks it up again; the rerun continues on the kept branch.
     if to_todo:
         try:
@@ -122,29 +131,8 @@ def restart_timed_out(rt) -> None:
 
 
 def reap_worktrees(rt) -> None:
-    """Removes the worktrees of finished runs whose issue is closed; the branch stays."""
-    # Caches a killed tick left behind; setup runs under the tick lock, so none is in use here.
-    for stale in rt.cfg.worktree_root.glob(".uv-cache-*"):
-        shutil.rmtree(
-            stale, onexc=lambda fn, p, exc: print(f"reap: {p} not removed: {exc}", file=sys.stderr)
-        )
-    # A canary killed past its finally leaves its checkout; git still lists it until pruned.
-    for stray in rt.cfg.worktree_root.glob(".canary-*"):
-        shutil.rmtree(
-            stray, onexc=lambda fn, p, exc: print(f"reap: {p} not removed: {exc}", file=sys.stderr)
-        )
-    for repo in rt.cfg.repos.values():
-        if repo.path.exists():
-            try:
-                subprocess.run(
-                    ["git", "worktree", "prune"], cwd=repo.path, capture_output=True, check=False
-                )
-            except OSError as exc:
-                print(f"reap: {repo.path} not pruned: {exc}", file=sys.stderr)
+    """Removes the worktree, the state and the claim of finished runs whose issue is closed."""
     for claim in ledger.finished_claims(rt.con):
-        # A removed worktree is not retried: its path is gone, so no Linear call is made.
-        if not Path(claim.worktree).exists():
-            continue
         try:
             state = rt.linear.state_types([claim.issue_key])[claim.issue_key]
         except LinearError as exc:
@@ -157,55 +145,16 @@ def reap_worktrees(rt) -> None:
         # Anything else stays: the owner may move the issue to Todo to rerun, which reuses it.
         if state not in ("completed", "canceled"):
             continue
-        try:
-            # A run stopped by the wall clock may hold work nobody committed, new files included;
-            # a finished one published, so what is left is disposable.
-            if claim.state == "timed_out" and has_uncommitted_changes(Path(claim.worktree)):
-                cause = f"{claim.issue_key}:worktree-kept"
-                if not ledger.alert_seen(rt.con, cause, COMMENT_ONCE_S, rt.now()):
-                    print(f"reap: {claim.worktree} has uncommitted changes, kept", file=sys.stderr)
-                    ledger.record_alert(rt.con, cause, 3, claim.issue_key, rt.now())
-                continue
-            git("worktree", "remove", "--force", claim.worktree, cwd=rt.cfg.repos[claim.repo].path)
-        except (subprocess.CalledProcessError, OSError, KeyError) as exc:
-            print(f"reap: worktree {claim.worktree} not removed: {exc}", file=sys.stderr)
-
-
-def scratch_root() -> Path:
-    return Path(f"/tmp/claude-{os.getuid()}")
-
-
-def _scratch_path(line: str) -> Path | None:
-    if not line.strip():
-        return None
-    root = scratch_root()
-    path = Path(line.strip())
-    try:
-        rel = path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return None
-    # A link or ".." in the listed path would make the delete land on another session's pad.
-    if path != root / rel:
-        return None
-    # <project>/<session>/<scratchpad>: anything shorter is shared by other sessions.
-    return path if len(rel.parts) >= 3 else None
-
-
-def clean_scratchpads(rt) -> None:
-    """Removes the Claude Code scratchpads of claims that are no longer running."""
-    for listing in rt.cfg.state_root.glob("*/scratchpads"):
-        claim = ledger.get_claim(rt.con, listing.parent.name)
-        if claim is not None and claim.state == "running":
+        # A run stopped by the wall clock may hold work nobody committed, new files included;
+        # a finished one published, so what is left is disposable.
+        if not remove_issue(rt, claim, keep_dirty=claim.state == "timed_out"):
+            cause = f"{claim.issue_key}:worktree-kept"
+            if not ledger.alert_seen(rt.con, cause, COMMENT_ONCE_S, rt.now()):
+                print(f"reap: {claim.worktree} kept: uncommitted changes", file=sys.stderr)
+                ledger.record_alert(rt.con, cause, 3, claim.issue_key, rt.now())
             continue
-        # A bad listing must not abort the tick: poll comes after this.
-        try:
-            for line in listing.read_text().splitlines():
-                path = _scratch_path(line)
-                if path is not None:
-                    shutil.rmtree(path, ignore_errors=True)
-            listing.unlink(missing_ok=True)
-        except (OSError, UnicodeDecodeError) as exc:
-            print(f"scratchpads: {listing} not cleaned: {exc}", file=sys.stderr)
+        ledger.delete_claim(rt.con, claim.issue_key)
+        ledger.clear_issue_alerts(rt.con, claim.issue_key)
 
 
 def main_hold(rt, repo: str, bases: dict[str, str | None]) -> str | None:

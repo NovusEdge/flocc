@@ -13,7 +13,6 @@ from flocc.context import agent_dir
 from flocc.linear import Linear, LinearError, http_transport
 from flocc.notice import Notice, Notifier
 from flocc.poller import (
-    clean_scratchpads,
     forward_comments,
     maybe_digest,
     poll,
@@ -183,8 +182,6 @@ def tick(cfg: Config, config_path: Path) -> int:
         restart_timed_out(rt)
         # Before poll, so the space it frees counts toward this tick's admission.
         reap_worktrees(rt)
-        # Before poll: a rerun's _start drops the old listing, which would orphan its pads.
-        clean_scratchpads(rt)
         poll(rt)
         # After poll, so an issue started this tick is not mistaken for a finished one.
         try:

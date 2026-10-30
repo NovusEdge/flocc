@@ -16,13 +16,24 @@ from flocc.sessions import SOCKET, Sessions, installed_plugins, trust_folders
 from flocc.worktree import (
     BranchDiverged,
     DirtyWorktree,
+    has_uncommitted_changes,
     head_at_base,
     install_hook,
     prepare_worktree,
     setup_at_base,
 )
 
-SUBCOMMANDS = ("alive", "attach", "capture", "check", "kill", "prepare", "send", "start")
+SUBCOMMANDS = (
+    "alive",
+    "attach",
+    "capture",
+    "check",
+    "kill",
+    "prepare",
+    "remove",
+    "send",
+    "start",
+)
 _NAME = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+(?:-test|-review)?$")
 _FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ATTACH_HINT = "read-only · Ctrl-b d detaches, the session keeps running"
@@ -269,12 +280,79 @@ def check(req: dict) -> dict:
     raise BadRequest(f"unknown check mode {mode!r}")
 
 
+def scratch_path(line: str) -> Path | None:
+    """A Claude Code scratchpad of this user's from a session's listing, or None."""
+    if not line.strip():
+        return None
+    root = Path(f"/tmp/claude-{os.getuid()}")
+    path = Path(line.strip())
+    try:
+        rel = path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return None
+    # A link or ".." in the listed path would make the delete land on another session's pad.
+    if path != root / rel:
+        return None
+    # <project>/<session>/<scratchpad>: anything shorter is shared by other sessions.
+    return path if len(rel.parts) >= 3 else None
+
+
+def _prune_containers() -> None:
+    # Only stopped ones: a running container may belong to another issue's check. Ryuk is off,
+    # so a check killed mid-run leaves its containers behind until this runs.
+    if container_env() and shutil.which("podman"):
+        subprocess.run(
+            ["podman", "container", "prune", "-f"], capture_output=True, check=False, timeout=120
+        )
+
+
+def remove(req: dict) -> dict:
+    key = _key(req["key"])
+    wt = under_home(req["worktree_root"]) / key
+    state = under_home(req["state_root"]) / key
+    if wt.exists():
+        try:
+            if req.get("keep_dirty") and has_uncommitted_changes(wt):
+                return {"removed": False, "dirty": True}
+            common = subprocess.run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=wt,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        except subprocess.CalledProcessError:
+            common = ""
+        clone = Path(common).parent if common else None
+        if clone:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(wt)],
+                cwd=clone,
+                capture_output=True,
+                check=False,
+            )
+        shutil.rmtree(wt, ignore_errors=True)
+        if clone:
+            subprocess.run(
+                ["git", "worktree", "prune"], cwd=clone, capture_output=True, check=False
+            )
+    listing = state / "scratchpads"
+    if listing.is_file() and not listing.is_symlink():
+        for line in listing.read_text().splitlines():
+            if (pad := scratch_path(line)) is not None:
+                shutil.rmtree(pad, ignore_errors=True)
+    shutil.rmtree(state, ignore_errors=True)
+    _prune_containers()
+    return {"removed": True, "dirty": False}
+
+
 HANDLERS: dict[str, Callable[[dict], dict]] = {
     "start": start,
     "send": send,
     "capture": capture,
     "prepare": prepare,
     "check": check,
+    "remove": remove,
 }
 
 

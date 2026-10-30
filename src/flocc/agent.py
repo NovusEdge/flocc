@@ -103,6 +103,15 @@ class Agent:
             raise _prepare_error(data)
         return Path(data["path"]), str(data["branch"]), str(data["base"])
 
+    def remove(self, key: str, keep_dirty: bool = False) -> dict:
+        payload = {
+            "key": key,
+            "worktree_root": str(self.cfg.worktree_root),
+            "state_root": str(self.cfg.agent_state_root),
+            "keep_dirty": keep_dirty,
+        }
+        return self.call("remove", payload=payload, timeout=300)
+
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
         payload = {
             "mode": "worktree",

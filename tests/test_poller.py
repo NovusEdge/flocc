@@ -5,16 +5,16 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 from flocc import ledger
-from flocc.config import TRAILER, RepoConfig, load
+from flocc.config import TRAILER, load
 from flocc.context import state_dir
 from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
 from flocc.notice import Notifier
 from flocc.poller import (
-    clean_scratchpads,
     forward_comments,
     maybe_digest,
     poll,
     reap_worktrees,
+    release_claim,
     repo_for,
     restart_timed_out,
 )
@@ -356,16 +356,14 @@ def test_a_branch_rebased_on_the_host_resumes_at_the_implementer(rt, origin, tmp
 
 
 @pytest.mark.parametrize("state", ["done", "timed_out", "blocked"])
-def test_finished_or_blocked_claim_back_in_todo_is_released_and_rerun(rt, monkeypatch, state):
-    removed = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: removed.append(a))
+def test_finished_or_blocked_claim_back_in_todo_is_released_and_rerun(rt, state):
     ledger.insert_claim(rt.con, make("NF-9", state=state))
     rt.linear.ready = [issue()]
     poll(rt)
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
     assert c is not None and c.state == "running" and c.started_at == 1000.0
-    assert removed == []
+    assert rt.agent.removed == []
     assert [text for _, text in rt.linear.comments] == [
         "moved back to Todo; restarting from a fresh claim."
     ]
@@ -820,14 +818,12 @@ def finished(rt, key, state="done"):
     "state_type, removed",
     [("completed", True), ("canceled", True), ("unstarted", False), ("started", False)],
 )
-def test_reap_removes_worktrees_of_closed_issues_only(rt, monkeypatch, state_type, removed):
-    wt = finished(rt, "NF-5", state="timed_out")
+def test_reap_removes_worktrees_of_closed_issues_only(rt, state_type, removed):
+    finished(rt, "NF-5", state="timed_out")
     rt.linear.state_types = lambda keys: {k: state_type for k in keys}
-    monkeypatch.setattr("flocc.poller.has_uncommitted_changes", lambda path: False)
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
-    assert calls == ([("worktree", "remove", "--force", str(wt))] if removed else [])
+    assert rt.agent.removed == ([("NF-5", True)] if removed else [])
+    assert (ledger.get_claim(rt.con, "NF-5") is None) is removed
 
 
 def timed_out(rt, monkeypatch, commit_times, state_type="started", key="NF-5"):
@@ -899,22 +895,19 @@ def test_a_blocked_claim_is_not_restarted(rt, monkeypatch):
     assert ledger.get_claim(rt.con, "NF-5") is not None
 
 
-def test_reap_leaves_live_claims_and_skips_missing_worktrees(rt, monkeypatch):
+def test_reap_leaves_live_claims_alone(rt):
     for key, state in (("NF-1", "running"), ("NF-2", "blocked")):
         (rt.cfg.worktree_root / key).mkdir()
         ledger.insert_claim(
             rt.con, make(key, state=state, worktree=str(rt.cfg.worktree_root / key))
         )
-    finished(rt, "NF-3").rmdir()
     asked = []
-    rt.linear.state_types = lambda keys: asked.append(keys) or {k: "completed" for k in keys}
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
+    rt.linear.state_types = lambda keys: asked.append(keys) or {k: "started" for k in keys}
     reap_worktrees(rt)
-    assert calls == [] and asked == []
+    assert rt.agent.removed == [] and asked == []
 
 
-def test_reap_survives_a_linear_error_and_a_failed_removal(rt, monkeypatch, capsys):
+def test_reap_survives_a_linear_error_and_a_failed_removal(rt, capsys):
     finished(rt, "NF-5")
     finished(rt, "NF-6")
 
@@ -923,27 +916,26 @@ def test_reap_survives_a_linear_error_and_a_failed_removal(rt, monkeypatch, caps
             raise LinearError("rate limited")
         return {"NF-6": "completed"}
 
-    def failing(*a, cwd):
-        raise subprocess.CalledProcessError(1, "git")
+    def failing(key, keep_dirty=False):
+        raise subprocess.CalledProcessError(1, "sudo")
 
     rt.linear.state_types = state_types
-    monkeypatch.setattr("flocc.poller.git", failing)
+    rt.agent.remove = failing
     reap_worktrees(rt)
     err = capsys.readouterr().err
     assert "NF-5 state not read" in err and "NF-6" in err
+    assert ledger.get_claim(rt.con, "NF-6") is not None
 
 
-def test_reap_treats_a_deleted_issue_as_closed(rt, monkeypatch):
-    wt = finished(rt, "NF-5")
+def test_reap_treats_a_deleted_issue_as_closed(rt):
+    finished(rt, "NF-5")
 
     def gone(keys):
         raise LinearError("Entity not found: Issue")
 
     rt.linear.state_types = gone
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
-    assert calls == [("worktree", "remove", "--force", str(wt))]
+    assert rt.agent.removed == [("NF-5", False)]
 
 
 @pytest.mark.parametrize(
@@ -955,160 +947,58 @@ def test_reap_treats_a_deleted_issue_as_closed(rt, monkeypatch):
     ],
 )
 def test_reap_keeps_a_timed_out_worktree_with_uncommitted_changes(
-    rt, monkeypatch, capsys, claim_state, dirty, removed
+    rt, capsys, claim_state, dirty, removed
 ):
     finished(rt, "NF-5", state=claim_state)
     rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
-    monkeypatch.setattr("flocc.poller.has_uncommitted_changes", lambda path: dirty)
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
+
+    def remove(key, keep_dirty=False):
+        kept = keep_dirty and dirty
+        return {"removed": not kept, "dirty": kept}
+
+    rt.agent.remove = remove
     reap_worktrees(rt)
-    assert bool(calls) is removed
+    assert (ledger.get_claim(rt.con, "NF-5") is None) is removed
     assert ("uncommitted" in capsys.readouterr().err) is (not removed)
     reap_worktrees(rt)
     assert "uncommitted" not in capsys.readouterr().err
 
 
-def test_reap_keeps_a_timed_out_worktree_holding_only_an_untracked_file(origin, rt):
-    path, _, _ = prepare_worktree(RepoConfig(origin), rt.cfg.worktree_root, "NF-5")
-    (path / "new.py").write_text("work\n")
-    ledger.insert_claim(rt.con, make("NF-5", state="timed_out", worktree=str(path)))
-    rt.cfg.repos["backend"] = RepoConfig(origin)
-    rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
-    reap_worktrees(rt)
-    assert (path / "new.py").exists()
-    ledger.update_claim(rt.con, "NF-5", state="done")
-    reap_worktrees(rt)
-    assert not path.exists()
-
-
-def test_reap_clears_caches_a_killed_setup_left(rt):
-    stale = rt.cfg.worktree_root / ".uv-cache-NF-1"
-    (stale / "wheels").mkdir(parents=True)
-    shared = rt.cfg.worktree_root / ".uv-cache"
-    (shared / "wheels").mkdir(parents=True)
-    reap_worktrees(rt)
-    assert not stale.exists()
-    assert shared.exists()
-
-
-def test_reap_removes_stray_canary_dirs_and_prunes_the_repos(rt, monkeypatch):
-    stray = rt.cfg.worktree_root / ".canary-x"
-    stray.mkdir(parents=True)
-    (stray / "file").write_text("x")
-    ran = []
-    next(iter(rt.cfg.repos.values())).path.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "flocc.poller.subprocess.run", lambda argv, **kw: ran.append((argv, kw["cwd"]))
-    )
-    reap_worktrees(rt)
-    assert not stray.exists()
-    paths = {repo.path for repo in rt.cfg.repos.values() if repo.path.exists()}
-    assert paths and {cwd for _, cwd in ran} == paths
-    assert all(argv == ["git", "worktree", "prune"] for argv, _ in ran)
-
-
-def test_reap_prune_failure_is_tolerated(rt, monkeypatch):
-    def broken(argv, **kw):
-        raise OSError("no git")
-
-    monkeypatch.setattr("flocc.poller.subprocess.run", broken)
-    reap_worktrees(rt)
-
-
-def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monkeypatch):
+def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt):
     finished(rt, "NF-5")
 
     def wrong(keys):
         raise LinearError("Team not found")
 
     rt.linear.state_types = wrong
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
-    assert calls == []
+    assert rt.agent.removed == []
 
 
-def pads(rt, key, lines):
-    d = state_dir(rt.cfg, key)
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "scratchpads").write_text("".join(f"{x}\n" for x in lines))
-    return d
+def test_done_or_canceled_removes_everything_but_the_branch(rt):
+    claim = make("NF-9", state="done")
+    ledger.insert_claim(rt.con, claim)
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir(parents=True)
+    (d / "pr-url").write_text("https://pr/9")
+    reap_worktrees(rt)
+    assert rt.agent.removed == [("NF-9", False)]
+    assert ledger.get_claim(rt.con, "NF-9") is None and not d.exists()
 
 
-def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypatch):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    done_pad = root / "proj" / "s1" / "scratchpad"
-    live_pad = root / "proj" / "s2" / "scratchpad"
-    done_pad.mkdir(parents=True)
-    live_pad.mkdir(parents=True)
-    ledger.insert_claim(rt.con, make("NF-1", state="blocked"))
-    ledger.insert_claim(rt.con, make("NF-2"))
-    d1 = pads(rt, "NF-1", [done_pad])
-    pads(rt, "NF-2", [live_pad])
-    clean_scratchpads(rt)
-    assert not done_pad.exists() and live_pad.exists()
-    assert not (d1 / "scratchpads").exists()
+def test_a_timed_out_run_keeps_its_dirty_worktree(rt):
+    ledger.insert_claim(rt.con, make("NF-9", state="timed_out"))
+    rt.agent.remove = lambda key, keep_dirty=False: {"removed": False, "dirty": True}
+    reap_worktrees(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is not None
 
 
-def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    project = root / "proj"
-    (project / "s1" / "scratchpad").mkdir(parents=True)
-    outside = tmp_path / "keep"
-    outside.mkdir()
-    ledger.insert_claim(rt.con, make("NF-1", state="done"))
-    (project / "s2" / "scratchpad").mkdir(parents=True)
-    listed = [root, project, project / "s1", outside, "", "/", f"{project}/../.."]
-    pads(rt, "NF-1", [*listed, project / "s2" / "scratchpad"])
-    clean_scratchpads(rt)
-    assert root.exists() and (project / "s1" / "scratchpad").exists() and outside.exists()
-    assert not (project / "s2" / "scratchpad").exists()
-
-
-def test_cleanup_does_not_follow_links(rt, tmp_path, monkeypatch):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    other = root / "proj" / "s2" / "scratchpad"
-    other.mkdir(parents=True)
-    outside = tmp_path / "keep"
-    outside.mkdir()
-    s1 = root / "proj" / "s1"
-    s1.mkdir(parents=True)
-    in_tree = s1 / "scratchpad"
-    in_tree.symlink_to(other)
-    out_tree = s1 / "elsewhere"
-    out_tree.symlink_to(outside)
-    via_parent = s1 / "up"
-    via_parent.symlink_to(root / "proj" / "s2")
-    ledger.insert_claim(rt.con, make("NF-1", state="done"))
-    pads(rt, "NF-1", [in_tree, out_tree, via_parent / "scratchpad"])
-    clean_scratchpads(rt)
-    assert other.exists() and outside.exists()
-
-
-def test_cleanup_covers_a_listing_with_no_claim(rt, tmp_path, monkeypatch):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    pad = root / "proj" / "s1" / "scratchpad"
-    pad.mkdir(parents=True)
-    d = pads(rt, "NF-7", [pad])
-    clean_scratchpads(rt)
-    assert not pad.exists() and not (d / "scratchpads").exists()
-
-
-def test_cleanup_skips_an_unreadable_listing(rt, tmp_path, monkeypatch, capsys):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    pad = root / "proj" / "s1" / "scratchpad"
-    pad.mkdir(parents=True)
-    (state_dir(rt.cfg, "NF-1") / "scratchpads").mkdir(parents=True)
-    bad = state_dir(rt.cfg, "NF-2")
-    bad.mkdir(parents=True)
-    (bad / "scratchpads").write_bytes(b"\xff\xfe\n")
-    pads(rt, "NF-3", [pad])
-    clean_scratchpads(rt)
-    assert not pad.exists()
-    assert capsys.readouterr().err.count("not cleaned") == 2
+def test_release_removes_the_worktree_and_both_state_directories(rt):
+    claim = make("NF-9")
+    ledger.insert_claim(rt.con, claim)
+    state_dir(rt.cfg, "NF-9").mkdir(parents=True)
+    release_claim(rt, claim)
+    assert rt.agent.removed == [("NF-9", False)] and not state_dir(rt.cfg, "NF-9").exists()
+    ledger.insert_claim(rt.con, claim)
+    release_claim(rt, claim, keep_worktree=True)
+    assert rt.agent.removed == [("NF-9", False)]

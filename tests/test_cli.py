@@ -17,7 +17,7 @@ from flocc.linear import LinearError
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.tick import tick_lock
-from tests.fakes import FakeNotifier, FakeSessions
+from tests.fakes import FakeAgent, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
@@ -43,6 +43,7 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
         EXAMPLE.read_text()
         .replace('"~/.local/state/flocc/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
         .replace('"~/src/backend"', f'"{origin}"')
+        .replace("~/.local/state/flocc", str(tmp_path / "state"))
     )
     cfg = load(path)
     con = ledger.connect(cfg.ledger_path)
@@ -62,12 +63,13 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
         git_head=lambda p: "sha0",
         review_diff=lambda c: "",
         comment_pr=lambda c, u, b: None,
+        agent=FakeAgent(cfg),
     )
     monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
     assert main(["--config", str(path), "release", "NF-1"]) == 0
     assert ledger.get_claim(con, "NF-1") is None and sessions.killed == ["NF-1-test"]
     captured = capsys.readouterr()
-    assert "worktree" in captured.err and "Entity not found" in captured.err
+    assert "Entity not found" in captured.err
     assert "worktree removed" in captured.out
     ledger.insert_claim(con, make("NF-1", worktree=str(tmp_path / "wt" / "NF-1")))
     assert main(["--config", str(path), "release", "NF-1", "--keep-worktree"]) == 0

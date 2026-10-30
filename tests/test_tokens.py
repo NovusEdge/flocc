@@ -185,7 +185,6 @@ def test_tick_runs_the_login_check(rt, tmp_path, monkeypatch):
     for name in (
         "forward_comments",
         "reap_worktrees",
-        "clean_scratchpads",
         "poll",
         "maybe_digest",
     ):
