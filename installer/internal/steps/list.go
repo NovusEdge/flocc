@@ -1,7 +1,7 @@
 package steps
 
 func RootSteps() []Step {
-	return []Step{Packages{}, Browsers{}, Tailscale{}, User{}, HostDocker{}, Scratch{}}
+	return []Step{Packages{}, Browsers{}, Tailscale{}, User{}, AgentAccount{}, AgentAccess{}, ClaudeHome{}, Containers{}, Scratch{}}
 }
 
 func ServiceSteps() []Step {

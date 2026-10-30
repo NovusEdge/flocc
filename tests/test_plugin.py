@@ -55,16 +55,25 @@ def test_hooks():
     assert [h["command"] for h in hooks["Stop"][0]["hooks"]] == ["flocc stop"]
     # The idle marker means "the last event was a Stop", so any later activity removes it.
     clear = '[ -z "$FLOCC_STATE" ] || rm -f "$FLOCC_STATE/idle"'
-    (clearing, guarding) = hooks["PreToolUse"]
+    (clearing,) = hooks["PreToolUse"]
     assert "matcher" not in clearing and [h["command"] for h in clearing["hooks"]] == [clear]
-    assert [h["command"] for h in guarding["hooks"]] == ["flocc guard"]
+    assert [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]] == [clear]
+    starts = [h["command"] for e in hooks["SessionStart"] for h in e["hooks"]]
+    assert starts == ["flocc session-start"]
+
+
+def test_the_guard_is_in_managed_settings():
+    managed = json.loads((PLUGIN.parent / "deploy" / "managed-settings.json").read_text())
+    (guarding,) = managed["hooks"]["PreToolUse"]
+    assert [h["command"] for h in guarding["hooks"]] == ["/opt/flocc/bin/flocc guard"]
     for tool in ("AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "Bash", "Edit", "Write"):
         assert re.search(guarding["matcher"], tool)
     assert re.search(guarding["matcher"], "mcp__linear__save_issue")
     assert not re.search(guarding["matcher"], "Read")
-    assert [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]] == [clear]
-    starts = [h["command"] for e in hooks["SessionStart"] for h in e["hooks"]]
-    assert starts == ["flocc session-start"]
+    assert {"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"} <= set(
+        managed["permissions"]["deny"]
+    )
+    assert "allowManagedHooksOnly" not in managed
 
 
 def test_the_idle_clearing_hook_removes_only_the_marker(tmp_path):

@@ -133,7 +133,8 @@ type Answers struct {
 	Playwright string `toml:"playwright,omitempty"`
 	// Tools are mise tools and versions the Tools step sets globally for the service user.
 	Tools map[string]string `toml:"tools,omitempty"`
-	// Docker installs Docker for the service user's checks (testcontainers) on apt hosts.
+	// Docker gives flocc-agent rootless Podman for checks that start containers (testcontainers),
+	// on apt hosts. The key keeps its old name so existing host files still load.
 	Docker bool `toml:"docker,omitempty"`
 	// Read only from an --answers file, for runs without a terminal; Save drops it.
 	Secrets *Secrets `toml:"secrets,omitempty"`
