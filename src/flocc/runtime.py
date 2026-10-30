@@ -22,7 +22,8 @@ class Runtime:
     claude_exe: str
     config_path: Path
     publish_fn: Callable
-    git_head: Callable[[str], str]
+    # The claim's branch head, fetched from flocc-agent's worktree into the service clone.
+    git_head: Callable[[Claim], str]
     # The PR's diff against its base, and a comment on the PR made with the publish token.
     review_diff: Callable[[Claim], str]
     comment_pr: Callable[[Claim, str, str], None]

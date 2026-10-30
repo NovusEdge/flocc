@@ -436,7 +436,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         )
         return
     if claim.phase == "test":
-        head = rt.git_head(claim.worktree)
+        head = rt.git_head(claim)
         if head == claim.base_sha:
             _block(
                 rt,

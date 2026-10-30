@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from flocc.agentrun import apply_handoff
 from flocc.linear import Issue
@@ -49,6 +50,36 @@ class FakeSessions:
 
     def send(self, name, text):
         self.sent.append((name, text))
+
+
+@dataclass
+class FakeAgent:
+    cfg: Any
+    prepare_fn: Any = None
+    removed: list = field(default_factory=list)
+    probe_result: dict = field(
+        default_factory=lambda: {"read": {}, "write": {}, "tmux": True, "groups": []}
+    )
+
+    def prepare(self, name, key):
+        repo = self.cfg.repos[name]
+        return self.prepare_fn(
+            repo,
+            self.cfg.worktree_root,
+            key,
+            setup_timeout_s=self.cfg.setup_timeout_s,
+            shared_uv_cache=self.cfg.shared_uv_cache,
+        )
+
+    def remove(self, key, keep_dirty=False):
+        self.removed.append((key, keep_dirty))
+        return {"removed": True, "dirty": False}
+
+    def probe(self, read, write):
+        return self.probe_result
+
+    def claude_argv(self):
+        return ["/opt/claude"]
 
 
 @dataclass

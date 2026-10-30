@@ -2,6 +2,7 @@ import io
 import json
 import re
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -9,9 +10,97 @@ import pytest
 from flocc import agentrun
 from flocc.agent import Agent, AgentError
 from flocc.agentrun import apply_handoff, restore, with_disabled_plugins
+from flocc.publisher import check_worktree
+from flocc.worktree import agent_ref, fetch_agent_branch, git
 
 ROOT = Path(__file__).parent.parent
 WRAPPER = ROOT / "deploy" / "flocc-agent-run"
+
+
+def agent_cfg(tmp_cfg, origin, tmp_path):
+    # The origin fixture's clone is tmp_path/src, so flocc-agent's home goes beside it.
+    home = tmp_path / "agent"
+    return replace(
+        tmp_cfg,
+        agent_home=home,
+        worktree_root=home / "worktrees",
+        agent_state_root=home / "state",
+        repos={"backend": replace(tmp_cfg.repos["backend"], path=origin)},
+    )
+
+
+def test_prepare_clones_for_flocc_agent_and_adds_the_worktree(tmp_cfg, origin, tmp_path):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    path, branch, _ = Agent(cfg).prepare("backend", "NF-7")
+    home = cfg.agent_home
+    assert path == (home / "worktrees").resolve() / "NF-7" and branch == "agent/nf-7"
+    assert (home / "src" / "backend" / ".git").is_dir()
+    assert (path / ".setup-ran").exists()
+    assert (home / "state" / "NF-7" / "hooks" / "commit-msg").exists()
+    assert (home / ".config" / "flocc" / "gh-agent.token").read_text() == "t\n"
+
+
+def test_a_failing_setup_comes_back_as_the_setup_error(tmp_cfg, origin, tmp_path):
+    (origin / "setup").write_text("#!/bin/sh\necho broken >&2\nexit 3\n")
+    git("commit", "-qam", "break setup", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        Agent(cfg).prepare("backend", "NF-7")
+    assert exc.value.cmd == ["./setup"] and "broken" in exc.value.stderr
+    assert exc.value.__dict__["at_base"] == git("rev-parse", "origin/main", cwd=origin)
+
+
+def test_check_reports_dirty_failed_and_ok(origin):
+    assert check_worktree("true", origin, 30)["status"] == "ok"
+    assert check_worktree("false", origin, 30)["status"] == "failed"
+    (origin / "stray.txt").write_text("x")
+    dirty = check_worktree("true", origin, 30)
+    assert dirty["status"] == "dirty" and "stray.txt" in dirty["output"]
+
+
+def test_the_branch_is_fetched_into_the_service_clone(origin, tmp_path):
+    service = tmp_path / "service"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(service)], check=True)
+    git("checkout", "-qb", "agent/nf-1", cwd=origin)
+    (origin / "b.txt").write_text("b\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-qm", "work", cwd=origin)
+    head = fetch_agent_branch(service, origin, "agent/nf-1", "NF-1")
+    assert head == git("rev-parse", "HEAD", cwd=origin)
+    assert git("rev-parse", agent_ref("NF-1"), cwd=service) == head
+
+
+def test_container_env_points_at_the_podman_socket(tmp_path, monkeypatch):
+    sock = tmp_path / "podman" / "podman.sock"
+    sock.parent.mkdir()
+    sock.touch()
+    monkeypatch.setattr("flocc.agentrun._runtime_dir", lambda: tmp_path)
+    assert agentrun.container_env() == {
+        "XDG_RUNTIME_DIR": str(tmp_path),
+        "DOCKER_HOST": f"unix://{sock}",
+        "TESTCONTAINERS_RYUK_DISABLED": "true",
+    }
+
+
+def test_no_socket_means_no_container_env(tmp_path, monkeypatch):
+    monkeypatch.setattr("flocc.agentrun._runtime_dir", lambda: tmp_path)
+    assert agentrun.container_env() == {}
+
+
+def test_the_pane_gets_the_container_env_after_env_i(monkeypatch):
+    monkeypatch.setattr("flocc.agentrun.container_env", lambda: {"DOCKER_HOST": "unix:///s"})
+    argv = ["/usr/bin/env", "-i", "HOME=/h", "claude", "--name", "NF-1"]
+    assert agentrun.with_container_env(argv) == [
+        "/usr/bin/env",
+        "-i",
+        "DOCKER_HOST=unix:///s",
+        "HOME=/h",
+        "claude",
+        "--name",
+        "NF-1",
+    ]
+    assert agentrun.with_container_env(["claude"]) == ["claude"]
 
 
 def test_the_wrapper_and_the_module_know_the_same_subcommands():

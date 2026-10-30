@@ -21,8 +21,8 @@ from flocc.poller import (
 from flocc.runtime import Runtime
 from flocc.supervisor import LaunchError
 from flocc.tick import tick, tick_lock
-from flocc.worktree import git, prepare_worktree, recover_tests
-from tests.fakes import FakeNotifier, FakeSessions
+from flocc.worktree import fetch_agent_branch, git, prepare_worktree, recover_tests
+from tests.fakes import FakeAgent, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
@@ -91,10 +91,10 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
         path.mkdir(parents=True, exist_ok=True)
         return path, f"agent/{key.lower()}", "sha0"
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", fake_prepare)
-    monkeypatch.setattr("flocc.poller.install_hook", lambda *a, **kw: None)
     monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: None)
+    monkeypatch.setattr("flocc.poller.fetch_agent_branch", lambda *a: "sha0")
     return Runtime(
+        agent=FakeAgent(tmp_cfg, fake_prepare),
         cfg=tmp_cfg,
         con=ledger.connect(tmp_cfg.ledger_path),
         linear=PollLinear([]),
@@ -187,7 +187,7 @@ def test_a_resume_at_the_implementer_keeps_the_amended_tests_record(rt, monkeypa
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
         "flocc.poller.contains",
-        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+        lambda path, sha, ref="": sha == "sha-tests" and ref == "refs/flocc/NF-9",
     )
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
@@ -201,7 +201,7 @@ def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeyp
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
         "flocc.poller.contains",
-        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+        lambda path, sha, ref="": sha == "sha-tests" and ref == "refs/flocc/NF-9",
     )
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
@@ -236,7 +236,7 @@ def test_a_fresh_claim_forgets_the_last_run_s_rebase_and_base_hold(rt):
 
 def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
-    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": False)
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="": False)
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -247,7 +247,7 @@ def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypa
 
 def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
-    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": True)
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="": True)
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -258,7 +258,7 @@ def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch)
 
 def test_tests_recovered_from_the_branch_are_remembered_and_resume_the_implementer(rt, monkeypatch):
     monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: ("sha-fork", "sha-tests"))
-    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": ref == "HEAD")
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="": ref == "refs/flocc/NF-9")
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -272,7 +272,7 @@ def test_a_rebased_branch_recovers_the_tests_and_updates_the_record(rt, monkeypa
     monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: ("sha-new-base", "sha-tests"))
     monkeypatch.setattr(
         "flocc.poller.contains",
-        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+        lambda path, sha, ref="": sha == "sha-tests" and ref == "refs/flocc/NF-9",
     )
     rt.linear.ready = [issue()]
     poll(rt)
@@ -289,7 +289,7 @@ def test_remembered_tests_are_not_recovered_again(rt, monkeypatch):
         raise AssertionError("recovery ran with tests already remembered")
 
     monkeypatch.setattr("flocc.poller.recover_tests", recover)
-    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": ref == "HEAD")
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="": ref == "refs/flocc/NF-9")
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -297,10 +297,12 @@ def test_remembered_tests_are_not_recovered_again(rt, monkeypatch):
 
 
 def test_a_branch_from_another_host_resumes_at_the_implementer(rt, origin, tmp_path, monkeypatch):
-    monkeypatch.setattr("flocc.poller.prepare_worktree", prepare_worktree)
+    rt.agent.prepare_fn = prepare_worktree
     monkeypatch.setattr("flocc.poller.recover_tests", recover_tests)
+    monkeypatch.setattr("flocc.poller.fetch_agent_branch", fetch_agent_branch)
     backend = replace(rt.cfg.repos["backend"], path=origin)
     rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
+    rt.agent.cfg = rt.cfg
     other = tmp_path / "other-host"
     subprocess.run(
         ["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)],
@@ -325,10 +327,12 @@ def test_a_branch_from_another_host_resumes_at_the_implementer(rt, origin, tmp_p
 
 
 def test_a_branch_rebased_on_the_host_resumes_at_the_implementer(rt, origin, tmp_path, monkeypatch):
-    monkeypatch.setattr("flocc.poller.prepare_worktree", prepare_worktree)
+    rt.agent.prepare_fn = prepare_worktree
     monkeypatch.setattr("flocc.poller.recover_tests", recover_tests)
+    monkeypatch.setattr("flocc.poller.fetch_agent_branch", fetch_agent_branch)
     backend = replace(rt.cfg.repos["backend"], path=origin)
     rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
+    rt.agent.cfg = rt.cfg
     path, _, fork = prepare_worktree(backend, rt.cfg.worktree_root, "NF-9")
     (path / "test_x.py").write_text("assert True\n")
     git("add", ".", cwd=path)
@@ -383,7 +387,7 @@ def test_running_claim_in_todo_is_left_alone(rt, phase):
 def test_rerun_resumes_at_the_implementer_and_clears_the_old_alerts(rt, monkeypatch):
     monkeypatch.setattr(
         "flocc.poller.contains",
-        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+        lambda path, sha, ref="": sha == "sha-tests" and ref == "refs/flocc/NF-9",
     )
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     ledger.insert_claim(rt.con, make("NF-9", state="blocked"))
@@ -571,7 +575,7 @@ def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
     def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.CalledProcessError(1, ["./setup"], stderr="setup: npm is missing\n")
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", failing)
+    rt.agent.prepare_fn = failing
     rt.notifier = Notifier(rt.con, rt.linear, rt.now)
     rt.linear.ready = [issue()]
     poll(rt)
@@ -583,7 +587,7 @@ def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
     def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", slow)
+    rt.agent.prepare_fn = slow
     rt.linear.ready = [issue()]
     poll(rt)
     [esc] = rt.notifier.sent
@@ -594,12 +598,15 @@ def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
 def _broken_main(rt, monkeypatch, at_base="sha-main"):
     calls = []
 
+    rt.agent.at_base = at_base
+
     def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
         calls.append(key)
-        raise subprocess.CalledProcessError(1, ["./setup"], stderr="mise: no version set for go\n")
+        exc = subprocess.CalledProcessError(1, ["./setup"], stderr="mise: no version set for go\n")
+        exc.__dict__["at_base"] = rt.agent.at_base
+        raise exc
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", failing)
-    monkeypatch.setattr("flocc.poller.head_at_base", lambda repo, path: at_base)
+    rt.agent.prepare_fn = failing
     monkeypatch.setattr("flocc.poller.origin_base", lambda repo: "sha-main")
     return calls
 
@@ -615,7 +622,7 @@ def test_a_kept_worktree_or_a_git_failure_never_marks_the_repo(rt, monkeypatch):
             raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="network down")
         raise subprocess.CalledProcessError(1, ["./setup"], stderr="uncommitted junk\n")
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", fetch_fails)
+    rt.agent.prepare_fn = fetch_fails
     rt.linear.ready = [issue("NF-9"), issue("NF-10")]
     poll(rt)
     assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
@@ -656,7 +663,7 @@ def test_a_setup_timeout_on_untouched_main_never_marks_the_repo(rt, monkeypatch)
     def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", slow)
+    rt.agent.prepare_fn = slow
     rt.linear.ready = [issue("NF-9")]
     poll(rt)
     assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
@@ -693,7 +700,7 @@ def test_main_broken_marks_even_when_the_issues_prepare_alert_is_recent(rt, monk
     calls = _broken_main(rt, monkeypatch, at_base=None)
     rt.linear.ready = [issue("NF-9")]
     poll(rt)
-    monkeypatch.setattr("flocc.poller.head_at_base", lambda repo, path: "sha-main")
+    rt.agent.at_base = "sha-main"
     poll(rt)
     poll(rt)
     assert calls == ["NF-9", "NF-9"]

@@ -67,7 +67,7 @@ def test_fake_claude_through_tmux(tmp_cfg, tmux_server, origin, tmp_path):
         claude_exe=str(FAKE),
         config_path=tmp_path / "c.toml",
         publish_fn=lambda *a: PublishResult("opened", url="u"),
-        git_head=lambda p: git("rev-parse", "HEAD", cwd=Path(p)),
+        git_head=lambda claim: git("rev-parse", "HEAD", cwd=Path(claim.worktree)),
         review_diff=lambda c: "",
         comment_pr=lambda c, u, b: None,
     )

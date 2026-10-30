@@ -14,7 +14,6 @@ from flocc.agentblock import (
     parse_settings,
     settings_to_json,
 )
-from flocc.config import trailer_enabled
 from flocc.context import state_dir, write_context
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
@@ -25,13 +24,12 @@ from flocc.supervisor import LAST_SUMMARY, launch
 from flocc.usage import latest_usage
 from flocc.worktree import (
     DirtyWorktree,
+    agent_ref,
     contains,
+    fetch_agent_branch,
     git,
     has_uncommitted_changes,
-    head_at_base,
-    install_hook,
     origin_base,
-    prepare_worktree,
     recover_tests,
 )
 
@@ -100,7 +98,10 @@ def restart_timed_out(rt) -> None:
         if ledger.meta_get(rt.con, once):
             continue
         try:
-            stamps = git("log", "--format=%ct", claim.branch, "--not", claim.base_sha, cwd=wt)
+            repo_path = rt.cfg.repos[claim.repo].path
+            fetch_agent_branch(repo_path, wt, claim.branch, key)
+            ref = agent_ref(key)
+            stamps = git("log", "--format=%ct", ref, "--not", claim.base_sha, cwd=repo_path)
             if not any(float(s) > claim.started_at for s in stamps.split()):
                 continue
             # An issue since parked, unlabelled or closed is no longer wanted; releasing it would
@@ -321,13 +322,9 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     # A kept worktree may hold a previous run's uncommitted work, so its failure is the issue's.
     reused = (cfg.worktree_root.resolve() / issue.key).exists()
     try:
-        path, branch, base = prepare_worktree(
-            cfg.repos[repo],
-            cfg.worktree_root,
-            issue.key,
-            setup_timeout_s=cfg.setup_timeout_s,
-            shared_uv_cache=cfg.shared_uv_cache,
-        )
+        path, branch, base = rt.agent.prepare(repo, issue.key)
+        repo_path = cfg.repos[repo].path
+        fetch_agent_branch(repo_path, path, branch, issue.key)
     except (subprocess.SubprocessError, OSError) as exc:  # nothing is claimed yet
         stderr = getattr(exc, "stderr", None) or ""
         if isinstance(stderr, bytes):
@@ -341,9 +338,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         setup_failed = isinstance(exc, DirtyWorktree) or (
             isinstance(exc, subprocess.CalledProcessError) and exc.cmd == ["./setup"]
         )
-        base = None
-        if setup_failed and not reused:
-            base = head_at_base(cfg.repos[repo], cfg.worktree_root.resolve() / issue.key)
+        base = getattr(exc, "at_base", None) if setup_failed and not reused else None
         if base is not None:
             base_branch = cfg.repos[repo].base_branch
             # Marked only once the notice is out: a mark holds every issue before _start, so one
@@ -378,12 +373,6 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     # Cleared here, not with the other causes in poll(): those run before every prepare attempt.
     ledger.clear_alert(rt.con, cause)
     d = state_dir(cfg, issue.key)
-    install_hook(
-        path,
-        d / "hooks",
-        rt.exe,
-        trailer=trailer_enabled(cfg, cfg.repos[repo]),
-    )
     # A fresh claim gets its own review fix round.
     ledger.meta_set(rt.con, f"review_fix:{issue.key}", "")
     for kept in ("rebase", "rebase_tried", "base_held", "base_released"):
@@ -402,18 +391,19 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     remembered = ledger.remembered_tests(rt.con, issue.key)
     # Tests already merged into the base belong to shipped work, and a reopened issue is new
     # work. After a merge commit, a branch cut fresh from the base contains them too.
-    if remembered and contains(path, remembered[1], f"origin/{base_branch}"):
+    ref = agent_ref(issue.key)
+    if remembered and contains(repo_path, remembered[1], f"origin/{base_branch}"):
         ledger.forget_tests(rt.con, issue.key)
         remembered = None
     # A branch another host pushed holds its tester's commits, but this ledger has no record of
     # them, and the publisher's guard and --accept-tests compare against that record. A rebase
     # rewrites the remembered commit the same way, so a record the branch lacks is recovered too.
-    if (remembered is None or not contains(path, remembered[1])) and (
-        recovered := recover_tests(path, base_branch, issue.key)
+    if (remembered is None or not contains(repo_path, remembered[1], ref)) and (
+        recovered := recover_tests(repo_path, base_branch, issue.key, ref)
     ):
         remembered = recovered
         ledger.remember_tests(rt.con, issue.key, *remembered)
-    if remembered and contains(path, remembered[1]):
+    if remembered and contains(repo_path, remembered[1], ref):
         (base, tester_sha), phase = remembered, "impl"
     claim = Claim(
         issue_key=issue.key,

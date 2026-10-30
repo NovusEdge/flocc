@@ -3,11 +3,32 @@ import os
 import subprocess
 from pathlib import Path
 
-from flocc.config import Config
+from flocc.config import Config, trailer_enabled
+from flocc.ledger import Claim
+from flocc.publisher import PublishResult
+from flocc.worktree import BranchDiverged, DirtyWorktree, git
 
 
 class AgentError(subprocess.SubprocessError):
     pass
+
+
+def _prepare_error(data: dict) -> subprocess.SubprocessError:
+    kind, detail = data["error"], str(data.get("detail", ""))
+    exc: subprocess.SubprocessError
+    if kind == "setup":
+        exc = subprocess.CalledProcessError(int(data.get("code") or 1), ["./setup"], stderr=detail)
+    elif kind == "timeout":
+        exc = subprocess.TimeoutExpired(["./setup"], float(data.get("timeout") or 0), stderr=detail)
+    elif kind == "dirty":
+        exc = DirtyWorktree(detail)
+    elif kind == "diverged":
+        exc = BranchDiverged(detail)
+    else:
+        exc = subprocess.CalledProcessError(int(data.get("code") or 1), ["git"], stderr=detail)
+    # Set only when ./setup failed on a worktree still exactly at the base: main's failure.
+    setattr(exc, "at_base", data.get("at_base"))  # noqa: B010
+    return exc
 
 
 class Agent:
@@ -53,6 +74,65 @@ class Agent:
 
     def sessions(self) -> "AgentSessions":
         return AgentSessions(self)
+
+    def _repo(self, name: str) -> tuple[dict, float]:
+        repo = self.cfg.repos[name]
+        url = git("remote", "get-url", "origin", cwd=repo.path)
+        common = {
+            "repo": name,
+            "url": url,
+            "base_branch": repo.base_branch,
+            "worktree_root": str(self.cfg.worktree_root),
+            "setup_timeout_s": self.cfg.setup_timeout_s,
+            "shared_uv_cache": self.cfg.shared_uv_cache,
+            "token": self.token(),
+        }
+        # A first clone of a big repo, then ./setup.
+        return common, self.cfg.setup_timeout_s + 900
+
+    def prepare(self, repo_name: str, key: str) -> tuple[Path, str, str]:
+        common, timeout = self._repo(repo_name)
+        payload = {
+            **common,
+            "key": key,
+            "state_root": str(self.cfg.agent_state_root),
+            "trailer": trailer_enabled(self.cfg, self.cfg.repos[repo_name]),
+        }
+        data = self.call("prepare", payload=payload, timeout=timeout)
+        if "error" in data:
+            raise _prepare_error(data)
+        return Path(data["path"]), str(data["branch"]), str(data["base"])
+
+    def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
+        payload = {
+            "mode": "worktree",
+            "worktree": claim.worktree,
+            "command": repo.check,
+            "timeout_s": timeout_s,
+        }
+        return self.call("check", payload=payload, timeout=timeout_s + 120)
+
+    def check_base(self, repo_name: str) -> tuple[str, PublishResult | None]:
+        common, timeout = self._repo(repo_name)
+        payload = {
+            **common,
+            "mode": "base-check",
+            "command": self.cfg.repos[repo_name].check,
+            "check_timeout_s": self.cfg.check_timeout_s,
+        }
+        data = self.call("check", payload=payload, timeout=timeout + self.cfg.check_timeout_s)
+        failure = data.get("failure")
+        if failure is None:
+            return str(data["sha"]), None
+        return str(data["sha"]), PublishResult(
+            "check_failed", str(failure["detail"]), log=str(failure["log"])
+        )
+
+    def setup_base(self, repo_name: str) -> tuple[int | None, str, str]:
+        common, timeout = self._repo(repo_name)
+        payload = {**common, "mode": "base-setup", "command": self.cfg.repos[repo_name].check}
+        data = self.call("check", payload=payload, timeout=timeout)
+        return data["code"], str(data["output"]), str(data["sha"])
 
 
 class AgentSessions:

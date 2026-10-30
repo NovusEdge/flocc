@@ -4,14 +4,25 @@ it as one JSON object on stdin and prints its answer as one JSON object on stdou
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from flocc.config import RepoConfig
+from flocc.publisher import check_at_base, check_worktree
 from flocc.sessions import SOCKET, Sessions, installed_plugins, trust_folders
+from flocc.worktree import (
+    BranchDiverged,
+    DirtyWorktree,
+    head_at_base,
+    install_hook,
+    prepare_worktree,
+    setup_at_base,
+)
 
-SUBCOMMANDS = ("alive", "attach", "capture", "kill", "send", "start")
+SUBCOMMANDS = ("alive", "attach", "capture", "check", "kill", "prepare", "send", "start")
 _NAME = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+(?:-test|-review)?$")
 _FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ATTACH_HINT = "read-only · Ctrl-b d detaches, the session keeps running"
@@ -32,6 +43,28 @@ def under_home(raw) -> Path:
     if not path.is_relative_to(_home()):
         raise BadRequest(f"{raw} is outside {_home()}")
     return path
+
+
+def _runtime_dir() -> Path:
+    return Path(f"/run/user/{os.getuid()}")
+
+
+def container_env() -> dict[str, str]:
+    sock = _runtime_dir() / "podman" / "podman.sock"
+    if not sock.exists():
+        return {}
+    return {
+        "XDG_RUNTIME_DIR": str(_runtime_dir()),
+        "DOCKER_HOST": f"unix://{sock}",
+        # Ryuk needs a privileged container, which rootless Podman does not give it.
+        "TESTCONTAINERS_RYUK_DISABLED": "true",
+    }
+
+
+def with_container_env(argv: list[str]) -> list[str]:
+    if argv[:2] != ["/usr/bin/env", "-i"]:
+        return argv
+    return [*argv[:2], *(f"{k}={v}" for k, v in container_env().items()), *argv[2:]]
 
 
 def session_name(raw) -> str:
@@ -101,7 +134,9 @@ def start(req: dict) -> dict:
     cwd, state = under_home(req["cwd"]), under_home(req["state"])
     write_token(req["token"])
     saved = apply_handoff(state, dict(req.get("files") or {}), req.get("clear") or [])
-    argv = with_disabled_plugins([str(a) for a in req["argv"]], req.get("plugins"))
+    argv = with_container_env(
+        with_disabled_plugins([str(a) for a in req["argv"]], req.get("plugins"))
+    )
     trust = [cwd, *(under_home(p) for p in req.get("trust") or [])]
     trust_folders(_home() / ".claude.json", trust)
     try:
@@ -129,7 +164,118 @@ def attach(name: str) -> int:
     os.execvp("tmux", [*argv, "display-message", "-d", "15000", ATTACH_HINT])
 
 
-HANDLERS: dict[str, Callable[[dict], dict]] = {"start": start, "send": send, "capture": capture}
+_KEY = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+$")
+_REPO = re.compile(r"^[A-Za-z0-9._-]+$")
+# Read on every fetch, so a replaced token takes effect without touching the clone. The same
+# string as credentialHelper in installer/internal/steps/config.go.
+CREDENTIAL_HELPER = (
+    "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n'"
+    ' "$(cat "$HOME/.config/flocc/gh-agent.token")"; }; f'
+)
+
+
+def _key(raw) -> str:
+    if not isinstance(raw, str) or not _KEY.match(raw):
+        raise BadRequest(f"not an issue key: {raw!r}")
+    return raw
+
+
+def _clone(name, url) -> Path:
+    if not isinstance(name, str) or not _REPO.match(name) or name in (".", ".."):
+        raise BadRequest(f"not a repo name: {name!r}")
+    clone = _home() / "src" / name
+    if not (clone / ".git").exists():
+        clone.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-c", "credential.helper=", "-c", f"credential.helper={CREDENTIAL_HELPER}"]
+            + ["clone", "-q", str(url), str(clone)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "config", "--replace-all", "credential.helper", ""], cwd=clone, check=True
+        )
+        subprocess.run(
+            ["git", "config", "--add", "credential.helper", CREDENTIAL_HELPER],
+            cwd=clone,
+            check=True,
+        )
+    return clone
+
+
+def _clean_stale(root: Path) -> None:
+    # Left by a killed tick; setup runs under the tick lock, so none is in use now.
+    for pattern in (".uv-cache-*", ".canary-*"):
+        for stale in root.glob(pattern):
+            shutil.rmtree(stale, ignore_errors=True)
+
+
+def _text(raw) -> str:
+    if isinstance(raw, bytes):
+        return raw.decode(errors="replace")
+    return raw or ""
+
+
+def _failed(kind: str, detail: str, at_base: str | None = None, **extra) -> dict:
+    return {"error": kind, "detail": detail[-4000:], "at_base": at_base, **extra}
+
+
+def prepare(req: dict) -> dict:
+    key = _key(req["key"])
+    write_token(req["token"])
+    repo = RepoConfig(path=_clone(req["repo"], req["url"]), base_branch=str(req["base_branch"]))
+    root = under_home(req["worktree_root"])
+    _clean_stale(root)
+    try:
+        path, branch, base = prepare_worktree(
+            repo, root, key, float(req["setup_timeout_s"]), bool(req["shared_uv_cache"])
+        )
+    except DirtyWorktree as exc:
+        return _failed("dirty", str(exc), head_at_base(repo, root.resolve() / key))
+    except BranchDiverged as exc:
+        return _failed("diverged", str(exc))
+    except subprocess.TimeoutExpired as exc:
+        return _failed("timeout", _text(exc.stderr), timeout=exc.timeout)
+    except subprocess.CalledProcessError as exc:
+        if exc.cmd == ["./setup"]:
+            at_base = head_at_base(repo, root.resolve() / key)
+            return _failed("setup", _text(exc.stderr), at_base, code=exc.returncode)
+        return _failed("git", _text(exc.stderr) or str(exc), code=exc.returncode)
+    state = under_home(req["state_root"]) / key
+    install_hook(path, state / "hooks", shutil.which("flocc") or "flocc", bool(req["trailer"]))
+    return {"path": str(path), "branch": branch, "base": base}
+
+
+def check(req: dict) -> dict:
+    mode = req["mode"]
+    if mode == "worktree":
+        return check_worktree(
+            str(req["command"]), under_home(req["worktree"]), float(req["timeout_s"])
+        )
+    write_token(req["token"])
+    clone = _clone(req["repo"], req["url"])
+    repo = RepoConfig(path=clone, base_branch=str(req["base_branch"]), check=str(req["command"]))
+    root = under_home(req["worktree_root"])
+    _clean_stale(root)
+    setup_s, shared = float(req["setup_timeout_s"]), bool(req["shared_uv_cache"])
+    if mode == "base-check":
+        sha, failure = check_at_base(repo, root, setup_s, float(req["check_timeout_s"]), shared)
+        found = None if failure is None else {"detail": failure.detail, "log": failure.log}
+        return {"sha": sha, "failure": found}
+    if mode == "base-setup":
+        code, out, sha = setup_at_base(repo, root, setup_s, shared)
+        return {"sha": sha, "code": code, "output": out}
+    raise BadRequest(f"unknown check mode {mode!r}")
+
+
+HANDLERS: dict[str, Callable[[dict], dict]] = {
+    "start": start,
+    "send": send,
+    "capture": capture,
+    "prepare": prepare,
+    "check": check,
+}
 
 
 def _request() -> dict:
@@ -142,6 +288,7 @@ def _request() -> dict:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     os.umask(0o027)
+    os.environ.update(container_env())
     if not argv or argv[0] not in SUBCOMMANDS:
         print(f"flocc-agent: unknown subcommand: {argv[0] if argv else 'none'}", file=sys.stderr)
         return 2

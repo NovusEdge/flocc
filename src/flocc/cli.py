@@ -325,7 +325,7 @@ def cmd_release(args) -> int:
             if ledger.remembered_tests(rt.con, args.key) is None:
                 print(f"release: {args.key} has no tester commit to accept", file=sys.stderr)
                 return 1
-            ledger.accept_tests(rt.con, args.key, rt.git_head(claim.worktree))
+            ledger.accept_tests(rt.con, args.key, rt.git_head(claim))
         release_claim(rt, claim, keep_worktree=keep)
     wt = "kept" if keep else "removed"
     accepted = ", tester files accepted as they stand" if args.accept_tests else ""
@@ -334,7 +334,8 @@ def cmd_release(args) -> int:
 
 
 def cmd_canary(args) -> int:
-    from flocc import canary, publisher, worktree
+    from flocc import canary
+    from flocc.agent import Agent
     from flocc.tick import tick_lock
 
     cfg, _ = _config(args)
@@ -367,22 +368,11 @@ def cmd_canary(args) -> int:
         check = cfg.repos[args.repo].check if mark and mark.get("check") else None
         try:
             if check:
-                sha, failure = publisher.check_at_base(
-                    cfg.repos[args.repo],
-                    cfg.worktree_root,
-                    cfg.setup_timeout_s,
-                    cfg.check_timeout_s,
-                    cfg.shared_uv_cache,
-                )
+                sha, failure = Agent(cfg).check_base(args.repo)
                 code = 1 if failure else 0
                 out = failure.log or failure.detail if failure else ""
             else:
-                code, out, sha = worktree.setup_at_base(
-                    cfg.repos[args.repo],
-                    cfg.worktree_root,
-                    cfg.setup_timeout_s,
-                    cfg.shared_uv_cache,
-                )
+                code, out, sha = Agent(cfg).setup_base(args.repo)
         except (subprocess.SubprocessError, OSError) as exc:
             why = getattr(exc, "stderr", None) or exc
             print(f"canary: {args.repo}'s base was not checked out: {why}", file=sys.stderr)

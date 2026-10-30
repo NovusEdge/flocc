@@ -1,6 +1,7 @@
 import subprocess
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,7 @@ from flocc.publisher import (
     COMMENT_LIMIT,
     BranchMoved,
     check_at_base,
+    check_worktree,
     comment_on_pr,
     failure_excerpt,
     pr_title,
@@ -58,6 +60,32 @@ def test_opens_draft_pr(origin, tmp_path):
     assert pr[:3] == ["gh", "pr", "create"] and "--draft" in pr
     assert "Fixes NF-5" in pr[pr.index("--body") + 1]
     assert git("ls-remote", "origin", claim.branch, cwd=path)
+
+
+def test_the_push_goes_from_the_service_clone_with_the_check_run_elsewhere(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    seen = []
+
+    def remote_check(c, r, timeout_s):
+        seen.append((c.issue_key, r.check))
+        return check_worktree(r.check, Path(c.worktree), timeout_s)
+
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), check=remote_check)
+    assert result.status == "opened" and seen == [("NF-5", "true")]
+    assert git("rev-parse", "refs/flocc/NF-5", cwd=origin) == git("rev-parse", "HEAD", cwd=path)
+
+
+def test_a_branch_that_moves_during_the_check_is_not_pushed(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+
+    def moving_check(c, r, timeout_s):
+        (path / "late.txt").write_text("x")
+        git("add", ".", cwd=path)
+        git("commit", "-qm", "late", cwd=path)
+        return check_worktree("true", path, timeout_s)
+
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), check=moving_check)
+    assert result.status == "check_failed" and "moved while the check ran" in result.detail
 
 
 def test_pr_title_has_a_conventional_type_from_the_labels():

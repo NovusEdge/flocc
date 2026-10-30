@@ -20,11 +20,11 @@ from flocc.poller import (
     reap_worktrees,
     restart_timed_out,
 )
-from flocc.publisher import check_at_base, comment_on_pr, pr_view, publish, read_amended
+from flocc.publisher import comment_on_pr, pr_view, publish, read_amended
 from flocc.runtime import Runtime
 from flocc.supervisor import supervise
 from flocc.tokens import check_claude_login, check_tokens
-from flocc.worktree import git
+from flocc.worktree import agent_ref, fetch_agent_branch, git
 
 FAILS_BEFORE_PAGE = 5
 
@@ -62,24 +62,23 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
             trailer=trailer_enabled(cfg, cfg.repos[claim.repo]),
             accepted_sha=ledger.accepted_tests(con, claim.issue_key),
             amended=read_amended(agent_dir(cfg, claim.issue_key)),
+            check=agent.check_worktree,
             **kw,
         )
 
+    def git_head(claim):
+        repo = cfg.repos[claim.repo]
+        return fetch_agent_branch(repo.path, Path(claim.worktree), claim.branch, claim.issue_key)
+
     def review_diff(claim):
-        base = f"origin/{cfg.repos[claim.repo].base_branch}"
-        return git("diff", f"{base}...HEAD", cwd=Path(claim.worktree))
+        repo = cfg.repos[claim.repo]
+        git_head(claim)
+        return git(
+            "diff", f"origin/{repo.base_branch}...{agent_ref(claim.issue_key)}", cwd=repo.path
+        )
 
     def comment_pr(claim, url, body):
         comment_on_pr(claim, url, body, token)
-
-    def base_check(repo):
-        return check_at_base(
-            cfg.repos[repo],
-            cfg.worktree_root,
-            cfg.setup_timeout_s,
-            cfg.check_timeout_s,
-            cfg.shared_uv_cache,
-        )
 
     return Runtime(
         cfg=cfg,
@@ -92,11 +91,11 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         claude_exe=claude_exe,
         config_path=config_path,
         publish_fn=publish_fn,
-        git_head=lambda path: git("rev-parse", "HEAD", cwd=Path(path)),
+        git_head=git_head,
         review_diff=review_diff,
         comment_pr=comment_pr,
         pr_view=lambda claim, url: pr_view(claim, url, token),
-        base_check=base_check,
+        base_check=agent.check_base,
         agent=agent,
     )
 

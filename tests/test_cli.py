@@ -449,7 +449,7 @@ def test_peek_exits_3_when_the_session_dies_before_the_capture(host_cfg, monkeyp
 
 
 def _canary(host_cfg, monkeypatch, result):
-    monkeypatch.setattr("flocc.worktree.setup_at_base", lambda *a: result)
+    monkeypatch.setattr("flocc.agent.Agent.setup_base", lambda self, repo: result)
     cfg = load(host_cfg)
     cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
     return cfg, next(iter(cfg.repos))
@@ -462,10 +462,10 @@ def test_canary_turns_a_kill_signal_into_an_exit_and_restores_the_handlers(
     _, repo = _canary(host_cfg, monkeypatch, None)
     before = signal.getsignal(sig)
 
-    def killed(*a):
+    def killed(self, repo):
         signal.raise_signal(sig)
 
-    monkeypatch.setattr("flocc.worktree.setup_at_base", killed)
+    monkeypatch.setattr("flocc.agent.Agent.setup_base", killed)
     assert main(["--config", str(host_cfg), "canary", repo]) == 128 + sig
     assert signal.getsignal(sig) == before
 
@@ -490,12 +490,14 @@ def test_canary_reruns_the_check_for_a_check_mark(host_cfg, monkeypatch, capsys)
     cfg, repo = _canary(host_cfg, monkeypatch, None)
     con = ledger.connect(cfg.ledger_path)
     canary.mark(con, repo, "abc123def456", 1.0, "old", check="just check")
-    monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", None))
+    monkeypatch.setattr("flocc.agent.Agent.check_base", lambda self, repo: ("def456abc123", None))
     assert main(["--config", str(host_cfg), "canary", repo]) == 0
     assert canary.get_mark(con, repo) is None
     canary.mark(con, repo, "abc123def456", 1.0, "old", check="just check")
     failure = PublishResult("check_failed", "E1 boom", log="E1 boom full")
-    monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", failure))
+    monkeypatch.setattr(
+        "flocc.agent.Agent.check_base", lambda self, repo: ("def456abc123", failure)
+    )
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     m = canary.get_mark(con, repo)
     assert m is not None and m["sha"] == "def456abc123" and m["check"] == "just check"
@@ -536,9 +538,9 @@ def test_canary_waits_for_a_running_tick(host_cfg, monkeypatch, capsys):
 def test_canary_reports_a_base_it_cannot_fetch(host_cfg, monkeypatch, capsys):
     _, repo = _canary(host_cfg, monkeypatch, None)
 
-    def unreachable(*a):
+    def unreachable(self, repo):
         raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="no remote")
 
-    monkeypatch.setattr("flocc.worktree.setup_at_base", unreachable)
+    monkeypatch.setattr("flocc.agent.Agent.setup_base", unreachable)
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     assert "no remote" in capsys.readouterr().err

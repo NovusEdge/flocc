@@ -30,7 +30,7 @@ def step(rt) -> None:
                 continue
             # Someone pushed to the PR after this host's branch: merging into the stale copy
             # would only fail at the push.
-            if view.get("headRefOid") != rt.git_head(claim.worktree):
+            if view.get("headRefOid") != rt.git_head(claim):
                 continue
             if not still_wanted(rt, key):
                 continue
