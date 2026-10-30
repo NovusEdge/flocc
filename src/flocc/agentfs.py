@@ -4,6 +4,9 @@ from pathlib import Path
 
 LIMIT = 8 * 1024 * 1024
 _DIR = os.O_RDONLY | os.O_DIRECTORY
+# flocc reaches flocc-agent's files through its 710 home, which grants flocc-work search but not
+# read: O_PATH needs only search, where O_RDONLY on a directory needs read.
+_WALK = os.O_PATH | os.O_DIRECTORY
 
 
 class AgentFileError(OSError):
@@ -11,18 +14,19 @@ class AgentFileError(OSError):
 
 
 def _open_dir(path: Path) -> int:
-    """A descriptor for path, reached without following any link flocc-agent could have made."""
-    fd = os.open("/", _DIR)
+    """An O_PATH descriptor for path, reached without following any link flocc-agent could have
+    made."""
+    fd = os.open("/", _WALK)
     try:
         for part in Path(os.path.abspath(path)).parts[1:]:
             st = os.stat(part, dir_fd=fd, follow_symlinks=False)
-            flags = _DIR | os.O_NOFOLLOW
+            flags = _WALK | os.O_NOFOLLOW
             if stat.S_ISLNK(st.st_mode):
                 # Only root's links are followed (a distro's /home -> var/home); flocc-agent owns
                 # everything under its home and could point a link at flocc's secrets.
                 if st.st_uid != 0:
                     raise AgentFileError(f"{path}: {part} is a link")
-                flags = _DIR
+                flags = _WALK
             nfd = os.open(part, flags, dir_fd=fd)
             os.close(fd)
             fd = nfd
@@ -82,9 +86,13 @@ def mtime(directory: Path, name: str) -> float | None:
 def entries(directory: Path) -> list[str]:
     """The real subdirectories of directory, by name."""
     try:
-        dfd = _open_dir(directory)
+        pfd = _open_dir(directory)
     except FileNotFoundError:
         return []
+    try:
+        dfd = os.open(".", _DIR, dir_fd=pfd)
+    finally:
+        os.close(pfd)
     try:
         names = []
         for name in os.listdir(dfd):
