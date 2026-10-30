@@ -3,13 +3,21 @@ package create
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
+	"maps"
 	"net"
 	"os"
+	"path"
 	"regexp"
+	"slices"
 	"strings"
 
+	"github.com/NovusEdge/flocc/deploy"
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 )
 
 // CardinalName is the cardinal VM's Incus instance. One per machine: cardinal reaches only VMs on
@@ -185,4 +193,386 @@ func (CardinalKey) Apply(ctx context.Context, e *Env) error {
 	// A half-made pair would make ssh-keygen ask whether to overwrite, on a stdin that is empty.
 	_, err := e.must(ctx, e.asCardinal("install -d -m 700 ~/.ssh && rm -f ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub && ssh-keygen -q -t ed25519 -N '' -C cardinal@"+CardinalName+" -f ~/.ssh/id_ed25519"))
 	return err
+}
+
+const (
+	cardinalEtc    = "/etc/flocc-cardinal"
+	cardinalPlugin = "/opt/cardinal/plugin"
+	gate           = "/home/" + steps.ServiceUser + "/.local/bin/flocc-cardinal-gate"
+	floccKeys      = "/home/" + steps.ServiceUser + "/.ssh/authorized_keys"
+	sshdDropIn     = "/etc/ssh/sshd_config.d/flocc-cardinal.conf"
+	sshUnitDropIn  = "/etc/systemd/system/ssh.service.d/flocc-cardinal.conf"
+	hostKeyFile    = "/etc/ssh/ssh_host_ed25519_key.pub"
+	fwFile         = cardinalEtc + "/fw.nft"
+	fwUnit         = "/etc/systemd/system/flocc-cardinal-fw.service"
+)
+
+// sshd binds ListenAddress when it starts; started before the bridge address is up, it fails.
+const sshAfterNetwork = "[Unit]\nWants=network-online.target\nAfter=network-online.target\n"
+
+// nicOf is the instance's NIC on the bridge, whether the profile or the instance holds it.
+func nicOf(in instance) string {
+	for _, name := range slices.Sorted(maps.Keys(in.ExpandedDevices)) {
+		d := in.ExpandedDevices[name]
+		if d["type"] == "nic" && (d["network"] == Bridge || d["parent"] == Bridge) {
+			return name
+		}
+	}
+	return ""
+}
+
+// pin makes vm's current bridge address its fixed DHCP lease: sshd, ssh_config, the key's from=
+// and the firewall name it, and a new lease would move it under them.
+func (e *Env) pin(ctx context.Context, vm string) (string, error) {
+	ip, _, err := e.bridgeAddr(ctx, vm)
+	if err != nil {
+		return "", err
+	}
+	in, ok := e.instanceOf(ctx, vm)
+	nic := nicOf(in)
+	if !ok || nic == "" {
+		return "", fmt.Errorf("%s has no NIC on %s", vm, Bridge)
+	}
+	if in.Devices[nic]["ipv4.address"] == ip {
+		return ip, nil
+	}
+	// override copies the profile's NIC into the instance; set changes one the instance holds.
+	verb := "override"
+	if _, own := in.Devices[nic]; own {
+		verb = "set"
+	}
+	_, err = e.must(ctx, e.incus("config", "device", verb, vm, nic, "ipv4.address="+ip))
+	return ip, err
+}
+
+func (e *Env) pinned(ctx context.Context, vm string) (string, bool) {
+	ip, _, err := e.bridgeAddr(ctx, vm)
+	if err != nil {
+		return "", false
+	}
+	in, ok := e.instanceOf(ctx, vm)
+	nic := nicOf(in)
+	return ip, ok && nic != "" && in.Devices[nic]["ipv4.address"] == ip
+}
+
+// sshdConf is the executor's sshd: on the bridge address only, by key only, for the service user
+// only. The owner reaches the VM through Tailscale SSH, which this sshd does not serve.
+func sshdConf(addr string) string {
+	return "# Written by flocc host cardinal: cardinal reaches flocc over the Incus bridge, by key.\n" +
+		"ListenAddress " + addr + "\n" +
+		"PasswordAuthentication no\n" +
+		"KbdInteractiveAuthentication no\n" +
+		"PermitRootLogin no\n" +
+		"AllowUsers " + steps.ServiceUser + "\n" +
+		// A vanished client must end the session, or its flocc events --follow lingers.
+		"ClientAliveInterval 30\n" +
+		"ClientAliveCountMax 3\n"
+}
+
+func (e *Env) systemctlIn(vm string, args ...string) host.Cmd {
+	return e.inVM(vm, append([]string{"systemctl"}, args...)...)
+}
+
+func (e *Env) aptIn(ctx context.Context, vm string, pkgs ...string) error {
+	apt := []string{"exec", vm, "--env", "DEBIAN_FRONTEND=noninteractive", "--", "apt-get"}
+	for _, args := range [][]string{{"update", "-q"}, append([]string{"install", "-y", "-q"}, pkgs...)} {
+		if _, err := e.must(ctx, e.incus(append(append([]string{}, apt...), args...)...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type ExecutorSSH struct{}
+
+func (ExecutorSSH) Name() string { return "executor sshd" }
+
+func (ExecutorSSH) Check(ctx context.Context, e *Env) (bool, string, error) {
+	x := e.Cardinal.Executor
+	ip, ok := e.pinned(ctx, x)
+	if !ok {
+		return false, x + "'s bridge address not pinned", nil
+	}
+	if got, _ := e.read(ctx, x, sshdDropIn); got != sshdConf(ip) {
+		return false, "sshd not set up for cardinal", nil
+	}
+	if got, _ := e.read(ctx, x, sshUnitDropIn); got != sshAfterNetwork {
+		return false, "sshd does not wait for the network", nil
+	}
+	if !e.ok(ctx, e.systemctlIn(x, "is-active", "--quiet", "ssh")) {
+		return false, "sshd not running", nil
+	}
+	return true, "sshd on " + ip + ":22, key only, " + steps.ServiceUser + " only", nil
+}
+
+func (ExecutorSSH) Apply(ctx context.Context, e *Env) error {
+	x := e.Cardinal.Executor
+	ip, err := e.pin(ctx, x)
+	if err != nil {
+		return err
+	}
+	// Before the install, so the sshd apt starts never runs with Debian's defaults: password
+	// login on every address.
+	for _, f := range []vmFile{{sshdDropIn, 0o644, "root", []byte(sshdConf(ip))}, {sshUnitDropIn, 0o644, "root", []byte(sshAfterNetwork)}} {
+		if err := e.put(ctx, x, f); err != nil {
+			return err
+		}
+	}
+	if _, err := e.must(ctx, e.systemctlIn(x, "daemon-reload")); err != nil {
+		return err
+	}
+	if !e.ok(ctx, e.inVM(x, "sh", "-c", "command -v sshd")) {
+		if err := e.aptIn(ctx, x, "openssh-server"); err != nil {
+			return err
+		}
+	}
+	_, err = e.must(ctx, e.systemctlIn(x, "restart", "ssh"))
+	return err
+}
+
+// fwRules lets the cardinal VM reach the executor's sshd and nothing else on it. The first two
+// lines make the file replace the table whether or not it exists.
+func fwRules(cardinalIP string) string {
+	return "# Written by flocc host cardinal: the cardinal VM reaches this VM's sshd and nothing else.\n" +
+		"table inet flocc_cardinal\n" +
+		"delete table inet flocc_cardinal\n" +
+		"table inet flocc_cardinal {\n" +
+		"  chain input {\n" +
+		"    type filter hook input priority 0; policy accept;\n" +
+		"    ip saddr " + cardinalIP + " tcp dport 22 accept\n" +
+		"    ip saddr " + cardinalIP + " drop\n" +
+		"  }\n" +
+		"}\n"
+}
+
+const fwUnitBody = "[Unit]\nDescription=flocc: the cardinal VM reaches only sshd here\nBefore=ssh.service\n\n" +
+	"[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/nft -f " + fwFile +
+	"\nExecStop=/usr/sbin/nft delete table inet flocc_cardinal\n\n[Install]\nWantedBy=multi-user.target\n"
+
+type ExecutorFirewall struct{}
+
+func (ExecutorFirewall) Name() string { return "executor firewall" }
+
+func (ExecutorFirewall) Check(ctx context.Context, e *Env) (bool, string, error) {
+	x := e.Cardinal.Executor
+	cip, ok := e.pinned(ctx, CardinalName)
+	if !ok {
+		return false, "cardinal's bridge address not pinned", nil
+	}
+	if got, _ := e.read(ctx, x, fwFile); got != fwRules(cip) {
+		return false, "no firewall for cardinal", nil
+	}
+	if got, _ := e.read(ctx, x, fwUnit); got != fwUnitBody {
+		return false, "firewall unit missing", nil
+	}
+	if !e.ok(ctx, e.systemctlIn(x, "is-active", "--quiet", "flocc-cardinal-fw.service")) {
+		return false, "firewall not loaded", nil
+	}
+	return true, cip + " reaches only port 22 on " + x, nil
+}
+
+func (ExecutorFirewall) Apply(ctx context.Context, e *Env) error {
+	x := e.Cardinal.Executor
+	cip, err := e.pin(ctx, CardinalName)
+	if err != nil {
+		return err
+	}
+	if !e.ok(ctx, e.inVM(x, "sh", "-c", "command -v nft")) {
+		if err := e.aptIn(ctx, x, "nftables"); err != nil {
+			return err
+		}
+	}
+	for _, f := range []vmFile{{fwFile, 0o644, "root", []byte(fwRules(cip))}, {fwUnit, 0o644, "root", []byte(fwUnitBody)}} {
+		if err := e.put(ctx, x, f); err != nil {
+			return err
+		}
+	}
+	for _, args := range [][]string{{"daemon-reload"}, {"enable", "flocc-cardinal-fw.service"}, {"restart", "flocc-cardinal-fw.service"}} {
+		if _, err := e.must(ctx, e.systemctlIn(x, args...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// keyLine is cardinal's authorized_keys line on the executor: from cardinal's pinned address
+// only, for nothing but the gate. The exec makes the gate replace sshd's shell, so its parent is
+// sshd's session and events --follow notices a vanished client whatever shell flocc has.
+func keyLine(from, pub string) string {
+	f := strings.Fields(pub)
+	return fmt.Sprintf(`restrict,command="exec %s",from="%s" %s %s cardinal`, gate, from, f[0], f[1])
+}
+
+// mergeKeys drops every line carrying line's key and appends line; the owner's other keys keep
+// their place.
+func mergeKeys(existing, line string) string {
+	blob := strings.Fields(line)[2]
+	var out []string
+	for _, l := range strings.Split(existing, "\n") {
+		if strings.TrimSpace(l) == "" || slices.Contains(strings.Fields(l), blob) {
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(append(out, line), "\n") + "\n"
+}
+
+type ExecutorKey struct{}
+
+func (ExecutorKey) Name() string { return "cardinal's key on the executor" }
+
+func (e *Env) wantKeyLine(ctx context.Context) (string, error) {
+	pub := e.cardinalPub(ctx)
+	if pub == "" {
+		return "", fmt.Errorf("cardinal has no ssh key yet")
+	}
+	cip, ok := e.pinned(ctx, CardinalName)
+	if !ok {
+		return "", fmt.Errorf("cardinal's bridge address is not pinned yet")
+	}
+	return keyLine(cip, pub), nil
+}
+
+func (ExecutorKey) Check(ctx context.Context, e *Env) (bool, string, error) {
+	x := e.Cardinal.Executor
+	if !e.ok(ctx, e.inVM(x, "test", "-x", gate)) {
+		return false, gate + " missing", nil
+	}
+	want, err := e.wantKeyLine(ctx)
+	if err != nil {
+		return false, err.Error(), nil
+	}
+	got, _ := e.read(ctx, x, floccKeys)
+	if !slices.Contains(strings.Split(got, "\n"), want) {
+		return false, "cardinal's key not in " + floccKeys, nil
+	}
+	return true, "forced command " + gate, nil
+}
+
+func (ExecutorKey) Apply(ctx context.Context, e *Env) error {
+	x := e.Cardinal.Executor
+	if !e.ok(ctx, e.inVM(x, "test", "-x", gate)) {
+		return fmt.Errorf("%s has no %s; run flocc ship -H %s with this checkout first", x, gate, x)
+	}
+	want, err := e.wantKeyLine(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := e.must(ctx, e.inVM(x, "runuser", "-u", steps.ServiceUser, "--", "install", "-d", "-m", "700", "/home/"+steps.ServiceUser+"/.ssh")); err != nil {
+		return err
+	}
+	got, _ := e.read(ctx, x, floccKeys)
+	return e.put(ctx, x, vmFile{floccKeys, 0o600, steps.ServiceUser, []byte(mergeKeys(got, want))})
+}
+
+func sshConfig(ip string) string {
+	return "Host executor\n" +
+		"  HostName " + ip + "\n" +
+		"  User " + steps.ServiceUser + "\n" +
+		"  IdentityFile " + cardinalKey + "\n" +
+		"  IdentitiesOnly yes\n" +
+		"  UserKnownHostsFile " + cardinalEtc + "/known_hosts\n" +
+		"  StrictHostKeyChecking yes\n" +
+		"  BatchMode yes\n" +
+		"  ConnectTimeout 10\n" +
+		"  ServerAliveInterval 30\n" +
+		"  ServerAliveCountMax 3\n" +
+		"  LogLevel ERROR\n"
+}
+
+// cardinalFiles is everything CardinalFiles puts in the cardinal VM, rendered.
+func cardinalFiles(spec CardinalSpec, ip, hostKey string) ([]vmFile, error) {
+	hk := strings.Fields(hostKey)
+	if len(hk) < 2 || !strings.HasPrefix(hk[0], "ssh-") {
+		return nil, fmt.Errorf("the executor's host key %q is not a public key line", strings.TrimSpace(hostKey))
+	}
+	var files []vmFile
+	err := fs.WalkDir(deploy.Cardinal, "cardinal/plugin", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := deploy.Cardinal.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		mode := os.FileMode(0o644)
+		if path.Dir(p) == "cardinal/plugin/bin" {
+			mode = 0o755
+		}
+		files = append(files, vmFile{cardinalPlugin + strings.TrimPrefix(p, "cardinal/plugin"), mode, "root", b})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	read := func(name string) []byte { b, _ := deploy.Cardinal.ReadFile("cardinal/" + name); return b }
+	render := strings.NewReplacer("{{executor}}", spec.Executor, "{{hour}}", fmt.Sprintf("%02d", spec.RenewHour))
+	files = append(files,
+		vmFile{"/etc/claude-code/managed-settings.json", 0o644, "root", read("managed-settings.json")},
+		vmFile{cardinalEtc + "/ssh_config", 0o644, "root", []byte(sshConfig(ip))},
+		vmFile{cardinalEtc + "/known_hosts", 0o644, "root", []byte(ip + " " + hk[0] + " " + hk[1] + "\n")},
+	)
+	for _, u := range []string{"cardinal.service", "cardinal-renew.service", "cardinal-renew.timer"} {
+		files = append(files, vmFile{cardinalHome + "/.config/systemd/user/" + u, 0o644, cardinalUser, []byte(render.Replace(string(read(u))))})
+	}
+	return files, nil
+}
+
+func filesSum(files []vmFile) string {
+	h := sha256.New()
+	for _, f := range files {
+		fmt.Fprintf(h, "%s %o %s %d\n", f.Path, f.Mode, f.Owner, len(f.Body))
+		h.Write(f.Body)
+	}
+	return hex.EncodeToString(h.Sum(nil)) + "\n"
+}
+
+type CardinalFiles struct{}
+
+func (CardinalFiles) Name() string { return "cardinal's plugin and units" }
+
+func (e *Env) cardinalFileSet(ctx context.Context) ([]vmFile, error) {
+	x := e.Cardinal.Executor
+	ip, ok := e.pinned(ctx, x)
+	if !ok {
+		return nil, fmt.Errorf("%s's bridge address is not pinned; the executor sshd step pins it", x)
+	}
+	hostKey, ok := e.read(ctx, x, hostKeyFile)
+	if !ok {
+		return nil, fmt.Errorf("%s has no %s; the executor sshd step installs it", x, hostKeyFile)
+	}
+	return cardinalFiles(e.Cardinal, ip, hostKey)
+}
+
+func (CardinalFiles) Check(ctx context.Context, e *Env) (bool, string, error) {
+	files, err := e.cardinalFileSet(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if got, _ := e.read(ctx, CardinalName, cardinalEtc+"/sum"); got != filesSum(files) {
+		return false, "missing or out of date", nil
+	}
+	return true, fmt.Sprintf("plugin, units and the link to %s; fresh start at %02d:00", e.Cardinal.Executor, e.Cardinal.RenewHour), nil
+}
+
+func (CardinalFiles) Apply(ctx context.Context, e *Env) error {
+	files, err := e.cardinalFileSet(ctx)
+	if err != nil {
+		return err
+	}
+	// Whole: a file a later plugin drops must not linger.
+	if _, err := e.must(ctx, e.inVM(CardinalName, "rm", "-rf", cardinalPlugin)); err != nil {
+		return err
+	}
+	for _, f := range append(files, vmFile{cardinalEtc + "/sum", 0o644, "root", []byte(filesSum(files))}) {
+		if err := e.put(ctx, CardinalName, f); err != nil {
+			return err
+		}
+	}
+	for _, args := range [][]string{{"daemon-reload"}, {"enable", "--now", "cardinal-renew.timer"}, {"try-restart", "cardinal.service"}} {
+		if _, err := e.must(ctx, e.cardinalctl(args...)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

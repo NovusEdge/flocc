@@ -94,3 +94,152 @@ func TestCardinalKeyMakesAnEd25519KeyOnlyWhenMissing(t *testing.T) {
 		t.Fatal("a key is not done")
 	}
 }
+
+const (
+	executorInstance   = "incus query /1.0/instances/flocc-a"
+	cardinalInstance   = "incus query /1.0/instances/flocc-cardinal"
+	cardinalStateQuery = "incus query /1.0/instances/flocc-cardinal/state"
+	profileNIC         = `{"status":"Running","config":{},"devices":{},"expanded_devices":{"eth0":{"type":"nic","network":"incusbr0"}}}`
+	cardinalWithIP     = `{"status":"Running","network":{"enp5s0":{"addresses":[{"family":"inet","address":"10.10.0.7","scope":"global"}]}}}`
+)
+
+func linkFake() *host.Fake {
+	return host.NewFake().
+		On(bridgeGet, 0, "10.10.0.1/24").
+		On(stateQuery, 0, vmWithIP).
+		On(executorInstance, 0, profileNIC).
+		On(cardinalStateQuery, 0, cardinalWithIP).
+		On(cardinalInstance, 0, profileNIC)
+}
+
+func TestPinOverridesAProfileNicAndSetsAnOwnOne(t *testing.T) {
+	f := linkFake().OnName("incus", 0, "")
+	ip, err := cardinalEnv(f).pin(context.Background(), "flocc-a")
+	if err != nil || ip != "10.10.0.5" || !f.Ran("incus config device override flocc-a eth0 ipv4.address=10.10.0.5") {
+		t.Fatalf("%q %v %v", ip, err, f.Calls)
+	}
+	own := `{"status":"Running","devices":{"eth0":{"type":"nic","network":"incusbr0"}},"expanded_devices":{"eth0":{"type":"nic","network":"incusbr0"}}}`
+	f = linkFake().On(executorInstance, 0, own).OnName("incus", 0, "")
+	cardinalEnv(f).pin(context.Background(), "flocc-a")
+	if !f.Ran("incus config device set flocc-a eth0 ipv4.address=10.10.0.5") {
+		t.Fatal(f.Calls)
+	}
+	done := `{"status":"Running","devices":{"eth0":{"type":"nic","network":"incusbr0","ipv4.address":"10.10.0.5"}},"expanded_devices":{"eth0":{"type":"nic","network":"incusbr0","ipv4.address":"10.10.0.5"}}}`
+	f = linkFake().On(executorInstance, 0, done)
+	if ip, ok := cardinalEnv(f).pinned(context.Background(), "flocc-a"); !ok || ip != "10.10.0.5" {
+		t.Fatal("a pinned address is not pinned")
+	}
+}
+
+func TestKeyLineIsForcedRestrictedAndFromCardinalOnly(t *testing.T) {
+	got := keyLine("10.10.0.7", "ssh-ed25519 AAAAC3Nza cardinal@flocc-cardinal")
+	want := `restrict,command="exec /home/flocc/.local/bin/flocc-cardinal-gate",from="10.10.0.7" ssh-ed25519 AAAAC3Nza cardinal`
+	if got != want {
+		t.Fatalf("%s", got)
+	}
+}
+
+func TestMergeKeysReplacesOnlyCardinalsLine(t *testing.T) {
+	old := "ssh-ed25519 OTHER owner@desk\nrestrict,command=\"x\" ssh-ed25519 AAAAC3Nza cardinal\n"
+	got := mergeKeys(old, "restrict ssh-ed25519 AAAAC3Nza cardinal")
+	if got != "ssh-ed25519 OTHER owner@desk\nrestrict ssh-ed25519 AAAAC3Nza cardinal\n" {
+		t.Fatalf("%q", got)
+	}
+	if mergeKeys("", "L ssh-ed25519 K c") != "L ssh-ed25519 K c\n" {
+		t.Fatal("empty file")
+	}
+}
+
+func TestExecutorSSHPinsAndWritesTheDropInsBeforeInstallingSshd(t *testing.T) {
+	f := linkFake().
+		On("incus exec flocc-a -- sh -c command -v sshd", 1, "").
+		OnName("incus", 0, "")
+	if err := (ExecutorSSH{}).Apply(context.Background(), cardinalEnv(f)); err != nil {
+		t.Fatal(err)
+	}
+	at := func(s string) int {
+		return slices.IndexFunc(f.Calls, func(c string) bool { return strings.Contains(c, s) })
+	}
+	pin, dropIn, unit, install := at("device override flocc-a eth0"), at(sshdDropIn), at(sshUnitDropIn), at("openssh-server")
+	if pin < 0 || dropIn < pin || unit < 0 || install < dropIn || install < unit || !f.Ran("incus exec flocc-a -- systemctl restart ssh") {
+		t.Fatalf("%v", f.Calls)
+	}
+	conf := f.Stdins[f.Calls[dropIn]]
+	for _, want := range []string{"ListenAddress 10.10.0.5\n", "PasswordAuthentication no\n", "AllowUsers flocc\n", "ClientAliveInterval 30\n"} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("drop-in lacks %q:\n%s", want, conf)
+		}
+	}
+	if !strings.Contains(f.Stdins[f.Calls[unit]], "After=network-online.target") {
+		t.Error("sshd does not wait for the network")
+	}
+}
+
+func TestExecutorFirewallLetsCardinalReachOnlySshd(t *testing.T) {
+	f := linkFake().On("incus exec flocc-a -- sh -c command -v nft", 0, "/usr/sbin/nft").OnName("incus", 0, "")
+	if err := (ExecutorFirewall{}).Apply(context.Background(), cardinalEnv(f)); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("incus config device override flocc-cardinal eth0 ipv4.address=10.10.0.7") {
+		t.Fatal("cardinal's address not pinned")
+	}
+	i := slices.IndexFunc(f.Calls, func(c string) bool { return strings.Contains(c, fwFile) })
+	rules := f.Stdins[f.Calls[i]]
+	if !strings.Contains(rules, "ip saddr 10.10.0.7 tcp dport 22 accept\n    ip saddr 10.10.0.7 drop\n") {
+		t.Fatalf("%s", rules)
+	}
+	for _, want := range []string{"incus exec flocc-a -- systemctl enable flocc-cardinal-fw.service", "incus exec flocc-a -- systemctl restart flocc-cardinal-fw.service"} {
+		if !f.Ran(want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+}
+
+func TestExecutorKeyNeedsTheShippedGate(t *testing.T) {
+	f := host.NewFake().
+		On("incus exec flocc-cardinal -- cat /home/cardinal/.ssh/id_ed25519.pub", 0, "ssh-ed25519 AAAAC3Nza cardinal@x\n").
+		On("incus exec flocc-a -- test -x /home/flocc/.local/bin/flocc-cardinal-gate", 1, "")
+	err := (ExecutorKey{}).Apply(context.Background(), cardinalEnv(f))
+	if err == nil || !strings.Contains(err.Error(), "flocc ship -H flocc-a") {
+		t.Fatal(err)
+	}
+}
+
+func TestCardinalFilesRenderTheHourTheExecutorAndTheLink(t *testing.T) {
+	files, err := cardinalFiles(CardinalSpec{Executor: "flocc-a", RenewHour: 4}, "10.10.0.5", "ssh-ed25519 HOSTKEY root@flocc-a\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]vmFile{}
+	for _, f := range files {
+		by[f.Path] = f
+	}
+	units := "/home/cardinal/.config/systemd/user/"
+	checks := map[string]string{
+		units + "cardinal-renew.timer":                    "OnCalendar=*-*-* 04:00:00",
+		units + "cardinal.service":                        "flocc executor VM flocc-a.",
+		"/etc/flocc-cardinal/ssh_config":                  "HostName 10.10.0.5",
+		"/etc/flocc-cardinal/known_hosts":                 "10.10.0.5 ssh-ed25519 HOSTKEY\n",
+		"/etc/claude-code/managed-settings.json":          `"dontAsk"`,
+		"/opt/cardinal/plugin/.claude-plugin/plugin.json": `"cardinal"`,
+		"/opt/cardinal/plugin/monitors/monitors.json":     `"always"`,
+		"/opt/cardinal/plugin/skills/triage/SKILL.md":     "name: triage",
+	}
+	for path, want := range checks {
+		if !strings.Contains(string(by[path].Body), want) {
+			t.Errorf("%s lacks %q", path, want)
+		}
+	}
+	if by["/opt/cardinal/plugin/bin/follow"].Mode != 0o755 || by[units+"cardinal.service"].Owner != cardinalUser {
+		t.Fatal("modes or owners")
+	}
+	if filesSum(files) == filesSum(files[1:]) {
+		t.Fatal("the sum ignores a file")
+	}
+}
+
+func TestCardinalFilesRefuseAMalformedHostKey(t *testing.T) {
+	if _, err := cardinalFiles(CardinalSpec{Executor: "flocc-a"}, "10.10.0.5", "garbage"); err == nil {
+		t.Fatal("accepted")
+	}
+}
