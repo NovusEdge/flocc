@@ -509,10 +509,7 @@ def cmd_logs(args) -> int:
 
 
 def cmd_attach(args) -> int:
-    from flocc.agentrun import ATTACH_HINT
-
     cfg, _ = _config(args)
-    print(f"Attaching {args.session} {ATTACH_HINT}", file=sys.stderr)
     argv = [*cfg.agent_run, "attach", args.session]
     os.execvp(argv[0], argv)
 

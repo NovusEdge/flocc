@@ -17,6 +17,7 @@ from flocc.worktree import (
     changed_files,
     fetch_agent_branch,
     git,
+    origin_base,
     run_bounded,
     setup_in_checkout,
 )
@@ -253,23 +254,23 @@ def publish(
     accepted_sha: str | None = None,
     amended: dict[str, dict] | None = None,
     reuse_only: bool = False,
-    check: Callable[[Claim, RepoConfig, float], dict] | None = None,
+    *,
+    check: Callable[[Claim, RepoConfig, float], dict],
 ) -> PublishResult:
     wt = Path(claim.worktree)
     if claim.base_sha is None:
         raise ValueError(f"{claim.issue_key} has no recorded base commit")
     head = fetch_agent_branch(repo.path, wt, claim.branch, claim.issue_key)
     ref = agent_ref(claim.issue_key)
+    # The guard's merge-base needs this clone's origin/<base> current; the agent's fetch updates
+    # only its own clone.
+    origin_base(repo)
     # No tester ran: there are no tester files to guard.
     if claim.tester_sha is not None and (
         touched := _tests_guard(claim, repo, repo.path, ref, accepted_sha, amended)
     ):
         return touched
-    ran = (
-        check(claim, repo, check_timeout_s)
-        if check
-        else check_worktree(repo.check, wt, check_timeout_s)
-    )
+    ran = check(claim, repo, check_timeout_s)
     out = str(ran.get("output", ""))
     if ran["status"] == "dirty":
         detail = f"Uncommitted changes; commit them or remove them, then finish again:\n{out}"

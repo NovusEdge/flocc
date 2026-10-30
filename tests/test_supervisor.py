@@ -91,6 +91,20 @@ def test_session_files_are_read_from_the_agent_state_root(rt, tmp_path):
     assert current(rt).phase == "impl"
 
 
+def test_a_done_file_from_before_the_phase_started_is_ignored(rt, tmp_path):
+    rt.cfg = replace(rt.cfg, agent_state_root=tmp_path / "agent-state")
+    add(rt, phase="fix", started_at=200.0)
+    rt.sessions.alive_names.add("NF-1")
+    agent = tmp_path / "agent-state" / "NF-1"
+    agent.mkdir(parents=True)
+    (agent / "done.json").write_text('{"summary": "old", "at": 100}')
+    supervise(rt, current(rt))
+    assert rt.sessions.killed == [] and current(rt).phase == "fix"
+    (agent / "done.json").write_text('{"summary": "new", "at": 300}')
+    supervise(rt, current(rt))
+    assert rt.sessions.killed == ["NF-1"]
+
+
 def test_tester_done_starts_implementer(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
@@ -100,6 +114,10 @@ def test_tester_done_starts_implementer(rt):
     assert c.phase == "impl" and c.tester_sha == "sha-tests"
     assert rt.sessions.killed == ["NF-1-test"] and rt.sessions.started[0][0] == "NF-1"
     assert not (state_dir(rt.cfg, "NF-1") / "done.json").exists()
+    assert json.loads(rt.sessions.starts[0]["files"]["tester.json"]) == {
+        "base_sha": "sha-base",
+        "tester_sha": "sha-tests",
+    }
     supervise(rt, c)
     assert len(rt.sessions.started) == 1
     assert ledger.remembered_tests(rt.con, "NF-1") == ("sha-base", "sha-tests")

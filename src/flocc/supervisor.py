@@ -323,10 +323,6 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     start = rt.now()
     (d / OWNER_ITEMS).unlink(missing_ok=True)
     (d / FIX_CONTEXT).write_text(extra)
-    # The review's done.json goes first: left in place, a tick that dies before the launch would
-    # read it as the fix finishing and publish with no fix. Dying here instead relaunches the
-    # review, which costs a session but loses nothing.
-    (d / "done.json").unlink(missing_ok=True)
     # Both before the launch: a tick that dies after the session starts must find the claim in
     # the fix phase, not in review where it would start a reviewer beside the live fix.
     ledger.meta_set(rt.con, f"review_fix:{key}", "1")
@@ -362,8 +358,6 @@ def start_rebase(rt, claim: Claim, base_sha: str) -> None:
     d = state_dir(rt.cfg, key)
     start = rt.now()
     (d / FIX_CONTEXT).write_text(extra)
-    # A stale done.json would be read as this session finishing.
-    (d / "done.json").unlink(missing_ok=True)
     # Before the launch, like the review fix: a tick that dies after the session starts must find
     # the claim running in the fix phase, with its publish reusing the open PR.
     ledger.meta_set(rt.con, f"{REBASE}:{key}", "1")
@@ -449,7 +443,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         if claim.base_sha is not None:
             ledger.remember_tests(rt.con, key, claim.base_sha, head)
         start = rt.now()
-        launch(rt, claim, "impl")
+        launch(rt, replace(claim, tester_sha=head), "impl")
         ledger.update_claim(
             rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=start
         )
@@ -729,14 +723,20 @@ def supervise(rt, claim: Claim) -> None:
     raw_done = agentfs.read_text(agent, "done.json")
     if raw_done is not None:
         try:
-            summary = str(json.loads(raw_done).get("summary", ""))
-        except (ValueError, AttributeError):  # still being written; the next tick reads it whole
+            data = json.loads(raw_done)
+            summary = str(data.get("summary", ""))
+            # flocc cannot delete in the agent's directory, so a previous session's file can
+            # outlive it; started_at is set before every launch.
+            stale = float(data.get("at", claim.started_at)) < claim.started_at
+        except (ValueError, TypeError, AttributeError):
+            # Still being written; the next tick reads it whole.
             return
-        rt.sessions.kill(name)
-        if claim.phase != "review":
-            (d / LAST_SUMMARY).write_text(summary)
-        _finish_phase(rt, claim, summary)
-        return
+        if not stale:
+            rt.sessions.kill(name)
+            if claim.phase != "review":
+                (d / LAST_SUMMARY).write_text(summary)
+            _finish_phase(rt, claim, summary)
+            return
     if (message := _idle_message(agent)) is not None:
         _stopped(rt, claim, name, message)
         return

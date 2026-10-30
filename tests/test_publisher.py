@@ -15,11 +15,16 @@ from flocc.publisher import (
     failure_excerpt,
     pr_title,
     pr_view,
-    publish,
     review_comment,
 )
+from flocc.publisher import publish as _publish
 from flocc.worktree import git, prepare_worktree
 from tests.test_ledger import make
+
+
+def publish(*args, **kw):
+    kw.setdefault("check", lambda c, r, t: check_worktree(r.check, Path(c.worktree), t))
+    return _publish(*args, **kw)
 
 
 def setup_claim(origin, tmp_path, check="true"):
@@ -581,3 +586,41 @@ def test_trailer_check_is_skipped_when_the_trailer_is_off(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path)
     result = publish(claim, repo, "t", "s", token="t", runner=Gh(), trailer=False)
     assert result.status == "opened" and result.untrailed == ()
+
+
+def test_review_diff_ignores_base_commits_the_service_clone_has_not_fetched(
+    origin, tmp_cfg, tmp_path
+):
+    from flocc.tick import build_runtime
+
+    bare = tmp_path / "origin.git"
+    service = tmp_path / "service"
+    agent = tmp_path / "agent"
+    for clone in (service, agent):
+        git("clone", "-q", str(bare), str(clone), cwd=tmp_path)
+        git("config", "user.name", "t", cwd=clone)
+        git("config", "user.email", "t@t", cwd=clone)
+    (origin / "newer.txt").write_text("n\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-qm", "newer", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    git("pull", "-q", cwd=agent)
+    git("checkout", "-qb", "agent/nf-5", cwd=agent)
+    (agent / "mine.txt").write_text("m\n")
+    git("add", ".", cwd=agent)
+    git("commit", "-qm", "mine", cwd=agent)
+    git("remote", "set-url", "origin", str(bare), cwd=service)
+    repo = RepoConfig(service, check="true")
+    for name in ("linear.key", "publish.token"):
+        (tmp_path / name).write_text("k\n")
+    cfg = replace(
+        tmp_cfg,
+        repos={"backend": repo},
+        linear_key_file=tmp_path / "linear.key",
+        publish_gh_token_file=tmp_path / "publish.token",
+    )
+    rt = build_runtime(cfg, tmp_path / "config.toml")
+    claim = make("NF-5", worktree=str(agent))
+    claim.branch = "agent/nf-5"
+    diff = rt.review_diff(claim)
+    assert "mine.txt" in diff and "newer.txt" not in diff

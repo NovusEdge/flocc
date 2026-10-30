@@ -401,12 +401,11 @@ def test_logs_issue_does_not_follow(host_cfg, capsys):
     assert capsys.readouterr().err == "--issue does not follow; drop -f\n"
 
 
-def test_attach_goes_through_the_wrapper_and_says_how_to_leave(host_cfg, capsys):
+def test_attach_goes_through_the_wrapper(host_cfg):
     with pytest.raises(Exec) as exc:
         main(["--config", str(host_cfg), "attach", "NF-12-review"])
     argv = exc.value.args[0]
     assert argv == [*load(host_cfg).agent_run, "attach", "NF-12-review"]
-    assert "Ctrl-b d detaches" in capsys.readouterr().err
 
 
 def _peek_host(host_cfg, monkeypatch, pane, alive=True, claim=True):

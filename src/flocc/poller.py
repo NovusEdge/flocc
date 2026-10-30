@@ -150,7 +150,10 @@ def reap_worktrees(rt) -> None:
         if not remove_issue(rt, claim, keep_dirty=claim.state == "timed_out"):
             cause = f"{claim.issue_key}:worktree-kept"
             if not ledger.alert_seen(rt.con, cause, COMMENT_ONCE_S, rt.now()):
-                print(f"reap: {claim.worktree} kept: uncommitted changes", file=sys.stderr)
+                print(
+                    f"reap: {claim.worktree} kept (uncommitted changes, or flocc-agent did not answer)",
+                    file=sys.stderr,
+                )
                 ledger.record_alert(rt.con, cause, 3, claim.issue_key, rt.now())
             continue
         ledger.delete_claim(rt.con, claim.issue_key)
@@ -329,9 +332,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     for round_ in (1, 2):
         ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")
     (d / "owner-items.md").unlink(missing_ok=True)
-    # A previous claim's scratchpads, idle marker and last summary belong to that run.
-    for stale in ("scratchpads", "idle", LAST_SUMMARY):
-        (d / stale).unlink(missing_ok=True)
+    (d / LAST_SUMMARY).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # executor: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.
@@ -339,7 +340,9 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     base_branch = cfg.repos[repo].base_branch
     remembered = ledger.remembered_tests(rt.con, issue.key)
     # Tests already merged into the base belong to shipped work, and a reopened issue is new
-    # work. After a merge commit, a branch cut fresh from the base contains them too.
+    # work. After a merge commit, a branch cut fresh from the base contains them too. The
+    # agent's fetch updated its own clone, not this one.
+    origin_base(cfg.repos[repo])
     ref = agent_ref(issue.key)
     if remembered and contains(repo_path, remembered[1], f"origin/{base_branch}"):
         ledger.forget_tests(rt.con, issue.key)

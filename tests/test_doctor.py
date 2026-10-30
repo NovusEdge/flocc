@@ -122,6 +122,25 @@ def test_the_boundary_check_fails_when_flocc_agent_can_read_a_secret(tmp_cfg, tm
     assert boundary.status == "fail" and key in boundary.detail
 
 
+def test_the_boundary_check_fails_when_flocc_agent_can_write_the_flocc_binary(tmp_cfg, tmp_path):
+    agent = FakeAgent(tmp_cfg)
+    seen = {}
+    real = agent.probe
+
+    def probe(read, write):
+        seen["write"] = write
+        return real(read, write)
+
+    agent.probe = probe
+    agent_checks(tmp_cfg, tmp_path / "c.toml", agent)
+    bin_dir = str(tmp_cfg.agent_flocc.parent)
+    assert {bin_dir, str(tmp_cfg.state_root)} <= set(seen["write"])
+    agent.probe_result = {"read": {}, "write": {bin_dir: True}, "tmux": True, "groups": []}
+    results = agent_checks(tmp_cfg, tmp_path / "c.toml", agent)
+    (boundary,) = [r for r in results if r.name == "agent boundary"]
+    assert boundary.status == "fail" and bin_dir in boundary.detail
+
+
 def test_the_docker_group_fails_the_boundary(tmp_cfg, tmp_path):
     agent = FakeAgent(tmp_cfg)
     agent.probe_result = {

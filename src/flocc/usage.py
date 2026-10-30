@@ -55,7 +55,11 @@ def limit_pcts(status: dict, now: float) -> tuple[float | None, float | None]:
 
 def latest_usage(state_root: Path, now: float) -> Usage | None:
     best: tuple[float, dict] | None = None
-    for key in agentfs.entries(state_root):
+    try:
+        keys = agentfs.entries(state_root)
+    except OSError:  # flocc-agent replaced the directory with a link
+        return None
+    for key in keys:
         # Each launch deletes the previous session's status file, so it can vanish mid-scan.
         try:
             mtime = agentfs.mtime(state_root / key, "status.json")

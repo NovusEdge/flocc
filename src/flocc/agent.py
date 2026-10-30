@@ -26,7 +26,7 @@ def _prepare_error(data: dict) -> subprocess.SubprocessError:
         exc = BranchDiverged(detail)
     else:
         exc = subprocess.CalledProcessError(int(data.get("code") or 1), ["git"], stderr=detail)
-    # Set only when ./setup failed on a worktree still exactly at the base: main's failure.
+    # Set when the worktree is still exactly at the base, after a setup failure or a dirty one.
     setattr(exc, "at_base", data.get("at_base"))  # noqa: B010
     return exc
 

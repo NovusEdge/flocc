@@ -233,7 +233,15 @@ def agent_checks(cfg: Config, config_path: Path, agent) -> list[Result]:
         config_path,
     ]
     try:
-        seen = agent.probe([str(p) for p in secrets], [str(cfg.plugin_dir)])
+        # Directories whose contents flocc, its hooks or its git run as flocc.
+        writes = [
+            cfg.plugin_dir,
+            cfg.agent_flocc.parent,
+            cfg.agent_flocc.parent.parent,
+            cfg.state_root,
+            *(repo.path / ".git" for repo in cfg.repos.values()),
+        ]
+        seen = agent.probe([str(p) for p in secrets], [str(p) for p in writes])
     except (subprocess.SubprocessError, OSError) as exc:
         detail = (
             f"flocc-agent-run did not answer ({exc}); flocc setup installs it and its sudoers rule"
@@ -244,7 +252,8 @@ def agent_checks(cfg: Config, config_path: Path, agent) -> list[Result]:
     if reached:
         detail = (
             f"flocc-agent can reach {', '.join(reached)}; keep /home/flocc mode 700 and"
-            f" {cfg.plugin_dir} flocc's"
+            f" {cfg.plugin_dir}, {cfg.agent_flocc.parent.parent}, the state directory and the"
+            " service clones flocc's"
         )
         results.append(Result("fail", "agent boundary", detail))
     else:

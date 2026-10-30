@@ -23,7 +23,7 @@ from flocc.publisher import comment_on_pr, pr_view, publish, read_amended
 from flocc.runtime import Runtime
 from flocc.supervisor import supervise
 from flocc.tokens import check_claude_login, check_tokens
-from flocc.worktree import agent_ref, fetch_agent_branch, git
+from flocc.worktree import agent_ref, fetch_agent_branch, git, origin_base
 
 FAILS_BEFORE_PAGE = 5
 
@@ -72,6 +72,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
     def review_diff(claim):
         repo = cfg.repos[claim.repo]
         git_head(claim)
+        origin_base(repo)
         return git(
             "diff", f"origin/{repo.base_branch}...{agent_ref(claim.issue_key)}", cwd=repo.path
         )
