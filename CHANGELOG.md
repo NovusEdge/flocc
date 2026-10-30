@@ -32,6 +32,10 @@ so on its Linear issue.
 - The subagent gate and its launch budgets are gone, with `flocc gate`, `allow:` grants in the
   agent block and in comments, and `launches N/M` in status and the dashboard. An `allow:` line in
   the agent block is now an unknown key, and the issue is skipped with a comment.
+- Fixed: a plugin hook answering "ask" (curt does for `cat`, `head` and `tail`) no longer stalls an
+  unattended session on a dialog. Managed settings gain a `PermissionRequest` hook,
+  `flocc permission-deny`, that denies it and tells the agent to do it another way; `flocc doctor`
+  checks for it. `context.md` now names the session's own state directory, not the service's.
 - The permission hook and `flocc permissions report` are gone.
 - Path claims are gone: `flocc claim`, the pre-commit hook's claim check and the agent block's
   `paths:` key, which is now refused as unknown. Repo config drops `shared_paths`.
