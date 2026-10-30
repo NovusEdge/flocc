@@ -708,15 +708,15 @@ def test_tick_pages_once_runtime_setup_failures_repeat(tmp_cfg, tmp_path, monkey
         publish_gh_token_file=tmp_path / "gh-publish.token",
     )
 
-    def missing(name):
-        raise RuntimeError(f"{name} is not on PATH")
+    def broken(_key):
+        raise RuntimeError("agent unreachable")
 
-    monkeypatch.setattr("flocc.tick._which", missing)
+    monkeypatch.setattr("flocc.tick.http_transport", broken)
     for _ in range(6):
-        with pytest.raises(RuntimeError, match="not on PATH"):
+        with pytest.raises(RuntimeError, match="agent unreachable"):
             tick(cfg, tmp_path / "c.toml")
     [(_, key, line)] = ledger.pending_digest(ledger.connect(cfg.ledger_path))
-    assert key is None and "not on PATH" in line
+    assert key is None and "agent unreachable" in line
 
 
 def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
@@ -786,7 +786,6 @@ def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monke
         publish_gh_token_file=tmp_path / "gh-publish.token",
     )
     cfg.agent_gh_token_file.unlink()
-    monkeypatch.setattr("flocc.tick._which", lambda name: f"/opt/{name}")
     transports = []
     monkeypatch.setattr("flocc.tick.http_transport", transports.append)
     with pytest.raises(RuntimeError, match="gh-agent.token"):

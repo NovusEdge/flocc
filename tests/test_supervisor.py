@@ -1,13 +1,14 @@
 import json
 import subprocess
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from flocc import canary, ledger
 from flocc.agentblock import IssueSettings, settings_to_json
 from flocc.agentfs import AgentFileError
-from flocc.context import state_dir
+from flocc.context import agent_dir, state_dir
 from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.publisher import BranchMoved, PublishResult
@@ -112,7 +113,7 @@ def test_failed_start_puts_the_markers_back(rt):
     before = (d / "done.json").read_text()
     working = rt.sessions.start
 
-    def down(name, cwd, argv):
+    def down(name, cwd, argv, **kw):
         raise subprocess.CalledProcessError(1, ["tmux"])
 
     rt.sessions.start = down
@@ -393,7 +394,7 @@ def test_a_pr_closed_during_the_fix_ends_the_claim(rt):
 def test_a_tick_that_dies_after_the_fix_launch_does_not_post_or_relaunch_a_review(rt):
     review_session(rt, CHANGES)
 
-    def dies(name, cwd, argv):
+    def dies(name, cwd, argv, **kw):
         raise KeyboardInterrupt
 
     rt.sessions.start = dies
@@ -740,19 +741,12 @@ def test_dead_session_restarts_once_then_blocks(rt):
     assert current(rt).state == "blocked"
 
 
-def test_launch_trusts_the_worktree_and_its_checkout(rt):
-    cj = rt.cfg.claude_json
-    cj.write_text(json.dumps({"userID": "u", "projects": {"/other": {"allowedTools": ["x"]}}}))
-    cj.chmod(0o600)
+def test_launch_asks_for_trust_in_the_worktree_and_its_clone(rt):
     add(rt)
     supervise(rt, current(rt))
-    assert rt.sessions.started[0][0] == "NF-1-test"
-    data = json.loads(cj.read_text())
-    checkout = str(rt.cfg.repos["backend"].path)
-    assert data["projects"]["/wt/NF-1"]["hasTrustDialogAccepted"] is True
-    assert data["projects"][checkout]["hasTrustDialogAccepted"] is True
-    assert data["userID"] == "u" and data["projects"]["/other"] == {"allowedTools": ["x"]}
-    assert cj.stat().st_mode & 0o777 == 0o600
+    (start,) = rt.sessions.starts
+    assert start["name"] == "NF-1-test" and start["cwd"] == Path("/wt/NF-1")
+    assert start["trust"] == [rt.cfg.agent_home / "src" / "backend"]
 
 
 def test_launch_fails_without_agent_token(rt):
@@ -855,16 +849,36 @@ def test_only_implementer_and_fix_sessions_use_remote_control(rt):
     assert "--remote-control" in rt.sessions.started[-1][1]
 
 
-def test_unlisted_installed_plugins_are_disabled_at_launch(rt):
-    rt.cfg.agent_plugins_file.write_text("docket@NovusEdge\n")
-    rt.cfg.installed_plugins_file.write_text(
-        json.dumps({"plugins": {"docket@NovusEdge": [], "glowup@glowup": []}})
-    )
+def test_launch_sends_the_allowed_plugins(rt):
     add(rt)
-    supervise(rt, current(rt))  # not alive: relaunch
-    argv = rt.sessions.started[-1][1]
-    settings = json.loads(argv[argv.index("--settings") + 1])
-    assert settings["enabledPlugins"] == {"glowup@glowup": False}
+    supervise(rt, current(rt))
+    assert rt.sessions.starts[-1]["plugins"] is None
+    rt.cfg.agent_plugins_file.write_text("docket@NovusEdge\n")
+    ledger.update_claim(rt.con, "NF-1", restarts=0)
+    rt.sessions.alive_names.clear()
+    supervise(rt, current(rt))
+    assert rt.sessions.starts[-1]["plugins"] == ("docket@NovusEdge",)
+
+
+def test_launch_hands_the_session_its_files_and_clears_the_old_markers(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "context.md").write_text("CTX")
+    (d / "last-summary.md").write_text("tests for A")
+    supervise(rt, current(rt))
+    (start,) = rt.sessions.starts
+    assert start["state"] == agent_dir(rt.cfg, "NF-1")
+    assert start["files"]["context.md"] == "CTX"
+    assert start["files"]["last-summary.md"] == "tests for A"
+    assert json.loads(start["files"]["tester.json"]) == {
+        "base_sha": "sha-base",
+        "tester_sha": "sha-tests",
+    }
+    assert {"done.json", "idle", "status.json", "review.md"} <= set(start["clear"])
+    env = start["argv"]
+    assert "FLOCC_STATE=" + str(agent_dir(rt.cfg, "NF-1")) in env
+    assert not any(a.startswith("FLOCC_CONFIG=") for a in env)
+    assert "--remote-control" in env
 
 
 def test_relaunch_clears_the_idle_marker(rt):

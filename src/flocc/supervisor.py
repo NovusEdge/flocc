@@ -10,7 +10,7 @@ from pathlib import Path
 from flocc import agentfs, canary, ledger
 from flocc.agentblock import settings_from_json
 from flocc.context import agent_dir, phase_prompt, state_dir
-from flocc.idle import BACKGROUND, clear_idle
+from flocc.idle import BACKGROUND
 from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.notice import Notice
@@ -24,18 +24,10 @@ from flocc.publisher import (
     review_comment,
 )
 from flocc.sequence import ARCHETYPE
-from flocc.sessions import (
-    allowed_plugins,
-    claude_argv,
-    clean_env,
-    installed_plugins,
-    session_name,
-    trust_folders,
-)
+from flocc.sessions import agent_env, allowed_plugins, claude_argv, session_name
 from flocc.usage import latest_usage
 from flocc.worktree import origin_base
 
-_MARKERS = ("done.json",)
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
 BASE_HELD = "base_held"
@@ -46,6 +38,19 @@ CHECK_OUTPUT = "check-output.log"
 OWNER_ITEMS = "owner-items.md"
 POSTED_REVIEW = "review-posted.md"
 LAST_SUMMARY = "last-summary.md"
+TESTER = "tester.json"
+# Service files a session reads, copied into its state directory at every start.
+_HANDOFF = (
+    "context.md",
+    LAST_SUMMARY,
+    TESTER,
+    "review-input.md",
+    "pr.diff",
+    FIX_CONTEXT,
+    CHECK_OUTPUT,
+)
+# A previous session's files that the new one would be taken to have written.
+_CLEAR = ("done.json", "status.json", "idle", BACKGROUND, "review.md")
 _RESTART = (
     "Your previous session for this step ended before flocc done. The branch holds what it"
     " committed; check git log and git status, then carry on from there."
@@ -72,38 +77,38 @@ def _record_usage(rt, key: str, phase: str, event: str) -> None:
         ledger.add_usage(rt.con, key, phase, event, u.five_hour_pct, u.weekly_pct, rt.now())
 
 
-def _disabled_plugins(rt) -> tuple[str, ...]:
+def _allowed_plugins(rt) -> tuple[str, ...] | None:
     cfg = rt.cfg
-    listed = cfg.agent_plugins_file or cfg.plugin_dir.parent / "deploy" / "agent-plugins.txt"
-    allowed = allowed_plugins(listed)
-    if allowed is None:
-        return ()
-    return tuple(p for p in installed_plugins(cfg.installed_plugins_file) if p not in allowed)
+    return allowed_plugins(
+        cfg.agent_plugins_file or cfg.plugin_dir.parent / "deploy" / "agent-plugins.txt"
+    )
 
 
-def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
+def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...] = ()) -> None:
     token = rt.cfg.agent_gh_token_file
     if not token.exists() or not token.read_text().strip():
         raise LaunchError(f"{token} is missing or empty; agents get their GitHub token from it")
-    d = state_dir(rt.cfg, claim.issue_key)
-    # Before the deletes below: the outgoing session's status file is the freshest usage reading.
-    _record_usage(rt, claim.issue_key, phase, "start")
-    name = session_name(claim.issue_key, phase)
-    env = clean_env(
+    key = claim.issue_key
+    d = state_dir(rt.cfg, key)
+    # Before the start below: the outgoing session's status file is the freshest usage reading.
+    _record_usage(rt, key, phase, "start")
+    name = session_name(key, phase)
+    agent = agent_dir(rt.cfg, key)
+    env = agent_env(
+        rt.cfg,
         {
-            "FLOCC_STATE": str(d),
-            "FLOCC_CONFIG": str(rt.config_path),
+            "FLOCC_STATE": str(agent),
             "FLOCC_PHASE": phase,
             "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
             "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS": "1",
-        }
+        },
     )
     settings = settings_from_json(claim.settings_json)
     if phase == "review":
         settings = replace(settings, model=rt.cfg.review_model)
     if settings.effort is None:
         settings = replace(settings, effort=rt.cfg.effort_for(phase))
-    prompt = phase_prompt(phase, claim.issue_key, extra)
+    prompt = phase_prompt(phase, key, extra)
     argv = claude_argv(
         rt.cfg,
         name,
@@ -112,26 +117,26 @@ def launch(rt, claim: Claim, phase: str, extra: str = "") -> None:
         env,
         rt.claude_exe,
         rt.exe,
-        disabled_plugins=_disabled_plugins(rt),
         remote_control=phase in ("impl", "fix"),
     )
-    # After everything above that can raise: the previous session's markers would be taken for
-    # the new one's.
-    markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
-    for leftover in (*_MARKERS, "status.json", BACKGROUND):
-        (d / leftover).unlink(missing_ok=True)
-    clear_idle(d)
-    # Both keys: for a worktree, trust may be keyed on the main checkout's root instead.
-    repo = rt.cfg.repos.get(claim.repo)
-    trust_folders(rt.cfg.claude_json, [claim.worktree, *([repo.path] if repo else [])])
-    try:
-        rt.sessions.start(name, Path(claim.worktree), argv)
-    except BaseException:
-        # Without its marker the next tick would take the step for a crash instead of repeating
-        # it: a tester rerun on its own commits, or a fix started without the check output.
-        for n, content in markers.items():
-            (d / n).write_bytes(content)
-        raise
+    if claim.tester_sha is not None:
+        (d / TESTER).write_text(
+            json.dumps({"base_sha": claim.base_sha, "tester_sha": claim.tester_sha})
+        )
+    else:
+        (d / TESTER).unlink(missing_ok=True)
+    files = {n: (d / n).read_text() for n in _HANDOFF if (d / n).exists()}
+    rt.sessions.start(
+        name,
+        Path(claim.worktree),
+        argv,
+        state=agent,
+        files=files,
+        clear=[*_CLEAR, *_HANDOFF, *reset],
+        # The worktree is trusted as the session's cwd; trust may also be keyed on its clone.
+        trust=[rt.cfg.agent_home / "src" / claim.repo],
+        plugins=_allowed_plugins(rt),
+    )
 
 
 def _block(rt, claim: Claim, cause: str, summary: str, action: str) -> None:
@@ -228,7 +233,8 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
                 f" findings.\n\n{posted.read_text().strip()}\n"
             )
         (d / "review-input.md").write_text(
-            f"# Review {key}: {title}\n\nPR: {url}\n\nThe diff is in {d / 'pr.diff'}.\n\n"
+            f"# Review {key}: {title}\n\nPR: {url}\n\n"
+            f"The diff is in {agent_dir(rt.cfg, key) / 'pr.diff'}.\n\n"
             f"## Issue description, including the acceptance criteria\n\n{description}\n"
             f"{amended_section(read_amended(agent_dir(rt.cfg, key)))}\n{earlier}"
         )
@@ -523,9 +529,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             return
         extra = f"The check failed with:\n\n{result.detail}"
         if result.log:
-            log = state_dir(rt.cfg, key) / CHECK_OUTPUT
-            log.write_text(result.log)
-            extra += f"\n\nThis is an excerpt; the full output is in {log}."
+            (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
+            full = agent_dir(rt.cfg, key) / CHECK_OUTPUT
+            extra += f"\n\nThis is an excerpt; the full output is in {full}."
         if claim.fix_attempts == 0 and (note := _base_moved_note(rt, claim, result.detail)):
             extra = f"{note}\n\n{extra}"
         context = state_dir(rt.cfg, key) / FIX_CONTEXT

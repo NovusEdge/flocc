@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import replace
 
@@ -32,9 +33,8 @@ def tmp_cfg(tmp_path):
         agent_state_root=tmp_path / "state",
         ledger_path=tmp_path / "l.sqlite",
         agent_gh_token_file=token,
-        claude_json=tmp_path / ".claude.json",
+        agent_run=(sys.executable, "-m", "flocc.agentrun"),
         agent_plugins_file=tmp_path / "agent-plugins.txt",
-        installed_plugins_file=tmp_path / "installed_plugins.json",
     )
 
 

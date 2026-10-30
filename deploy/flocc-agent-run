@@ -1,0 +1,17 @@
+#!/bin/sh
+# Root-owned at /usr/local/libexec/flocc-agent-run. flocc's one sudoers rule names only this file,
+# run as flocc-agent; it passes a fixed set of subcommands on to flocc-agent.
+set -eu
+umask 027
+case "${1:-}" in
+  alive|attach|capture|kill|send|start) ;;
+  *)
+    echo "flocc-agent-run: unknown subcommand: ${1:-none}" >&2
+    exit 2
+    ;;
+esac
+PATH="/opt/flocc/bin:$HOME/.local/bin:$HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
+export PATH
+# The service's working directory is usually one flocc-agent cannot enter.
+[ -x . ] || cd "$HOME"
+exec /opt/flocc/bin/flocc-agent "$@"

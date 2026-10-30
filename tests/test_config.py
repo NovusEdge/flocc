@@ -28,7 +28,6 @@ def test_example_loads_with_defaults():
     assert cfg.state_root.is_absolute()
     assert cfg.mcp_servers["sentry"]["type"] == "http"
     assert cfg.agent_plugins_file is None
-    assert cfg.installed_plugins_file.name == "installed_plugins.json"
 
 
 def test_layout_keys_in_an_old_config_are_ignored_with_a_warning(tmp_path, capsys):

@@ -1,5 +1,4 @@
 import fcntl
-import shutil
 import subprocess
 import sys
 import time
@@ -8,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from flocc import ledger, rebase
+from flocc.agent import Agent
 from flocc.config import Config, trailer_enabled
 from flocc.context import agent_dir
 from flocc.linear import Linear, LinearError, http_transport
@@ -22,7 +22,6 @@ from flocc.poller import (
 )
 from flocc.publisher import check_at_base, comment_on_pr, pr_view, publish, read_amended
 from flocc.runtime import Runtime
-from flocc.sessions import Sessions
 from flocc.supervisor import supervise
 from flocc.tokens import check_claude_login, check_tokens
 from flocc.worktree import git
@@ -36,14 +35,6 @@ class IssueLinearErrors(LinearError):
         super().__init__("; ".join(f"{k}: {failed[k]}" for k in self.keys))
 
 
-def _which(name: str) -> str:
-    # The pane's PATH is the tick's, and the unit's PATH is systemd's unless the unit sets one.
-    path = shutil.which(name)
-    if path is None:
-        raise RuntimeError(f"{name} is not on PATH; set Environment=PATH in the unit")
-    return path
-
-
 def _require_token(path: Path) -> None:
     # launch() needs it too, but failing there comes after a claim is made; every ready issue
     # would be claimed and dropped again each tick.
@@ -52,7 +43,8 @@ def _require_token(path: Path) -> None:
 
 
 def build_runtime(cfg: Config, config_path: Path) -> Runtime:
-    exe, claude_exe = _which("flocc"), _which("claude")
+    exe, claude_exe = str(cfg.agent_flocc), str(cfg.agent_claude)
+    agent = Agent(cfg)
     _require_token(cfg.agent_gh_token_file)
     con = ledger.connect(cfg.ledger_path)
     linear = Linear(http_transport(cfg.linear_key_file.read_text().strip()))
@@ -93,7 +85,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         cfg=cfg,
         con=con,
         linear=linear,
-        sessions=Sessions(),
+        sessions=agent.sessions(),
         notifier=notifier,
         now=time.time,
         exe=exe,
@@ -105,6 +97,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         comment_pr=comment_pr,
         pr_view=lambda claim, url: pr_view(claim, url, token),
         base_check=base_check,
+        agent=agent,
     )
 
 

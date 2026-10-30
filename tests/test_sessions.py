@@ -9,9 +9,9 @@ from flocc.agentblock import IssueSettings
 from flocc.config import load
 from flocc.sessions import (
     Sessions,
+    agent_env,
     allowed_plugins,
     claude_argv,
-    clean_env,
     installed_plugins,
     session_name,
     trust_folders,
@@ -22,13 +22,14 @@ CFG = load(EXAMPLE)
 STATE = {"FLOCC_STATE": "/s/NF-1"}
 
 
-def test_clean_env_keeps_only_the_allowlist(monkeypatch):
-    for key in ("HOME", "USER", "PATH"):
-        monkeypatch.setenv(key, "/x")
-    for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CONFIG_DIR"):
-        monkeypatch.setenv(key, "x")
-    env = clean_env({"FLOCC_STATE": "/s"})
-    assert env.keys() == {"HOME", "USER", "PATH", "TERM", "LANG", "FLOCC_STATE"}
+def test_the_pane_gets_flocc_agent_s_environment_and_nothing_else(monkeypatch):
+    monkeypatch.setenv("SUDO_UID", "1000")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
+    env = agent_env(CFG, {"FLOCC_PHASE": "impl"})
+    assert env["HOME"] == "/home/flocc-agent" and env["USER"] == "flocc-agent"
+    assert env["PATH"].startswith("/opt/flocc/bin:/home/flocc-agent/.local/bin:")
+    assert env["FLOCC_PHASE"] == "impl"
+    assert not {"SUDO_UID", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"} & set(env)
 
 
 def test_argv_wraps_claude_in_a_clean_env():
@@ -44,7 +45,7 @@ def test_argv_wraps_claude_in_a_clean_env():
     )
     assert argv[:4] == ["/usr/bin/env", "-i", "HOME=/h", "X=1"]
     i = argv.index("/opt/claude")
-    assert argv[i - 1] == str(CFG.agent_gh_token_file) and argv[i + 1] == "do the thing"
+    assert argv[i - 1] == str(CFG.agent_token_file) and argv[i + 1] == "do the thing"
     assert argv[-2] == "--mcp-config"
     assert json.loads(argv[-1]) == {"mcpServers": {"sentry": CFG.mcp_servers["sentry"]}}
     assert argv[argv.index("--remote-control") + 1] == "NF-1"
@@ -147,11 +148,6 @@ def test_settings_deny_general_purpose_and_nested_claude_but_allow_questions():
     assert "Agent(general-purpose)" in deny and "Bash(claude:*)" in deny
     assert "AskUserQuestion" not in deny
     assert s["disableWorkflows"] is True
-
-
-def test_unlisted_plugins_are_disabled():
-    s = settings_of(argv_with(disabled_plugins=("glowup@glowup",)))
-    assert s["enabledPlugins"] == {"glowup@glowup": False}
 
 
 def test_remote_control_can_be_left_off():

@@ -19,20 +19,25 @@ _DENY = [
     "Bash(claude:*)",
     "Agent(general-purpose)",
 ]
-_KEEP = ("HOME", "USER", "PATH", "LANG", "TERM")
 # $0 is the token file. Reading it inside the pane keeps the token off the tmux and ps command
 # lines, and a missing file stops the session instead of leaving gh to find other credentials.
 _WRAPPER = 'GH_TOKEN=$(cat "$0") || exit 1; export GH_TOKEN; exec "$@"'
 
 
-def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    # A session started from inside another Claude Code session inherits its messaging socket,
-    # session ID and task list, ANTHROPIC_API_KEY would switch billing to the API, and
-    # CLAUDE_CONFIG_DIR would move ~/.claude.json away from the login and folder trust.
-    env = {k: os.environ[k] for k in _KEEP if k in os.environ}
-    env.setdefault("TERM", "xterm-256color")
-    env.setdefault("LANG", "C.UTF-8")
-    return {**env, **(extra or {})}
+def agent_env(cfg: Config, extra: dict[str, str]) -> dict[str, str]:
+    # The pane gets only these. Left out on purpose: sudo's SUDO_* (Claude Code refuses
+    # bypassPermissions under sudo), ANTHROPIC_API_KEY (it would bill the API), CLAUDE_CONFIG_DIR
+    # (it would move the login away), and whatever the session that started the tick had.
+    home = str(cfg.agent_home)
+    path = f"{cfg.agent_flocc.parent}:{home}/.local/bin:{home}/.local/share/mise/shims"
+    return {
+        "HOME": home,
+        "USER": cfg.agent_user,
+        "PATH": f"{path}:/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "TERM": "xterm-256color",
+        **extra,
+    }
 
 
 def trust_folders(claude_json: Path, paths) -> None:
@@ -88,7 +93,6 @@ def claude_argv(
     env: dict[str, str],
     claude_exe: str,
     exe: str,
-    disabled_plugins: tuple[str, ...] = (),
     remote_control: bool = True,
 ) -> list[str]:
     servers = {s: cfg.mcp_servers[s] for s in settings.mcp}
@@ -103,8 +107,6 @@ def claude_argv(
         # without it the first session on a host sits at that dialog.
         "skipDangerousModePermissionPrompt": True,
     }
-    if disabled_plugins:
-        session_settings["enabledPlugins"] = {p: False for p in disabled_plugins}
     # The pane would otherwise inherit the tmux server's environment, which is whatever the
     # process that started the server had.
     argv = [
@@ -114,7 +116,7 @@ def claude_argv(
         "/bin/sh",
         "-c",
         _WRAPPER,
-        str(cfg.agent_gh_token_file),
+        str(cfg.agent_token_file),
         claude_exe,
         prompt,
         # The Claude app announces every Remote Control session; only the long phases get one.

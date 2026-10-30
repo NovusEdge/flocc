@@ -14,6 +14,8 @@ _LAYOUT = (
     "agent_state_root",
     "agent_flocc",
     "agent_run",
+    "claude_json",
+    "installed_plugins_file",
 )
 AGENT_RUN = ("sudo", "-n", "-H", "-u", "flocc-agent", "/usr/local/libexec/flocc-agent-run")
 _PATH_KEYS = (
@@ -22,9 +24,7 @@ _PATH_KEYS = (
     "linear_key_file",
     "agent_gh_token_file",
     "publish_gh_token_file",
-    "claude_json",
     "agent_plugins_file",
-    "installed_plugins_file",
 )
 
 
@@ -90,13 +90,8 @@ class Config:
     plugin_dir: Path = Path("/opt/flocc/plugin")
     agent_flocc: Path = Path("/opt/flocc/bin/flocc")
     agent_run: tuple[str, ...] = AGENT_RUN
-    # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
-    claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
-    # The plugins agent sessions get; None means deploy/agent-plugins.txt in the service repo.
+    # The plugins agent sessions get; None means /opt/flocc/deploy/agent-plugins.txt.
     agent_plugins_file: Path | None = None
-    installed_plugins_file: Path = field(
-        default_factory=lambda: Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-    )
 
     @property
     def agent_token_file(self) -> Path:

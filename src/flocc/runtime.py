@@ -32,3 +32,5 @@ class Runtime:
     # Runs the repo's check on its base branch: (base SHA, failure or None). None skips the
     # base comparison.
     base_check: Callable[[str], tuple[str, Any]] | None = None
+    # The service's side of flocc-agent-run; None in tests that never reach flocc-agent.
+    agent: Any = None

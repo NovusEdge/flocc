@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
+from flocc.agentrun import apply_handoff
 from flocc.linear import Issue
 
 ISSUE = Issue("u1", "NF-1", "Fix rounding", "desc", "https://l/NF-1", "started", (), None, "t1")
@@ -13,13 +15,29 @@ class FakeSessions:
     killed: list = field(default_factory=list)
     panes: dict = field(default_factory=dict)
     captured: list = field(default_factory=list)
+    starts: list = field(default_factory=list)
 
     def capture(self, name, lines):
         self.captured.append((name, lines))
         return self.panes.get(name, "")
 
-    def start(self, name, cwd, argv):
+    def start(self, name, cwd, argv, *, state=None, files=None, clear=(), trust=(), plugins=None):
+        # The real file handling, so tests see what flocc-agent would find in its directory.
+        if state is not None:
+            apply_handoff(Path(state), dict(files or {}), clear)
         self.started.append((name, argv))
+        self.starts.append(
+            {
+                "name": name,
+                "cwd": cwd,
+                "argv": argv,
+                "state": state,
+                "files": dict(files or {}),
+                "clear": list(clear),
+                "trust": list(trust),
+                "plugins": plugins,
+            }
+        )
         self.alive_names.add(name)
 
     def alive(self, name):

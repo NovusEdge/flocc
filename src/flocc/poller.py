@@ -415,10 +415,6 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         ledger.remember_tests(rt.con, issue.key, *remembered)
     if remembered and contains(path, remembered[1]):
         (base, tester_sha), phase = remembered, "impl"
-    # A run resuming at the executor still needs the first run's amendments, or the guard
-    # blocks them; a run that starts at the tester has none.
-    if tester_sha is None:
-        (d / "tests-amended.json").unlink(missing_ok=True)
     claim = Claim(
         issue_key=issue.key,
         issue_id=issue.id,
@@ -440,7 +436,9 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     ledger.insert_claim(rt.con, claim)
     write_context(cfg, issue, claim)
     try:
-        launch(rt, claim, phase)
+        # A run with no tester commit has no amendments; one resuming at the executor keeps them,
+        # or the guard blocks them.
+        launch(rt, claim, phase, reset=("tests-amended.json",) if tester_sha is None else ())
     except BaseException:
         # A claim without a session would be relaunched by every tick and never count a restart,
         # and an In Progress issue would not be polled again. Leave it in Todo, unclaimed.

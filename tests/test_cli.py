@@ -133,7 +133,7 @@ def test_done_elsewhere_needs_a_summary(tmp_path, monkeypatch, capsys):
     assert main(["review-done"]) == 2
 
 
-def tester_claim(claims_env, tmp_path):
+def commit_tester(tmp_path, monkeypatch):
     wt = tmp_path / "wt"
     wt.mkdir()
     for args in (["init", "-q"], ["config", "user.name", "t"], ["config", "user.email", "t@t"]):
@@ -149,13 +149,13 @@ def tester_claim(claims_env, tmp_path):
 
     base = commit("README", "x")
     tester = commit("gateway/tests/test_a.py", "def test_a(): ...\n")
-    claim = make("NF-1", worktree=str(wt))
-    claim.base_sha, claim.tester_sha = base, tester
-    ledger.insert_claim(claims_env, claim)
+    state = Path(os.environ["FLOCC_STATE"])
+    (state / "tester.json").write_text(json.dumps({"base_sha": base, "tester_sha": tester}))
+    monkeypatch.chdir(wt)
 
 
-def test_tests_amended_records_paths_with_the_reason(claims_env, tmp_path, capsys):
-    tester_claim(claims_env, tmp_path)
+def test_tests_amended_records_paths_with_the_reason(claims_env, tmp_path, monkeypatch, capsys):
+    commit_tester(tmp_path, monkeypatch)
     state = Path(os.environ["FLOCC_STATE"])
     cmd = ["tests-amended", "gateway/tests/test_a.py", "--reason", "contradicts the API"]
     assert main(cmd) == 0
@@ -164,8 +164,8 @@ def test_tests_amended_records_paths_with_the_reason(claims_env, tmp_path, capsy
     assert recorded == {"gateway/tests/test_a.py": {"reason": "contradicts the API"}}
 
 
-def test_tests_amended_merges_into_the_existing_file(claims_env, tmp_path):
-    tester_claim(claims_env, tmp_path)
+def test_tests_amended_merges_into_the_existing_file(claims_env, tmp_path, monkeypatch):
+    commit_tester(tmp_path, monkeypatch)
     state = Path(os.environ["FLOCC_STATE"])
     (state / "tests-amended.json").write_text(json.dumps({"other.py": {"reason": "r"}}))
     assert main(["tests-amended", "gateway/tests/test_a.py", "--reason", "why"]) == 0
@@ -173,12 +173,19 @@ def test_tests_amended_merges_into_the_existing_file(claims_env, tmp_path):
     assert set(recorded) == {"other.py", "gateway/tests/test_a.py"}
 
 
-def test_tests_amended_refuses_a_file_the_tester_did_not_write(claims_env, tmp_path, capsys):
-    tester_claim(claims_env, tmp_path)
+def test_tests_amended_refuses_a_file_the_tester_did_not_write(
+    claims_env, tmp_path, monkeypatch, capsys
+):
+    commit_tester(tmp_path, monkeypatch)
     state = Path(os.environ["FLOCC_STATE"])
     assert main(["tests-amended", "src/app.py", "--reason", "why"]) == 2
     assert "src/app.py" in capsys.readouterr().err
     assert not (state / "tests-amended.json").exists()
+
+
+def test_tests_amended_without_a_tester_is_refused(claims_env, tmp_path, capsys):
+    assert main(["tests-amended", "a.py", "--reason", "why"]) == 1
+    assert "no tester ran" in capsys.readouterr().err
 
 
 def test_session_start_on_compaction_lists_the_scratchpad(tmp_path, monkeypatch, capsys):

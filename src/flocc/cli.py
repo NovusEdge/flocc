@@ -32,14 +32,6 @@ def _pct(value: float | None) -> str:
     return "?" if value is None else f"{value:.0f}%"
 
 
-def _ledger(args):
-    env = os.environ.get("FLOCC_LEDGER")
-    if env:
-        return ledger.connect(env)
-    path = Path(args.config) if args.config else default_config_path()
-    return ledger.connect(load(path).ledger_path)
-
-
 # Claude Code's own attribution; the session settings turn it off, this catches what slips by.
 _CLAUDE_ATTRIBUTION = re.compile(r"^(Claude-Session:|Co-Authored-By: Claude)", re.IGNORECASE)
 
@@ -117,16 +109,20 @@ def cmd_guard(args) -> int:
 
 def cmd_tests_amended(args) -> int:
     from flocc.publisher import AMENDED
-    from flocc.worktree import changed_files
+    from flocc.worktree import changed_files, git
 
     state = _state_dir()
-    claim = ledger.get_claim(_ledger(args), state.name)
-    if claim is None or claim.base_sha is None or claim.tester_sha is None:
+    try:
+        tester = json.loads((state / "tester.json").read_text())
+        base_sha, tester_sha = str(tester["base_sha"]), str(tester["tester_sha"])
+    except (OSError, ValueError, KeyError, TypeError):
         print(
-            f"tests-amended: no live claim with a tester commit for {state.name}", file=sys.stderr
+            f"tests-amended: no tester ran for {state.name}, so it has no tester files",
+            file=sys.stderr,
         )
         return 1
-    tester_files = changed_files(Path(claim.worktree), claim.base_sha, claim.tester_sha)
+    top = Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd()))
+    tester_files = changed_files(top, base_sha, tester_sha)
     foreign = [p for p in args.paths if p not in tester_files]
     if foreign:
         print(
