@@ -544,13 +544,37 @@ def cmd_status(args) -> int:
         print(json.dumps(report))
         return 0
     print(f"{report['host']} ({report['mode']}), v{_version()}, cap {report['session_cap']}")
+    cap = report.get("check_fix_rounds", "?")
+    rows = [*report["claims"], *report.get("finished", [])]
+    if rows:
+        print(f"  {'ISSUE':<9}{'STEP':<10}{'STATE':<11}{'FIX':<5}{'AGE':<6}{'CTX':<6}SESSION")
     for c in report["claims"]:
         alive = "up" if c["tmux_alive"] else "down"
-        print(f"  {c['issue']}  {c['phase']}  {c['state']}  ctx {_pct(c['context_pct'])}  {alive}")
+        fix = f"{c.get('fix_attempts', 0)}/{cap}"
+        step = c.get("archetype", c["phase"])
+        age = age_text(c["started_age_s"])
+        print(
+            f"  {c['issue']:<9}{step:<10}{c['state']:<11}{fix:<5}{age:<6}"
+            f"{_pct(c['context_pct']):<6}{alive}"
+        )
+    for c in report.get("finished", []):
+        fix = f"{c['fix_attempts']}/{cap}"
+        age = age_text(c["started_age_s"])
+        line = f"  {c['issue']:<9}{c['archetype']:<10}{c['state']:<11}{fix:<5}{age:<6}{'-':<6}-"
+        print(f"{line}  {c['pr_url']}" if c["pr_url"] else line)
     if report["ledger_error"]:
         print(f"  ledger unreadable: {report['ledger_error']}")
-    elif not report["claims"]:
+    elif not rows:
         print("  no live claims")
+    for h in report.get("holds", []):
+        print(f"  held {h['issue']}: {h['reason']} ({age_text(h['age_s'])})")
+    ev = report.get("events") or {}
+    if ev.get("unacked"):
+        stuck = f"; {ev['attention']} needs attention" if ev.get("attention") else ""
+        print(
+            f"  events waiting for cardinal: {ev['unacked']},"
+            f" oldest {age_text(ev['oldest_age_s'])}{stuck}"
+        )
     if report["claude_login"]:
         print(f"  claude login {report['claude_login']}")
     for name, value in report["token_expiry"].items():
