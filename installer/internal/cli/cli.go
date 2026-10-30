@@ -37,6 +37,7 @@ Desktop commands:
   flocc host add <name> [--ssh DEST | --daytona SANDBOX]
   flocc host import -H <name> [--ssh DEST | --daytona SANDBOX]
   flocc host create [--cpus N] [--memory GiB] [--disk GiB] <machine> <name>
+  flocc host cardinal -H <name> [--renew-hour H]   the event-woken cardinal VM beside that host
   flocc host run -H <name> -- <command...>
   flocc ship -H <name> [--interactive]    run it inside the flocc checkout: it ships that commit
   flocc login -H <name> [--email ADDR]

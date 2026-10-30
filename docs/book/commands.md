@@ -15,6 +15,7 @@ Bare `flocc` on a terminal opens the [dashboard](#the-dashboard). Without a term
 | `flocc host add <name> [--ssh DEST \| --daytona SANDBOX]` | Write the host file. See [Add a host](setup/README.md#add-a-host) |
 | `flocc host import -H <name> [--ssh DEST \| --daytona SANDBOX]` | Build the host file from a host's own answers |
 | `flocc host create [--cpus N] [--memory GiB] [--disk GiB] <machine> <name>` | Make an Incus VM and set it up. See [Create a host](setup/host-create.md) |
+| `flocc host cardinal -H <name> [--renew-hour H]` | Make or repair the cardinal VM beside that host. See [cardinal](cardinal.md) |
 | `flocc host run -H <name> -- <command...>` | Run a raw command on the host over SSH, not the host's `flocc` |
 | `flocc ship -H <name> [--interactive]` | Install or upgrade the service on a host. Run it inside the flocc checkout |
 | `flocc login -H <name> [--email ADDR]` | Sign in to Claude on a host |

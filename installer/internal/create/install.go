@@ -34,17 +34,9 @@ type Installer interface {
 func Steps() []Step { return []Step{Incus{}, Root{}, VM{}, Egress{}, Tailnet{}} }
 
 func Create(ctx context.Context, e *Env, inst Installer, steps []Step) error {
-	st := e.UI.Step("Connect")
-	st.Detail("ssh " + e.Spec.Machine)
-	// Attached, so a Tailscale SSH check-mode URL for the machine shows on the terminal instead
-	// of hanging a captured command; ControlPersist carries the approval through the run.
-	if err := e.M.Interactive(ctx, host.Cmd{Name: "true", Why: "ssh to " + e.Spec.Machine}); err != nil {
-		return failStep(st, fmt.Errorf("ssh %s: %w", e.Spec.Machine, err))
+	if err := connectStep(ctx, e); err != nil {
+		return err
 	}
-	if err := e.Probe(ctx); err != nil {
-		return failStep(st, err)
-	}
-	st.Done(e.Spec.Machine)
 	if err := RunSteps(ctx, e, steps); err != nil {
 		return err
 	}
@@ -211,19 +203,11 @@ func Check(spec Spec, inst Installer) error {
 // ~/.cache/flocc/create-<name>.log, which the session's record names. Every failure after the log
 // opens is a failed step of s.
 func Run(ctx context.Context, spec Spec, inst Installer, s ui.Session, tty bool) error {
-	logPath, logf, err := openLog(spec.Name)
+	e, logf, err := openEnv(spec, s, tty, inst.RepoRoot)
 	if err != nil {
-		return failStep(s.Step("Log"), err)
+		return err
 	}
 	defer logf.Close()
-	s.LogPath(logPath)
-	log := NewRedactLog(logf)
-	run := host.Exec{Log: log, Term: s}
-	// Captured commands buffer stderr, so one that stops at a password or host-key prompt would
-	// hang with nothing shown; BatchMode makes it fail instead.
-	opts := append([]string{"-o", "BatchMode=yes"}, ControlOpts()...)
-	e := &Env{M: Remote{R: run, Target: spec.Machine, Opts: opts}, Local: run,
-		UI: s, Log: log, Spec: spec, Sleep: time.Sleep, TTY: tty, Checkout: inst.RepoRoot}
 	if t, ok := inst.(interface{ Tailnet() KeyMinter }); ok {
 		e.Tailnet = t.Tailnet()
 	}
@@ -231,6 +215,38 @@ func Run(ctx context.Context, spec Spec, inst Installer, s ui.Session, tty bool)
 		return failStep(s.Step("Connect"), err)
 	}
 	return Create(ctx, e, inst, Steps())
+}
+
+func connectStep(ctx context.Context, e *Env) error {
+	st := e.UI.Step("Connect")
+	st.Detail("ssh " + e.Spec.Machine)
+	// Attached, so a Tailscale SSH check-mode URL for the machine shows on the terminal instead
+	// of hanging a captured command; ControlPersist carries the approval through the run.
+	if err := e.M.Interactive(ctx, host.Cmd{Name: "true", Why: "ssh to " + e.Spec.Machine}); err != nil {
+		return failStep(st, fmt.Errorf("ssh %s: %w", e.Spec.Machine, err))
+	}
+	if err := e.Probe(ctx); err != nil {
+		return failStep(st, err)
+	}
+	st.Done(e.Spec.Machine)
+	return nil
+}
+
+// openEnv opens the run's log, ~/.cache/flocc/create-<name>.log, and the Env over it.
+func openEnv(spec Spec, s ui.Session, tty bool, checkout func() (string, error)) (*Env, io.Closer, error) {
+	logPath, logf, err := openLog(spec.Name)
+	if err != nil {
+		return nil, nil, failStep(s.Step("Log"), err)
+	}
+	s.LogPath(logPath)
+	log := NewRedactLog(logf)
+	run := host.Exec{Log: log, Term: s}
+	// Captured commands buffer stderr, so one that stops at a password or host-key prompt would
+	// hang with nothing shown; BatchMode makes it fail instead.
+	opts := append([]string{"-o", "BatchMode=yes"}, ControlOpts()...)
+	e := &Env{M: Remote{R: run, Target: spec.Machine, Opts: opts}, Local: run,
+		UI: s, Log: log, Spec: spec, Sleep: time.Sleep, TTY: tty, Checkout: checkout}
+	return e, logf, nil
 }
 
 // Logged names each host a create run has logged for. A run that stopped before host add left

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	"github.com/NovusEdge/flocc/deploy"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // CardinalName is the cardinal VM's Incus instance. One per machine: cardinal reaches only VMs on
@@ -575,4 +577,130 @@ func (CardinalFiles) Apply(ctx context.Context, e *Env) error {
 		}
 	}
 	return nil
+}
+
+func CardinalSteps() []Step {
+	return []Step{Incus{}, Root{}, VM{}, Egress{}, CardinalBase{}, CardinalClaude{}, ExecutorSSH{},
+		ExecutorFirewall{}, CardinalKey{}, ExecutorKey{}, CardinalFiles{}, CardinalLink{},
+		CardinalLogin{}, CardinalStart{}}
+}
+
+// RunCardinal makes or repairs the cardinal VM beside spec.Machine's executor c.Executor. Every
+// step checks first, so a second run only does what is missing.
+func RunCardinal(ctx context.Context, spec Spec, c CardinalSpec, s ui.Session, tty bool, checkout func() (string, error)) error {
+	e, logf, err := openEnv(spec, s, tty, checkout)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	e.Cardinal = c
+	if err := e.connect(ctx); err != nil {
+		return failStep(s.Step("Connect"), err)
+	}
+	if err := connectStep(ctx, e); err != nil {
+		return err
+	}
+	return RunSteps(ctx, e, CardinalSteps())
+}
+
+type CardinalLink struct{}
+
+func (CardinalLink) Name() string { return "cardinal's link" }
+
+func (e *Env) linkCheck() host.Cmd { return e.asCardinal(cardinalPlugin + "/bin/executor status") }
+
+func (CardinalLink) Check(ctx context.Context, e *Env) (bool, string, error) {
+	if e.ok(ctx, e.linkCheck()) {
+		return true, "cardinal reaches " + e.Cardinal.Executor + " through the forced command", nil
+	}
+	return false, "cardinal cannot run flocc status on " + e.Cardinal.Executor, nil
+}
+
+func (CardinalLink) Apply(ctx context.Context, e *Env) error {
+	return fmt.Errorf("cardinal's ssh to %s fails; to see why, run on %s: %s; and see \"The link\" in docs/book/cardinal.md",
+		e.Cardinal.Executor, e.Spec.Machine,
+		e.incusLine("exec "+CardinalName+" -- runuser -l cardinal -c '"+cardinalPlugin+"/bin/executor status'"))
+}
+
+type CardinalLogin struct{}
+
+func (CardinalLogin) Name() string { return "cardinal's Claude login" }
+
+func (CardinalLogin) Check(ctx context.Context, e *Env) (bool, string, error) {
+	var s struct {
+		LoggedIn   bool   `json:"loggedIn"`
+		AuthMethod string `json:"authMethod"`
+	}
+	json.Unmarshal([]byte(e.out(ctx, e.asCardinal(".local/bin/claude auth status"))), &s)
+	if !s.LoggedIn || s.AuthMethod != "claude.ai" {
+		return false, "no claude.ai login", nil
+	}
+	return true, "claude.ai subscription", nil
+}
+
+func (CardinalLogin) Apply(ctx context.Context, e *Env) error {
+	if !e.TTY {
+		return fmt.Errorf("cardinal's Claude login needs you at a terminal; run flocc host cardinal in one")
+	}
+	attached := func(line, why string) host.Cmd {
+		c := e.incus("exec", "-t", CardinalName, "--", "runuser", "-l", cardinalUser, "-c", line)
+		c.Why = why
+		return c
+	}
+	if err := e.M.Interactive(ctx, attached(".local/bin/claude auth login --claudeai", "Sign cardinal in to Claude with your claude.ai account")); err != nil {
+		return err
+	}
+	// Ctrl-C is how the owner leaves remote-control once it is connected, so its exit status says
+	// nothing; the step's check reads the login again.
+	e.M.Interactive(ctx, attached("cd "+cardinalSession+" && ~/.local/bin/claude remote-control", "Remote Control consent: answer y, wait for the line saying it is connected, then press Ctrl-C"))
+	return nil
+}
+
+// trustDir is cardinal's ~/.claude.json with onboarding done and dir trusted, so the first start
+// does not wait at a dialog nobody is there to answer; every other key is kept.
+func trustDir(raw, dir string) ([]byte, error) {
+	m := map[string]any{}
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			return nil, fmt.Errorf("%s/.claude.json: %w", cardinalHome, err)
+		}
+	}
+	projects, _ := m["projects"].(map[string]any)
+	if projects == nil {
+		projects = map[string]any{}
+	}
+	entry, _ := projects[dir].(map[string]any)
+	if entry == nil {
+		entry = map[string]any{}
+	}
+	entry["hasTrustDialogAccepted"] = true
+	projects[dir] = entry
+	m["projects"] = projects
+	m["hasCompletedOnboarding"] = true
+	return json.MarshalIndent(m, "", "  ")
+}
+
+type CardinalStart struct{}
+
+func (CardinalStart) Name() string { return "cardinal's session" }
+
+func (CardinalStart) Check(ctx context.Context, e *Env) (bool, string, error) {
+	if !e.ok(ctx, e.cardinalctl("is-active", "--quiet", "cardinal.service")) {
+		return false, "cardinal.service not running", nil
+	}
+	return true, "cardinal on Sonnet with Remote Control, woken by flocc events", nil
+}
+
+func (CardinalStart) Apply(ctx context.Context, e *Env) error {
+	// Only while cardinal is down: a running claude rewrites .claude.json from memory.
+	raw, _ := e.read(ctx, CardinalName, cardinalHome+"/.claude.json")
+	trusted, err := trustDir(raw, cardinalSession)
+	if err != nil {
+		return err
+	}
+	if err := e.put(ctx, CardinalName, vmFile{cardinalHome + "/.claude.json", 0o600, cardinalUser, trusted}); err != nil {
+		return err
+	}
+	_, err = e.must(ctx, e.cardinalctl("enable", "--now", "cardinal.service"))
+	return err
 }

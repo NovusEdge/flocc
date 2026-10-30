@@ -9,6 +9,12 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 flocc drops cardinal, A2A and the escalation path built in 0.9 to 0.12. A run that needs you says
 so on its Linear issue.
 
+- cardinal is back, rebuilt: `flocc host cardinal -H <host>` makes a small Incus VM beside the
+  host with one idle Sonnet session in Remote Control, woken only by a plugin monitor that
+  follows the host's events over a forced-command ssh key. cardinal holds new starts and starts
+  fixers; it never reruns stopped or finished work. The executor VM gains an OpenSSH server on
+  its pinned bridge address for that key alone, and a firewall that lets the cardinal VM reach
+  nothing else on it.
 - cardinal as built in 0.9 to 0.12 is gone: `flocc cardinal` and its subcommands, cardinal's step
   in `flocc setup`, the dashboard's cardinal pane and `c` key, the CARDINAL table in
   `flocc status -H all` and `~/.cache/flocc/cardinal-<user>.log`. `flocc setup` offers to remove

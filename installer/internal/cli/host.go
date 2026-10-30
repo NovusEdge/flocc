@@ -30,6 +30,8 @@ func hostCmd(ctx context.Context, d *deps, name string, args []string) int {
 		return hostRun(ctx, d, name, args[1:])
 	case "create":
 		return hostCreate(ctx, d, args[1:])
+	case "cardinal":
+		return hostCardinal(ctx, d, name, args[1:])
 	case "add", "import":
 		reach, rest, err := reachFlags(args[1:])
 		if err == nil && args[0] == "add" && len(rest) != 1 {

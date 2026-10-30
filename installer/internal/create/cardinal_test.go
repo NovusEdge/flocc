@@ -2,6 +2,7 @@ package create
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -235,6 +236,54 @@ func TestCardinalFilesRenderTheHourTheExecutorAndTheLink(t *testing.T) {
 	}
 	if filesSum(files) == filesSum(files[1:]) {
 		t.Fatal("the sum ignores a file")
+	}
+}
+
+func TestTrustDirKeepsEveryOtherKey(t *testing.T) {
+	out, err := trustDir(`{"oauthAccount":{"a":1},"projects":{"/other":{"x":1}}}`, cardinalSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	json.Unmarshal(out, &m)
+	projects := m["projects"].(map[string]any)
+	dir := projects[cardinalSession].(map[string]any)
+	if m["oauthAccount"] == nil || projects["/other"] == nil || dir["hasTrustDialogAccepted"] != true || m["hasCompletedOnboarding"] != true {
+		t.Fatalf("%s", out)
+	}
+	if _, err := trustDir("", cardinalSession); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCardinalStepsReuseTheHostCreateSteps(t *testing.T) {
+	var names []string
+	for _, s := range CardinalSteps() {
+		names = append(names, s.Name())
+	}
+	want := []string{"Incus", "Root pass", "VM", "Egress", "cardinal user", "cardinal's Claude Code", "executor sshd", "executor firewall", "cardinal's ssh key", "cardinal's key on the executor", "cardinal's plugin and units", "cardinal's link", "cardinal's Claude login", "cardinal's session"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("%v", names)
+	}
+}
+
+func TestCardinalLinkFailsWithTheCommandToRetry(t *testing.T) {
+	f := host.NewFake().OnName("incus", 1, "")
+	e := cardinalEnv(f)
+	if ok, _, _ := (CardinalLink{}).Check(context.Background(), e); ok {
+		t.Fatal("done without a link")
+	}
+	err := (CardinalLink{}).Apply(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "/opt/cardinal/plugin/bin/executor status") {
+		t.Fatal(err)
+	}
+}
+
+func TestCardinalLoginNeedsATerminal(t *testing.T) {
+	e := cardinalEnv(host.NewFake())
+	e.TTY = false
+	if err := (CardinalLogin{}).Apply(context.Background(), e); err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Fatal(err)
 	}
 }
 

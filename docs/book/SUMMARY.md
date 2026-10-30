@@ -5,6 +5,7 @@
 * [Set up the desktop and a host](setup/README.md)
   * [Create a host as an Incus VM](setup/host-create.md)
   * [Run a host](setup/running-a-host.md)
+* [cardinal](cardinal.md)
 * [Keys](keys.md)
 * [Tailnet](tailnet.md)
 * [Commands](commands.md)
