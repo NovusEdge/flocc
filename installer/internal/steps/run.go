@@ -111,8 +111,11 @@ func (Run) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return false, u + " not installed or out of date", nil
 	}
 	for _, u := range oldUnits {
-		if _, err := os.Stat(e.HomePath(filepath.Join(".config/systemd/user", u))); err == nil {
-			return false, "old " + u + " still installed", nil
+		dir := e.HomePath(".config/systemd/user")
+		for _, p := range []string{filepath.Join(dir, u), filepath.Join(dir, "default.target.wants", u)} {
+			if _, err := os.Lstat(p); err == nil {
+				return false, "old " + u + " still installed", nil
+			}
 		}
 	}
 	if !timerOn(ctx, e) {
@@ -129,14 +132,13 @@ func (Run) Apply(ctx context.Context, e *Env) error {
 		}
 		for _, u := range oldUnits {
 			old := filepath.Join(dir, u)
-			if _, err := os.Stat(old); err != nil {
-				continue
+			if _, err := os.Stat(old); err == nil {
+				e.Run.Run(ctx, e.userctl("disable", "--now", u))
+				if err := os.Remove(old); err != nil {
+					return err
+				}
 			}
-			e.Run.Run(ctx, e.userctl("disable", "--now", u))
-			if err := os.Remove(old); err != nil {
-				return err
-			}
-			// A failed disable leaves the link, and systemd would start the dangling unit.
+			// A dangling link starts nothing; systemd only logs the missing unit at each login.
 			if err := os.Remove(filepath.Join(dir, "default.target.wants", u)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}

@@ -18,7 +18,9 @@ const (
 // tailnetRules replaces the table whether or not it exists. Interface names are matched as
 // strings, so the table loads before tailscale0 does. A drop in any base chain is final, so
 // firewalld's and Docker's accepts do not undo it. Executor VMs run their own tailscaled whose
-// WireGuard traffic leaves through the uplink, so they lose nothing.
+// WireGuard traffic leaves through the uplink, so they lose nothing, unless the machine uses an
+// exit node (or a subnet route covering a peer endpoint): table 52 then sends the default route
+// out of tailscale0 and this drop cuts all VM egress.
 var tailnetRules = "# Written by flocc host create: VMs on " + IncusBridge + " cannot leave through this machine's tailnet.\n" +
 	"table inet " + tailnetTable + "\n" +
 	"delete table inet " + tailnetTable + "\n" +
@@ -33,7 +35,7 @@ var tailnetRules = "# Written by flocc host create: VMs on " + IncusBridge + " c
 // unit's flush ruleset would otherwise remove the table after it loaded.
 var tailnetUnit = "[Unit]\nDescription=flocc: VMs on " + IncusBridge + " cannot forward into this machine's tailnet\n" +
 	"After=nftables.service\nBefore=network-pre.target\nWants=network-pre.target\n\n" +
-	"[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/bin/env nft -f " + tailnetFile +
+	"[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=nft -f" + tailnetFile +
 	"\n\n[Install]\nWantedBy=multi-user.target\n"
 
 // TailnetBlock keeps VMs on the Incus bridge from reaching the owner's tailnet as this machine.
@@ -47,16 +49,17 @@ func (TailnetBlock) Check(ctx context.Context, e *Env) (bool, string, error) {
 			return false, path + " missing or out of date", nil
 		}
 	}
-	if !e.Ok(ctx, "systemctl", "is-enabled", "--quiet", tailnetUnitName) {
-		return false, tailnetUnitName + " not enabled", nil
-	}
-	if !e.Ok(ctx, "systemctl", "is-active", "--quiet", tailnetUnitName) {
-		return false, tailnetUnitName + " not active", nil
+	if !unitLive(ctx, e, tailnetUnitName) {
+		return false, tailnetUnitName + " not enabled and active", nil
 	}
 	if !strings.Contains(e.Output(ctx, "nft", "list", "table", "inet", tailnetTable), tailnetDrop) {
 		return false, "nft table inet " + tailnetTable + " lacks the drop rule", nil
 	}
-	return true, IncusBridge + " cannot forward out of tailscale0", nil
+	detail := IncusBridge + " cannot forward out of tailscale0"
+	if strings.Contains(e.Output(ctx, "ip", "route", "get", "1.1.1.1"), "dev tailscale0") {
+		detail += "; the machine routes the internet through tailscale0 (an exit node), so VMs have no egress"
+	}
+	return true, detail, nil
 }
 
 func (TailnetBlock) Apply(ctx context.Context, e *Env) error {

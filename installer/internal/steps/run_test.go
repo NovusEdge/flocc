@@ -119,6 +119,30 @@ func TestRunRemovesTheOldA2AUnitAndItsLink(t *testing.T) {
 	}
 }
 
+func TestRunRemovesALeftoverA2ALinkWhoseUnitIsGone(t *testing.T) {
+	const u = "flocc-a2a.service"
+	f := systemdRun(host.NewFake(), 1, loginFailLine)
+	e := testEnv(t, f)
+	e.Pending = []string{"Claude login"}
+	dir := e.HomePath(".config/systemd/user")
+	link := filepath.Join(dir, "default.target.wants", u)
+	os.MkdirAll(filepath.Dir(link), 0o755)
+	os.Symlink(filepath.Join(dir, u), link)
+	for _, shipped := range deploy.Units {
+		b, _ := deploy.Files.ReadFile(shipped)
+		os.WriteFile(filepath.Join(dir, shipped), b, 0o644)
+	}
+	if done, detail, _ := (Run{}).Check(context.Background(), e); done || detail != "old "+u+" still installed" {
+		t.Fatalf("%v %q", done, detail)
+	}
+	if err := (Run{}).Apply(context.Background(), e); !errors.Is(err, ErrPending) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(link); err == nil {
+		t.Fatal("link kept")
+	}
+}
+
 func TestRunWithTheLoginPendingStillStopsOnOtherFails(t *testing.T) {
 	f := systemdRun(host.NewFake(), 1, loginFailLine+"FAIL  linear: 401\n")
 	e := testEnv(t, f)

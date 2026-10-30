@@ -8,7 +8,13 @@ import (
 // IncusBridge is the Incus bridge create puts VMs on; create.Bridge is it.
 const IncusBridge = "incusbr0"
 
-func CreateRootSteps() []Step { return []Step{Firewalld{}, Docker{}, TailnetBlock{}} }
+func CreateRootSteps() []Step { return []Step{TailnetBlock{}, Firewalld{}, Docker{}} }
+
+// unitLive reports whether a systemd unit is enabled and active.
+func unitLive(ctx context.Context, e *Env, unit string) bool {
+	return e.Ok(ctx, "systemctl", "is-enabled", "--quiet", unit) &&
+		e.Ok(ctx, "systemctl", "is-active", "--quiet", unit)
+}
 
 func firewalldRunning(ctx context.Context, e *Env) bool {
 	return e.Ok(ctx, "systemctl", "is-active", "--quiet", "firewalld.service")
@@ -33,8 +39,7 @@ func CreateRootIdle(ctx context.Context, e *Env) (bool, string) {
 	if _, docker := dockerPresent(ctx, e); firewalldRunning(ctx, e) || docker {
 		return false, ""
 	}
-	if !e.Ok(ctx, "systemctl", "is-enabled", "--quiet", tailnetUnitName) ||
-		!e.Ok(ctx, "systemctl", "is-active", "--quiet", tailnetUnitName) {
+	if !unitLive(ctx, e, tailnetUnitName) {
 		return false, ""
 	}
 	return true, strings.Join([]string{noFirewalld, noDocker, "tailnet block installed"}, "; ")

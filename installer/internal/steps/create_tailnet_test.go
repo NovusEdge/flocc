@@ -68,6 +68,27 @@ func TestTailnetBlockApplyWritesFilesAndLoadsThem(t *testing.T) {
 	}
 }
 
+func TestTailnetBlockWarnsWhenTheMachineUsesAnExitNode(t *testing.T) {
+	f := tailnetLoaded(host.NewFake()).On("ip route get 1.1.1.1", 0, "1.1.1.1 dev tailscale0 table 52 src 100.64.0.1\n")
+	e := testEnv(t, f)
+	writeFile(t, e, tailnetFile, tailnetRules)
+	writeFile(t, e, tailnetUnitPath, tailnetUnit)
+	ok, detail, _ := (TailnetBlock{}).Check(context.Background(), e)
+	if !ok || !strings.Contains(detail, "exit node") {
+		t.Fatalf("%v %q", ok, detail)
+	}
+	f.On("ip route get 1.1.1.1", 0, "1.1.1.1 via 192.168.1.1 dev wlan0\n")
+	if ok, detail, _ := (TailnetBlock{}).Check(context.Background(), e); !ok || strings.Contains(detail, "exit node") {
+		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestCreateRootStepsPutsTheTailnetBlockFirst(t *testing.T) {
+	if _, ok := CreateRootSteps()[0].(TailnetBlock); !ok {
+		t.Fatal("an earlier step's Apply error would skip the tailnet block")
+	}
+}
+
 func TestTailnetBlockApplyFailsWithoutNft(t *testing.T) {
 	e := testEnv(t, host.NewFake())
 	err := (TailnetBlock{}).Apply(context.Background(), e)
