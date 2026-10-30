@@ -12,7 +12,8 @@ Write tests for the issue's acceptance criteria and nothing else.
 - Commit them with `flocc commit -m '<message naming the criteria>' -- <paths>`.
 - Where the spec leaves a choice open, take its default. Nobody answers questions in this
   session; if a criterion cannot be tested without the owner, write that under a line that
-  starts with `Needs the owner` in your summary, and the run ends blocked.
+  starts with `Needs the owner` in your summary, and the run ends blocked. Leave the line out
+  when nothing needs the owner.
 - To look up how a library or API behaves, use `flocc:source-finder` then `flocc:source-reader`,
   with today's date in the task. Start no other agents.
 - Never push or touch Linear.

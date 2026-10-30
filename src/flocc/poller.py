@@ -391,11 +391,11 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     for round_ in (1, 2):
         ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")
     (d / "owner-items.md").unlink(missing_ok=True)
-    # A previous claim's scratchpads and idle marker belong to that run.
+    # A previous claim's scratchpads, idle marker and last summary belong to that run.
     for stale in ("scratchpads", "idle", LAST_SUMMARY):
         (d / stale).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
-    # implementer: a fresh tester would block on adding nothing, and the guard would lose the
+    # executor: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.
     phase, tester_sha = ("test" if "tester" in sequence else "impl"), None
     base_branch = cfg.repos[repo].base_branch
@@ -415,7 +415,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         ledger.remember_tests(rt.con, issue.key, *remembered)
     if remembered and contains(path, remembered[1]):
         (base, tester_sha), phase = remembered, "impl"
-    # A run resuming at the implementer still needs the first run's amendments, or the guard
+    # A run resuming at the executor still needs the first run's amendments, or the guard
     # blocks them; a run that starts at the tester has none.
     if tester_sha is None:
         (d / "tests-amended.json").unlink(missing_ok=True)

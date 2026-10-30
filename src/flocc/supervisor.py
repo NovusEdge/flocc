@@ -57,6 +57,8 @@ _VERDICT = re.compile(
 
 
 _OWNER_HEADING = re.compile(r"^[\s#*-]*needs the owner", re.IGNORECASE | re.MULTILINE)
+# What follows the heading on its own line when nothing needs the owner: "Needs the owner: none".
+_NOTHING = re.compile(r"[\s:*_.-]*(none|nothing|n/?a)[\s*_.]*", re.IGNORECASE)
 
 
 class LaunchError(RuntimeError):
@@ -409,6 +411,11 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
     rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
     found = _OWNER_HEADING.search(summary)
+    if found:
+        rest = summary[found.end() :]
+        # A heading with a list under it is a real request; "none" or nothing at all is filler.
+        if not rest.strip() or _NOTHING.fullmatch((rest.splitlines() or [""])[0]):
+            found = None
     # A review fixer's owner items ride to the final comment instead: the PR is open and a
     # second review follows.
     if found and not review_fix and not rebasing:

@@ -34,7 +34,7 @@ def test_effort_for_maps_phase_to_config():
     assert cfg.effort_for("test") == "high"
     assert cfg.effort_for("impl") == "medium"
     assert cfg.effort_for("review") == "medium"
-    # The post-check fix session runs the implementer skill, so it takes the implementer level.
+    # The post-check fix session runs the fixer skill, so it takes the executor level.
     assert cfg.effort_for("fix") == "medium"
 
 

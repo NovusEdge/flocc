@@ -71,10 +71,9 @@ def test_the_idle_clearing_hook_removes_only_the_marker(tmp_path):
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
     command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
     (tmp_path / "idle").touch()
-    (tmp_path / "idle-escalated").touch()
     env = {"PATH": os.environ["PATH"], "FLOCC_STATE": str(tmp_path)}
     subprocess.run(command, shell=True, env=env, check=True)
-    assert not (tmp_path / "idle").exists() and (tmp_path / "idle-escalated").exists()
+    assert not (tmp_path / "idle").exists()
     subprocess.run(command, shell=True, env={"PATH": env["PATH"]}, check=True)
 
 

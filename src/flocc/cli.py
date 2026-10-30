@@ -93,6 +93,8 @@ def cmd_hook(args) -> int:
 def cmd_guard(args) -> int:
     from flocc.guard import decide
 
+    if not os.environ.get("FLOCC_PHASE"):
+        return 0
     # Exit 0 always: a guard that fails must not stop the session, and it is not the boundary.
     try:
         reason = decide(
@@ -208,8 +210,9 @@ def cmd_stop(args) -> int:
         if (state / "done.json").exists() or idle.has_background(state):
             return failed
         if not payload.get("stop_hook_active"):
+            # Hook JSON is read on exit 0 only.
             print(json.dumps({"decision": "block", "reason": STOP_REASON}))
-            return failed
+            return 0
     try:
         idle.note_idle(state, payload, time.time())
     except Exception as exc:  # noqa: BLE001

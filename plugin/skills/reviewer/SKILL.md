@@ -3,7 +3,7 @@ name: reviewer
 description: Use when you are the review session for a flocc issue whose PR is already open
 ---
 
-Review the branch the implementer pushed. You change nothing: do not edit files, commit or push.
+Review the branch the executor committed and the service pushed. You change nothing: do not edit files, commit or push.
 
 - Read `review-input.md` in your state directory. It holds the PR link, the issue description with
   its acceptance criteria, and the path of `pr.diff`, the full `git diff <base>...HEAD`.

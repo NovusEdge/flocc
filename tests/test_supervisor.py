@@ -900,6 +900,19 @@ def test_needs_the_owner_ends_the_run_blocked(rt, phase, alive):
     assert notice.cause == "NF-1:needs-owner" and "which currency" in notice.summary
 
 
+@pytest.mark.parametrize(
+    "line", ["Needs the owner: none", "- Needs the owner: n/a", "**Needs the owner:** Nothing."]
+)
+def test_a_none_line_under_needs_the_owner_does_not_block(rt, line):
+    add(rt, phase="impl")
+    rt.sessions.alive_names.add("NF-1")
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
+    done(rt, f"Done.\n\n{line}")
+    supervise(rt, current(rt))
+    assert current(rt).state != "blocked" and published
+
+
 def test_a_review_fixer_s_owner_items_do_not_block(rt):
     add(rt, phase="fix")
     ledger.meta_set(rt.con, "review_fix:NF-1", "1")

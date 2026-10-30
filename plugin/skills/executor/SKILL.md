@@ -11,7 +11,8 @@ design: do not redesign, re-plan or ask for sign-off.
 - Where the spec leaves a choice open, take its default or the smallest choice that meets the
   criteria. Nobody answers questions in this session. If you cannot go on without the owner, stop
   changing code and write the need under a line that starts with `Needs the owner` in your
-  summary; the run then ends blocked with your work kept on the branch.
+  summary; the run then ends blocked with your work kept on the branch. Leave the line out when
+  nothing needs the owner.
 - If a tester ran, the committed tests are the contract. Change a tester's file only when one of
   its tests contradicts the acceptance criteria or the real API; then fix it, run
   `flocc tests-amended <path>... --reason "<why it was wrong>"` and carry on. Never delete or skip

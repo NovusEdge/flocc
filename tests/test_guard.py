@@ -103,3 +103,7 @@ def test_guard_prints_nothing_for_an_allowed_call_or_bad_input(tmp_path, monkeyp
         monkeypatch.setattr("sys.stdin", io.StringIO(raw))
         assert main(["guard"]) == 0
         assert capsys.readouterr().out == ""
+    monkeypatch.delenv("FLOCC_PHASE")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "AskUserQuestion"})))
+    assert main(["guard"]) == 0
+    assert capsys.readouterr().out == ""
