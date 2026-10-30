@@ -44,6 +44,21 @@ def test_a_fifo_or_an_oversized_file_is_refused(tmp_path):
 
 
 @as_root
+def test_a_directory_on_the_path_needs_search_but_not_read(tmp_path):
+    # flocc-agent's home is 710: flocc-work may pass through it but not list it.
+    home = tmp_path / "home"
+    (home / "state" / "NF-1").mkdir(parents=True)
+    (home / "state" / "NF-1" / "done.json").write_text("{}")
+    home.chmod(0o300)
+    try:
+        assert read_text(home / "state" / "NF-1", "done.json") == "{}"
+        assert exists(home / "state" / "NF-1", "done.json")
+        assert entries(home / "state") == ["NF-1"]
+    finally:
+        home.chmod(0o700)
+
+
+@as_root
 def test_entries_lists_real_directories_only(tmp_path):
     (tmp_path / "NF-1").mkdir()
     (tmp_path / "NF-2").symlink_to(tmp_path / "NF-1")
