@@ -374,6 +374,35 @@ def cmd_fix(args) -> int:
     return 0
 
 
+def cmd_run_summary(args) -> int:
+    from flocc.status import issue_lines
+    from flocc.summary import run_summary
+
+    cfg, _ = _config(args)
+
+    def log_lines(key: str, n: int) -> list[tuple[int, str]]:
+        try:
+            return issue_lines(cfg, key, n)
+        except (OSError, subprocess.SubprocessError):
+            return []
+
+    print(run_summary(cfg, ledger.connect(cfg.ledger_path), args.key, time.time(), log_lines))
+    return 0
+
+
+def cmd_digest_data(args) -> int:
+    from flocc.summary import digest_data
+
+    cfg, _ = _config(args)
+    con = ledger.connect(cfg.ledger_path)
+    if args.done is not None:
+        ledger.clear_digest(con, args.done)
+        print(f"cleared digest lines through {args.done}")
+        return 0
+    print(digest_data(cfg, con, time.time())[0])
+    return 0
+
+
 def _lift_hold(cfg, key: str) -> int:
     # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
     # the timed-out restart, or a move to Todo made while it was held, would start it again.
@@ -483,7 +512,7 @@ def cmd_doctor(args) -> int:
 
 def cmd_status(args) -> int:
     from flocc.agent import Agent
-    from flocc.status import collect
+    from flocc.status import age_text, collect
 
     cfg, _ = _config(args)
     agent = Agent(cfg)
@@ -512,7 +541,9 @@ def cmd_status(args) -> int:
         )
         age = t.get("age_s")
         print(
-            f"  last tick {_age(age)} ago, {state}" if age is not None else f"  last tick {state}"
+            f"  last tick {age_text(age)} ago, {state}"
+            if age is not None
+            else f"  last tick {state}"
         )
     u = report["usage"]
     if u is None:
@@ -636,16 +667,6 @@ def _expiry(value: str, now: float) -> str:
     return f"expires {day} ({int((at - now) // 86400)} days)"
 
 
-def _age(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    if seconds < 3600:
-        return f"{seconds / 60:.0f}m"
-    if seconds < 172800:
-        return f"{seconds / 3600:.0f}h"
-    return f"{seconds / 86400:.0f}d"
-
-
 COMMANDS = {
     "stop": cmd_stop,
     "statusline": cmd_statusline,
@@ -669,6 +690,8 @@ COMMANDS = {
     "ack": cmd_ack,
     "hold": cmd_hold,
     "fix": cmd_fix,
+    "run-summary": cmd_run_summary,
+    "digest-data": cmd_digest_data,
 }
 
 
@@ -728,6 +751,10 @@ def build_parser() -> argparse.ArgumentParser:
     fix = add("fix", "Start one fixer with a note on a blocked or timed-out run, within the cap")
     fix.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     fix.add_argument("--note", required=True, help="what the fixer should fix")
+    rs = add("run-summary", "Print a run's summary, why it stopped and a log tail, at a fixed size")
+    rs.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    dd = add("digest-data", "Print what the daily digest covers; --done N clears it once sent")
+    dd.add_argument("--done", type=int, default=None, metavar="N", help="clear lines through N")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )

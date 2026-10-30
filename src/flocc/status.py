@@ -21,6 +21,16 @@ _LOG_TAIL = 256 * 1024
 _LOGIN_TIMEOUT = 5
 
 
+def age_text(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 172800:
+        return f"{seconds / 3600:.0f}h"
+    return f"{seconds / 86400:.0f}d"
+
+
 def last_tick(log: Path) -> dict | None:
     try:
         with log.open("rb") as f:

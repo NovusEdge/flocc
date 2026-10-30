@@ -1,0 +1,85 @@
+import pytest
+
+from flocc import events, ledger
+from flocc.context import state_dir
+from flocc.summary import DIGEST_LINES, LIST_ROWS, RUN_SUMMARY_CHARS, digest_data, run_summary
+from flocc.supervisor import BLOCKED, CHECK_OUTPUT, LAST_SUMMARY
+from tests.test_ledger import make
+
+
+@pytest.fixture
+def con(tmp_cfg):
+    return ledger.connect(tmp_cfg.ledger_path)
+
+
+def no_log(key, n):
+    return []
+
+
+def test_run_summary_has_the_step_the_block_and_the_check(tmp_cfg, con):
+    c = make("NF-1", state="blocked")
+    c.phase, c.fix_attempts, c.sequence = "fix", 1, ["executor", "reviewer"]
+    ledger.insert_claim(con, c)
+    d = state_dir(tmp_cfg, "NF-1")
+    d.mkdir(parents=True)
+    (d / LAST_SUMMARY).write_text("Fixed the parser.")
+    (d / BLOCKED).write_text("check-failed\n\nThe check still fails")
+    (d / CHECK_OUTPUT).write_text("ok\nFAILED tests/test_a.py::test_x - assert 1 == 2\n")
+    (d / "pr-url").write_text("https://pr/1\n")
+    text = run_summary(tmp_cfg, con, "NF-1", 3600.0, lambda k, n: [(1, f"{k}: blocked")])
+    assert "fixer, blocked; sequence executor, reviewer; fix rounds 1/2" in text
+    assert "PR: https://pr/1" in text and "Fixed the parser." in text
+    assert "The check still fails" in text and "test_x" in text and "NF-1: blocked" in text
+
+
+def test_run_summary_is_trimmed_to_a_fixed_size(tmp_cfg, con):
+    ledger.insert_claim(con, make("NF-1", state="blocked"))
+    d = state_dir(tmp_cfg, "NF-1")
+    d.mkdir(parents=True)
+    for name in (LAST_SUMMARY, BLOCKED, CHECK_OUTPUT):
+        (d / name).write_text("error " * 50_000)
+    assert len(run_summary(tmp_cfg, con, "NF-1", 0.0, no_log)) <= RUN_SUMMARY_CHARS
+
+
+def test_run_summary_without_a_claim_says_so(tmp_cfg, con):
+    assert "No claim" in run_summary(tmp_cfg, con, "NF-404", 0.0, no_log)
+
+
+def test_digest_data_lists_runs_lines_holds_events_and_attention(tmp_cfg, con):
+    ledger.insert_claim(con, make("NF-1", state="done"))
+    ledger.add_digest(con, "NF-1", "review skipped", 10.0)
+    ledger.add_digest(con, None, "GitHub agent token expires in 9 days", 11.0)
+    ledger.add_hold(con, "NF-7", "owner said wait", 12.0)
+    stuck = events.emit(con, "ended", 50_000.0, issue_key="NF-1", detail="blocked: idle")
+    for _ in range(1 + events.REDELIVERIES):
+        events.mark_printed(con, [stuck], 50_001.0)
+    text, through = digest_data(tmp_cfg, con, 86_400.0 + 100.0)
+    assert "- NF-1: tester, done" in text
+    assert "- NF-1: review skipped" in text and "- service: GitHub agent token" in text
+    assert "- NF-7: owner said wait" in text and "ended: 1, 1 not acknowledged" in text
+    assert f"- event {stuck}, ended, NF-1: blocked: idle" in text
+    assert text.rstrip().endswith(f"flocc digest-data --done {through}")
+
+
+def test_digest_data_caps_every_list(tmp_cfg, con):
+    for n in range(DIGEST_LINES + 5):
+        ledger.add_digest(con, None, f"line {n}", float(n))
+    for n in range(LIST_ROWS + 2):
+        ledger.insert_claim(con, make(f"NF-{n + 1}", state="done"))
+        ledger.add_hold(con, f"NF-{n + 100}", "wait", float(n))
+    text, _ = digest_data(tmp_cfg, con, 1000.0)
+    assert "(5 older lines left out)" in text and "line 4\n" not in text
+    assert text.count("(2 more)") == 2
+
+
+def test_digest_data_done_clears_through_the_id(tmp_cfg, tmp_path):
+    from flocc.cli import main
+    from tests.test_cli import _cfg_file
+
+    path = _cfg_file(tmp_path)
+    c = ledger.connect(tmp_path / "l.sqlite")
+    ledger.add_digest(c, None, "a", 1.0)
+    ledger.add_digest(c, None, "b", 2.0)
+    [(first, _, _), _] = ledger.pending_digest(c)
+    assert main(["--config", str(path), "digest-data", "--done", str(first)]) == 0
+    assert [line for _, _, line in ledger.pending_digest(c)] == ["b"]
