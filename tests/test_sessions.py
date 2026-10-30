@@ -2,7 +2,6 @@ import json
 import shutil
 import subprocess
 import time
-from dataclasses import replace
 
 import pytest
 
@@ -86,25 +85,6 @@ def test_trust_marks_onboarding_done_when_every_folder_is_trusted(tmp_path):
     assert json.loads(cj.read_text())["hasCompletedOnboarding"] is True
 
 
-def test_trust_dismisses_the_auto_mode_setup_dialog_and_keeps_its_counts(tmp_path):
-    cj = tmp_path / ".claude.json"
-    cj.write_text(
-        json.dumps(
-            {
-                "hasCompletedOnboarding": True,
-                "projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}},
-                "autoModeEnvSetup": {"denials": 5, "dismissedAt": 1792673965473},
-            }
-        )
-    )
-    trust_folders(cj, ["/wt/NF-1"])
-    assert json.loads(cj.read_text())["autoModeEnvSetup"] == {
-        "denials": 5,
-        "dismissedAt": 1792673965473,
-        "dismissed": True,
-    }
-
-
 def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
     cj = tmp_path / ".claude.json"
     cj.write_text(
@@ -112,7 +92,6 @@ def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
             {
                 "hasCompletedOnboarding": True,
                 "projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}},
-                "autoModeEnvSetup": {"dismissed": True},
             }
         )
     )
@@ -192,24 +171,18 @@ def test_installed_and_allowed_plugin_files(tmp_path):
     assert allowed_plugins(tmp_path / "none.txt") is None
 
 
-def test_the_hosts_rules_and_environment_reach_the_session():
-    cfg = replace(
-        CFG,
-        permission_allow=("Bash(uv sync --frozen)",),
-        permission_environment=("Nothing on this VM is production.",),
-    )
-    s = settings_of(
-        claude_argv(cfg, "NF-1", IssueSettings(), "p", env=STATE, claude_exe="c", exe="x")
-    )
-    assert s["permissions"]["allow"] == ["Bash(uv sync --frozen)"]
-    assert "Bash(claude:*)" in s["permissions"]["deny"]
-    assert s["autoMode"] == {"environment": ["$defaults", "Nothing on this VM is production."]}
+def test_sessions_run_in_bypass_mode_without_the_warning_dialog():
+    argv = claude_argv(CFG, "NF-1", IssueSettings(), "p", env=STATE, claude_exe="c", exe="x")
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings["skipDangerousModePermissionPrompt"] is True
+    assert set(settings["permissions"]) == {"deny"} and "autoMode" not in settings
 
 
-def test_no_rules_leave_auto_mode_alone_and_allow_nothing_extra():
-    s = settings_of(argv_with())
-    assert "autoMode" not in s and s["permissions"]["allow"] == []
-    assert json.loads(argv_with()[-1]) == {"mcpServers": {}}
+def test_trust_no_longer_writes_the_auto_mode_dialog_key(tmp_path):
+    path = tmp_path / ".claude.json"
+    trust_folders(path, [tmp_path / "wt"])
+    assert "autoModeEnvSetup" not in json.loads(path.read_text())
 
 
 def test_capture_asks_tmux_for_plain_text():

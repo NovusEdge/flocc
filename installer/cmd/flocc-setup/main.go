@@ -237,7 +237,6 @@ func run(args []string) int {
 	// Overlay keeps a saved table when the shipped one is absent; a ship is the whole host file,
 	// so a table removed there must go from the host too.
 	if fromStdin {
-		a.Permissions = in.Permissions
 		a.Playwright = in.Playwright
 		a.Tools = in.Tools
 		a.Docker = in.Docker

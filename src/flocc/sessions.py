@@ -43,26 +43,17 @@ def trust_folders(claude_json: Path, paths) -> None:
     # `claude auth login` signs in without the first-run onboarding, so a host logged in that way
     # (0.4.0's flocc-setup --phase login) starts every session on the "Press Enter to continue"
     # security notes; flocc-nimble lost three hours of NF-260 to it on 2026-10-20.
-    # After five auto-mode denials Claude Code asks "Teach auto mode about your environment?"
-    # mid-turn; `dismissed` is what its "Don't show again" writes. NF-256 sat on it on 2026-10-22.
     try:
         data = json.loads(claude_json.read_text())
     except FileNotFoundError:
         data = {}
     projects = data.setdefault("projects", {})
     missing = [str(p) for p in paths if not projects.get(str(p), {}).get("hasTrustDialogAccepted")]
-    env_setup = data.get("autoModeEnvSetup")
-    env_setup = env_setup if isinstance(env_setup, dict) else {}
-    if (
-        not missing
-        and data.get("hasCompletedOnboarding") is True
-        and env_setup.get("dismissed") is True
-    ):
+    if not missing and data.get("hasCompletedOnboarding") is True:
         return
     for p in missing:
         projects.setdefault(p, {})["hasTrustDialogAccepted"] = True
     data["hasCompletedOnboarding"] = True
-    data["autoModeEnvSetup"] = {**env_setup, "dismissed": True}
     tmp = claude_json.with_name(f"{claude_json.name}.flocc.tmp")
     # Mode 600 from the start: the file holds the account's OAuth state.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -101,19 +92,19 @@ def claude_argv(
     remote_control: bool = True,
 ) -> list[str]:
     servers = {s: cfg.mcp_servers[s] for s in settings.mcp}
-    permissions: dict = {"deny": list(_DENY), "allow": [*cfg.permission_allow]}
     session_settings: dict = {
         "statusLine": {"type": "command", "command": f"{exe} statusline"},
         "autoContinueAtUsageLimit": True,
         "attribution": False,
-        "permissions": permissions,
+        # Deny rules still block in bypassPermissions; allow rules do nothing there.
+        "permissions": {"deny": list(_DENY)},
         "disableWorkflows": True,
+        # Interactive sessions take the bypass warning's acceptance from a --settings file;
+        # without it the first session on a host sits at that dialog.
+        "skipDangerousModePermissionPrompt": True,
     }
     if disabled_plugins:
         session_settings["enabledPlugins"] = {p: False for p in disabled_plugins}
-    if cfg.permission_environment:
-        # Without $defaults the host's lines would replace the classifier's built-in context.
-        session_settings["autoMode"] = {"environment": ["$defaults", *cfg.permission_environment]}
     # The pane would otherwise inherit the tmux server's environment, which is whatever the
     # process that started the server had.
     argv = [
@@ -135,7 +126,7 @@ def claude_argv(
         "--settings",
         json.dumps(session_settings),
         "--permission-mode",
-        "auto",
+        "bypassPermissions",
         "--strict-mcp-config",
     ]
     if settings.model:

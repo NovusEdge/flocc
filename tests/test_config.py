@@ -1,4 +1,3 @@
-import json
 
 import pytest
 
@@ -120,122 +119,13 @@ def test_commit_trailer_is_on_unless_a_repo_overrides_it(tmp_path):
     assert not trailer_enabled(global_off, global_off.repos["backend"])
 
 
-def with_permissions(tmp_path, text):
-    config = tmp_path / "config.toml"
-    config.write_text(EXAMPLE.read_text())
-    (tmp_path / "permissions.toml").write_text(text)
-    return config
-
-
-def test_the_permissions_file_beside_the_config_is_loaded(tmp_path):
-    cfg = load(
-        with_permissions(
-            tmp_path,
-            'allow = ["Bash(npx playwright install)"]\n'
-            'environment = ["Nothing on this VM is production."]\n'
-            'judge_model = "sonnet"\n',
-        )
-    )
-    assert cfg.permission_allow == ("Bash(npx playwright install)",)
-    assert cfg.permission_environment == ("Nothing on this VM is production.",)
-    assert (cfg.judge_model, cfg.judge_max_per_run) == ("sonnet", 30)
-
-
-def test_no_permissions_file_means_no_rules_and_no_judge():
-    cfg = load(EXAMPLE)
-    assert (cfg.permission_allow, cfg.permission_environment, cfg.judge_model) == ((), (), "")
-
-
-@pytest.mark.parametrize(
-    "rule",
-    [
-        "Bash(python:*)",
-        "Bash(sh *)",
-        "Bash(bash -c ls)",
-        "Bash(env:*)",
-        "Bash(xargs *)",
-        "Bash",
-        "Bash()",
-        "Bash(*)",
-        "Bash(:*)",
-        "Bash(*:*)",
-        "Bash( python *)",
-        "Bash(/usr/bin/python3 *)",
-        "Bash(FOO=1 python *)",
-        "Bash(FOO=1 *)",
-        "Bash(python3.12 *)",
-        "Bash(sh\\t*)",
-        "Bash(Python:*)",
-        "Bash(PATH=/a:/b python *)",
-    ],
-)
-def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule, capsys):
-    text = f'allow = ["{rule}", "Bash(uv sync --frozen)"]\n'
-    assert load(with_permissions(tmp_path, text)).permission_allow == ("Bash(uv sync --frozen)",)
-    assert "interpreter" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    "rule",
-    [
-        "Bash(py* *)",
-        "Bash(pyth* *)",
-        "Bash(?ython *)",
-        "Bash(p*:*)",
-        "Bash([a-z]* *)",
-        "Bash(/usr/bin/* *)",
-        'Bash("python" *)',
-        "Bash('python' *)",
-        'Bash(FOO="a b" python *)',
-        "Bash(pyth\\on *)",
-        "Bash(FOO=a\\ b python *)",
-        "Bash(FOO=$(echo a b) python *)",
-        "Bash(FOO=${X:-a b} python *)",
-        "Bash(FOO=`x` python *)",
-        "Bash($SHELL *)",
-        "Bash(${P} *)",
-        "Bash({python,x} *)",
-        "Bash((python) *)",
-        "Bash(!python *)",
-        "Bash(~/py *)",
-    ],
-)
-def test_an_unresolvable_program_token_is_refused(tmp_path, rule, capsys):
-    assert (
-        load(with_permissions(tmp_path, f"allow = [{json.dumps(rule)}]\n")).permission_allow == ()
-    )
-    assert "interpreter" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    "rule",
-    [
-        "Bash(npx playwright install)",
-        "Bash(uv run pytest *)",
-        "Bash(git status:*)",
-        "Read(*)",
-        "Bash(FOO=1 uv run pytest *)",
-        "Bash(PATH=/a:/b make *)",
-        "Bash(./scripts/check.sh *)",
-        "Bash(g++ *)",
-    ],
-)
-def test_an_ordinary_allow_rule_is_accepted(tmp_path, rule):
-    cfg = load(with_permissions(tmp_path, f'allow = ["{rule}"]\n'))
-    assert cfg.permission_allow == (rule,)
-
-
-@pytest.mark.parametrize(
-    "text, word",
-    [
-        ("alow = []\n", "alow"),
-        ('environment = "x"\n', "environment"),
-        ("judge_max_per_run = 0\n", "judge_max_per_run"),
-    ],
-)
-def test_a_bad_permissions_file_fails_at_load(tmp_path, text, word):
-    with pytest.raises(ValueError, match=word):
-        load(with_permissions(tmp_path, text))
+def test_a_leftover_permissions_file_is_ignored_with_a_warning(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    path.write_text(EXAMPLE.read_text())
+    (tmp_path / "permissions.toml").write_text('allow = ["Bash(just:*)"]\n')
+    cfg = load(path)
+    assert not hasattr(cfg, "permission_allow")
+    assert "permissions.toml is no longer read" in capsys.readouterr().err
 
 
 def test_context_restart_pct_is_retired(tmp_path, capsys):
