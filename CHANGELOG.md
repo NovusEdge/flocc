@@ -4,6 +4,17 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 `plugin/.claude-plugin/plugin.json` together and adds its entry here; the merge commit is tagged
 `v<version>`.
 
+## Unreleased
+
+- A PR title takes its conventional type from the branch's commits when they all share one (a
+  docs-only change reads `docs:`); mixed or non-conventional subjects keep the label rule.
+- The executor keeps a fact the issue's wording would silently remove, or lists the conflict under
+  `Needs the owner`, and both it and the fixer keep commit subjects to 72 characters.
+- The supervisor-error event names the exception's type and first line.
+- `flocc run-summary` leaves the sudo and PAM lines out of its service log.
+- A prepare failure outside the repo's `./setup` says it is a flocc error and points to the
+  service log, instead of "Fix the repo or ./setup".
+
 ## 0.13.0 (2026-10-30)
 
 flocc drops cardinal, A2A and the escalation path built in 0.9 to 0.12. A run that needs you says

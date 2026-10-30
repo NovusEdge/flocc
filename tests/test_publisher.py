@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from flocc.config import RepoConfig
+from flocc.config import TRAILER, RepoConfig
 from flocc.publisher import (
     COMMENT_LIMIT,
     BranchMoved,
+    branch_subjects,
     check_at_base,
     check_worktree,
     comment_on_pr,
@@ -98,6 +99,35 @@ def test_pr_title_has_a_conventional_type_from_the_labels():
     assert pr_title("NF-2", "Pool writes", ("Chore", "claude")) == "chore: Pool writes (NF-2)"
     assert pr_title("NF-3", "Web app: frames", ("Feature",)) == "feat: Web app: frames (NF-3)"
     assert pr_title("NF-4", "Unlabelled") == "feat: Unlabelled (NF-4)"
+
+
+def test_pr_title_takes_the_type_the_commits_agree_on():
+    docs = ("docs(agents): add the lookup", "docs: fix a link")
+    assert pr_title("NF-6", "Docs", (), docs) == "docs: Docs (NF-6)"
+    assert pr_title("NF-6", "Docs", ("Bug",), docs) == "docs: Docs (NF-6)"
+
+
+def test_pr_title_falls_back_to_the_labels_unless_the_commits_agree():
+    mixed = ("docs: a", "fix: b")
+    assert pr_title("NF-7", "Mixed", ("Bug",), mixed) == "fix: Mixed (NF-7)"
+    assert pr_title("NF-7", "Mixed", (), mixed) == "feat: Mixed (NF-7)"
+    plain = ("update the docs", "docs: a")
+    assert pr_title("NF-8", "Plain", ("Chore",), plain) == "chore: Plain (NF-8)"
+    assert pr_title("NF-8", "None", ("Chore",), ()) == "chore: None (NF-8)"
+
+
+def test_branch_subjects_skip_the_testers_commits(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    git("commit", "-q", "--amend", "-m", f"test: pin it\n\n{TRAILER}: NF-5 test", cwd=path)
+    (path / "impl.py").write_text("x = 1\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", f"docs(agents): explain\n\n{TRAILER}: NF-5 impl", cwd=path)
+    assert branch_subjects(claim, repo) == ("docs(agents): explain",)
+
+
+def test_branch_subjects_are_empty_when_the_branch_cannot_be_read(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    assert branch_subjects(replace(claim, worktree=str(tmp_path / "gone")), repo) == ()
 
 
 def test_pr_is_created_with_the_title_as_given(origin, tmp_path):
