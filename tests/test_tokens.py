@@ -117,6 +117,22 @@ def test_checks_once_a_day_and_retries_after_a_network_error(rt):
     assert len(calls) == 6
 
 
+def test_a_page_repeated_by_an_unfinished_check_sends_one_event(rt):
+    from flocc import events
+    from flocc.notice import Notifier
+
+    rt.notifier = Notifier(rt.con, None, rt.now)
+
+    def expiry(token):
+        if token == "p":
+            raise TokenRejected("401")
+        raise urllib.error.URLError("no route")
+
+    check_tokens(rt, expiry)
+    check_tokens(rt, expiry)
+    assert [e.kind for e in events.unacked(rt.con)] == ["service-error"]
+
+
 def auth_run(stdout, code=0):
     def run(argv, **kw):
         assert argv[1:] == ["auth", "status"]

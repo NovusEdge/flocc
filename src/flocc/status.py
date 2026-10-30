@@ -171,9 +171,11 @@ def issue_lines(
     return hits[-n:] if n > 0 else []
 
 
-def _read_queue(path: Path) -> tuple[list[ledger.Claim], dict[str, tuple[str, float]], tuple]:
+def _read_queue(
+    path: Path, now: float
+) -> tuple[list[ledger.Claim], dict[str, tuple[str, float]], tuple]:
     """Finished claims, holds and (unacked, oldest unacked time, needing attention). Each table is
-    read on its own: a ledger the new code has not migrated lacks holds, events or prints, and
+    read on its own: a ledger the new code has not migrated lacks holds, events or printed_at, and
     that must not hide the finished runs. _read_ledger reports an unreadable ledger."""
     nothing: tuple = (0, None, 0)
     if not path.exists():
@@ -196,9 +198,10 @@ def _read_queue(path: Path) -> tuple[list[ledger.Claim], dict[str, tuple[str, fl
         counts = read(
             lambda: tuple(
                 con.execute(
-                    "SELECT COUNT(*), MIN(at), COUNT(CASE WHEN prints > ? THEN 1 END)"
+                    "SELECT COUNT(*), MIN(at),"
+                    " COUNT(CASE WHEN printed_at IS NOT NULL AND at <= ? THEN 1 END)"
                     " FROM events WHERE acked_at IS NULL",
-                    (events.REDELIVERIES,),
+                    (now - events.ATTENTION_S,),
                 ).fetchone()
             ),
             nothing,
@@ -281,7 +284,7 @@ def collect(
     latest = usage.latest_usage(cfg.agent_state_root, now)
     claims, expiry, ledger_error = _read_ledger(cfg.ledger_path)
     rows = [_claim_row(cfg, c, sessions, now) for c in claims]
-    finished, holds, (unacked, oldest, attention) = _read_queue(cfg.ledger_path)
+    finished, holds, (unacked, oldest, attention) = _read_queue(cfg.ledger_path, now)
     activity_error = None
     if rows:
         try:

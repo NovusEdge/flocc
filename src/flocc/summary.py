@@ -90,10 +90,10 @@ def digest_data(cfg: Config, con, now: float) -> tuple[str, int]:
     out += _capped(runs, LIST_ROWS)
     out += ["", "## Since the last digest"]
     rows = ledger.pending_digest(con)
-    shown = rows[-DIGEST_LINES:]
-    if len(rows) > len(shown):
-        out.append(f"- ({len(rows) - len(shown)} older lines left out)")
+    shown = rows[:DIGEST_LINES]
     out += [f"- {key or 'service'}: {line[:LINE_CHARS]}" for _, key, line in shown]
+    if len(rows) > len(shown):
+        out.append(f"- ({len(rows) - len(shown)} newer lines wait for the next digest)")
     if not rows:
         out.append("- nothing")
     out += ["", "## Holds"]
@@ -109,14 +109,14 @@ def digest_data(cfg: Config, con, now: float) -> tuple[str, int]:
         [f"- {k}: {n}, {waiting[k]} not acknowledged" for k, n in sorted(kinds.items())],
         LIST_ROWS,
     )
-    out += ["", "## Events needing attention: never acknowledged, no longer printed on their own"]
+    out += ["", "## Events needing attention: printed and redelivered, never acknowledged"]
     out += _capped(
         [
             f"- event {e.id}, {e.kind}, {e.issue_key or e.repo or 'service'}: {e.detail}"
-            for e in events.attention(con)
+            for e in events.attention(con, now)
         ],
         ATTENTION_ROWS,
     )
-    through = rows[-1][0] if rows else 0
+    through = shown[-1][0] if shown else 0
     out += ["", f"When the digest is sent: flocc digest-data --done {through}"]
     return "\n".join(out), through

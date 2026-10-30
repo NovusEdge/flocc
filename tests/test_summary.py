@@ -68,8 +68,16 @@ def test_digest_data_caps_every_list(tmp_cfg, con):
         ledger.insert_claim(con, make(f"NF-{n + 1}", state="done"))
         ledger.add_hold(con, f"NF-{n + 100}", "wait", float(n))
     text, _ = digest_data(tmp_cfg, con, 1000.0)
-    assert "(5 older lines left out)" in text and "line 4\n" not in text
+    assert "(5 newer lines wait for the next digest)" in text and "line 104" not in text
+    assert "line 99" in text
     assert text.count("(2 more)") == 2
+
+
+def test_digest_data_through_is_the_last_line_shown(tmp_cfg, con):
+    for n in range(DIGEST_LINES + 5):
+        ledger.add_digest(con, None, f"line {n}", float(n))
+    _, through = digest_data(tmp_cfg, con, 1000.0)
+    assert through == ledger.pending_digest(con)[DIGEST_LINES - 1][0]
 
 
 def test_digest_data_done_clears_through_the_id(tmp_cfg, tmp_path):

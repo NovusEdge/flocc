@@ -59,12 +59,16 @@ def since(con, t: float) -> list[Event]:
     return [Event(*r) for r in rows]
 
 
-def attention(con) -> list[Event]:
-    """Unacknowledged events printed more often than one connect and every redelivery: no
-    follower prints them on its own any more, so status and the digest name them."""
+ATTENTION_S = BATCH_S + REDELIVERIES * REDELIVER_S
+
+
+def attention(con, now: float) -> list[Event]:
+    """Printed events still unacknowledged after the batch close and every redelivery. Judged by
+    age, not by the print count, which also grows with each reconnect of a flapping link."""
     rows = con.execute(
-        f"SELECT {_COLUMNS} FROM events WHERE acked_at IS NULL AND prints > ? ORDER BY id",
-        (REDELIVERIES,),
+        f"SELECT {_COLUMNS} FROM events WHERE acked_at IS NULL AND printed_at IS NOT NULL"
+        " AND at <= ? ORDER BY id",
+        (now - ATTENTION_S,),
     )
     return [Event(*r) for r in rows]
 

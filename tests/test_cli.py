@@ -77,6 +77,18 @@ def test_hold_only_refuses_stopped_or_finished_work(tmp_path, capsys, state):
     assert ledger.get_claim(con, "NF-1").state == state  # type: ignore[union-attr]
 
 
+def test_hold_only_waits_for_a_running_tick(tmp_path, capsys):
+    from flocc.config import load
+
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.add_hold(con, "NF-1", "wait", 1.0)
+    with tick_lock(load(path).tick_lock):
+        assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 1
+    assert "a tick is running" in capsys.readouterr().err
+    assert "NF-1" in ledger.issue_holds(con)
+
+
 def test_hold_only_without_a_hold_is_refused(tmp_path, capsys):
     path = _cfg_file(tmp_path)
     assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 1

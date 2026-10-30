@@ -68,7 +68,17 @@ def test_redelivery_every_thirty_minutes_stops_after_three(con):
     for k in range(1, 6):
         f.poll(k * events.REDELIVER_S)
     assert every_id(out) == [n] * (1 + events.REDELIVERIES)
-    assert [e.id for e in events.attention(con)] == [n]
+    assert [e.id for e in events.attention(con, 6000.0)] == [n]
+    assert events.attention(con, events.ATTENTION_S - 1) == []
+
+
+def test_reconnects_do_not_make_an_event_need_attention(con):
+    n = events.emit(con, "ended", 0.0, issue_key="NF-1")
+    for k in range(5):
+        Follower(con, [].append).connect(float(k))
+    assert events.unacked(con)[0].prints == 5
+    assert events.attention(con, 10.0) == []
+    assert [e.id for e in events.attention(con, events.ATTENTION_S)] == [n]
 
 
 def test_an_event_past_its_redeliveries_is_still_printed_on_connect(con):

@@ -73,6 +73,11 @@ def can_write_contents(token: str, slug: str, opener=urllib.request.urlopen) -> 
 
 
 def _page(rt, name: str, path, summary: str) -> None:
+    # An unfinished check re-runs every tick, and each send wakes cardinal.
+    cause = f"gh-token-{name}"
+    if ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
+        return
+    ledger.record_alert(rt.con, cause, 0, None, rt.now())
     rt.notifier.send(
         Notice(
             f"gh-token-{name}",

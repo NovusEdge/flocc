@@ -148,12 +148,12 @@ def test_status_lists_finished_runs_holds_and_waiting_events(cfg):
     stuck = events.emit(con, "cap", 200.0, issue_key="NF-1")
     for _ in range(1 + events.REDELIVERIES):
         events.mark_printed(con, [stuck], 300.0)
-    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop")
+    report = collect(cfg, FakeSessions(), now=10_000.0, mode="loop")
     assert report["claims"][0]["archetype"] == "tester" and report["check_fix_rounds"] == 2
     [fin] = report["finished"]
     assert (fin["issue"], fin["archetype"], fin["pr_url"]) == ("NF-2", "reviewer", "https://pr/2")
-    assert report["holds"] == [{"issue": "NF-3", "reason": "owner said wait", "age_s": 600.0}]
-    assert report["events"] == {"unacked": 2, "oldest_age_s": 900.0, "attention": 1}
+    assert report["holds"] == [{"issue": "NF-3", "reason": "owner said wait", "age_s": 9600.0}]
+    assert report["events"] == {"unacked": 2, "oldest_age_s": 9900.0, "attention": 1}
 
 
 def test_status_reads_a_ledger_without_holds_or_events(cfg):
@@ -171,6 +171,29 @@ def test_status_reads_a_ledger_without_holds_or_events(cfg):
     assert report["ledger_error"] is None and report["holds"] == []
     assert [f["issue"] for f in report["finished"]] == ["NF-9"]
     assert report["events"] == {"unacked": 0, "oldest_age_s": None, "attention": 0}
+
+
+def test_status_reads_events_without_the_prints_column(cfg):
+    import sqlite3
+
+    from tests.test_ledger import V0_CLAIM
+
+    cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    raw = sqlite3.connect(cfg.ledger_path)
+    raw.executescript(ledger._SCHEMA)
+    raw.execute(V0_CLAIM.replace("'running'", "'done'"))
+    raw.execute(
+        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,"
+        " issue_key TEXT, repo TEXT, detail TEXT NOT NULL DEFAULT '', at REAL NOT NULL,"
+        " printed_at REAL, acked_at REAL)"
+    )
+    raw.execute("INSERT INTO events (kind, at) VALUES ('ended', 100.0)")
+    raw.commit()
+    raw.close()
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop")
+    assert report["ledger_error"] is None
+    assert [f["issue"] for f in report["finished"]] == ["NF-9"]
+    assert report["events"]["unacked"] == 1
 
 
 def test_human_status_prints_the_table(cfg, tmp_path, monkeypatch, capsys):

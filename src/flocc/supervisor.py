@@ -727,10 +727,11 @@ def _timed_out(rt, claim: Claim, name: str) -> None:
     line = f"stopped at the wall-clock limit ({name}); rerun with flocc release {key}"
     ledger.add_digest(rt.con, key, line, rt.now())
     _record_usage(rt, key, claim.phase, "end")
-    ledger.update_claim(rt.con, key, state="timed_out")
+    # Before the state change: a duplicate is acked away, a lost event is never seen.
     events.emit(
         rt.con, "ended", rt.now(), issue_key=key, repo=claim.repo, detail=f"timed out: {line}"
     )
+    ledger.update_claim(rt.con, key, state="timed_out")
     try:
         rt.linear.comment(claim.issue_id, f"The {ARCHETYPE[claim.phase]} {line}.")
     except LinearError as exc:

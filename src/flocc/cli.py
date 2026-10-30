@@ -429,15 +429,23 @@ def cmd_cleanup(args) -> int:
 def _lift_hold(cfg, key: str) -> int:
     # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
     # the timed-out restart, or a move to Todo made while it was held, would start it again.
-    con = ledger.connect(cfg.ledger_path)
-    claim = ledger.get_claim(con, key)
-    if claim is not None and claim.state != "running":
-        state = claim.state.replace("_", " ")
-        print(f"release: {key}'s run is {state}; only the owner reruns it", file=sys.stderr)
-        return 1
-    if not ledger.remove_hold(con, key):
-        print(f"release: {key} has no hold", file=sys.stderr)
-        return 1
+    # Under the tick lock: a tick could otherwise time the run out between the state read and the
+    # removal, and the next restart would rerun it.
+    from flocc.tick import tick_lock
+
+    with tick_lock(cfg.tick_lock) as held:
+        if not held:
+            print("release: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        con = ledger.connect(cfg.ledger_path)
+        claim = ledger.get_claim(con, key)
+        if claim is not None and claim.state != "running":
+            state = claim.state.replace("_", " ")
+            print(f"release: {key}'s run is {state}; only the owner reruns it", file=sys.stderr)
+            return 1
+        if not ledger.remove_hold(con, key):
+            print(f"release: {key} has no hold", file=sys.stderr)
+            return 1
     print(f"released the hold on {key}")
     return 0
 
