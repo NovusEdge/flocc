@@ -64,6 +64,11 @@ func loopCommand(home string) string {
 	return "sh -c 'while :; do env " + ServicePath(home) + " flocc run; sleep 10; done'"
 }
 
+// oldUnits are user units earlier flocc versions installed that ship removes. 0.12 ran the session
+// server as this user (flocc-tmux, flocc-agent's now); flocc-a2a ran `flocc a2a serve` until A2A
+// was removed.
+var oldUnits = []string{"flocc-tmux.service", "flocc-a2a.service"}
+
 // staleUnit names the first of units whose installed copy is missing or differs from the shipped one.
 func staleUnit(e *Env, units []string) string {
 	for _, u := range units {
@@ -105,8 +110,10 @@ func (Run) Check(ctx context.Context, e *Env) (bool, string, error) {
 	if u := staleUnit(e, deploy.Units); u != "" {
 		return false, u + " not installed or out of date", nil
 	}
-	if _, err := os.Stat(e.HomePath(".config/systemd/user/flocc-tmux.service")); err == nil {
-		return false, "old flocc-tmux.service still installed", nil
+	for _, u := range oldUnits {
+		if _, err := os.Stat(e.HomePath(filepath.Join(".config/systemd/user", u))); err == nil {
+			return false, "old " + u + " still installed", nil
+		}
 	}
 	if !timerOn(ctx, e) {
 		return false, "timer not enabled", nil
@@ -120,11 +127,17 @@ func (Run) Apply(ctx context.Context, e *Env) error {
 		if err != nil {
 			return err
 		}
-		// 0.12 ran the session server as this user; it is flocc-agent's now.
-		old := filepath.Join(dir, "flocc-tmux.service")
-		if _, err := os.Stat(old); err == nil {
-			e.Run.Run(ctx, e.userctl("disable", "--now", "flocc-tmux.service"))
+		for _, u := range oldUnits {
+			old := filepath.Join(dir, u)
+			if _, err := os.Stat(old); err != nil {
+				continue
+			}
+			e.Run.Run(ctx, e.userctl("disable", "--now", u))
 			if err := os.Remove(old); err != nil {
+				return err
+			}
+			// A failed disable leaves the link, and systemd would start the dangling unit.
+			if err := os.Remove(filepath.Join(dir, "default.target.wants", u)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
 		}
