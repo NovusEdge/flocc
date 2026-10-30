@@ -48,8 +48,8 @@ func report(v int, claims ...ship.Claim) *ship.Report {
 	return r
 }
 
-func claim(issue, phase, state string, pct float64, launches int, upd float64, act ...string) ship.Claim {
-	c := ship.Claim{Issue: issue, Phase: phase, State: state, ContextPct: f64(pct), Launches: launches, LaunchLimit: 2,
+func claim(issue, phase, state string, pct float64, upd float64, act ...string) ship.Claim {
+	c := ship.Claim{Issue: issue, Phase: phase, State: state, ContextPct: f64(pct),
 		UpdatedAge: f64(upd), StartedAge: 3 * 86400, TmuxAlive: state == "running"}
 	for i, a := range act {
 		c.Activity = append(c.Activity, ship.ActivityLine{At: float64(t0.Add(time.Duration(i) * time.Minute).Unix()), Text: a})
@@ -58,9 +58,9 @@ func claim(issue, phase, state string, pct float64, launches int, upd float64, a
 }
 
 func canned() fetched {
-	a := report(1, claim("NF-240", "fix", "blocked", 7, 0, 86400, "ran just check: 2 failures", "asked in Linear: keep the old summary line?"),
-		claim("NF-388", "review", "running", 41, 1, 1))
-	b := report(1, claim("NF-402", "test", "running", 18, 1, 60))
+	a := report(1, claim("NF-240", "fix", "blocked", 7, 86400, "ran just check: 2 failures", "asked in Linear: keep the old summary line?"),
+		claim("NF-388", "review", "running", 41, 1))
+	b := report(1, claim("NF-402", "test", "running", 18, 60))
 	return fetched{
 		results: []Result{
 			{Host: ship.FleetHost{Name: "flocc-nimble"}, Status: a},
@@ -81,7 +81,6 @@ func (*fakeSource) Discover(context.Context) ([]ship.FleetHost, []string) { retu
 func (*fakeSource) Status(context.Context, ship.FleetHost) (*ship.Report, error) {
 	return nil, nil
 }
-func (*fakeSource) Cardinals(context.Context) ([]ship.CardinalRow, []string) { return nil, nil }
 
 func (f *fakeSource) Run(_ context.Context, h ship.FleetHost, args []string) (host.Result, error) {
 	f.mu.Lock()
@@ -321,7 +320,7 @@ func TestSelectionFollowsItsRowAcrossAPoll(t *testing.T) {
 	key(m, "down")
 	f := canned()
 	f.at = t0.Add(time.Second)
-	f.results[1].Status = report(1, claim("NF-100", "fix", "running", 1, 0, 1), claim("NF-240", "fix", "blocked", 7, 0, 840))
+	f.results[1].Status = report(1, claim("NF-100", "fix", "running", 1, 1), claim("NF-240", "fix", "blocked", 7, 840))
 	m.Update(f)
 	for _, l := range strings.Split(text(m), "\n") {
 		if strings.Contains(l, "NF-240") && strings.Contains(l, "flocc-nimble") && !strings.Contains(l, "❯") {

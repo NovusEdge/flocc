@@ -97,7 +97,7 @@ func TestListReturnsGoodHostsByNameAndNamesTheBadOnes(t *testing.T) {
 func TestHostFileKeepsTheAnswersFlatAndNeverASecret(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hosts")
 	h := Host{Name: "flocc-nimble", SSH: "root@flocc-nimble", Answers: answers.Answers{
-		TeamKey: "NF", DigestIssue: "NF-186", NtfyTopic: "flocc-x",
+		TeamKey: "NF", DigestIssue: "NF-186",
 		Repos:   []answers.Repo{{Name: "nimblefox", URL: "https://github.com/o/nimblefox", BaseBranch: "main", Check: "just check", Draft: true}},
 		Secrets: &answers.Secrets{LinearKey: "lin_api_s3cret"},
 	}}

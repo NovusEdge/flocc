@@ -1,13 +1,13 @@
 [Unit]
 Description=flocc tick
-After=network-online.target flocc-tmux.service
-Wants=network-online.target flocc-tmux.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 # The user manager's PATH lacks ~/.local/bin, where claude and flocc live, and the
 # sessions and the repo's check inherit this PATH. Add any other tool directories the repos need.
 Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
-# The tick takes its own lock. Sessions live in flocc-tmux.service, outside this unit's
-# cgroup, so they survive the end of each tick.
+# The tick takes its own lock. Sessions live in flocc-agent's flocc-tmux.service, outside this
+# unit's cgroup, so they survive the end of each tick.
 ExecStart=%h/.local/bin/flocc tick

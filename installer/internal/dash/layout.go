@@ -5,7 +5,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
@@ -71,7 +71,7 @@ func (m *Model) statusLine() string {
 	case m.titleNote != "":
 		return m.th.Dim.Render(m.titleNote)
 	case len(m.notes) > 0:
-		return m.th.Dim.Render(saved.Sanitize(m.notes[0]))
+		return m.th.Dim.Render(safe.Sanitize(m.notes[0]))
 	}
 	return ""
 }

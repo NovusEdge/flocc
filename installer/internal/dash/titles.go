@@ -5,7 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 )
 
 type titlesMsg struct {
@@ -47,13 +47,13 @@ func (m *Model) gotTitles(msg titlesMsg) {
 		delete(m.asked, k)
 	}
 	if msg.err != nil {
-		m.titleNote = "titles unavailable: " + saved.Sanitize(msg.err.Error())
+		m.titleNote = "titles unavailable: " + safe.Sanitize(msg.err.Error())
 		return
 	}
 	m.titleNote = ""
 	for _, k := range msg.keys {
 		t := msg.got[k]
-		m.titles[k] = Title{Title: saved.Sanitize(t.Title), URL: saved.Sanitize(t.URL)}
+		m.titles[k] = Title{Title: safe.Sanitize(t.Title), URL: safe.Sanitize(t.URL)}
 	}
 	m.reselect()
 }

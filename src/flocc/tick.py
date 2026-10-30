@@ -1,5 +1,4 @@
 import fcntl
-import shutil
 import subprocess
 import sys
 import time
@@ -7,42 +6,34 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
-from flocc import a2atick, ledger, rebase
+from flocc import ledger, rebase
+from flocc.agent import Agent
 from flocc.config import Config, trailer_enabled
-from flocc.context import state_dir
-from flocc.escalation import Escalation, Notifier, ntfy_push
+from flocc.context import agent_dir
 from flocc.linear import Linear, LinearError, http_transport
+from flocc.notice import Notice, Notifier
 from flocc.poller import (
-    clean_scratchpads,
     forward_comments,
-    maybe_digest,
+    maybe_daily,
     poll,
     reap_worktrees,
     restart_timed_out,
-    route_escalations,
 )
-from flocc.publisher import check_at_base, comment_on_pr, pr_view, publish, read_amended
+from flocc.publisher import comment_on_pr, pr_view, publish, read_amended
 from flocc.runtime import Runtime
-from flocc.sessions import Sessions
 from flocc.supervisor import supervise
 from flocc.tokens import check_claude_login, check_tokens
-from flocc.worktree import git
+from flocc.worktree import agent_ref, fetch_agent_branch, git, origin_base
 
-FAILS_BEFORE_PAGE = 5
+# The spec's service-error: a tick that raised, and Linear failing three ticks in a row.
+TICK_FAILS_BEFORE_EVENT = 1
+LINEAR_FAILS_BEFORE_EVENT = 3
 
 
 class IssueLinearErrors(LinearError):
     def __init__(self, failed: dict[str, LinearError]):
         self.keys = sorted(failed)
         super().__init__("; ".join(f"{k}: {failed[k]}" for k in self.keys))
-
-
-def _which(name: str) -> str:
-    # The pane's PATH is the tick's, and the unit's PATH is systemd's unless the unit sets one.
-    path = shutil.which(name)
-    if path is None:
-        raise RuntimeError(f"{name} is not on PATH; set Environment=PATH in the unit")
-    return path
 
 
 def _require_token(path: Path) -> None:
@@ -53,11 +44,12 @@ def _require_token(path: Path) -> None:
 
 
 def build_runtime(cfg: Config, config_path: Path) -> Runtime:
-    exe, claude_exe = _which("flocc"), _which("claude")
+    exe, claude_exe = str(cfg.agent_flocc), str(cfg.agent_claude)
+    agent = Agent(cfg)
     _require_token(cfg.agent_gh_token_file)
     con = ledger.connect(cfg.ledger_path)
     linear = Linear(http_transport(cfg.linear_key_file.read_text().strip()))
-    notifier = Notifier(cfg, con, linear, now=time.time)
+    notifier = Notifier(con, linear, now=time.time)
     token = cfg.publish_gh_token_file.read_text().strip()
 
     def publish_fn(claim, title, summary, **kw):
@@ -70,42 +62,43 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
             check_timeout_s=cfg.check_timeout_s,
             trailer=trailer_enabled(cfg, cfg.repos[claim.repo]),
             accepted_sha=ledger.accepted_tests(con, claim.issue_key),
-            amended=read_amended(state_dir(cfg, claim.issue_key)),
+            amended=read_amended(agent_dir(cfg, claim.issue_key)),
+            check=agent.check_worktree,
             **kw,
         )
 
+    def git_head(claim):
+        repo = cfg.repos[claim.repo]
+        return fetch_agent_branch(repo.path, Path(claim.worktree), claim.branch, claim.issue_key)
+
     def review_diff(claim):
-        base = f"origin/{cfg.repos[claim.repo].base_branch}"
-        return git("diff", f"{base}...HEAD", cwd=Path(claim.worktree))
+        repo = cfg.repos[claim.repo]
+        git_head(claim)
+        origin_base(repo)
+        return git(
+            "diff", f"origin/{repo.base_branch}...{agent_ref(claim.issue_key)}", cwd=repo.path
+        )
 
     def comment_pr(claim, url, body):
         comment_on_pr(claim, url, body, token)
-
-    def base_check(repo):
-        return check_at_base(
-            cfg.repos[repo],
-            cfg.worktree_root,
-            cfg.setup_timeout_s,
-            cfg.check_timeout_s,
-            cfg.shared_uv_cache,
-        )
 
     return Runtime(
         cfg=cfg,
         con=con,
         linear=linear,
-        sessions=Sessions(),
+        sessions=agent.sessions(),
         notifier=notifier,
         now=time.time,
         exe=exe,
         claude_exe=claude_exe,
         config_path=config_path,
         publish_fn=publish_fn,
-        git_head=lambda path: git("rev-parse", "HEAD", cwd=Path(path)),
+        git_head=git_head,
         review_diff=review_diff,
         comment_pr=comment_pr,
         pr_view=lambda claim, url: pr_view(claim, url, token),
-        base_check=base_check,
+        base_check=agent.check_base,
+        agent=agent,
     )
 
 
@@ -123,23 +116,27 @@ def tick_lock(path: Path):
         yield True
 
 
-def _page_after_repeats(con, notifier, counter, cause, what, exc: Exception, action: str):
+def _page_after_repeats(con, notifier, counter, cause, what, exc: Exception, action: str, after):
     fails = int(ledger.meta_get(con, counter) or 0) + 1
     ledger.meta_set(con, counter, str(fails))
-    if fails >= FAILS_BEFORE_PAGE:
-        summary = f"{what} has failed {fails} ticks in a row: {exc}"
-        notifier.send(Escalation(1, cause, summary, action, scope="global"), None, None)
+    now = time.time()
+    if fails < after or ledger.alert_seen(con, cause, ledger.DEDUPE_S, now):
+        return
+    tick_word = "tick" if fails == 1 else "ticks"
+    summary = f"{what} has failed {fails} {tick_word} in a row: {exc}"
+    notifier.send(Notice(cause, summary, action, event="service-error"))
+    ledger.record_alert(con, cause, 0, None, now)
 
 
 def _page_unbuilt(cfg: Config, exc: Exception) -> None:
-    # The page must not need what failed. A global tier 1 with no team only pushes, so the
-    # notifier gets no Linear client; without a ledger to count in, the journal is all there is.
+    # The notice must not need what failed: with no issue it only writes the digest, so it gets
+    # no Linear client. Without a ledger to count in, the journal is all there is.
     try:
         con = ledger.connect(cfg.ledger_path)
     except Exception as err:  # noqa: BLE001
         print(f"tick: failure not counted, the ledger did not open: {err}", file=sys.stderr)
         return
-    _page_tick_failure(con, Notifier(cfg, con, None, now=time.time, push=ntfy_push), exc)
+    _page_tick_failure(con, Notifier(con, None, now=time.time), exc)
 
 
 def _page_tick_failure(con, notifier, exc: Exception) -> None:
@@ -151,6 +148,7 @@ def _page_tick_failure(con, notifier, exc: Exception) -> None:
         "The tick",
         exc,
         "Read journalctl --user -u flocc",
+        TICK_FAILS_BEFORE_EVENT,
     )
 
 
@@ -173,38 +171,33 @@ def tick(cfg: Config, config_path: Path) -> int:
                 failed[claim.issue_key] = exc
             except Exception:  # noqa: BLE001 - one issue's failure must not stop the others
                 traceback.print_exc()
-                rt.notifier.send(
-                    Escalation(
-                        2,
-                        f"{claim.issue_key}:supervisor-error",
-                        "The supervisor failed on this issue; see journalctl -u flocc.",
-                        "Read the log",
-                        issue_key=claim.issue_key,
-                        waiting=True,
-                    ),
-                    None,
-                    None,
-                )
-        failed |= route_escalations(rt)
+                cause = f"{claim.issue_key}:supervisor-error"
+                if not ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
+                    rt.notifier.send(
+                        Notice(
+                            cause,
+                            "The supervisor failed on this issue; see journalctl -u flocc.",
+                            "Read the log",
+                            issue_key=claim.issue_key,
+                            event="service-error",
+                        )
+                    )
+                    ledger.record_alert(rt.con, cause, 0, claim.issue_key, rt.now())
         failed |= forward_comments(rt)
         # Before poll, which then picks the released issue up in this tick.
         restart_timed_out(rt)
         # Before poll, so the space it frees counts toward this tick's admission.
         reap_worktrees(rt)
-        # Before poll: a rerun's _start drops the old listing, which would orphan its pads.
-        clean_scratchpads(rt)
         poll(rt)
         # After poll, so an issue started this tick is not mistaken for a finished one.
         try:
             rebase.step(rt)
         except Exception:  # noqa: BLE001 - a rebase that cannot start must not stop the digest
             traceback.print_exc()
-        # After poll, so an issue started this tick counts as live for the record comments.
-        a2atick.step(rt)
         # Before the digest, so a warning written today goes out with today's digest.
         check_tokens(rt)
         check_claude_login(rt)
-        maybe_digest(rt)
+        maybe_daily(rt)
         if failed:
             raise IssueLinearErrors(failed)
         ledger.meta_set(rt.con, "linear_failures", "0")
@@ -216,7 +209,14 @@ def tick(cfg: Config, config_path: Path) -> int:
             commands = ", ".join(f"flocc release {k}" for k in exc.keys)
             action += f"; if an issue was deleted, run {commands}"
         _page_after_repeats(
-            rt.con, rt.notifier, "linear_failures", "linear-api", "Linear", exc, action
+            rt.con,
+            rt.notifier,
+            "linear_failures",
+            "linear-api",
+            "Linear",
+            exc,
+            action,
+            LINEAR_FAILS_BEFORE_EVENT,
         )
         return 1
     except Exception as exc:

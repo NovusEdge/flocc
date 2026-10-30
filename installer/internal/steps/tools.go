@@ -12,7 +12,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 )
 
-// Tools sets the host file's mise tools as the service user's global versions, so a repo's
+// Tools sets the host file's mise tools as flocc-agent's global versions, so a repo's
 // ./setup finds them through mise's shims without pinning them itself. NF-211, NF-212 and NF-260
 // failed on "No version is set for shim: go" with go installed under mise and no global version.
 type Tools struct{}
@@ -42,7 +42,7 @@ func (t Tools) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return true, "none in the host file", nil
 	}
 	if _, err := os.Stat(e.HomePath(miseRel)); err != nil {
-		return false, "mise is not installed for the service user", nil
+		return false, "mise is not installed for this user", nil
 	}
 	if u := t.unset(ctx, e); len(u) > 0 {
 		return false, "not set: " + strings.Join(u, ", "), nil
@@ -52,7 +52,7 @@ func (t Tools) Check(ctx context.Context, e *Env) (bool, string, error) {
 
 func (t Tools) Apply(ctx context.Context, e *Env) error {
 	if _, err := os.Stat(e.HomePath(miseRel)); err != nil {
-		return errors.New("mise is not installed for the service user; install it with curl https://mise.run | sh as that user")
+		return errors.New("mise is not installed for this user; install it with curl https://mise.run | sh as that user")
 	}
 	for _, nv := range t.unset(ctx, e) {
 		name, version, _ := strings.Cut(nv, " ")

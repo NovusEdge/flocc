@@ -27,6 +27,12 @@ func TestRepoCheckComparesBundleHeadAndInstall(t *testing.T) {
 	}
 	os.MkdirAll(e.HomePath(".local/bin"), 0o755)
 	os.WriteFile(e.HomePath(".local/bin/flocc"), nil, 0o755)
+	os.MkdirAll(e.Path(OptDir+"/bin"), 0o755)
+	os.WriteFile(e.Path(OptDir+"/bin/flocc-agent"), nil, 0o755)
+	if done, detail, _ := (Repo{}).Check(context.Background(), e); done || !strings.HasPrefix(detail, OptDir+" not published at") {
+		t.Fatalf("detail=%q", detail)
+	}
+	os.WriteFile(e.Path(OptDir+"/.flocc-commit"), []byte(sha+"\n"), 0o644)
 	if done, _, _ := (Repo{}).Check(context.Background(), e); !done {
 		t.Fatal("want done")
 	}

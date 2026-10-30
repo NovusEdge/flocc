@@ -19,6 +19,8 @@ import (
 
 const claudeBin = "/home/flocc/.local/bin/claude"
 
+const agentClaudeBin = "sudo -n -H -u flocc-agent /usr/local/libexec/flocc-agent-run claude"
+
 func claudeEnv(t *testing.T, f *host.Fake, l plugins.List) *Env {
 	e := testEnv(t, f)
 	e.Stage = t.TempDir()
@@ -28,7 +30,7 @@ func claudeEnv(t *testing.T, f *host.Fake, l plugins.List) *Env {
 	return e
 }
 
-const pushOn = `{"inputNeededNotifEnabled":true,"agentPushNotifEnabled":false}`
+const pushOn = `{"inputNeededNotifEnabled":true,"agentPushNotifEnabled":false,"skipDangerousModePermissionPrompt":true}`
 
 func writeSettings(t *testing.T, e *Env, body string) {
 	t.Helper()
@@ -93,7 +95,7 @@ func TestClaudeLoginProbesInEveryMode(t *testing.T) {
 		{0, `not json`, "none"},
 	} {
 		for _, skip := range []bool{false, true} {
-			f := host.NewFake().On(claudeBin+" auth status", c.code, c.out)
+			f := host.NewFake().On(agentClaudeBin+" auth status", c.code, c.out)
 			e := testEnv(t, f)
 			e.SkipInteractive = skip
 			if got := claudeLogin(context.Background(), e); got != c.login {
@@ -108,9 +110,9 @@ func TestClaudeLoginProbesInEveryMode(t *testing.T) {
 }
 
 func TestClaudeLoginApplyLeavesAMissingLoginPendingAndStartsNothing(t *testing.T) {
-	f := host.NewFake().On(claudeBin+" auth status", 1, `{"loggedIn":false}`)
+	f := host.NewFake().On(agentClaudeBin+" auth status", 1, `{"loggedIn":false}`)
 	if err := (ClaudeLogin{}).Apply(context.Background(), testEnv(t, f)); !errors.Is(err, ErrPending) ||
-		!slices.Equal(f.Calls, []string{claudeBin + " auth status"}) {
+		!slices.Equal(f.Calls, []string{agentClaudeBin + " auth status"}) {
 		t.Fatalf("err=%v calls=%v", err, f.Calls)
 	}
 }
@@ -118,7 +120,7 @@ func TestClaudeLoginApplyLeavesAMissingLoginPendingAndStartsNothing(t *testing.T
 // --interactive offers every finished step for redo; redoing a full login must not keep the
 // Run step from starting the timer.
 func TestRedoingAFullLoginLeavesNothingPending(t *testing.T) {
-	f := host.NewFake().On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
+	f := host.NewFake().On(agentClaudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
 	e := testEnv(t, f)
 	e.UI = redoUI{Scripted: &ui.Scripted{A: &answers.Answers{}, Out: io.Discard}, redo: []string{"Claude login"}}
 	if err := RunAll(context.Background(), e, []Step{ClaudeLogin{}}); err != nil || len(e.Pending) != 0 {
@@ -187,7 +189,7 @@ func TestClaudeApplyLeavesCorrectSettingsUntouched(t *testing.T) {
 		On(claudeBin+" --version", 0, "2.1.295\n").
 		On(claudeBin+" auth status", 0, `{"loggedIn":true,"authMethod":"claude.ai"}`)
 	e := claudeEnv(t, f, plugins.List{})
-	const body = `{"z":"a<b","inputNeededNotifEnabled":true,"agentPushNotifEnabled":false}`
+	const body = `{"z":"a<b","inputNeededNotifEnabled":true,"agentPushNotifEnabled":false,"skipDangerousModePermissionPrompt":true}`
 	writeSettings(t, e, body)
 	if err := (Claude{}).Apply(context.Background(), e); err != nil {
 		t.Fatal(err)

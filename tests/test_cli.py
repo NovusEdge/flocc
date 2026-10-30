@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -13,14 +14,101 @@ import pytest
 from flocc import canary, ledger
 from flocc.cli import build_parser, main
 from flocc.config import load
-from flocc.grants import Grants, set_block
 from flocc.linear import LinearError
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.tick import tick_lock
-from tests.fakes import FakeNotifier, FakeSessions
+from tests.fakes import FakeAgent, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
+
+
+def _cfg_file(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text(
+        EXAMPLE.read_text()
+        .replace('"~/.local/state/flocc/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
+        .replace("~/.local/state/flocc", str(tmp_path / "state"))
+    )
+    return path
+
+
+def test_hold_says_a_running_claim_goes_on(tmp_path, capsys):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.insert_claim(con, make("NF-1"))
+    assert main(["--config", str(path), "hold", "NF-1", "--reason=owner asked"]) == 0
+    assert "its run in progress goes on" in capsys.readouterr().out
+    assert ledger.issue_holds(con)["NF-1"][0] == "owner asked"
+
+
+def test_release_of_a_held_issue_without_a_claim_lifts_the_hold(tmp_path, capsys):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.add_hold(con, "NF-3", "wait", 1.0)
+    assert main(["--config", str(path), "release", "NF-3"]) == 0
+    assert "released the hold on NF-3" in capsys.readouterr().out
+    assert ledger.issue_holds(con) == {}
+
+
+@pytest.mark.parametrize("state", [None, "running"])
+def test_hold_only_lifts_the_hold_and_leaves_the_claim(tmp_path, capsys, state):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    if state:
+        ledger.insert_claim(con, make("NF-1", state=state))
+    ledger.add_hold(con, "NF-1", "wait", 1.0)
+    assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 0
+    assert "released the hold on NF-1" in capsys.readouterr().out
+    assert ledger.issue_holds(con) == {}
+    if state:
+        assert ledger.get_claim(con, "NF-1").state == state  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("state", ["done", "blocked", "timed_out"])
+def test_hold_only_refuses_stopped_or_finished_work(tmp_path, capsys, state):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.insert_claim(con, make("NF-1", state=state))
+    ledger.add_hold(con, "NF-1", "wait", 1.0)
+    assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 1
+    assert "only the owner reruns it" in capsys.readouterr().err
+    assert "NF-1" in ledger.issue_holds(con)
+    assert ledger.get_claim(con, "NF-1").state == state  # type: ignore[union-attr]
+
+
+def test_hold_only_waits_for_a_running_tick(tmp_path, capsys):
+    from flocc.config import load
+
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.add_hold(con, "NF-1", "wait", 1.0)
+    with tick_lock(load(path).tick_lock):
+        assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 1
+    assert "a tick is running" in capsys.readouterr().err
+    assert "NF-1" in ledger.issue_holds(con)
+
+
+def test_hold_only_without_a_hold_is_refused(tmp_path, capsys):
+    path = _cfg_file(tmp_path)
+    assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 1
+    assert "has no hold" in capsys.readouterr().err
+
+
+def test_a_failed_accept_tests_keeps_the_hold(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.insert_claim(con, make("NF-1", state="blocked"))
+    ledger.add_hold(con, "NF-1", "wait", 1.0)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, p: types.SimpleNamespace(con=con))
+    assert main(["--config", str(path), "release", "--accept-tests", "NF-1"]) == 1
+    assert "NF-1" in ledger.issue_holds(con)
+
+
+def test_a_malformed_key_is_refused_by_the_parser(tmp_path):
+    path = _cfg_file(tmp_path)
+    assert main(["--config", str(path), "hold", "nf-1"]) == 2
+    assert main(["--config", str(path), "hold", "NF-1\n"]) == 2
 
 
 def test_unknown_subcommand_exits_nonzero(capsys):
@@ -44,6 +132,7 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
         EXAMPLE.read_text()
         .replace('"~/.local/state/flocc/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
         .replace('"~/src/backend"', f'"{origin}"')
+        .replace("~/.local/state/flocc", str(tmp_path / "state"))
     )
     cfg = load(path)
     con = ledger.connect(cfg.ledger_path)
@@ -63,12 +152,13 @@ def test_release_clears_a_claim_whose_issue_and_worktree_are_gone(
         git_head=lambda p: "sha0",
         review_diff=lambda c: "",
         comment_pr=lambda c, u, b: None,
+        agent=FakeAgent(cfg),
     )
     monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
     assert main(["--config", str(path), "release", "NF-1"]) == 0
     assert ledger.get_claim(con, "NF-1") is None and sessions.killed == ["NF-1-test"]
     captured = capsys.readouterr()
-    assert "worktree" in captured.err and "Entity not found" in captured.err
+    assert "Entity not found" in captured.err
     assert "worktree removed" in captured.out
     ledger.insert_claim(con, make("NF-1", worktree=str(tmp_path / "wt" / "NF-1")))
     assert main(["--config", str(path), "release", "NF-1", "--keep-worktree"]) == 0
@@ -96,28 +186,14 @@ def test_subcommands_have_help(capsys):
     assert main(["status", "--help"]) == 0
 
 
-def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, capsys):
-    con_path = tmp_path / "hook.sqlite"
-    claim = make("NF-1", (), worktree=str(origin.resolve()))
-    claim.phase = "review"
-    ledger.insert_claim(ledger.connect(con_path), claim)
-    monkeypatch.setenv("FLOCC_LEDGER", str(con_path))
-    monkeypatch.chdir(origin)
-    assert main(["hook", "pre-commit"]) == 1
-    assert "read-only" in capsys.readouterr().err
-    ledger.update_claim(ledger.connect(con_path), "NF-1", phase="impl")
+def test_pre_commit_from_an_old_worktree_is_a_no_op():
     assert main(["hook", "pre-commit"]) == 0
 
 
 @pytest.fixture
 def claims_env(tmp_path, monkeypatch):
     config = tmp_path / "c.toml"
-    config.write_text(
-        EXAMPLE.read_text().replace(
-            '[repos.backend]\npath = "~/src/backend"',
-            '[repos.backend]\npath = "~/src/backend"\nshared_paths = ["docs/verification.md"]',
-        )
-    )
+    config.write_text(EXAMPLE.read_text())
     state = tmp_path / "state" / "NF-1"
     state.mkdir(parents=True)
     monkeypatch.setenv("FLOCC_STATE", str(state))
@@ -126,232 +202,29 @@ def claims_env(tmp_path, monkeypatch):
     return ledger.connect(tmp_path / "hook.sqlite")
 
 
-def test_claim_refuses_a_whole_tree(claims_env, capsys):
-    ledger.insert_claim(claims_env, make("NF-1", ()))
-    assert main(["claim", "src/a.py", "src/**"]) == 1
-    assert "src/** claims a whole tree; claim the files you will edit" in capsys.readouterr().err
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == []
-    assert main(["claim", "src/*.py"]) == 0
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == ["src/*.py"]
-
-
-def test_claim_refuses_a_glob_that_matches_a_directory(claims_env, tmp_path, capsys):
-    wt = tmp_path / "wt"
-    (wt / "server/src/api").mkdir(parents=True)
-    (wt / "server/src/main.rs").touch()
-    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(wt)))
-    for glob, directory in (
-        ("server/src", "server/src"),
-        ("server/src/", "server/src/"),
-        ("server/src/*", "server/src/api"),
-        ("server/s?c", "server/src"),
-    ):
-        assert main(["claim", "docs/a.md", glob]) == 1
-        err = capsys.readouterr().err
-        assert f"claim: {glob} matches the directory {directory}; claim the files in it" in err
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == []
-    # Files, globs over files, and a directory that does not exist yet are fine.
-    assert main(["claim", "server/src/main.rs", "server/src/*.rs", "server/new/*.rs"]) == 0
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == ["server/src/main.rs", "server/src/*.rs", "server/new/*.rs"]
-
-
-@pytest.mark.parametrize("glob", ["", "/etc/passwd", "../other/a.py", "src/../../a.py"])
-def test_claim_refuses_a_glob_outside_the_worktree(claims_env, capsys, glob):
-    ledger.insert_claim(claims_env, make("NF-1", ()))
-    assert main(["claim", glob]) == 1
-    assert "is not a path inside the worktree" in capsys.readouterr().err
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == []
-
-
-def test_claim_skips_a_shared_path(claims_env, capsys):
-    ledger.insert_claim(claims_env, make("NF-1", ()))
-    assert main(["claim", "docs/verification.md"]) == 0
-    assert "docs/verification.md is shared; edit it without claiming" in capsys.readouterr().out
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == []
-    assert main(["claim", "docs/verification.md", "src/a.py"]) == 0
-    claim = ledger.get_claim(claims_env, "NF-1")
-    assert claim and claim.paths == ["src/a.py"]
-
-
-def test_claim_ignores_a_peer_in_another_repo(claims_env, capsys):
-    ledger.insert_claim(claims_env, make("NF-1", ()))
-    ledger.insert_claim(claims_env, make("NF-2", ("src/a.py",), repo="web"))
-    assert main(["claim", "src/a.py"]) == 0
-    ledger.insert_claim(claims_env, make("NF-3", ("src/b.py",)))
-    assert main(["claim", "src/b.py"]) == 1
-    assert "overlaps NF-3" in capsys.readouterr().err
-
-
-def commit_hook(claims_env, origin, monkeypatch, peer, name):
-    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
-    ledger.insert_claim(claims_env, peer)
-    (origin / name).parent.mkdir(exist_ok=True)
-    (origin / name).write_text("x")
-    subprocess.run(["git", "add", name], cwd=origin, check=True)
-    monkeypatch.chdir(origin)
-    return main(["hook", "pre-commit"])
-
-
-def test_commit_hook_ignores_a_peer_claim_in_another_repo(claims_env, origin, monkeypatch):
-    peer = make("NF-2", ("server/x.py",), repo="web", worktree="/wt/NF-2")
-    assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 0
-
-
-def test_commit_hook_still_refuses_a_peer_claim_in_the_same_repo(
-    claims_env, origin, monkeypatch, capsys
-):
-    peer = make("NF-2", ("server/x.py",), worktree="/wt/NF-2")
-    assert commit_hook(claims_env, origin, monkeypatch, peer, "server/x.py") == 1
-    assert "server/x.py is claimed by NF-2" in capsys.readouterr().err
-
-
-def test_commit_hook_ignores_what_the_merged_side_brought_in(claims_env, origin, monkeypatch):
-    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
-    ledger.insert_claim(claims_env, make("NF-2", ("server/x.py",), worktree="/wt/NF-2"))
-    branch = subprocess.run(
-        ["git", "branch", "--show-current"], cwd=origin, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    for args in (
-        ["checkout", "-qb", "side"],
-        ["commit", "-q", "--allow-empty", "-m", "side"],
-        ["checkout", "-q", branch],
-    ):
-        subprocess.run(["git", *args], cwd=origin, check=True)
-    (origin / "server").mkdir()
-    (origin / "server" / "x.py").write_text("x")
-    subprocess.run(["git", "add", "server/x.py"], cwd=origin, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=origin, check=True)
-    subprocess.run(["git", "checkout", "-q", "side"], cwd=origin, check=True)
-    subprocess.run(["git", "merge", "--no-commit", "--no-ff", "-q", branch], cwd=origin, check=True)
-    monkeypatch.chdir(origin)
-    assert main(["hook", "pre-commit"]) == 0
-
-
-def test_commit_hook_still_checks_what_the_branch_itself_edited_before_the_merge(
-    claims_env, origin, monkeypatch
-):
-    ledger.insert_claim(claims_env, make("NF-1", (), worktree=str(origin.resolve())))
-    ledger.insert_claim(claims_env, make("NF-2", ("server/x.py",), worktree="/wt/NF-2"))
-    branch = subprocess.run(
-        ["git", "branch", "--show-current"], cwd=origin, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    subprocess.run(["git", "checkout", "-qb", "side"], cwd=origin, check=True)
-    (origin / "server").mkdir()
-    (origin / "server" / "x.py").write_text("x")
-    subprocess.run(["git", "add", "server/x.py"], cwd=origin, check=True)
-    subprocess.run(["git", "commit", "-qm", "side edit"], cwd=origin, check=True)
-    subprocess.run(["git", "checkout", "-q", branch], cwd=origin, check=True)
-    (origin / "other.py").write_text("o")
-    subprocess.run(["git", "add", "other.py"], cwd=origin, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=origin, check=True)
-    subprocess.run(["git", "checkout", "-q", "side"], cwd=origin, check=True)
-    subprocess.run(["git", "merge", "--no-commit", "--no-ff", "-q", branch], cwd=origin, check=True)
-    (origin / "touched.py").write_text("t")
-    subprocess.run(["git", "add", "touched.py"], cwd=origin, check=True)
-    monkeypatch.chdir(origin)
-    # Neither the base's other.py nor the branch's earlier server/x.py is part of this commit.
-    assert main(["hook", "pre-commit"]) == 0
-    ledger.insert_claim(claims_env, make("NF-3", ("touched.py",), worktree="/wt/NF-3"))
-    assert main(["hook", "pre-commit"]) == 1
-
-
-def test_commit_hook_never_refuses_a_shared_path(claims_env, origin, monkeypatch):
-    peer = make("NF-2", ("docs/**",), worktree="/wt/NF-2")
-    assert commit_hook(claims_env, origin, monkeypatch, peer, "docs/verification.md") == 0
-
-
-def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
-    assert main(["review-done"]) == 1
-    (tmp_path / "review.md").write_text(" \n")
-    assert main(["review-done"]) == 1
-    assert not (tmp_path / "done.json").exists()
-    (tmp_path / "review.md").write_text("Verdict: approve\n")
-    assert main(["review-done"]) == 0 and (tmp_path / "done.json").exists()
-
-
-def gate_env(monkeypatch, tmp_path, phase="review"):
+def session_env(monkeypatch, tmp_path, phase="review"):
     monkeypatch.setenv("FLOCC_STATE", str(tmp_path))
     monkeypatch.setenv("FLOCC_PHASE", phase)
-    monkeypatch.setenv("FLOCC_RUN", f"{phase}@1")
-    # The suite may run inside a host session, whose launch grants would leak into the gate.
-    monkeypatch.delenv("FLOCC_LAUNCH_GRANTS", raising=False)
 
 
-def test_gate_command_denies_with_hook_json(tmp_path, monkeypatch, capsys):
-    gate_env(monkeypatch, tmp_path)
-    payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "flocc:source-finder"}}
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-    assert main(["gate"]) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+def test_done_in_the_review_phase_needs_the_review(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "review")
+    assert main(["done"]) == 1
+    (tmp_path / "review.md").write_text(" \n")
+    assert main(["done"]) == 1 and not (tmp_path / "done.json").exists()
+    (tmp_path / "review.md").write_text("Verdict: approve\n")
+    assert main(["done"]) == 0
+    assert json.loads((tmp_path / "done.json").read_text())["summary"] == "review"
 
 
-def test_gate_allows_a_flag_grant_only_for_the_session_launched_with_it(
-    tmp_path, monkeypatch, capsys
-):
-    gate_env(monkeypatch, tmp_path, "impl")
-    set_block(tmp_path / "grants.json", Grants(agents=("general-purpose",)))
-    payload = json.dumps({"tool_name": "Agent", "tool_input": {"prompt": "p"}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
-    assert main(["gate"]) == 0
-    assert (
-        "next handoff"
-        in json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"]
-    )
-    monkeypatch.setenv("FLOCC_LAUNCH_GRANTS", "agent:general-purpose")
-    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
-    assert main(["gate"]) == 0
-    assert capsys.readouterr().out == ""
+def test_done_elsewhere_needs_a_summary(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    assert main(["done"]) == 2 and "--summary" in capsys.readouterr().err
+    assert main(["done", "--summary", "did it"]) == 0
+    assert main(["review-done"]) == 2
 
 
-def test_a_question_is_never_blocked_by_bookkeeping(tmp_path, monkeypatch, capsys):
-    gate_env(monkeypatch, tmp_path, "impl")
-
-    def boom(*a, **kw):
-        raise OSError("disk gone")
-
-    monkeypatch.setattr("flocc.gate.note_question", boom)
-    q = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Q?"}]}}
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
-    assert main(["gate"]) == 1
-    assert "disk gone" in capsys.readouterr().err
-
-
-def test_gate_refuses_with_exit_2_when_it_breaks(tmp_path, monkeypatch, capsys):
-    gate_env(monkeypatch, tmp_path, "impl")
-
-    def boom(*a, **kw):
-        raise RuntimeError("disk gone")
-
-    monkeypatch.setattr("flocc.gate.run_gate", boom)
-    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Agent", "tool_input": {}}'))
-    assert main(["gate"]) == 2
-    assert "disk gone" in capsys.readouterr().err
-
-
-def test_gate_without_a_state_dir_refuses(monkeypatch, capsys):
-    monkeypatch.delenv("FLOCC_STATE", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Agent", "tool_input": {}}'))
-    assert main(["gate"]) == 2
-
-
-def test_gate_records_and_clears_a_question(tmp_path, monkeypatch):
-    gate_env(monkeypatch, tmp_path, "impl")
-    q = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Q?"}]}}
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
-    assert main(["gate"]) == 0 and (tmp_path / "asking").exists()
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(q)))
-    assert main(["gate", "--answered"]) == 0 and not (tmp_path / "asking").exists()
-
-
-def tester_claim(claims_env, tmp_path):
+def commit_tester(tmp_path, monkeypatch):
     wt = tmp_path / "wt"
     wt.mkdir()
     for args in (["init", "-q"], ["config", "user.name", "t"], ["config", "user.email", "t@t"]):
@@ -367,13 +240,13 @@ def tester_claim(claims_env, tmp_path):
 
     base = commit("README", "x")
     tester = commit("gateway/tests/test_a.py", "def test_a(): ...\n")
-    claim = make("NF-1", (), worktree=str(wt))
-    claim.base_sha, claim.tester_sha = base, tester
-    ledger.insert_claim(claims_env, claim)
+    state = Path(os.environ["FLOCC_STATE"])
+    (state / "tester.json").write_text(json.dumps({"base_sha": base, "tester_sha": tester}))
+    monkeypatch.chdir(wt)
 
 
-def test_tests_amended_records_paths_with_the_reason(claims_env, tmp_path, capsys):
-    tester_claim(claims_env, tmp_path)
+def test_tests_amended_records_paths_with_the_reason(claims_env, tmp_path, monkeypatch, capsys):
+    commit_tester(tmp_path, monkeypatch)
     state = Path(os.environ["FLOCC_STATE"])
     cmd = ["tests-amended", "gateway/tests/test_a.py", "--reason", "contradicts the API"]
     assert main(cmd) == 0
@@ -382,8 +255,8 @@ def test_tests_amended_records_paths_with_the_reason(claims_env, tmp_path, capsy
     assert recorded == {"gateway/tests/test_a.py": {"reason": "contradicts the API"}}
 
 
-def test_tests_amended_merges_into_the_existing_file(claims_env, tmp_path):
-    tester_claim(claims_env, tmp_path)
+def test_tests_amended_merges_into_the_existing_file(claims_env, tmp_path, monkeypatch):
+    commit_tester(tmp_path, monkeypatch)
     state = Path(os.environ["FLOCC_STATE"])
     (state / "tests-amended.json").write_text(json.dumps({"other.py": {"reason": "r"}}))
     assert main(["tests-amended", "gateway/tests/test_a.py", "--reason", "why"]) == 0
@@ -391,164 +264,119 @@ def test_tests_amended_merges_into_the_existing_file(claims_env, tmp_path):
     assert set(recorded) == {"other.py", "gateway/tests/test_a.py"}
 
 
-def test_tests_amended_refuses_a_file_the_tester_did_not_write(claims_env, tmp_path, capsys):
-    tester_claim(claims_env, tmp_path)
+def test_tests_amended_refuses_a_file_the_tester_did_not_write(
+    claims_env, tmp_path, monkeypatch, capsys
+):
+    commit_tester(tmp_path, monkeypatch)
     state = Path(os.environ["FLOCC_STATE"])
     assert main(["tests-amended", "src/app.py", "--reason", "why"]) == 2
     assert "src/app.py" in capsys.readouterr().err
     assert not (state / "tests-amended.json").exists()
 
 
-def test_gate_answered_credits_the_time_the_question_was_open(tmp_path, monkeypatch):
-    gate_env(monkeypatch, tmp_path, "impl")
-    (tmp_path / "asking").write_text(json.dumps({"at": time.time() - 600, "question": "Q?"}))
-    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
-    assert main(["gate", "--answered"]) == 0
-    assert 590 <= int((tmp_path / "asked-seconds").read_text()) <= 700
+def test_tests_amended_without_a_tester_is_refused(claims_env, tmp_path, capsys):
+    assert main(["tests-amended", "a.py", "--reason", "why"]) == 1
+    assert "no tester ran" in capsys.readouterr().err
 
 
-def test_session_start_on_compaction(tmp_path, monkeypatch, capsys):
-    gate_env(monkeypatch, tmp_path, "impl")
+def test_session_start_on_compaction_lists_the_scratchpad(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
-    (tmp_path / "status.json").write_text("{}")
     payload = {"source": "compact", "scratchpad_dir": "/tmp/claude-1000/x/s1/scratchpad"}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert main(["session-start"]) == 0
-    assert (tmp_path / "compacted").exists() and not (tmp_path / "status.json").exists()
     assert (tmp_path / "scratchpads").read_text().splitlines() == [payload["scratchpad_dir"]]
-    assert not (tmp_path / "launches.jsonl").exists(), "compaction is not a new session"
-    assert not (tmp_path / "last-stop").exists()
+    assert not (tmp_path / "compacted").exists()
 
 
-def test_session_start_on_startup_records_a_session(tmp_path, monkeypatch, capsys):
-    gate_env(monkeypatch, tmp_path, "impl")
+def test_session_start_on_startup_prints_the_context(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
+    (tmp_path / "context.md").write_text("CTX")
     monkeypatch.setattr("sys.stdin", io.StringIO('{"source": "startup"}'))
     assert main(["session-start"]) == 0
-    line = json.loads((tmp_path / "launches.jsonl").read_text())
-    assert (line["event"], line["phase"], line["run"]) == ("session", "impl", "impl@1")
-    assert "## Grants" in capsys.readouterr().out
-    assert (tmp_path / "last-stop").exists()
+    assert "CTX" in capsys.readouterr().out
+    assert not (tmp_path / "launches.jsonl").exists()
 
 
 def test_session_start_prints_the_context_when_bookkeeping_fails(tmp_path, monkeypatch, capsys):
-    gate_env(monkeypatch, tmp_path, "impl")
+    session_env(monkeypatch, tmp_path, "impl")
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
-
-    def boom(*a, **kw):
-        raise OSError("disk gone")
-
-    monkeypatch.setattr("flocc.gate.record_session", boom)
-    monkeypatch.setattr("sys.stdin", io.StringIO('{"source": "startup"}'))
+    (tmp_path / "context.md").write_text("CTX")
+    (tmp_path / "scratchpads").mkdir()
+    payload = {"source": "startup", "scratchpad_dir": "/tmp/claude-1000/x/s1/scratchpad"}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert main(["session-start"]) == 0
     captured = capsys.readouterr()
-    assert "## Grants" in captured.out and "disk gone" in captured.err
+    assert "CTX" in captured.out and "bookkeeping failed" in captured.err
 
 
-@pytest.mark.parametrize("flag", ["--stopped", "--answered"])
-def test_bookkeeping_failures_never_exit_2(tmp_path, monkeypatch, capsys, flag):
-    gate_env(monkeypatch, tmp_path, "impl")
-
-    def boom(*a, **kw):
-        raise OSError("disk gone")
-
-    monkeypatch.setattr("flocc.gate.record_stop", boom)
-    monkeypatch.setattr("flocc.gate.clear_question", boom)
-    monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "flocc:code-mapper"}'))
-    assert main(["gate", flag]) == 1
-    err = capsys.readouterr().err
-    assert "disk gone" in err and "refused" not in err
-
-
-def test_idle_records_the_last_message(tmp_path, monkeypatch):
-    gate_env(monkeypatch, tmp_path, "impl")
-    payload = {"last_assistant_message": "x" * 700, "transcript_path": "/nonexistent"}
+def stop(monkeypatch, payload, *flags):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-    assert main(["idle"]) == 0
+    return main(["stop", *flags])
+
+
+def test_stop_refuses_once_then_marks_the_session_idle(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    assert stop(monkeypatch, {"stop_hook_active": False, "last_assistant_message": "a?"}) == 0
+    refusal = json.loads(capsys.readouterr().out)
+    assert refusal["decision"] == "block" and "flocc done" in refusal["reason"]
+    assert "Needs the owner" in refusal["reason"] and not (tmp_path / "idle").exists()
+    assert stop(monkeypatch, {"stop_hook_active": True, "last_assistant_message": "x" * 700}) == 0
+    assert capsys.readouterr().out == ""
     marker = json.loads((tmp_path / "idle").read_text())
     assert marker["message"] == "x" * 600 and marker["at"] > 0
-    assert not (tmp_path / "idle.tmp").exists()
 
 
-def test_idle_falls_back_to_the_transcript(tmp_path, monkeypatch):
-    gate_env(monkeypatch, tmp_path, "impl")
-
-    def line(kind, *blocks):
-        return json.dumps({"type": kind, "message": {"content": list(blocks)}})
-
-    text = {"type": "text", "text": "please run it for me"}
+def test_stop_falls_back_to_the_transcript_for_the_idle_message(tmp_path, monkeypatch):
+    session_env(monkeypatch, tmp_path, "impl")
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(
-        "\n".join(
-            [
-                line("assistant", {"type": "text", "text": "older"}),
-                line("assistant", text, {"type": "tool_use", "name": "Bash"}),
-                line("user", {"type": "text", "text": "ignored"}),
-            ]
-        )
-    )
-    for payload in (
-        {"transcript_path": str(transcript)},
-        {"last_assistant_message": "", "transcript_path": str(transcript)},
-    ):
-        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-        assert main(["idle"]) == 0
-        assert json.loads((tmp_path / "idle").read_text())["message"] == "please run it for me"
-    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
-    assert main(["idle"]) == 0
-    assert json.loads((tmp_path / "idle").read_text())["message"] == ""
+    text = {"type": "text", "text": "please run it for me"}
+    transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [text]}}))
+    assert stop(monkeypatch, {"stop_hook_active": True, "transcript_path": str(transcript)}) == 0
+    assert json.loads((tmp_path / "idle").read_text())["message"] == "please run it for me"
 
 
-def test_idle_bookkeeping_failure_exits_1_never_2(tmp_path, monkeypatch, capsys):
-    gate_env(monkeypatch, tmp_path, "impl")
+def test_stop_lets_a_finished_run_stop(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    (tmp_path / "done.json").write_text('{"summary": "ok"}')
+    assert stop(monkeypatch, {"stop_hook_active": False}) == 0
+    assert capsys.readouterr().out == "" and not (tmp_path / "idle").exists()
+
+
+def test_stop_lets_a_session_waiting_on_background_work_stop(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    payload = {"stop_hook_active": False, "background_tasks": [{"id": "1", "type": "shell"}]}
+    assert stop(monkeypatch, payload) == 0
+    assert capsys.readouterr().out == "" and not (tmp_path / "idle").exists()
+    assert json.loads((tmp_path / "background").read_text()) == ["shell"]
+
+
+def test_a_scheduled_wakeup_counts_as_background(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    payload = {"stop_hook_active": True, "background_tasks": [], "session_crons": [{"id": "c"}]}
+    assert stop(monkeypatch, payload) == 0
+    assert capsys.readouterr().out == "" and not (tmp_path / "idle").exists()
+
+
+def test_stop_failure_marks_idle_except_for_a_usage_limit(tmp_path, monkeypatch):
+    session_env(monkeypatch, tmp_path, "impl")
+    assert stop(monkeypatch, {"error": "rate_limit"}, "--failure") == 0
+    assert not (tmp_path / "idle").exists()
+    payload = {"error": "server_error", "last_assistant_message": "API Error: 500"}
+    assert stop(monkeypatch, payload, "--failure") == 0
+    assert json.loads((tmp_path / "idle").read_text())["message"] == "API Error: 500"
+
+
+def test_stop_bookkeeping_failure_exits_1_never_2(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
 
     def boom(*a, **kw):
         raise OSError("disk gone")
 
-    monkeypatch.setattr("flocc.gate.note_idle", boom)
-    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
-    assert main(["idle"]) == 1
+    monkeypatch.setattr("flocc.idle.note_idle", boom)
+    assert stop(monkeypatch, {"stop_hook_active": True}) == 1
     assert "disk gone" in capsys.readouterr().err
-
-
-def test_stopped_records_the_agent_type_and_phase(tmp_path, monkeypatch):
-    gate_env(monkeypatch, tmp_path, "impl")
-    monkeypatch.setattr("sys.stdin", io.StringIO('{"agent_type": "flocc:code-mapper"}'))
-    assert main(["gate", "--stopped"]) == 0
-    line = json.loads((tmp_path / "launches.jsonl").read_text())
-    assert (line["event"], line["what"], line["phase"]) == ("stop", "code-mapper", "impl")
-
-
-@pytest.mark.parametrize("stdin", ["", "   ", "{not json", "[1, 2]", "null"])
-def test_gate_refuses_input_it_cannot_read(tmp_path, monkeypatch, stdin):
-    gate_env(monkeypatch, tmp_path, "impl")
-    monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
-    assert main(["gate"]) == 2
-
-
-def test_gate_refuses_when_it_cannot_print_the_denial(tmp_path, monkeypatch):
-    gate_env(monkeypatch, tmp_path)
-    payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "flocc:source-finder"}}
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-
-    real_print = print
-
-    def broken_stdout(*a, file=None, **kw):
-        if file is None:
-            raise BrokenPipeError
-        real_print(*a, file=file, **kw)
-
-    monkeypatch.setattr("builtins.print", broken_stdout)
-    assert main(["gate"]) == 2
-
-
-def test_context_prints_the_phase_grants(tmp_path, monkeypatch, capsys):
-    gate_env(monkeypatch, tmp_path, "impl")
-    monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "l.sqlite"))
-    set_block(tmp_path / "grants.json", Grants(launches=12, fix_rounds=2))
-    main(["context"])
-    out = capsys.readouterr().out
-    assert "## Grants" in out and "launches 12" in out and "fix-rounds 2" in out
 
 
 def test_parallel_commits_take_only_their_own_paths(origin, monkeypatch):
@@ -662,13 +490,11 @@ def test_logs_issue_does_not_follow(host_cfg, capsys):
     assert capsys.readouterr().err == "--issue does not follow; drop -f\n"
 
 
-def test_attach_is_read_only_on_the_service_socket_and_says_how_to_leave(host_cfg, capsys):
+def test_attach_goes_through_the_wrapper(host_cfg):
     with pytest.raises(Exec) as exc:
         main(["--config", str(host_cfg), "attach", "NF-12-review"])
     argv = exc.value.args[0]
-    assert argv[:7] == ["tmux", "-L", "flocc", "attach", "-r", "-t", "NF-12-review"]
-    assert argv[7:10] == [";", "display-message", "-d"] and "Ctrl-b d" in argv[-1]
-    assert "Ctrl-b d detaches" in capsys.readouterr().err
+    assert argv == [*load(host_cfg).agent_run, "attach", "NF-12-review"]
 
 
 def _peek_host(host_cfg, monkeypatch, pane, alive=True, claim=True):
@@ -682,7 +508,7 @@ def _peek_host(host_cfg, monkeypatch, pane, alive=True, claim=True):
     fake = FakeSessions(
         alive_names={"NF-240-review"} if alive else set(), panes={"NF-240-review": pane}
     )
-    monkeypatch.setattr("flocc.sessions.Sessions", lambda: fake)
+    monkeypatch.setattr("flocc.agent.Agent.sessions", lambda self: fake)
     return fake
 
 
@@ -705,32 +531,6 @@ def test_peek_exits_3_without_a_claim(host_cfg, monkeypatch, capsys):
     assert capsys.readouterr().err == "peek: no live session for NF-240\n"
 
 
-def test_press_sends_dialog_keys_to_the_issue_session(host_cfg, monkeypatch, capsys):
-    fake = _peek_host(host_cfg, monkeypatch, "x")
-    assert main(["--config", str(host_cfg), "press", "NF-240", "Down", "Enter", "2"]) == 0
-    assert fake.sent == [("NF-240-review", ["Down", "Enter", "2"])]
-    assert "pressed Down Enter 2 in NF-240-review" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("key", ["C-c", ";", "-", "Enter;kill-server"])
-def test_press_refuses_keys_that_could_end_the_session(host_cfg, monkeypatch, capsys, key):
-    fake = _peek_host(host_cfg, monkeypatch, "x")
-    assert main(["--config", str(host_cfg), "press", "NF-240", key]) == 2
-    assert fake.sent == [] and "not a key flocc sends" in capsys.readouterr().err
-
-
-def test_press_exits_3_without_a_live_session(host_cfg, monkeypatch, capsys):
-    _peek_host(host_cfg, monkeypatch, "x", alive=False)
-    assert main(["--config", str(host_cfg), "press", "NF-240", "Enter"]) == 3
-    assert capsys.readouterr().err == "press: no live session for NF-240\n"
-
-
-def test_say_types_the_message_and_enter(host_cfg, monkeypatch):
-    fake = _peek_host(host_cfg, monkeypatch, "x")
-    assert main(["--config", str(host_cfg), "say", "NF-240", "fix", "the", "nit"]) == 0
-    assert fake.sent == [("NF-240-review", "fix the nit")]
-
-
 def test_peek_exits_3_when_the_session_dies_before_the_capture(host_cfg, monkeypatch, capsys):
     fake = _peek_host(host_cfg, monkeypatch, "")
     assert main(["--config", str(host_cfg), "peek", "NF-240"]) == 3
@@ -738,7 +538,7 @@ def test_peek_exits_3_when_the_session_dies_before_the_capture(host_cfg, monkeyp
 
 
 def _canary(host_cfg, monkeypatch, result):
-    monkeypatch.setattr("flocc.worktree.setup_at_base", lambda *a: result)
+    monkeypatch.setattr("flocc.agent.Agent.setup_base", lambda self, repo: result)
     cfg = load(host_cfg)
     cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
     return cfg, next(iter(cfg.repos))
@@ -751,10 +551,10 @@ def test_canary_turns_a_kill_signal_into_an_exit_and_restores_the_handlers(
     _, repo = _canary(host_cfg, monkeypatch, None)
     before = signal.getsignal(sig)
 
-    def killed(*a):
+    def killed(self, repo):
         signal.raise_signal(sig)
 
-    monkeypatch.setattr("flocc.worktree.setup_at_base", killed)
+    monkeypatch.setattr("flocc.agent.Agent.setup_base", killed)
     assert main(["--config", str(host_cfg), "canary", repo]) == 128 + sig
     assert signal.getsignal(sig) == before
 
@@ -770,7 +570,8 @@ def test_canary_clears_the_mark_when_setup_passes(host_cfg, monkeypatch, capsys)
 def test_canary_marks_the_repo_when_setup_fails(host_cfg, monkeypatch, capsys):
     cfg, repo = _canary(host_cfg, monkeypatch, (2, "go: not found", "abc123def456"))
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
-    assert canary.get_mark(ledger.connect(cfg.ledger_path), repo)["output"] == "go: not found"
+    mark = canary.get_mark(ledger.connect(cfg.ledger_path), repo)
+    assert mark is not None and mark["output"] == "go: not found"
     assert "go: not found" in capsys.readouterr().err
 
 
@@ -778,12 +579,14 @@ def test_canary_reruns_the_check_for_a_check_mark(host_cfg, monkeypatch, capsys)
     cfg, repo = _canary(host_cfg, monkeypatch, None)
     con = ledger.connect(cfg.ledger_path)
     canary.mark(con, repo, "abc123def456", 1.0, "old", check="just check")
-    monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", None))
+    monkeypatch.setattr("flocc.agent.Agent.check_base", lambda self, repo: ("def456abc123", None))
     assert main(["--config", str(host_cfg), "canary", repo]) == 0
     assert canary.get_mark(con, repo) is None
     canary.mark(con, repo, "abc123def456", 1.0, "old", check="just check")
     failure = PublishResult("check_failed", "E1 boom", log="E1 boom full")
-    monkeypatch.setattr("flocc.publisher.check_at_base", lambda *a: ("def456abc123", failure))
+    monkeypatch.setattr(
+        "flocc.agent.Agent.check_base", lambda self, repo: ("def456abc123", failure)
+    )
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     m = canary.get_mark(con, repo)
     assert m is not None and m["sha"] == "def456abc123" and m["check"] == "just check"
@@ -824,9 +627,9 @@ def test_canary_waits_for_a_running_tick(host_cfg, monkeypatch, capsys):
 def test_canary_reports_a_base_it_cannot_fetch(host_cfg, monkeypatch, capsys):
     _, repo = _canary(host_cfg, monkeypatch, None)
 
-    def unreachable(*a):
+    def unreachable(self, repo):
         raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="no remote")
 
-    monkeypatch.setattr("flocc.worktree.setup_at_base", unreachable)
+    monkeypatch.setattr("flocc.agent.Agent.setup_base", unreachable)
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     assert "no remote" in capsys.readouterr().err

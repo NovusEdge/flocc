@@ -18,7 +18,6 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/dash"
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
 	"github.com/NovusEdge/flocc/installer/internal/host"
@@ -31,26 +30,23 @@ import (
 const usage = `flocc runs Claude sessions on Linear issues. This is its desktop command.
 
 Desktop commands:
-  flocc setup                        everything below in order: keys, a host, old versions, cardinal, logins
-  flocc keys                         make, check and store the Linear key, GitHub tokens and ntfy topic
+  flocc setup                        everything below in order: keys, a host, old versions, logins
+  flocc keys                         make, check and store the Linear key and GitHub tokens
   flocc keys check                   check every stored key again
   flocc keys rotate github|linear    replace keys and push them to every host
   flocc host add <name> [--ssh DEST | --daytona SANDBOX]
   flocc host import -H <name> [--ssh DEST | --daytona SANDBOX]
   flocc host create [--cpus N] [--memory GiB] [--disk GiB] <machine> <name>
+  flocc host cardinal -H <name> [--renew-hour H]   the event-woken cardinal VM beside that host
   flocc host run -H <name> -- <command...>
   flocc ship -H <name> [--interactive]    run it inside the flocc checkout: it ships that commit
   flocc login -H <name> [--email ADDR]
-  flocc cardinal setup|login|status|attach|restart|remove [--user NAME] ...
-                                     the always-on assistant on a machine; flocc cardinal for details
 
 Host commands run on the host as the service user:
   flocc [-H <name>] <command> [args...]   e.g. flocc -H flocc-nimble doctor, flocc release NF-12
   Without -H: $FLOCC_HOST, then the only host, then the host holding the issue named.
   -H all runs status, doctor or logs on every host.
   flocc peek NF-12                   what the session's screen shows now
-  flocc press NF-12 Down Enter       answer a dialog it is stuck on
-  flocc say NF-12 <message>          type into the session and press Enter
 
 Off a terminal, flocc with no command prints the status of every host.
 `
@@ -76,8 +72,6 @@ type deps struct {
 	http      *http.Client
 	githubAPI string
 	linearAPI string
-	ntfyBase  string
-	newTopic  func() string
 
 	repoRoot func() (string, error)
 	doShip   func(context.Context, ship.Options, io.Reader) (ship.Summary, error)
@@ -96,8 +90,7 @@ func Main(args []string) int {
 	// Key pages are made on the desktop; only a host login, which a phone may finish, gets a QR code.
 	d.open = ship.Browse
 	d.http = &http.Client{Timeout: 30 * time.Second}
-	d.githubAPI, d.linearAPI, d.ntfyBase = githubapi.DefaultBase, linearapi.DefaultURL, "https://ntfy.sh"
-	d.newTopic = answers.RandomTopic
+	d.githubAPI, d.linearAPI = githubapi.DefaultBase, linearapi.DefaultURL
 	d.repoRoot = func() (string, error) {
 		out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 		return strings.TrimSpace(string(out)), err
@@ -165,8 +158,6 @@ func handoffOnly(name string, rest []string) bool {
 		return false
 	case "host":
 		return len(rest) > 1 && rest[1] == "run"
-	case "cardinal":
-		return len(rest) > 1 && rest[1] == "attach"
 	}
 	return name != "all"
 }
@@ -239,8 +230,6 @@ func fullScreen(rest []string) bool {
 		return true
 	case "host":
 		return len(rest) > 1 && rest[1] == "create"
-	case "cardinal":
-		return len(rest) > 1 && (rest[1] == "setup" || rest[1] == "login")
 	}
 	return false
 }
@@ -327,13 +316,6 @@ func run(ctx context.Context, d *deps, args []string) (code int) {
 		return hostCmd(ctx, d, name, rest[1:])
 	case "keys":
 		return keysCmd(ctx, d, rest[1:])
-	case "cardinal":
-		// cardinal names its machine, not a host; a -H here would otherwise be dropped unseen.
-		if name != "" {
-			fmt.Fprintln(d.err, "flocc cardinal takes no -H; limit setup with --only <host>")
-			return 2
-		}
-		return d.cardinal(ctx, rest[1:])
 	}
 	if name == "all" {
 		return onAll(ctx, d, rest)

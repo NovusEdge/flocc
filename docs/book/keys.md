@@ -1,13 +1,12 @@
 # Keys
 
-flocc holds five keys on your desktop. `flocc keys` makes, checks and stores them, and `flocc ship` sends them to each host.
+flocc holds four keys on your desktop. `flocc keys` makes, checks and stores them, and `flocc ship` sends them to each host.
 
 | Key | Stored as | Used for | `.env` name |
 |---|---|---|---|
 | Linear API key | `linear_key` | The service reads issues, comments and moves issues | `FLOCC_LINEAR_API_KEY` |
 | GitHub agent token | `agent_token` | Read-only. Agent sessions run `gh` with it | `FLOCC_GITHUB_AGENT_TOKEN` |
 | GitHub publish token | `publish_token` | The service pushes branches, opens PRs and posts the review | `FLOCC_GITHUB_PUBLISH_TOKEN` |
-| ntfy topic | `ntfy_topic` | Push notifications | `FLOCC_NTFY_TOPIC` |
 | Tailscale OAuth client | `tailscale_oauth` | Optional. Joins and tags hosts without a browser login | `FLOCC_TAILSCALE_OAUTH_SECRET`, and optionally `FLOCC_TAILSCALE_OAUTH_CLIENT_ID` |
 
 ## Make the keys
@@ -36,7 +35,6 @@ The recognised names are in the table above. Other names in the file are ignored
 # .env
 export FLOCC_LINEAR_API_KEY="lin_api_…"
 FLOCC_GITHUB_AGENT_TOKEN=github_pat_…
-FLOCC_NTFY_TOPIC=flocc-a-long-random-topic
 ```
 
 Each value is handled like this:
@@ -44,7 +42,6 @@ Each value is handled like this:
 - A value equal to the stored key is skipped.
 - A new or changed value is checked as a paste is. See [How a key is checked](#how-a-key-is-checked).
 - A changed Linear key or GitHub token replaces the stored one, and flocc offers to push it to every host, as `flocc keys rotate` does.
-- A changed ntfy topic is stored. It reaches a host on that host's next `flocc ship`.
 - A value that fails its check is shown masked, with the reason, and the stored key stays. The mask is the key's public prefix, its last four characters and its length, for example `lin_api_…ab12, 48 characters`. A value with no known prefix shows only its length.
 
 {% hint style="warning" %}
@@ -71,10 +68,6 @@ A fine-grained token serves one owner, so map only repositories of one owner per
 Fine-grained tokens have no Checks permission. Actions (read) is what shows workflow runs and their logs, and Commit statuses (read) covers the rest.
 
 The publish token's page opens only after the agent token has passed its check.
-
-### ntfy topic
-
-flocc generates a random topic and stores it. It shows a QR code for the ntfy app on Android, with the `https://ntfy.sh/<topic>` address beside it, and sends one test push. Answer whether it arrived. If it did not, subscribe in the app and flocc sends another.
 
 ### Tailscale OAuth client
 

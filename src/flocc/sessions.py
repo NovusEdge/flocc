@@ -5,36 +5,39 @@ from pathlib import Path
 
 from flocc.agentblock import IssueSettings
 from flocc.config import Config
-from flocc.grants import Grants
 
 SOCKET = "flocc"
-# --no-verify skips the pre-commit claim check and the commit-msg trailer. Flag order varies, so
-# the wildcard forms cover the flag anywhere after `git commit`; -n also arrives bundled (-nm).
+# --no-verify skips the commit-msg trailer and the repo's own hooks. Flag order varies, so the
+# wildcard forms cover the flag anywhere after `git commit`; -n also arrives bundled (-nm).
 _DENY = [
     "Bash(git commit --no-verify:*)",
     "Bash(git commit -n:*)",
     "Bash(git commit * --no-verify*)",
     "Bash(git commit * -n *)",
     "Bash(git commit * -n)",
-    # A second claude process is a session the gate and the usage caps never see.
+    # A second claude process is a session the usage caps never see.
     "Bash(claude:*)",
+    "Agent(general-purpose)",
 ]
-_GENERAL_DENY = "Agent(general-purpose)"
-NO_GRANTS = Grants()
-_KEEP = ("HOME", "USER", "PATH", "LANG", "TERM")
 # $0 is the token file. Reading it inside the pane keeps the token off the tmux and ps command
 # lines, and a missing file stops the session instead of leaving gh to find other credentials.
 _WRAPPER = 'GH_TOKEN=$(cat "$0") || exit 1; export GH_TOKEN; exec "$@"'
 
 
-def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    # A session started from inside another Claude Code session inherits its messaging socket,
-    # session ID and task list, ANTHROPIC_API_KEY would switch billing to the API, and
-    # CLAUDE_CONFIG_DIR would move ~/.claude.json away from the login and folder trust.
-    env = {k: os.environ[k] for k in _KEEP if k in os.environ}
-    env.setdefault("TERM", "xterm-256color")
-    env.setdefault("LANG", "C.UTF-8")
-    return {**env, **(extra or {})}
+def agent_env(cfg: Config, extra: dict[str, str]) -> dict[str, str]:
+    # The pane gets only these. Left out on purpose: sudo's SUDO_* (Claude Code refuses
+    # bypassPermissions under sudo), ANTHROPIC_API_KEY (it would bill the API), CLAUDE_CONFIG_DIR
+    # (it would move the login away), and whatever the session that started the tick had.
+    home = str(cfg.agent_home)
+    path = f"{cfg.agent_flocc.parent}:{home}/.local/bin:{home}/.local/share/mise/shims"
+    return {
+        "HOME": home,
+        "USER": cfg.agent_user,
+        "PATH": f"{path}:/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "TERM": "xterm-256color",
+        **extra,
+    }
 
 
 def trust_folders(claude_json: Path, paths) -> None:
@@ -45,26 +48,17 @@ def trust_folders(claude_json: Path, paths) -> None:
     # `claude auth login` signs in without the first-run onboarding, so a host logged in that way
     # (0.4.0's flocc-setup --phase login) starts every session on the "Press Enter to continue"
     # security notes; flocc-nimble lost three hours of NF-260 to it on 2026-10-20.
-    # After five auto-mode denials Claude Code asks "Teach auto mode about your environment?"
-    # mid-turn; `dismissed` is what its "Don't show again" writes. NF-256 sat on it on 2026-10-22.
     try:
         data = json.loads(claude_json.read_text())
     except FileNotFoundError:
         data = {}
     projects = data.setdefault("projects", {})
     missing = [str(p) for p in paths if not projects.get(str(p), {}).get("hasTrustDialogAccepted")]
-    env_setup = data.get("autoModeEnvSetup")
-    env_setup = env_setup if isinstance(env_setup, dict) else {}
-    if (
-        not missing
-        and data.get("hasCompletedOnboarding") is True
-        and env_setup.get("dismissed") is True
-    ):
+    if not missing and data.get("hasCompletedOnboarding") is True:
         return
     for p in missing:
         projects.setdefault(p, {})["hasTrustDialogAccepted"] = True
     data["hasCompletedOnboarding"] = True
-    data["autoModeEnvSetup"] = {**env_setup, "dismissed": True}
     tmp = claude_json.with_name(f"{claude_json.name}.flocc.tmp")
     # Mode 600 from the start: the file holds the account's OAuth state.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -91,14 +85,6 @@ def allowed_plugins(path: Path) -> tuple[str, ...] | None:
     return tuple(line for line in lines if line and not line.startswith("#"))
 
 
-A2A_TOOLS = (
-    "mcp__flocc-a2a__agents",
-    "mcp__flocc-a2a__send",
-    "mcp__flocc-a2a__notify",
-    "mcp__flocc-a2a__replies",
-)
-
-
 def claude_argv(
     cfg: Config,
     name: str,
@@ -107,34 +93,20 @@ def claude_argv(
     env: dict[str, str],
     claude_exe: str,
     exe: str,
-    grants: Grants = NO_GRANTS,
-    disabled_plugins: tuple[str, ...] = (),
     remote_control: bool = True,
 ) -> list[str]:
     servers = {s: cfg.mcp_servers[s] for s in settings.mcp}
-    # Through --mcp-config: --strict-mcp-config ignores a plugin's .mcp.json.
-    servers["flocc-a2a"] = {
-        "type": "stdio",
-        "command": exe,
-        "args": ["mcp-a2a"],
-        "env": {"FLOCC_STATE": env["FLOCC_STATE"]},
-    }
-    deny = list(_DENY)
-    if "general-purpose" not in grants.agents:
-        deny.append(_GENERAL_DENY)
-    permissions: dict = {"deny": deny, "allow": [*cfg.permission_allow, *A2A_TOOLS]}
     session_settings: dict = {
         "statusLine": {"type": "command", "command": f"{exe} statusline"},
         "autoContinueAtUsageLimit": True,
         "attribution": False,
-        "permissions": permissions,
-        "disableWorkflows": not grants.workflows,
+        # Deny rules still block in bypassPermissions; allow rules do nothing there.
+        "permissions": {"deny": list(_DENY)},
+        "disableWorkflows": True,
+        # Interactive sessions take the bypass warning's acceptance from a --settings file;
+        # without it the first session on a host sits at that dialog.
+        "skipDangerousModePermissionPrompt": True,
     }
-    if disabled_plugins:
-        session_settings["enabledPlugins"] = {p: False for p in disabled_plugins}
-    if cfg.permission_environment:
-        # Without $defaults the host's lines would replace the classifier's built-in context.
-        session_settings["autoMode"] = {"environment": ["$defaults", *cfg.permission_environment]}
     # The pane would otherwise inherit the tmux server's environment, which is whatever the
     # process that started the server had.
     argv = [
@@ -144,7 +116,7 @@ def claude_argv(
         "/bin/sh",
         "-c",
         _WRAPPER,
-        str(cfg.agent_gh_token_file),
+        str(cfg.agent_token_file),
         claude_exe,
         prompt,
         # The Claude app announces every Remote Control session; only the long phases get one.
@@ -156,7 +128,7 @@ def claude_argv(
         "--settings",
         json.dumps(session_settings),
         "--permission-mode",
-        "auto",
+        "bypassPermissions",
         "--strict-mcp-config",
     ]
     if settings.model:
@@ -199,6 +171,3 @@ class Sessions:
     def send(self, name: str, text: str) -> None:
         self._tmux("send-keys", "-t", f"={name}:", "-l", text)
         self._tmux("send-keys", "-t", f"={name}:", "Enter")
-
-    def press(self, name: str, keys: list[str]) -> None:
-        self._tmux("send-keys", "-t", f"={name}:", *keys)

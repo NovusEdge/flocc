@@ -1,6 +1,7 @@
 import subprocess
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -9,15 +10,21 @@ from flocc.publisher import (
     COMMENT_LIMIT,
     BranchMoved,
     check_at_base,
+    check_worktree,
     comment_on_pr,
     failure_excerpt,
     pr_title,
     pr_view,
-    publish,
     review_comment,
 )
+from flocc.publisher import publish as _publish
 from flocc.worktree import git, prepare_worktree
 from tests.test_ledger import make
+
+
+def publish(*args, **kw):
+    kw.setdefault("check", lambda c, r, t: check_worktree(r.check, Path(c.worktree), t))
+    return _publish(*args, **kw)
 
 
 def setup_claim(origin, tmp_path, check="true"):
@@ -58,6 +65,32 @@ def test_opens_draft_pr(origin, tmp_path):
     assert pr[:3] == ["gh", "pr", "create"] and "--draft" in pr
     assert "Fixes NF-5" in pr[pr.index("--body") + 1]
     assert git("ls-remote", "origin", claim.branch, cwd=path)
+
+
+def test_the_push_goes_from_the_service_clone_with_the_check_run_elsewhere(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    seen = []
+
+    def remote_check(c, r, timeout_s):
+        seen.append((c.issue_key, r.check))
+        return check_worktree(r.check, Path(c.worktree), timeout_s)
+
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), check=remote_check)
+    assert result.status == "opened" and seen == [("NF-5", "true")]
+    assert git("rev-parse", "refs/flocc/NF-5", cwd=origin) == git("rev-parse", "HEAD", cwd=path)
+
+
+def test_a_branch_that_moves_during_the_check_is_not_pushed(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+
+    def moving_check(c, r, timeout_s):
+        (path / "late.txt").write_text("x")
+        git("add", ".", cwd=path)
+        git("commit", "-qm", "late", cwd=path)
+        return check_worktree("true", path, timeout_s)
+
+    result = publish(claim, repo, "t", "s", token="t", runner=Gh(), check=moving_check)
+    assert result.status == "check_failed" and "moved while the check ran" in result.detail
 
 
 def test_pr_title_has_a_conventional_type_from_the_labels():
@@ -285,6 +318,14 @@ def test_an_amendment_that_weakens_a_test_still_blocks(origin, tmp_path, before,
     assert (
         result.status == "tests_touched" and "test_w.py" in result.detail and why in result.detail
     )
+
+
+def test_without_a_tester_the_guard_is_skipped(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    claim.tester_sha = None
+    (path / "test_x.py").write_text("assert 1\n")
+    git("commit", "-qam", "rewrite the test file", cwd=path)
+    assert publish(claim, repo, "t", "s", token="t", runner=Gh()).status == "opened"
 
 
 def test_a_moved_or_resigned_test_is_not_removed(origin, tmp_path):
@@ -541,7 +582,53 @@ def test_commits_without_the_trailer_are_listed_not_blocked(origin, tmp_path):
     assert set(result.untrailed) == {bare, tests}
 
 
+def test_publish_refreshes_the_service_clones_base_before_the_guard(origin, tmp_path, monkeypatch):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    seen = []
+    monkeypatch.setattr("flocc.publisher.origin_base", lambda r: seen.append(r))
+    publish(claim, repo, "t", "s", token="t", runner=Gh())
+    assert seen == [repo]
+
+
 def test_trailer_check_is_skipped_when_the_trailer_is_off(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path)
     result = publish(claim, repo, "t", "s", token="t", runner=Gh(), trailer=False)
     assert result.status == "opened" and result.untrailed == ()
+
+
+def test_review_diff_ignores_base_commits_the_service_clone_has_not_fetched(
+    origin, tmp_cfg, tmp_path
+):
+    from flocc.tick import build_runtime
+
+    bare = tmp_path / "origin.git"
+    service = tmp_path / "service"
+    agent = tmp_path / "agent"
+    for clone in (service, agent):
+        git("clone", "-q", str(bare), str(clone), cwd=tmp_path)
+        git("config", "user.name", "t", cwd=clone)
+        git("config", "user.email", "t@t", cwd=clone)
+    (origin / "newer.txt").write_text("n\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-qm", "newer", cwd=origin)
+    git("push", "-q", "origin", "main", cwd=origin)
+    git("pull", "-q", cwd=agent)
+    git("checkout", "-qb", "agent/nf-5", cwd=agent)
+    (agent / "mine.txt").write_text("m\n")
+    git("add", ".", cwd=agent)
+    git("commit", "-qm", "mine", cwd=agent)
+    git("remote", "set-url", "origin", str(bare), cwd=service)
+    repo = RepoConfig(service, check="true")
+    for name in ("linear.key", "publish.token"):
+        (tmp_path / name).write_text("k\n")
+    cfg = replace(
+        tmp_cfg,
+        repos={"backend": repo},
+        linear_key_file=tmp_path / "linear.key",
+        publish_gh_token_file=tmp_path / "publish.token",
+    )
+    rt = build_runtime(cfg, tmp_path / "config.toml")
+    claim = make("NF-5", worktree=str(agent))
+    claim.branch = "agent/nf-5"
+    diff = rt.review_diff(claim)
+    assert "mine.txt" in diff and "newer.txt" not in diff

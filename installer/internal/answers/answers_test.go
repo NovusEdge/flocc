@@ -171,17 +171,10 @@ func TestOverlayKeepsUnsetFields(t *testing.T) {
 	}
 }
 
-func TestPermissionsTableParsesAndOverlays(t *testing.T) {
-	a, err := Parse([]byte("team_key = \"NF\"\n[permissions]\nallow = [\"Bash(uv sync --frozen)\"]\njudge_model = \"sonnet\"\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.Permissions == nil || a.Permissions.Allow[0] != "Bash(uv sync --frozen)" || a.Permissions.JudgeModel != "sonnet" {
-		t.Fatalf("permissions = %+v", a.Permissions)
-	}
-	b := &Answers{}
-	if err := b.Overlay(a); err != nil || b.Permissions != a.Permissions {
-		t.Fatalf("overlay lost permissions: %+v, %v", b.Permissions, err)
+func TestAPermissionsTableInAnOldHostFileStillParses(t *testing.T) {
+	a, err := Parse([]byte("team_key = \"NF\"\n[permissions]\nallow = [\"Bash(uv sync --frozen)\"]\n"))
+	if err != nil || a.TeamKey != "NF" {
+		t.Fatalf("%+v, %v", a, err)
 	}
 }
 
@@ -200,12 +193,5 @@ func TestTailscaleAuthKeyIsASecretAndNeverSaved(t *testing.T) {
 	back, err := Parse([]byte("[secrets]\ntailscale_auth_key = \"tskey-auth-k1-x\"\n"))
 	if err != nil || back.Secrets.TailscaleAuthKey != "tskey-auth-k1-x" {
 		t.Errorf("%v %+v", err, back.Secrets)
-	}
-}
-
-func TestSecretsValuesIncludeEveryA2AToken(t *testing.T) {
-	s := &Secrets{A2A: &A2AFile{Token: "t1", Accept: map[string]string{"t2": "owner"}}}
-	if v := s.Values(); !slices.Contains(v, "t1") || !slices.Contains(v, "t2") {
-		t.Fatalf("values %q", v)
 	}
 }

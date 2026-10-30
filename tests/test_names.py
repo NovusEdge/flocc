@@ -16,7 +16,6 @@ EXEMPT = {
     "installer/internal/steps/old_users.go",
     "installer/internal/steps/old_users_test.go",
     "installer/internal/cli/setup_test.go",
-    "installer/internal/cardinal/cardinal_test.go",
 }
 
 

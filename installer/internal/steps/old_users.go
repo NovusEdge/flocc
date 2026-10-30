@@ -14,9 +14,9 @@ import (
 // OldName is flocc's name before the rename, for its service user and its run command.
 const OldName = "linear-agents"
 
-// OldUsers are the service users earlier flocc versions made. flocc setup offers to remove one it
-// finds; the root pass removes no other name. A later rename adds its old name here.
-var OldUsers = []string{OldName}
+// OldUsers are the users earlier flocc versions made: the service user before the rename, and
+// cardinal 0.9-0.12's. flocc setup offers to remove one it finds; the root pass removes no other name.
+var OldUsers = []string{OldName, "cardinal"}
 
 var uidMinLine = regexp.MustCompile(`(?m)^\s*UID_MIN\s+(\d+)`)
 
@@ -57,7 +57,7 @@ func CheckOldUser(ctx context.Context, e *Env, user string, sudoUID int) error {
 		return fmt.Errorf("%s's home %s is not a directory", user, f[5])
 	}
 	for _, g := range strings.Fields(e.Output(ctx, "id", "-nG", user)) {
-		if slices.Contains(CardinalPrivileged, g) {
+		if slices.Contains(PrivilegedGroups, g) {
 			return fmt.Errorf("%s is in group %s, which reaches root; remove it by hand if it is an old install", user, g)
 		}
 	}
@@ -70,21 +70,21 @@ func CheckOldUser(ctx context.Context, e *Env, user string, sudoUID int) error {
 }
 
 // RemoveOldUser archives an old install's home to a root-only tarball, then deletes the user as
-// CardinalPurge does. Its processes stop first, so tar reads a home nothing writes to.
-func RemoveOldUser(ctx context.Context, e *Env, user string, sudoUID int, now time.Time) (CardinalReport, error) {
+// PurgeUser does. Its processes stop first, so tar reads a home nothing writes to.
+func RemoveOldUser(ctx context.Context, e *Env, user string, sudoUID int, now time.Time) (RootReport, error) {
 	if err := CheckOldUser(ctx, e, user, sudoUID); err != nil {
-		return CardinalReport{}, err
+		return RootReport{}, err
 	}
 	if err := stopUser(ctx, e, user); err != nil {
-		return CardinalReport{}, err
+		return RootReport{}, err
 	}
 	archive := "/root/flocc-removed-" + user + "-" + now.Format("2006-01-02-150405") + ".tar.gz"
 	// $1 and $2 keep the names out of the script's text; umask 077 makes the archive mode 600.
 	if _, err := e.Must(ctx, "sh", "-c", `umask 077 && tar -czf "$1" -C /home -- "$2"`, "sh", archive, user); err != nil {
-		return CardinalReport{}, fmt.Errorf("archiving /home/%s: %w", user, err)
+		return RootReport{}, fmt.Errorf("archiving /home/%s: %w", user, err)
 	}
-	r := CardinalReport{Steps: []ReportStep{{Name: "Archive", Detail: archive + ", mode 600", Done: true}}}
-	if err := CardinalPurge(ctx, e, user); err != nil {
+	r := RootReport{Steps: []ReportStep{{Name: "Archive", Detail: archive + ", mode 600", Done: true}}}
+	if err := PurgeUser(ctx, e, user); err != nil {
 		return r, err
 	}
 	r.Steps = append(r.Steps, ReportStep{Name: "User", Detail: user + " and its home deleted", Done: true})

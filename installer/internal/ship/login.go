@@ -86,20 +86,12 @@ var (
 	ansi     = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
 )
 
-// urlWatch passes the host's output through and opens each OAuth URL in it once. allow, when set,
-// must accept a URL before it opens; the rest are only printed.
+// urlWatch passes the host's output through and opens each OAuth URL in it once.
 type urlWatch struct {
-	out   io.Writer
-	open  func(string)
-	allow func(string) bool
-	line  []byte
-	seen  map[string]bool
-}
-
-// WatchURLs is urlWatch for output the desktop does not trust, such as cardinal's: only URLs
-// allow accepts are opened.
-func WatchURLs(out io.Writer, open func(string), allow func(string) bool) io.Writer {
-	return &urlWatch{out: out, open: open, allow: allow, seen: map[string]bool{}}
+	out  io.Writer
+	open func(string)
+	line []byte
+	seen map[string]bool
 }
 
 func (u *urlWatch) Write(p []byte) (int, error) {
@@ -111,7 +103,7 @@ func (u *urlWatch) Write(p []byte) (int, error) {
 			break
 		}
 		for _, m := range oauthURL.FindAllString(ansi.ReplaceAllString(string(u.line[:i]), ""), -1) {
-			if !u.seen[m] && (u.allow == nil || u.allow(m)) {
+			if !u.seen[m] {
 				u.seen[m] = true
 				u.open(m)
 			}

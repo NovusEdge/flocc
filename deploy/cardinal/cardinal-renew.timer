@@ -1,8 +1,8 @@
 [Unit]
-Description=cardinal's daily renewal window
+Description=cardinal's daily fresh start
 
 [Timer]
-OnCalendar=*-*-* {{hours}}:00/15
+OnCalendar=*-*-* {{hour}}:00:00
 Persistent=true
 
 [Install]

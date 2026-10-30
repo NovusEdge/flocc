@@ -14,15 +14,16 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/plugins"
 )
 
-// The gate hook's onFailure setting needs this version.
+// The hooks' StopFailure event and stop_hook_active input need this version or later.
 var minClaude = [3]int{2, 1, 295}
 
 var needsClaude = fmt.Sprintf("needs %d.%d.%d", minClaude[0], minClaude[1], minClaude[2])
 
 const settingsRel = ".claude/settings.json"
 
-// pushSettings are the /config toggles "Push when actions required" and "Push when Claude decides".
-var pushSettings = map[string]bool{"inputNeededNotifEnabled": true, "agentPushNotifEnabled": false}
+// pushSettings are the /config toggles "Push when actions required" and "Push when Claude
+// decides", and the bypass warning's acceptance, which sessions also get from --settings.
+var pushSettings = map[string]bool{"inputNeededNotifEnabled": true, "agentPushNotifEnabled": false, "skipDangerousModePermissionPrompt": true}
 
 type Claude struct{}
 
@@ -38,6 +39,12 @@ func claudeVersion(ctx context.Context, e *Env) (bool, string) {
 	return host.AtLeast(v, minClaude), v
 }
 
+// agentClaude runs flocc-agent's claude through the wrapper: the login and the Remote Control
+// consent are flocc-agent's, whose sessions use them.
+func agentClaude(args ...string) host.Cmd {
+	return host.Cmd{Name: "sudo", Args: append([]string{"-n", "-H", "-u", AgentUser, AgentRun, "claude"}, args...)}
+}
+
 // claudeLogin is "full" for a claude.ai login, "token-only (<method>)" for any other, or "none".
 // Only a full login can open Remote Control sessions.
 func claudeLogin(ctx context.Context, e *Env) string {
@@ -45,7 +52,12 @@ func claudeLogin(ctx context.Context, e *Env) string {
 		LoggedIn   bool   `json:"loggedIn"`
 		AuthMethod string `json:"authMethod"`
 	}
-	if json.Unmarshal([]byte(e.Output(ctx, e.claude(), "auth", "status")), &s) != nil || !s.LoggedIn {
+	r, err := e.Run.Run(ctx, agentClaude("auth", "status"))
+	out := ""
+	if err == nil && r.Code == 0 {
+		out = r.Stdout
+	}
+	if json.Unmarshal([]byte(out), &s) != nil || !s.LoggedIn {
 		return "none"
 	}
 	if s.AuthMethod == "claude.ai" {

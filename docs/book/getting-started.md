@@ -29,10 +29,9 @@ In order, it:
 2. Asks for the Linear key and the GitHub agent token. See [Keys](keys.md).
 3. Checks the Tailscale OAuth client and your tailnet policy. See [Tailnet](tailnet.md).
 4. Creates or adds a host, then ships the service to it. See [Set up the desktop and a host](setup/README.md).
-5. Asks for the GitHub publish token and the ntfy topic.
+5. Asks for the GitHub publish token.
 6. Offers to remove old installs it finds on the machine.
-7. Sets up [cardinal](cardinal.md), if you want it.
-8. Signs in to Claude on each host.
+7. Signs in to Claude on each host.
 
 ## 3. Prepare a repository
 
@@ -74,7 +73,6 @@ Add rate limiting to the export endpoint.
 ```agent
 model: opus
 wall_clock: 2h
-paths: [src/export/**]
 depends_on: [ENG-120]
 ```
 ````
@@ -86,11 +84,8 @@ The optional `agent` block takes these keys:
 | `model` | Model for the session |
 | `effort` | Reasoning effort: `low`, `medium`, `high`, `xhigh` or `max` |
 | `wall_clock` | Time limit, such as `90m` or `2h` |
-| `paths` | File globs the issue claims up front, so two issues do not edit the same files |
 | `depends_on` | Issues that must be done first |
 | `mcp` | MCP servers the session may use, from the host's `[mcp_servers.*]` config |
-| `allow` | Extra launch grants. See [Run a host](setup/running-a-host.md#subagents-in-agent-sessions) |
-
 ## 5. Watch it run
 
 The host polls every 3 minutes. Add the `claude` label last. It starts paid, unattended work.
@@ -102,17 +97,7 @@ flocc -H my-host logs -f
 flocc -H my-host attach ENG-12      # read-only view of the session
 ```
 
-The issue moves to In Progress, a tester session writes failing tests, an implementer session makes them pass, and the service runs the check, pushes, opens a draft PR and comments the link on the issue. A reviewer session then posts a review on the PR. You merge by hand.
-
-## 6. Let your desktop sessions reach the agents
-
-After one `flocc ship`, which writes `~/.config/flocc/a2a.toml` on the desktop, add the A2A tools to your Claude sessions once:
-
-```bash
-claude mcp add --scope user flocc-a2a -- uvx --from git+https://github.com/NovusEdge/flocc flocc mcp-a2a
-```
-
-Your sessions can then list the running agents with `agents`, message one with `send`, tell a repository's agents about a shared change with `notify`, and read answers with `replies`. A message from you reaches an agent at its next tool call or turn end, and wakes a session that is idle at its prompt. See [Architecture](architecture.md#a2a).
+The issue moves to In Progress, an executor session does the work, and the service runs the check, pushes, opens a draft PR and comments the link on the issue. A reviewer session then posts a review on the PR. You merge by hand. A `Run: tester, executor, reviewer` line in the description adds a tester session that writes failing tests first.
 
 ## Run an issue again
 

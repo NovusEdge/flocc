@@ -1,4 +1,4 @@
-import json
+from pathlib import Path
 
 import pytest
 
@@ -13,8 +13,6 @@ def test_example_loads_with_defaults():
     assert cfg.digest_hour == 18
     assert cfg.default_wall_clock_s == 10800
     assert cfg.review_wall_clock_s == 3600
-    assert cfg.context_restart_pct == 60.0
-    assert cfg.idle_escalate_s == 1800.0
     assert cfg.review_model == "opus"
     assert cfg.five_hour_max_pct == 80.0
     assert cfg.weekly_max_pct == 80.0
@@ -30,7 +28,18 @@ def test_example_loads_with_defaults():
     assert cfg.state_root.is_absolute()
     assert cfg.mcp_servers["sentry"]["type"] == "http"
     assert cfg.agent_plugins_file is None
-    assert cfg.installed_plugins_file.name == "installed_plugins.json"
+
+
+def test_layout_keys_in_an_old_config_are_ignored_with_a_warning(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    old = 'worktree_root = "~/worktrees"\nplugin_dir = "~/flocc/plugin"\n'
+    path.write_text(old + EXAMPLE.read_text())
+    cfg = load(path)
+    assert cfg.worktree_root == Path("/home/flocc-agent/worktrees")
+    assert cfg.plugin_dir == Path("/opt/flocc/plugin")
+    assert cfg.agent_token_file == Path("/home/flocc-agent/.config/flocc/gh-agent.token")
+    err = capsys.readouterr().err
+    assert "worktree_root is fixed by the two-user layout" in err and "plugin_dir" in err
 
 
 def test_effort_for_maps_phase_to_config():
@@ -38,7 +47,7 @@ def test_effort_for_maps_phase_to_config():
     assert cfg.effort_for("test") == "high"
     assert cfg.effort_for("impl") == "medium"
     assert cfg.effort_for("review") == "medium"
-    # The post-check fix session runs the implementer skill, so it takes the implementer level.
+    # The post-check fix session runs the fixer skill, so it takes the executor level.
     assert cfg.effort_for("fix") == "medium"
 
 
@@ -67,15 +76,12 @@ def test_bad_steer_authors_is_an_error(tmp_path):
         load(p)
 
 
-def test_shared_paths_load_per_repo(tmp_path):
-    assert load(EXAMPLE).repos["backend"].shared_paths == ()
-    p = tmp_path / "c.toml"
-    table = '[repos.backend]\npath = "~/src/backend"'
+def test_a_retired_repo_key_is_ignored_with_a_warning(tmp_path, capsys):
+    p = tmp_path / "config.toml"
+    table = "[repos.backend]"
     p.write_text(EXAMPLE.read_text().replace(table, f'{table}\nshared_paths = ["docs/log.md"]'))
-    assert load(p).repos["backend"].shared_paths == ("docs/log.md",)
-    p.write_text(EXAMPLE.read_text().replace(table, f'{table}\nshared_paths = "docs/log.md"'))
-    with pytest.raises(ValueError, match="shared_paths"):
-        load(p)
+    assert load(p).repos["backend"].base_branch == "main"
+    assert "repos.backend.shared_paths is no longer used" in capsys.readouterr().err
 
 
 def test_missing_repos_is_an_error(tmp_path):
@@ -85,11 +91,10 @@ def test_missing_repos_is_an_error(tmp_path):
         load(p)
 
 
-def test_missing_digest_issue_is_an_error(tmp_path):
+def test_a_config_without_digest_issue_loads(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text(EXAMPLE.read_text().replace('digest_issue = "NF-1"\n', ""))
-    with pytest.raises(ValueError, match="digest_issue"):
-        load(p)
+    assert load(p).digest_issue == ""
 
 
 def test_unknown_key_is_an_error(tmp_path):
@@ -124,119 +129,34 @@ def test_commit_trailer_is_on_unless_a_repo_overrides_it(tmp_path):
     assert not trailer_enabled(global_off, global_off.repos["backend"])
 
 
-def with_permissions(tmp_path, text):
-    config = tmp_path / "config.toml"
-    config.write_text(EXAMPLE.read_text())
-    (tmp_path / "permissions.toml").write_text(text)
-    return config
+def test_a_leftover_permissions_file_is_ignored_with_a_warning(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    path.write_text(EXAMPLE.read_text())
+    (tmp_path / "permissions.toml").write_text('allow = ["Bash(just:*)"]\n')
+    cfg = load(path)
+    assert not hasattr(cfg, "permission_allow")
+    assert "permissions.toml is no longer read" in capsys.readouterr().err
 
 
-def test_the_permissions_file_beside_the_config_is_loaded(tmp_path):
-    cfg = load(
-        with_permissions(
-            tmp_path,
-            'allow = ["Bash(npx playwright install)"]\n'
-            'environment = ["Nothing on this VM is production."]\n'
-            'judge_model = "sonnet"\n',
-        )
-    )
-    assert cfg.permission_allow == ("Bash(npx playwright install)",)
-    assert cfg.permission_environment == ("Nothing on this VM is production.",)
-    assert (cfg.judge_model, cfg.judge_max_per_run) == ("sonnet", 30)
+def test_retired_notice_keys_are_ignored(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    path.write_text("idle_escalate_s = 60.0\nstall_escalate_s = 60.0\n" + EXAMPLE.read_text())
+    load(path)
+    err = capsys.readouterr().err
+    assert "idle_escalate_s is no longer used" in err and "stall_escalate_s" in err
 
 
-def test_no_permissions_file_means_no_rules_and_no_judge():
-    cfg = load(EXAMPLE)
-    assert (cfg.permission_allow, cfg.permission_environment, cfg.judge_model) == ((), (), "")
+def test_context_restart_pct_is_retired(tmp_path, capsys):
+    p = tmp_path / "config.toml"
+    p.write_text("context_restart_pct = 60.0\n" + EXAMPLE.read_text())
+    cfg = load(p)
+    assert not hasattr(cfg, "context_restart_pct")
+    assert "context_restart_pct is no longer used" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "rule",
-    [
-        "Bash(python:*)",
-        "Bash(sh *)",
-        "Bash(bash -c ls)",
-        "Bash(env:*)",
-        "Bash(xargs *)",
-        "Bash",
-        "Bash()",
-        "Bash(*)",
-        "Bash(:*)",
-        "Bash(*:*)",
-        "Bash( python *)",
-        "Bash(/usr/bin/python3 *)",
-        "Bash(FOO=1 python *)",
-        "Bash(FOO=1 *)",
-        "Bash(python3.12 *)",
-        "Bash(sh\\t*)",
-        "Bash(Python:*)",
-        "Bash(PATH=/a:/b python *)",
-    ],
-)
-def test_an_allow_rule_that_wildcards_an_interpreter_is_refused(tmp_path, rule, capsys):
-    text = f'allow = ["{rule}", "Bash(uv sync --frozen)"]\n'
-    assert load(with_permissions(tmp_path, text)).permission_allow == ("Bash(uv sync --frozen)",)
-    assert "interpreter" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    "rule",
-    [
-        "Bash(py* *)",
-        "Bash(pyth* *)",
-        "Bash(?ython *)",
-        "Bash(p*:*)",
-        "Bash([a-z]* *)",
-        "Bash(/usr/bin/* *)",
-        'Bash("python" *)',
-        "Bash('python' *)",
-        'Bash(FOO="a b" python *)',
-        "Bash(pyth\\on *)",
-        "Bash(FOO=a\\ b python *)",
-        "Bash(FOO=$(echo a b) python *)",
-        "Bash(FOO=${X:-a b} python *)",
-        "Bash(FOO=`x` python *)",
-        "Bash($SHELL *)",
-        "Bash(${P} *)",
-        "Bash({python,x} *)",
-        "Bash((python) *)",
-        "Bash(!python *)",
-        "Bash(~/py *)",
-    ],
-)
-def test_an_unresolvable_program_token_is_refused(tmp_path, rule, capsys):
-    assert (
-        load(with_permissions(tmp_path, f"allow = [{json.dumps(rule)}]\n")).permission_allow == ()
-    )
-    assert "interpreter" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    "rule",
-    [
-        "Bash(npx playwright install)",
-        "Bash(uv run pytest *)",
-        "Bash(git status:*)",
-        "Read(*)",
-        "Bash(FOO=1 uv run pytest *)",
-        "Bash(PATH=/a:/b make *)",
-        "Bash(./scripts/check.sh *)",
-        "Bash(g++ *)",
-    ],
-)
-def test_an_ordinary_allow_rule_is_accepted(tmp_path, rule):
-    cfg = load(with_permissions(tmp_path, f'allow = ["{rule}"]\n'))
-    assert cfg.permission_allow == (rule,)
-
-
-@pytest.mark.parametrize(
-    "text, word",
-    [
-        ("alow = []\n", "alow"),
-        ('environment = "x"\n', "environment"),
-        ("judge_max_per_run = 0\n", "judge_max_per_run"),
-    ],
-)
-def test_a_bad_permissions_file_fails_at_load(tmp_path, text, word):
-    with pytest.raises(ValueError, match=word):
-        load(with_permissions(tmp_path, text))
+def test_retired_top_level_keys_are_ignored_with_a_warning(tmp_path, capsys):
+    p = tmp_path / "config.toml"
+    kept = [ln for ln in EXAMPLE.read_text().splitlines() if not ln.startswith("ntfy_url")]
+    p.write_text('ntfy_url = "https://ntfy.sh/x"\n' + "\n".join(kept) + "\n")
+    assert load(p).team_key == "NF"
+    assert "ntfy_url is no longer used" in capsys.readouterr().err

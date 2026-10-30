@@ -21,7 +21,7 @@ type Host struct {
 	SSH     string `toml:"ssh,omitempty"`
 	Daytona string `toml:"daytona,omitempty"`
 	// Machine is the owner's ssh destination on the machine holding the host, for flocc setup's
-	// old-version cleanup and cardinal; MachineNone when the host is on none of the owner's.
+	// old-version cleanup; MachineNone when the host is on none of the owner's.
 	Machine string `toml:"machine,omitempty"`
 	answers.Answers
 }

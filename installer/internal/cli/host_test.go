@@ -102,7 +102,7 @@ func writeSecrets(t *testing.T, home, body string) {
 	}
 }
 
-const allKeys = "linear_key = 'lin_api_k'\nagent_token = 'github_pat_agent'\npublish_token = 'github_pat_publish'\nntfy_topic = 'flocc-t'\n"
+const allKeys = "linear_key = 'lin_api_k'\nagent_token = 'github_pat_agent'\npublish_token = 'github_pat_publish'\n"
 
 // fakeLinear keeps labels and issues, so a second host add finds what the first one made.
 // issueErr, when set, is the error every issue lookup gets, as a rate limit or outage gives.
@@ -242,9 +242,6 @@ func addDeps(t *testing.T, secrets string) (*deps, *fakeLinear, *hostScript) {
 	d.prompt = p
 	d.http = http.DefaultClient
 	d.githubAPI, d.linearAPI = fakeGitHub(t).URL, ls.URL
-	ntfy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	t.Cleanup(ntfy.Close)
-	d.ntfyBase, d.newTopic = ntfy.URL, func() string { return "flocc-t" }
 	d.open = func(string) {}
 	return d, lin, p
 }
@@ -265,10 +262,10 @@ func TestHostAddMakesTheDigestAndLabelsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if lin.labelCreates != 4 || lin.issueCreates != 1 || p.teamAsked {
+	if lin.labelCreates != 2 || lin.issueCreates != 1 || p.teamAsked {
 		t.Fatalf("labels %d issues %d team asked %v", lin.labelCreates, lin.issueCreates, p.teamAsked)
 	}
-	if !slices.Equal(lin.labels, []string{"claude", "escalation", "needs-decision", "a"}) || lin.issues["NF-100"] != digestTitle {
+	if !slices.Equal(lin.labels, []string{"claude", "a"}) || lin.issues["NF-100"] != digestTitle {
 		t.Fatalf("%v %v", lin.labels, lin.issues)
 	}
 	// The key check after each add proved the Linear key can write, on the digest.
@@ -295,7 +292,7 @@ func TestHostAddShowsEachCallAsAStepWithItsOwnOutcome(t *testing.T) {
 		got = append(got, r.Name+"="+string(r.State))
 	}
 	want := []string{"Host file=done", "Keys=done", "Repos=done", "Linear team=done", "Issues=done", "Labels=done", "Save host=done",
-		"Check Linear API key=done", "Check GitHub agent token (read-only)=done", "Check GitHub publish token=done", "Check ntfy topic=done", "Keys=done"}
+		"Check Linear API key=done", "Check GitHub agent token (read-only)=done", "Check GitHub publish token=done", "Keys=done"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("%q", got)
 	}
@@ -426,17 +423,16 @@ func TestHostAddSkipsADigestAnotherHostNamesButLinearNoLongerHas(t *testing.T) {
 func TestHostAddAsksForAMissingKeyOnTheSpot(t *testing.T) {
 	d, lin, p := addDeps(t, "")
 	p.secrets = []string{"lin_api_k", "github_pat_agent", "github_pat_publish"}
-	p.confirms = []bool{true} // the ntfy test push arrived
 	if err := hostAdd(context.Background(), d, "h1", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	st := d.store()
-	for slot, want := range map[keys.Slot]string{keys.Linear: "lin_api_k", keys.Agent: "github_pat_agent", keys.Publish: "github_pat_publish", keys.Ntfy: "flocc-t"} {
+	for slot, want := range map[keys.Slot]string{keys.Linear: "lin_api_k", keys.Agent: "github_pat_agent", keys.Publish: "github_pat_publish"} {
 		if v, _ := st.Get(slot); v != want {
 			t.Errorf("%s: %q", slot, v)
 		}
 	}
-	if h := loadHost(t, d, "h1"); h.DigestIssue != "NF-100" || lin.labelCreates != 4 {
+	if h := loadHost(t, d, "h1"); h.DigestIssue != "NF-100" || lin.labelCreates != 2 {
 		t.Fatalf("%+v labels %d", h, lin.labelCreates)
 	}
 }
@@ -493,7 +489,7 @@ func TestHostAddSaysWhichKeyMissesTheNewRepoOnce(t *testing.T) {
 	loadHost(t, d, "h1") // saved even though a key does not cover it yet
 }
 
-const hostAnswers = "team_key = \"NF\"\ndigest_issue = \"NF-186\"\nntfy_topic = \"flocc-host\"\n\n" +
+const hostAnswers = "team_key = \"NF\"\ndigest_issue = \"NF-186\"\n\n" +
 	"[[repos]]\nname = \"a\"\nurl = \"https://github.com/o/a\"\nbase_branch = \"main\"\ncheck = \"just check\"\n"
 
 func importDeps(t *testing.T) (*deps, *fakeSSH, *fakeLinear) {
@@ -506,39 +502,19 @@ func importDeps(t *testing.T) (*deps, *fakeSSH, *fakeLinear) {
 	return d, f, lin
 }
 
-func TestHostImportCopiesTheHostsAnswersAndKeepsItsTopic(t *testing.T) {
+func TestHostImportCopiesTheHostsAnswers(t *testing.T) {
 	d, f, _ := importDeps(t)
 	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	h := loadHost(t, d, "h1")
-	if h.TeamKey != "NF" || h.DigestIssue != "NF-186" || h.NtfyTopic != "" || len(h.Repos) != 1 {
+	if h.TeamKey != "NF" || h.DigestIssue != "NF-186" || len(h.Repos) != 1 {
 		t.Fatalf("%+v", h)
-	}
-	if topic, _ := d.store().Get(keys.Ntfy); topic != "flocc-host" {
-		t.Fatalf("topic %q", topic)
 	}
 	c := f.captured()[0]
 	words := shWords(t, c.Args[len(c.Args)-1])
 	if script := words[len(words)-1]; script != "cd && cat .config/flocc/answers.toml" {
 		t.Fatalf("%q", script)
-	}
-}
-
-// The next ship sends the desktop's topic, so the phone would stop hearing from the host.
-func TestHostImportSaysWhenTheDesktopsTopicWillReplaceTheHosts(t *testing.T) {
-	d, _, _ := importDeps(t)
-	p := d.prompt.(*hostScript)
-	writeSecrets(t, d.home, "ntfy_topic = 'flocc-desk'\n")
-	if code := run(context.Background(), d, []string{"host", "import", "-H", "h1"}); code != 0 {
-		t.Fatalf("exit %d", code)
-	}
-	if topic, _ := d.store().Get(keys.Ntfy); topic != "flocc-desk" {
-		t.Fatalf("topic %q", topic)
-	}
-	want := "The desktop's ntfy topic differs from h1's; the next ship moves h1 to the desktop's (https://ntfy.sh/flocc-desk)."
-	if got := p.texts(ui.KTodo); len(got) != 1 || !strings.Contains(got[0], want) {
-		t.Fatal(got)
 	}
 }
 

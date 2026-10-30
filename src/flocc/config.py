@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -7,56 +6,25 @@ from pathlib import Path
 
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
-# Allow rules and the judge's prefixes may name these only exactly: a wildcard after one admits
-# any program.
-INTERPRETERS = frozenset(
-    {
-        "sh",
-        "bash",
-        "zsh",
-        "dash",
-        "fish",
-        "python",
-        "python3",
-        "node",
-        "deno",
-        "bun",
-        "perl",
-        "ruby",
-        "php",
-        "eval",
-        "exec",
-        "env",
-        "xargs",
-        "sudo",
-        "su",
-        "nohup",
-        "timeout",
-        "nice",
-        "watch",
-    }
-)
-_BASH_RULE = re.compile(r"Bash\((.*)\)")
-_ENV_ASSIGN = re.compile(r"[A-Za-z_]\w*=[\w.,:/@%+=-]*")
-_PROGRAM = re.compile(r"[A-Za-z0-9._/+-]+")
-_PERMISSION_KEYS = {
-    "allow": "permission_allow",
-    "environment": "permission_environment",
-    "judge_model": "judge_model",
-    "judge_max_per_run": "judge_max_per_run",
-}
-
-_PATH_KEYS = (
-    "state_root",
+_RETIRED = ("ntfy_url", "context_restart_pct", "idle_escalate_s", "stall_escalate_s")
+_LAYOUT = (
     "worktree_root",
     "plugin_dir",
+    "agent_home",
+    "agent_state_root",
+    "agent_flocc",
+    "agent_run",
+    "claude_json",
+    "installed_plugins_file",
+)
+AGENT_RUN = ("sudo", "-n", "-H", "-u", "flocc-agent", "/usr/local/libexec/flocc-agent-run")
+_PATH_KEYS = (
+    "state_root",
     "ledger_path",
     "linear_key_file",
     "agent_gh_token_file",
     "publish_gh_token_file",
-    "claude_json",
     "agent_plugins_file",
-    "installed_plugins_file",
 )
 
 
@@ -68,8 +36,6 @@ class RepoConfig:
     # GitHub Free organizations cannot open draft PRs on private repos.
     draft: bool = True
     commit_trailer: bool | None = None  # None follows Config.commit_trailer
-    # Files every issue edits (an append-only log): never claimed, never refused at commit.
-    shared_paths: tuple[str, ...] = ()
     # Added with the publish token to a PR whose implementer amended tester files, for repos whose
     # PR check fails such PRs without it. Empty adds none; flocc never removes it.
     amended_label: str = ""
@@ -83,23 +49,15 @@ class Config:
     trigger_label: str
     repos: dict[str, RepoConfig]
     state_root: Path
-    worktree_root: Path
-    plugin_dir: Path
     ledger_path: Path
     linear_key_file: Path
     agent_gh_token_file: Path
     publish_gh_token_file: Path
-    ntfy_url: str
-    # Required: tier 3 reports, wall-clock stops among them, reach the owner only through it.
-    digest_issue: str
     digest_hour: int = 18
     session_cap: int = 2
     five_hour_max_pct: float = 80.0
     weekly_max_pct: float = 80.0
-    context_restart_pct: float = 60.0
-    idle_escalate_s: float = 1800.0
     check_fix_rounds: int = 2
-    stall_escalate_s: float = 1200.0
     default_wall_clock_s: int = 3 * 3600
     review_model: str = "opus"
     # Per-phase reasoning effort, overridden by an issue's agentblock effort. The tester plans the
@@ -122,19 +80,27 @@ class Config:
     # Linear user or bot/app ids whose comments on a running issue are forwarded into the live
     # session like the owner's own, letting another agent steer. Empty forwards only the owner's.
     steer_authors: tuple[str, ...] = ()
-    # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
-    claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
-    # The plugins agent sessions get; None means deploy/agent-plugins.txt in the service repo.
+    # Written by flocc setup and no longer read: cardinal writes the digest.
+    digest_issue: str = ""
+    # The two-user layout: the same on every host, created by flocc setup and not configurable.
+    agent_user: str = "flocc-agent"
+    agent_home: Path = Path("/home/flocc-agent")
+    worktree_root: Path = Path("/home/flocc-agent/worktrees")
+    agent_state_root: Path = Path("/home/flocc-agent/state")
+    plugin_dir: Path = Path("/opt/flocc/plugin")
+    agent_flocc: Path = Path("/opt/flocc/bin/flocc")
+    agent_run: tuple[str, ...] = AGENT_RUN
+    # The plugins agent sessions get; None means /opt/flocc/deploy/agent-plugins.txt.
     agent_plugins_file: Path | None = None
-    installed_plugins_file: Path = field(
-        default_factory=lambda: Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-    )
-    # From permissions.toml beside the config, written by flocc ship from the host file.
-    permission_allow: tuple[str, ...] = ()
-    permission_environment: tuple[str, ...] = ()
-    # Empty turns the permission judge off.
-    judge_model: str = ""
-    judge_max_per_run: int = 30
+
+    @property
+    def agent_token_file(self) -> Path:
+        """flocc-agent's copy of the read-only token, written by flocc-agent-run."""
+        return self.agent_home / ".config" / "flocc" / "gh-agent.token"
+
+    @property
+    def agent_claude(self) -> Path:
+        return self.agent_home / ".local" / "bin" / "claude"
 
     def effort_for(self, phase: str) -> str:
         if phase == "test":
@@ -163,78 +129,13 @@ def default_config_path() -> Path:
 
 
 def _repo(config_path: Path, name: str, table: dict) -> RepoConfig:
-    shared = table.pop("shared_paths", [])
-    # A bare string would become a char tuple; fail at load like steer_authors.
-    if not isinstance(shared, list) or not all(isinstance(p, str) for p in shared):
-        raise ValueError(f"{config_path}: repos.{name}.shared_paths must be a list of path strings")
+    if table.pop("shared_paths", None) is not None:
+        print(
+            f"{config_path}: repos.{name}.shared_paths is no longer used; delete it",
+            file=sys.stderr,
+        )
     # Unpacked so a misspelt repo key fails like a misspelt top-level one.
-    return RepoConfig(
-        path=Path(table.pop("path")).expanduser(), shared_paths=tuple(shared), **table
-    )
-
-
-def wildcards_an_interpreter(rule: str) -> bool:
-    rule = rule.strip()
-    if rule == "Bash":
-        return True
-    m = _BASH_RULE.fullmatch(rule)
-    if m is None:
-        return False
-    body = m.group(1).strip()
-    if re.search(r"(?:^|\s)-c", body):
-        return True
-    # A VAR=value whose value holds a quote, escape or expansion can swallow spaces, so only a
-    # plain value is skipped; anything else stays as the program token and fails _PROGRAM.
-    tokens = body.split()
-    while tokens and _ENV_ASSIGN.fullmatch(tokens[0]):
-        tokens.pop(0)
-    # "cmd:*" is Claude Code's legacy prefix form. Claude Code matches "*" anywhere in a rule, so
-    # "py* *" reaches python, and $SHELL, {a,b} or a quoted name is a program this check cannot
-    # resolve; hence a whitelist.
-    program = tokens[0].split(":", 1)[0] if tokens else ""
-    if not _PROGRAM.fullmatch(program):
-        return True
-    program = program.rsplit("/", 1)[-1].lower()
-    return "*" in body and (
-        program in INTERPRETERS or program.rstrip("0123456789.-") in INTERPRETERS
-    )
-
-
-def _permissions(path: Path) -> dict:
-    # Its own file: the installer's Config step rewrites config.toml only when it fails to load.
-    try:
-        table = tomllib.loads(path.read_text())
-    except FileNotFoundError:
-        return {}
-    unknown = sorted(set(table) - _PERMISSION_KEYS.keys())
-    if unknown:
-        raise ValueError(f"{path}: unknown key {unknown[0]}")
-    out: dict = {}
-    for key in ("allow", "environment"):
-        value = table.get(key, [])
-        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-            raise ValueError(f"{path}: {key} must be a list of strings")
-        out[_PERMISSION_KEYS[key]] = tuple(value)
-    # Dropped, not fatal: a refused rule raising here would stop every tick on the host until the
-    # next ship.
-    kept = []
-    for rule in out["permission_allow"]:
-        if wildcards_an_interpreter(rule):
-            print(
-                f"{path}: allow rule {rule} wildcards an interpreter or shell; dropped",
-                file=sys.stderr,
-            )
-        else:
-            kept.append(rule)
-    out["permission_allow"] = tuple(kept)
-    if "judge_model" in table:
-        out["judge_model"] = str(table["judge_model"])
-    if "judge_max_per_run" in table:
-        n = table["judge_max_per_run"]
-        if not isinstance(n, int) or n < 1:
-            raise ValueError(f"{path}: judge_max_per_run {n!r} must be a whole number >= 1")
-        out["judge_max_per_run"] = n
-    return out
+    return RepoConfig(path=Path(table.pop("path")).expanduser(), **table)
 
 
 def load(path: Path) -> Config:
@@ -242,8 +143,14 @@ def load(path: Path) -> Config:
     repos = {name: _repo(path, name, r) for name, r in raw.pop("repos", {}).items()}
     if not repos:
         raise ValueError(f"{path}: no [repos.<name>] tables")
-    if not raw.get("digest_issue"):
-        raise ValueError(f"{path}: digest_issue is required, the key of the pinned digest issue")
+    # Hosts keep their config.toml across upgrades, so a key a release removed must not stop
+    # the tick.
+    for key in _RETIRED:
+        if raw.pop(key, None) is not None:
+            print(f"{path}: {key} is no longer used; delete it", file=sys.stderr)
+    for key in _LAYOUT:
+        if raw.pop(key, None) is not None:
+            print(f"{path}: {key} is fixed by the two-user layout; delete it", file=sys.stderr)
     for key in _PATH_KEYS:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()
@@ -254,7 +161,13 @@ def load(path: Path) -> Config:
         if not isinstance(authors, list) or not all(isinstance(a, str) for a in authors):
             raise ValueError(f"{path}: steer_authors must be a list of id strings")
         raw["steer_authors"] = tuple(authors)
-    cfg = Config(repos=repos, **raw, **_permissions(path.with_name("permissions.toml")))
+    stale = path.with_name("permissions.toml")
+    if stale.exists():
+        print(
+            f"{stale} is no longer read: sessions run in bypassPermissions; delete it",
+            file=sys.stderr,
+        )
+    cfg = Config(repos=repos, **raw)
     # launch() passes a per-phase effort to --effort for every session, so a typo here would
     # crash the tick for all issues with an opaque CLI error; fail at load instead.
     for key in ("tester_effort", "impl_effort", "review_effort"):

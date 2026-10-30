@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": ["Bash(/opt/cardinal/plugin/bin/executor:*)", "Skill"],
+    "deny": ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit", "Write"],
+    "disableBypassPermissionsMode": "disable"
+  }
+}

@@ -1,6 +1,6 @@
 // Package rootpass is the desktop's side of a root pass: build flocc-setup, stage it in a directory
-// the owner's mktemp made, and run it through sudo in one ssh -t. flocc cardinal and flocc host
-// create both use it; create cannot import cardinal, which imports create.
+// the owner's mktemp made, and run it through sudo in one ssh -t. flocc host create and setup's
+// old-users removal both use it.
 package rootpass
 
 import (
@@ -12,8 +12,8 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -88,7 +88,7 @@ func Build(ctx context.Context, r host.Runner, s ui.Session, root, arch string, 
 type Pass struct {
 	Machine string     // the owner's ssh destination on the machine
 	Opts    []string   // ssh options: the shared master's
-	Prefix  string     // the stage's mktemp prefix: "/tmp/flocc-cardinal" or "/tmp/flocc-create"
+	Prefix  string     // the stage's mktemp prefix: "/tmp/flocc-create" or "/tmp/flocc-remove"
 	Files   []string   // local files to stage; one must be named flocc-setup
 	Calls   [][]string // flocc-setup's arguments, one sudo each, in order; shell-safe words only
 	Why     string     // the handoff banner
@@ -99,7 +99,7 @@ type Pass struct {
 // owner types one password. A failed call stops the ones after it. The stage goes after a success
 // and stays, with its log, after a failure. It returns the reports in call order, and on failure
 // also an error naming the last report error and the stage's log.
-func Run(ctx context.Context, r host.Runner, p Pass) ([]steps.CardinalReport, error) {
+func Run(ctx context.Context, r host.Runner, p Pass) ([]steps.RootReport, error) {
 	dir, err := host.Must(ctx, r, SSH(p.Opts, false, p.Machine, "mktemp -d "+p.Prefix+".XXXXXX"))
 	dir = strings.TrimSpace(dir)
 	if err != nil {
@@ -117,7 +117,7 @@ func Run(ctx context.Context, r host.Runner, p Pass) ([]steps.CardinalReport, er
 		remote += " && sudo " + dir + "/flocc-setup " + strings.Join(call, " ")
 	}
 	remote += " && rm -rf " + dir
-	var reports []steps.CardinalReport
+	var reports []steps.RootReport
 	// Safe on os.Stdout only because c has no Stdin: under a ui session that makes Interactive a
 	// handoff, so the tap writes while the session has released the terminal.
 	tap := Tap(os.Stdout, &reports)
@@ -130,7 +130,7 @@ func Run(ctx context.Context, r host.Runner, p Pass) ([]steps.CardinalReport, er
 		var why string
 		for _, rep := range reports {
 			if rep.Error != "" {
-				why = saved.Sanitize(rep.Error) + "; "
+				why = safe.Sanitize(rep.Error) + "; "
 			}
 		}
 		return reports, fmt.Errorf("the root pass failed: %sits log is %s/setup.log on %s: %w", why, dir, p.Machine, err)
@@ -140,10 +140,10 @@ func Run(ctx context.Context, r host.Runner, p Pass) ([]steps.CardinalReport, er
 
 // Events are a pass's steps and notes as rows. Every string came from the far end, so each is
 // sanitized.
-func Events(r steps.CardinalReport) []ui.Event {
+func Events(r steps.RootReport) []ui.Event {
 	var evs []ui.Event
 	for _, s := range r.Steps {
-		e := ui.Event{Name: saved.Sanitize(s.Name), Detail: saved.Sanitize(s.Detail), State: ui.Done}
+		e := ui.Event{Name: safe.Sanitize(s.Name), Detail: safe.Sanitize(s.Detail), State: ui.Done}
 		switch {
 		case s.Pending:
 			e.State = ui.Pending
@@ -153,16 +153,16 @@ func Events(r steps.CardinalReport) []ui.Event {
 		evs = append(evs, e)
 	}
 	for _, n := range r.Notes {
-		evs = append(evs, ui.Event{Name: "note", Detail: saved.Sanitize(n), State: ui.Skipped})
+		evs = append(evs, ui.Event{Name: "note", Detail: safe.Sanitize(n), State: ui.Skipped})
 	}
 	return evs
 }
 
 // Tap passes a pass's output through as it comes, prompts included, and keeps each
-// flocc-cardinal line in rs for Events.
-func Tap(out io.Writer, rs *[]steps.CardinalReport) *ship.LineTap {
-	return &ship.LineTap{Out: out, Marker: steps.CardinalMarker, Take: func(line string) bool {
-		got, ok := steps.ParseCardinalLine(line)
+// root report line in rs for Events.
+func Tap(out io.Writer, rs *[]steps.RootReport) *ship.LineTap {
+	return &ship.LineTap{Out: out, Marker: steps.RootMarker, Take: func(line string) bool {
+		got, ok := steps.ParseRootLine(line)
 		if ok {
 			*rs = append(*rs, got)
 		}

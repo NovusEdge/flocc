@@ -11,7 +11,7 @@ import pytest
 from flocc import ledger
 from flocc.tick import tick
 from flocc.tokens import TokenRejected, check_claude_login, check_tokens, claude_login, token_expiry
-from tests.fakes import FakeNotifier
+from tests.fakes import FakeAgent, FakeNotifier
 
 NOW = datetime(2027, 1, 10, 12, tzinfo=UTC).timestamp()
 DAY = 86400
@@ -88,7 +88,7 @@ def test_expiry_within_two_weeks_goes_to_the_digest(rt):
 def test_expiry_within_three_days_pages(rt):
     check_tokens(rt, lambda token: NOW + 2 * DAY if token == "t" else NOW + 60 * DAY)
     [esc] = rt.notifier.sent
-    assert (esc.tier, esc.scope, esc.cause) == (1, "global", "gh-token-agent")
+    assert esc.cause == "gh-token-agent"
     assert str(rt.cfg.agent_gh_token_file) in esc.action
 
 
@@ -117,6 +117,22 @@ def test_checks_once_a_day_and_retries_after_a_network_error(rt):
     assert len(calls) == 6
 
 
+def test_a_page_repeated_by_an_unfinished_check_sends_one_event(rt):
+    from flocc import events
+    from flocc.notice import Notifier
+
+    rt.notifier = Notifier(rt.con, None, rt.now)
+
+    def expiry(token):
+        if token == "p":
+            raise TokenRejected("401")
+        raise urllib.error.URLError("no route")
+
+    check_tokens(rt, expiry)
+    check_tokens(rt, expiry)
+    assert [e.kind for e in events.unacked(rt.con)] == ["service-error"]
+
+
 def auth_run(stdout, code=0):
     def run(argv, **kw):
         assert argv[1:] == ["auth", "status"]
@@ -139,23 +155,23 @@ LOGGED_OUT = '{"loggedIn": false}'
     ],
 )
 def test_claude_login_kinds(stdout, want):
-    assert claude_login("/opt/claude", auth_run(stdout)) == want
+    assert claude_login(["/opt/claude"], auth_run(stdout)) == want
 
 
 def test_claude_login_that_cannot_run_is_unknown():
     def hangs(argv, **kw):
         raise subprocess.TimeoutExpired(argv, 30)
 
-    assert claude_login("/opt/claude", hangs) is None
+    assert claude_login(["/opt/claude"], hangs) is None
 
 
 def test_lapsed_login_pages_once_and_rearms(rt):
-    rt.claude_exe = "/opt/claude"
+    rt.agent = FakeAgent(rt.cfg)
     out = auth_run(LOGGED_OUT, 1)
     check_claude_login(rt, out)
     check_claude_login(rt, out)
     [esc] = rt.notifier.sent
-    assert (esc.tier, esc.scope, esc.cause) == (1, "global", "claude-login")
+    assert esc.cause == "claude-login" and esc.event == "service-error"
     assert "flocc login -H" in esc.action
     check_claude_login(rt, auth_run(FULL))
     check_claude_login(rt, out)
@@ -163,14 +179,14 @@ def test_lapsed_login_pages_once_and_rearms(rt):
 
 
 def test_unanswered_login_probe_does_not_page(rt):
-    rt.claude_exe = "/opt/claude"
+    rt.agent = FakeAgent(rt.cfg)
     check_claude_login(rt, auth_run("not json"))
     assert rt.notifier.sent == []
 
 
 def test_error_json_without_logged_in_is_no_answer(rt):
-    rt.claude_exe = "/opt/claude"
-    assert claude_login("/opt/claude", auth_run('{"error": "rate limited"}')) is None
+    rt.agent = FakeAgent(rt.cfg)
+    assert claude_login(["/opt/claude"], auth_run('{"error": "rate limited"}')) is None
     check_claude_login(rt, auth_run('{"error": "rate limited"}'))
     assert rt.notifier.sent == []
     assert ledger.meta_get(rt.con, "claude_login_lapsed") is None
@@ -178,22 +194,20 @@ def test_error_json_without_logged_in_is_no_answer(rt):
 
 def test_tick_runs_the_login_check(rt, tmp_path, monkeypatch):
     # conftest stubs the check out of every other tick test.
-    rt.claude_exe = "/opt/claude"
+    rt.agent = FakeAgent(rt.cfg)
     monkeypatch.setattr("flocc.tick.check_claude_login", lambda r: check_claude_login(r, out))
     out = auth_run(LOGGED_OUT)
     monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
     for name in (
-        "route_escalations",
         "forward_comments",
         "reap_worktrees",
-        "clean_scratchpads",
         "poll",
-        "maybe_digest",
+        "maybe_daily",
     ):
         monkeypatch.setattr(f"flocc.tick.{name}", lambda r: set())
     assert tick(rt.cfg, tmp_path / "c.toml") == 0
     [esc] = rt.notifier.sent
-    assert esc.cause == "claude-login"
+    assert esc.cause == "claude-login" and esc.event == "service-error"
 
 
 def test_check_tokens_records_each_expiry_for_status(rt):

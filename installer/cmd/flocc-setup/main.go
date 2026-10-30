@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/NovusEdge/flocc/installer/internal/answers"
@@ -22,7 +24,8 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-const serviceStage = "/home/" + steps.ServiceUser + "/.cache/flocc-setup"
+// stageFor is where user keeps its copy of the stage.
+func stageFor(user string) string { return "/home/" + user + "/.cache/flocc-setup" }
 
 // The service phase's saved answers: outside ~/.cache, which may be cleared, and outside the
 // stage, whose *.toml files removeStagedAnswers deletes.
@@ -57,16 +60,18 @@ func checkPhase(phase string, euid int) error {
 	switch {
 	case phase == "root" && euid != 0:
 		return errors.New("the root phase runs as root; flocc ship runs it with sudo")
+	case phase == "agent" && euid == 0:
+		return errors.New("the agent phase runs as " + steps.AgentUser + ", not root")
 	case (phase == "service" || phase == "login") && euid == 0:
 		return errors.New("the " + phase + " phase runs as " + steps.ServiceUser + ", not root")
-	case phase != "root" && phase != "service" && phase != "login":
+	case phase != "root" && phase != "service" && phase != "login" && phase != "agent":
 		return fmt.Errorf("unknown phase %q", phase)
 	}
 	return nil
 }
 
-func handoffArgs(fromStdin bool) []string {
-	args := []string{"--phase", "service"}
+func handoffArgs(phase string, fromStdin bool) []string {
+	args := []string{"--phase", phase}
 	if fromStdin {
 		args = append(args, "--answers", "-")
 	}
@@ -86,6 +91,26 @@ var stageFile = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 func checkStage(dir string) error {
 	if dir != rootStage {
 		return fmt.Errorf("the root phase runs from %s, not %s; flocc ship stages it there", rootStage, dir)
+	}
+	return nil
+}
+
+// checkStageDir refuses a stage another user could have swapped: /tmp is shared, and a
+// flocc-agent process can create /tmp/flocc-setup itself when ship's reset leaves a gap.
+func checkStageDir(dir string, sudoUID string) error {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is not a plain directory; run flocc ship again", dir)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is writable by group or others; run flocc ship again", dir)
+	}
+	if owner := strconv.Itoa(int(st.Uid)); st.Uid != 0 && owner != sudoUID {
+		return fmt.Errorf("%s is owned by uid %s, not the user that ran sudo; run flocc ship again", dir, owner)
 	}
 	return nil
 }
@@ -118,24 +143,55 @@ func copyScript(dir string, names []string) string {
 	return "mkdir -p ~/.cache/flocc-setup && cd " + dir + " && cp -- " + strings.Join(names, " ") + " ~/.cache/flocc-setup/"
 }
 
-// handoff lets the service user read the stage and copy it itself. Root never writes inside
-// the service home: an agent could plant a symlink there and have root write through it. doc
-// is the answers document as root read it, piped on; nil leaves the service phase the terminal.
-func handoff(ctx context.Context, r host.Runner, stage string, args []string, doc io.Reader) error {
+// handoff lets user read the stage and copy it itself. Root never writes inside a user's home:
+// an agent could plant a symlink there and have root write through it. doc is the answers
+// document as root read it, piped on; nil leaves the phase the terminal.
+func handoff(ctx context.Context, r host.Runner, stage, user string, args []string, doc []byte) error {
 	names, err := stageNames(stage)
 	if err != nil {
 		return err
 	}
 	for _, c := range []host.Cmd{
-		{Name: "chown", Args: []string{"-R", "root:" + steps.ServiceUser, stage}},
+		{Name: "chown", Args: []string{"-R", "root:" + user, stage}},
 		{Name: "chmod", Args: []string{"-R", "g+rX,o-rwx", stage}},
-		{Name: "sudo", Args: []string{"-iu", steps.ServiceUser, "sh", "-c", copyScript(rootStage, names)}},
+		{Name: "sudo", Args: []string{"-iu", user, "sh", "-c", copyScript(rootStage, names)}},
 	} {
 		if _, err := host.Must(ctx, r, c); err != nil {
 			return err
 		}
 	}
-	return r.Interactive(ctx, host.Cmd{Name: "sudo", Args: append([]string{"-iu", steps.ServiceUser, serviceStage + "/flocc-setup"}, args...), Stdin: doc})
+	var in io.Reader
+	if doc != nil {
+		in = bytes.NewReader(doc)
+	}
+	return r.Interactive(ctx, host.Cmd{Name: "sudo", Args: append([]string{"-iu", user, stageFor(user) + "/flocc-setup"}, args...), Stdin: in})
+}
+
+// handoffAll runs the agent phase, then the service phase. The agent phase gets the document
+// without [secrets]: it runs in a login shell whose profile flocc-agent's own sessions can edit,
+// and none of its steps uses a secret.
+func handoffAll(ctx context.Context, r host.Runner, stage string, doc []byte, in *answers.Answers, fromStdin, events bool) error {
+	var agentDoc, serviceDoc []byte
+	if fromStdin {
+		var err error
+		if agentDoc, err = in.Public(); err != nil {
+			return err
+		}
+		serviceDoc = doc
+	}
+	for _, h := range []struct {
+		user, phase string
+		doc         []byte
+	}{{steps.AgentUser, "agent", agentDoc}, {steps.ServiceUser, "service", serviceDoc}} {
+		args := handoffArgs(h.phase, fromStdin)
+		if events {
+			args = append(args, "--events")
+		}
+		if err := handoff(ctx, r, stage, h.user, args, h.doc); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // readAnswers takes the whole document before anything runs: commands started later must find
@@ -150,11 +206,11 @@ func readAnswers(r io.Reader) ([]byte, *answers.Answers, error) {
 }
 
 func run(args []string) int {
-	if _, ok := cardinalPhase(args); ok {
-		return runCardinal(args, os.Stdin, os.Stdout, os.Stderr)
+	if _, ok := rootPhase(args); ok {
+		return runRootPhase(args, os.Stdout, os.Stderr)
 	}
 	fs := flag.NewFlagSet("flocc-setup", flag.ContinueOnError)
-	phase := fs.String("phase", "root", "root, service or login; the root phase hands off to the service phase itself")
+	phase := fs.String("phase", "root", "root, agent, service or login; the root phase hands off to the agent and service phases itself")
 	answersIn := fs.String("answers", "", `"-" reads the answers document, secrets included, from stdin and runs without a terminal`)
 	email := fs.String("email", "", "login phase: the claude.ai account to sign in as")
 	events := fs.Bool("events", false, "with --answers -: write flocc-event lines for the desktop to draw")
@@ -192,7 +248,11 @@ func run(args []string) int {
 	}
 	stage := filepath.Dir(exe)
 	if *phase == "root" {
-		if err := checkStage(stage); err != nil {
+		err := checkStage(stage)
+		if err == nil {
+			err = checkStageDir(stage, os.Getenv("SUDO_UID"))
+		}
+		if err != nil {
 			fmt.Fprintln(stderr, "flocc-setup:", err)
 			return 2
 		}
@@ -220,16 +280,14 @@ func run(args []string) int {
 		env.Home, _ = os.UserHomeDir()
 	}
 	if *phase == "service" {
-		if stage == serviceStage {
+		if stage == stageFor(steps.ServiceUser) {
 			if err := removeStagedAnswers(stage); err != nil {
 				fmt.Fprintln(stderr, "flocc-setup: could not remove a leftover answers file from", stage+":", err)
 			}
 		}
 		env.AnswersPath = savedAnswersPath(env.Home)
 		if saved, err := answers.Load(env.AnswersPath); err == nil {
-			if err := a.OverlaySaved(saved); err != nil {
-				fmt.Fprintln(stderr, "flocc-setup: the saved ntfy topic in", env.AnswersPath, "is invalid and will be asked again:", err)
-			}
+			_ = a.Overlay(saved)
 		}
 	}
 	if err := a.Overlay(in); err != nil {
@@ -239,7 +297,6 @@ func run(args []string) int {
 	// Overlay keeps a saved table when the shipped one is absent; a ship is the whole host file,
 	// so a table removed there must go from the host too.
 	if fromStdin {
-		a.Permissions = in.Permissions
 		a.Playwright = in.Playwright
 		a.Tools = in.Tools
 		a.Docker = in.Docker
@@ -264,6 +321,9 @@ func run(args []string) int {
 		return finish(ctx, env, err, true, stdout, stderr, logPath)
 	}
 	list := steps.ServiceSteps()
+	if *phase == "agent" {
+		list = steps.AgentSteps()
+	}
 	if *phase == "root" {
 		if env.Mode == steps.Loop {
 			if ok, err := u.Confirm(loopWarning, false); err != nil || !ok {
@@ -277,18 +337,10 @@ func run(args []string) int {
 		steps.ForgetHolds(ctx, env)
 	}
 	if err == nil && *phase == "root" {
-		var piped io.Reader
-		if fromStdin {
-			piped = bytes.NewReader(doc)
-		}
-		args := handoffArgs(fromStdin)
-		if *events {
-			args = append(args, "--events")
-		}
-		err = handoff(ctx, runner, stage, args, piped)
+		err = handoffAll(ctx, runner, stage, doc, in, fromStdin, *events)
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return exit.ExitCode() // the service phase already reported its error
+			return exit.ExitCode() // the agent or service phase already reported its error
 		}
 	}
 	return finish(ctx, env, err, *phase == "service", stdout, stderr, logPath)

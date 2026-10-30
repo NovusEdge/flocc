@@ -122,7 +122,7 @@ def test_a_pr_whose_issue_is_unlabelled_or_parked_is_left_alone(pr):
 
 def test_the_session_cap_holds_a_rebase(pr):
     for key in ("NF-7", "NF-8"):
-        ledger.insert_claim(pr.con, make(key, ("z/**",), repo="web"))
+        ledger.insert_claim(pr.con, make(key, repo="web"))
     window = {"used_percentage": 20.0, "resets_at": 4_000_000_000}
     write_status(
         state_dir(pr.cfg, "NF-1"), {"rate_limits": {"five_hour": window, "seven_day": window}}

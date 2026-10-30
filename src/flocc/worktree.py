@@ -11,7 +11,7 @@ from flocc.config import TRAILER, RepoConfig
 
 _LISTED = 20
 _DRAIN_S = 5
-_OWN_HOOKS = ("pre-commit", "commit-msg")
+_OWN_HOOKS = ("commit-msg",)
 
 
 # A SubprocessError so the poller's prepare-failure handling covers it.
@@ -26,6 +26,29 @@ class BranchDiverged(subprocess.SubprocessError):
 def git(*args: str, cwd: Path) -> str:
     out = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
     return out.stdout.strip()
+
+
+def agent_ref(key: str) -> str:
+    return f"refs/flocc/{key}"
+
+
+def fetch_agent_branch(repo_path: Path, worktree: Path, branch: str, key: str) -> str:
+    """Copies branch from flocc-agent's worktree into repo_path's agent_ref(key); its head."""
+    ref = agent_ref(key)
+    # upload-pack is built to serve an untrusted repository (git-upload-pack(1), SECURITY), and
+    # without safe.directory git refuses flocc-agent's repo as dubious ownership. flocc runs no
+    # other git command inside a repo flocc-agent owns.
+    git(
+        "-c",
+        "safe.directory=*",
+        "fetch",
+        "-q",
+        "--no-tags",
+        str(worktree),
+        f"+refs/heads/{branch}:{ref}",
+        cwd=repo_path,
+    )
+    return git("rev-parse", ref, cwd=repo_path)
 
 
 def run_bounded(
@@ -269,9 +292,7 @@ def has_uncommitted_changes(path: Path) -> bool:
     return bool(_status(path))
 
 
-def install_hook(
-    worktree: Path, hooks_dir: Path, exe: str, config_path: Path, trailer: bool = True
-) -> None:
+def install_hook(worktree: Path, hooks_dir: Path, exe: str, trailer: bool = True) -> None:
     # The repo's own hooks dir, read with this worktree's core.hooksPath unset so the generated
     # hook can chain to it. A kept worktree still points at the previous install, and chaining to
     # that would make the hook exec itself forever. Exit 5 (not set) and the error before
@@ -297,13 +318,6 @@ def install_hook(
             stub = hooks_dir / src.name
             stub.write_text(f'#!/bin/sh\nexec {shlex.quote(str(src))} "$@"\n')
             stub.chmod(0o755)
-    hook = hooks_dir / "pre-commit"
-    hook.write_text(
-        "#!/bin/sh\nset -e\n"
-        f'FLOCC_CONFIG="{config_path}" "{exe}" hook pre-commit\n'
-        f'if [ -x "{original}/pre-commit" ]; then exec "{original}/pre-commit" "$@"; fi\n'
-    )
-    hook.chmod(0o755)
     msg_hook = hooks_dir / "commit-msg"
     msg_hook.write_text(
         "#!/bin/sh\nset -e\n"
@@ -326,11 +340,13 @@ def contains(worktree: Path, sha: str, ref: str = "HEAD") -> bool:
     return out.returncode == 0
 
 
-def recover_tests(worktree: Path, base_branch: str, key: str) -> tuple[str, str] | None:
-    """(base_sha, tester_sha) of the tester's commits on the worktree's HEAD, or None."""
+def recover_tests(
+    worktree: Path, base_branch: str, key: str, head: str = "HEAD"
+) -> tuple[str, str] | None:
+    """(base_sha, tester_sha) of the tester's commits on `head` in the repo, or None."""
     # Exits 1 when the branches share no history; git() would raise and crash every poll of the issue.
     base = subprocess.run(
-        ["git", "merge-base", f"origin/{base_branch}", "HEAD"],
+        ["git", "merge-base", f"origin/{base_branch}", head],
         cwd=worktree,
         capture_output=True,
         text=True,
@@ -344,7 +360,7 @@ def recover_tests(worktree: Path, base_branch: str, key: str) -> tuple[str, str]
         "--reverse",
         "--first-parent",
         "--format=%H%x1f%(trailers:only,unfold)%x1e",
-        f"{fork}..HEAD",
+        f"{fork}..{head}",
         cwd=worktree,
     )
     wanted = f"{TRAILER}: {key} test"

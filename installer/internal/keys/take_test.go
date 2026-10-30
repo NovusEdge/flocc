@@ -97,35 +97,3 @@ func TestTakeAsksBeforeCheckingAgainAfterAnOutageAndSkipsOnNo(t *testing.T) {
 		t.Fatalf("%v %+v", f.store.m, f.rec.Rows())
 	}
 }
-
-func TestTakeStoresANewNtfyTopicAndAChangedOneNeedsAShip(t *testing.T) {
-	f := newFixture(t, nil, nil, &script{})
-	vals := map[Slot]Taken{Ntfy: {" my-topic ", ".env"}}
-	changed, err := Take(context.Background(), f.env, Mapped{}, vals, fillOrder)
-	if err != nil || len(changed) != 0 || f.store.m[Ntfy] != "my-topic" {
-		t.Fatal(changed, err, f.store.m)
-	}
-	f.env.UI.Close()
-	if len(f.rec.Todos) != 0 {
-		t.Fatal(f.rec.Todos)
-	}
-	f = newFixture(t, nil, nil, &script{})
-	f.store.m[Ntfy] = "my-topic"
-	vals[Ntfy] = Taken{"other-topic", ".env"}
-	changed, err = Take(context.Background(), f.env, Mapped{}, vals, fillOrder)
-	if err != nil || len(changed) != 0 || f.store.m[Ntfy] != "other-topic" {
-		t.Fatal(changed, err, f.store.m)
-	}
-	f.env.UI.Close()
-	if len(f.rec.Todos) != 1 || !strings.Contains(f.rec.Todos[0], "flocc ship -H <host>") || strings.Contains(f.rec.Todos[0], "other-topic") {
-		t.Fatalf("%q", f.rec.Todos)
-	}
-}
-
-func TestTakeRefusesAnNtfyTopicWithSpaces(t *testing.T) {
-	f := newFixture(t, nil, nil, &script{})
-	changed, err := Take(context.Background(), f.env, Mapped{}, map[Slot]Taken{Ntfy: {"a b", ".env"}}, fillOrder)
-	if err != nil || len(changed) != 0 || f.store.m[Ntfy] != "" || f.row("Check ntfy topic from .env").State != ui.Skipped {
-		t.Fatal(changed, err, f.store.m, f.rec.Rows())
-	}
-}

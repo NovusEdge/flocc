@@ -13,9 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
-	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme/themetest"
 )
 
@@ -25,37 +23,23 @@ var fixtureTitles = map[string]Title{
 	"NF-402": {"Trim the activity log", "https://linear.app/x/issue/NF-402"},
 }
 
-func cardRow() ship.CardinalRow {
-	st := steps.CardinalStatus{Unit: "active", SessionAgeS: f64(36000), LastTurnAgeS: f64(480), Login: "full", Tmux: true, Claude: true}
-	return ship.CardinalRow{Saved: saved.Saved{Machine: "zer0-day", User: "cardinal"}, Status: &st}
-}
-
-// goldenModel is the canned fleet with one cardinal install and a title for every key.
+// goldenModel is the canned fleet with a title for every key.
 func goldenModel(t *testing.T, sz [2]int) *Model {
 	t.Helper()
 	m, _ := newModel(t)
 	m.titles = maps.Clone(fixtureTitles)
-	f := canned()
-	f.cards = []ship.CardinalRow{cardRow()}
-	m.Update(f)
+	m.Update(canned())
 	m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
 	return m
 }
 
-func TestTabCyclesHostsCardinalIssues(t *testing.T) {
-	m := goldenModel(t, [2]int{140, 40})
-	for _, want := range []focus{hostsPane, cardinalPane, issuesPane, hostsPane} {
+func TestTabCyclesHostsAndIssues(t *testing.T) {
+	m, _ := newModel(t)
+	m.Update(canned())
+	for _, want := range []focus{hostsPane, issuesPane, hostsPane} {
 		key(m, "tab")
 		if m.focus != want {
 			t.Fatalf("focus %v, want %v", m.focus, want)
-		}
-	}
-	m, _ = newModel(t)
-	m.Update(canned())
-	for _, want := range []focus{hostsPane, issuesPane} {
-		key(m, "tab")
-		if m.focus != want {
-			t.Fatalf("without cardinal rows: focus %v, want %v", m.focus, want)
 		}
 	}
 }
@@ -81,11 +65,6 @@ func TestArrowsMoveOnlyTheFocusedPane(t *testing.T) {
 	key(m, "down")
 	if m.hostSel != 1 || m.sel != 1 {
 		t.Fatalf("hosts focus: sel %d host %d (two hosts, so down twice stops at 1)", m.sel, m.hostSel)
-	}
-	key(m, "tab")
-	key(m, "down")
-	if m.cardSel != 0 {
-		t.Errorf("one install: cardSel %d", m.cardSel)
 	}
 }
 
@@ -213,27 +192,6 @@ func TestAHostThatIsNotStarted(t *testing.T) {
 	}
 }
 
-func TestCardinalPaneRows(t *testing.T) {
-	m := goldenModel(t, [2]int{140, 40})
-	for _, want := range []string{"cardinal", "● active · up 10h", "last turn 8m · login full"} {
-		if !strings.Contains(text(m), want) {
-			t.Errorf("lacks %q:\n%s", want, text(m))
-		}
-	}
-	f := canned()
-	f.at = t0.Add(time.Second)
-	bad := cardRow()
-	bad.Status.Login = "api"
-	f.cards = []ship.CardinalRow{bad, {Saved: saved.Saved{Machine: "second", User: "cardinal"}, Err: "no answer"}}
-	m.Update(f)
-	got := text(m)
-	for _, want := range []string{"cardinal@zer0-day ✗ login i", "cardinal@second ✗ no answer"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("lacks %q:\n%s", want, got)
-		}
-	}
-}
-
 func TestTitlesAskedOncePerKey(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -307,7 +265,7 @@ func TestAttachAndReleaseDimOffTheIssuesPane(t *testing.T) {
 func TestHostileStringsAreSanitised(t *testing.T) {
 	hostile := "\x1b[2J" + strings.Repeat("x", 300)
 	f := canned()
-	f.results[1].Status = report(1, claim("NF-402", "test", "running", 18, 1, 60, hostile))
+	f.results[1].Status = report(1, claim("NF-402", "test", "running", 18, 60, hostile))
 	f.results[0].Host.Name = "flocc\x1b[2J-nimble"
 	for _, sz := range [][2]int{{80, 24}, {140, 40}} {
 		m, _ := newModel(t)

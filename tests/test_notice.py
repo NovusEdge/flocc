@@ -1,0 +1,52 @@
+from flocc import events, ledger
+from flocc.linear import LinearError
+from flocc.notice import Notice, Notifier
+from tests.fakes import ISSUE, FakeLinear
+
+
+def test_a_notice_with_an_issue_is_one_comment_and_no_label(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    linear = FakeLinear()
+    Notifier(con, linear, lambda: 5.0).send(
+        Notice("NF-1:crash", "The session died twice.", "Release it", issue_key="NF-1"), ISSUE
+    )
+    assert linear.comments == ["The session died twice.\nAction: Release it"]
+    assert ledger.pending_digest(con) == []
+
+
+def test_a_notice_without_an_issue_goes_to_the_digest(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    linear = FakeLinear()
+    Notifier(con, linear, lambda: 5.0).send(Notice("claude-login", "Login lapsed."))
+    assert linear.comments == []
+    assert [line for _, _, line in ledger.pending_digest(con)] == ["Login lapsed."]
+
+
+def test_a_notice_with_an_event_writes_it_after_the_comment(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    Notifier(con, FakeLinear(), lambda: 5.0).send(
+        Notice("NF-1:crash", "Died twice.", issue_key="NF-1", event="ended"), ISSUE
+    )
+    [e] = events.unacked(con)
+    assert (e.kind, e.issue_key, e.detail, e.at) == ("ended", "NF-1", "crash: Died twice.", 5.0)
+
+
+def test_no_event_when_the_comment_fails(tmp_path):
+    class Down:
+        def comment(self, issue_id, text):
+            raise LinearError("down")
+
+    con = ledger.connect(tmp_path / "l.sqlite")
+    try:
+        Notifier(con, Down(), lambda: 5.0).send(
+            Notice("NF-1:crash", "Died.", issue_key="NF-1", event="ended"), ISSUE
+        )
+    except LinearError:
+        pass
+    assert events.unacked(con) == []
+
+
+def test_a_notice_without_an_event_writes_none(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    Notifier(con, FakeLinear(), lambda: 5.0).send(Notice("NF-1:prepare", "Failed."), ISSUE)
+    assert events.unacked(con) == []

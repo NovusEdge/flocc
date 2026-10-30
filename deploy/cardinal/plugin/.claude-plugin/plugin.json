@@ -1,0 +1,5 @@
+{
+  "name": "cardinal",
+  "version": "0.1.0",
+  "description": "cardinal: woken by flocc events from the executor VM; triage, status, holds and the daily digest"
+}

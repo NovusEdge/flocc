@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from flocc.agentblock import IssueSettings
 from flocc.config import Config
-from flocc.ledger import Claim, conflicting_claims, in_repo, unshared
+from flocc.ledger import Claim
 from flocc.usage import Usage
 
 STALE_USAGE_S = 15 * 60
@@ -28,7 +28,7 @@ def admit(
 ) -> Decision:
     if free_disk_gb is not None and free_disk_gb < cfg.min_free_disk_gb:
         return Decision(False, f"disk free {free_disk_gb:.1f} GB < min_free_disk_gb")
-    # A claim held on a broken base runs no session; it still holds its paths below.
+    # A claim held on a broken base runs no session.
     running = [c for c in live if c.state == "running" and c.issue_key not in held]
     if len(running) >= cfg.session_cap:
         return Decision(False, f"session cap {cfg.session_cap} reached")
@@ -45,10 +45,4 @@ def admit(
     waiting = [d for d in settings.depends_on if dep_states.get(d) != "completed"]
     if waiting:
         return Decision(False, f"waiting on {', '.join(waiting)}")
-    shared = cfg.repos[repo].shared_paths if repo in cfg.repos else ()
-    paths = unshared(list(settings.paths), shared)
-    clash = conflicting_claims(paths, in_repo(live, repo), exclude=key)
-    if clash:
-        owners = ", ".join(f"{g} ({k})" for g, k in clash.items())
-        return Decision(False, f"paths claimed: {owners}")
     return Decision(True)

@@ -22,13 +22,16 @@ class Runtime:
     claude_exe: str
     config_path: Path
     publish_fn: Callable
-    git_head: Callable[[str], str]
+    # The claim's branch head, fetched from flocc-agent's worktree into the service clone.
+    git_head: Callable[[Claim], str]
     # The PR's diff against its base, and a comment on the PR made with the publish token.
     review_diff: Callable[[Claim], str]
     comment_pr: Callable[[Claim, str, str], None]
     free_disk_gb: Callable[[Path], float] = free_disk_gb
-    # The PR's state and files; None in tests that never reach the A2A step.
+    # The PR's state, head and mergeability; None in tests that never reach the rebase step.
     pr_view: Callable[[Claim, str], dict] | None = None
     # Runs the repo's check on its base branch: (base SHA, failure or None). None skips the
     # base comparison.
     base_check: Callable[[str], tuple[str, Any]] | None = None
+    # The service's side of flocc-agent-run; None in tests that never reach flocc-agent.
+    agent: Any = None

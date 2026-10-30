@@ -7,23 +7,13 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
-from flocc import canary, ledger
-from flocc import grants as grants_mod
+from flocc import agentfs, canary, events, ledger
 from flocc.agentblock import settings_from_json
-from flocc.context import phase_prompt, state_dir
-from flocc.escalation import DEDUPE_S, Escalation, scoped
-from flocc.gate import (
-    ASKED,
-    BACKGROUND,
-    LAUNCH_GRANTS_ENV,
-    clear_idle,
-    clear_question,
-    has_background,
-    run_id,
-    running_agents,
-)
+from flocc.context import agent_dir, phase_prompt, state_dir
+from flocc.idle import BACKGROUND
 from flocc.ledger import Claim
 from flocc.linear import LinearError
+from flocc.notice import Notice
 from flocc.publisher import (
     BASE_CHECKOUT,
     BranchMoved,
@@ -33,22 +23,11 @@ from flocc.publisher import (
     read_amended,
     review_comment,
 )
-from flocc.sessions import (
-    allowed_plugins,
-    claude_argv,
-    clean_env,
-    installed_plugins,
-    session_name,
-    trust_folders,
-)
-from flocc.usage import context_pct, latest_usage, read_status
+from flocc.sequence import ARCHETYPE
+from flocc.sessions import agent_env, allowed_plugins, claude_argv, session_name
+from flocc.usage import latest_usage
 from flocc.worktree import origin_base
 
-HANDOFF_ASK = (
-    "Your context is past {pct:.0f}%. Follow the handoff skill now: write handoff.md in your state"
-    " directory, then run flocc handoff-ready. A fresh session will continue from it."
-)
-_MARKERS = ("done.json", "handoff-ready", "handoff-requested")
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
 BASE_HELD = "base_held"
@@ -57,11 +36,27 @@ REBASE = "rebase"
 REBASE_TRIED = "rebase_tried"
 CHECK_OUTPUT = "check-output.log"
 OWNER_ITEMS = "owner-items.md"
-QUESTION_WAIT_S = 7200
-PANE = "pane.json"
-STALL_ESCALATED = "stall-escalated"
-STALL_LINES = 60
-STALL_TAIL = 12
+POSTED_REVIEW = "review-posted.md"
+LAST_SUMMARY = "last-summary.md"
+TESTER = "tester.json"
+# Why the run last blocked, for flocc run-summary; the notice itself went to the issue.
+BLOCKED = "blocked.md"
+# Service files a session reads, copied into its state directory at every start.
+_HANDOFF = (
+    "context.md",
+    LAST_SUMMARY,
+    TESTER,
+    "review-input.md",
+    "pr.diff",
+    FIX_CONTEXT,
+    CHECK_OUTPUT,
+)
+# A previous session's files that the new one would be taken to have written.
+_CLEAR = ("done.json", "status.json", "idle", BACKGROUND, "review.md")
+_RESTART = (
+    "Your previous session for this step ended before flocc done. The branch holds what it"
+    " committed; check git log and git status, then carry on from there."
+)
 PUBLISH_TRIES = 3
 POST_TRIES = 3
 _VERDICT = re.compile(
@@ -70,6 +65,8 @@ _VERDICT = re.compile(
 
 
 _OWNER_HEADING = re.compile(r"^[\s#*-]*needs the owner", re.IGNORECASE | re.MULTILINE)
+# What follows the heading on its own line when nothing needs the owner: "Needs the owner: none".
+_NOTHING = re.compile(r"[\s:*_.-]*(none|nothing|n/?a)[\s*_.]*", re.IGNORECASE)
 
 
 class LaunchError(RuntimeError):
@@ -77,50 +74,43 @@ class LaunchError(RuntimeError):
 
 
 def _record_usage(rt, key: str, phase: str, event: str) -> None:
-    u = latest_usage(rt.cfg.state_root, rt.now())
+    u = latest_usage(rt.cfg.agent_state_root, rt.now())
     if u is not None:
         ledger.add_usage(rt.con, key, phase, event, u.five_hour_pct, u.weekly_pct, rt.now())
 
 
-def _disabled_plugins(rt) -> tuple[str, ...]:
+def _allowed_plugins(rt) -> tuple[str, ...] | None:
     cfg = rt.cfg
-    listed = cfg.agent_plugins_file or cfg.plugin_dir.parent / "deploy" / "agent-plugins.txt"
-    allowed = allowed_plugins(listed)
-    if allowed is None:
-        return ()
-    return tuple(p for p in installed_plugins(cfg.installed_plugins_file) if p not in allowed)
+    return allowed_plugins(
+        cfg.agent_plugins_file or cfg.plugin_dir.parent / "deploy" / "agent-plugins.txt"
+    )
 
 
-def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | None = None) -> None:
+def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...] = ()) -> None:
     token = rt.cfg.agent_gh_token_file
     if not token.exists() or not token.read_text().strip():
         raise LaunchError(f"{token} is missing or empty; agents get their GitHub token from it")
-    d = state_dir(rt.cfg, claim.issue_key)
-    # Before the deletes below: the outgoing session's status file is the freshest usage reading.
-    _record_usage(rt, claim.issue_key, phase, "start")
-    name = session_name(claim.issue_key, phase)
-    start = claim.started_at if started_at is None else started_at
-    env = clean_env(
+    key = claim.issue_key
+    d = state_dir(rt.cfg, key)
+    # Before the start below: the outgoing session's status file is the freshest usage reading.
+    _record_usage(rt, key, phase, "start")
+    name = session_name(key, phase)
+    agent = agent_dir(rt.cfg, key)
+    env = agent_env(
+        rt.cfg,
         {
-            "FLOCC_STATE": str(d),
-            "FLOCC_CONFIG": str(rt.config_path),
+            "FLOCC_STATE": str(agent),
             "FLOCC_PHASE": phase,
-            # Handoffs and crash relaunches of one phase share its launch budget.
-            "FLOCC_RUN": run_id(phase, start),
             "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
             "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS": "1",
-        }
+        },
     )
     settings = settings_from_json(claim.settings_json)
-    if settings.allow:
-        grants_mod.set_block(d / "grants.json", grants_mod.parse_allow(settings.allow))
-    granted = grants_mod.for_phase(d / "grants.json", phase)
-    env[LAUNCH_GRANTS_ENV] = ",".join(sorted(grants_mod.launch_flags(granted)))
     if phase == "review":
         settings = replace(settings, model=rt.cfg.review_model)
     if settings.effort is None:
         settings = replace(settings, effort=rt.cfg.effort_for(phase))
-    prompt = phase_prompt(phase, claim.issue_key, extra)
+    prompt = phase_prompt(phase, key, extra)
     argv = claude_argv(
         rt.cfg,
         name,
@@ -129,38 +119,49 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", started_at: float | No
         env,
         rt.claude_exe,
         rt.exe,
-        grants=granted,
-        disabled_plugins=_disabled_plugins(rt),
         remote_control=phase in ("impl", "fix"),
     )
-    # After everything above that can raise. The previous session's markers would be taken for
-    # the new one's, and its context reading would ask the new session to hand off at once.
-    markers = {n: (d / n).read_bytes() for n in _MARKERS if (d / n).exists()}
-    for leftover in (*_MARKERS, "status.json", "compacted", PANE, STALL_ESCALATED, BACKGROUND):
-        (d / leftover).unlink(missing_ok=True)
-    clear_question(d)
-    # A new phase or claim starts a new clock; a restart of the same session keeps its credit.
-    if started_at is not None:
-        (d / ASKED).unlink(missing_ok=True)
-    clear_idle(d)
-    # Both keys: for a worktree, trust may be keyed on the main checkout's root instead.
-    repo = rt.cfg.repos.get(claim.repo)
-    trust_folders(rt.cfg.claude_json, [claim.worktree, *([repo.path] if repo else [])])
-    try:
-        rt.sessions.start(name, Path(claim.worktree), argv)
-    except BaseException:
-        # Without its marker the next tick would take the step for a crash instead of repeating
-        # it: a tester rerun on its own commits, or a fix started without the check output.
-        for n, content in markers.items():
-            (d / n).write_bytes(content)
-        raise
+    if claim.tester_sha is not None:
+        (d / TESTER).write_text(
+            json.dumps({"base_sha": claim.base_sha, "tester_sha": claim.tester_sha})
+        )
+    else:
+        (d / TESTER).unlink(missing_ok=True)
+    files = {n: (d / n).read_text() for n in _HANDOFF if (d / n).exists()}
+    rt.sessions.start(
+        name,
+        Path(claim.worktree),
+        argv,
+        state=agent,
+        files=files,
+        clear=[*_CLEAR, *_HANDOFF, *reset],
+        # The worktree is trusted as the session's cwd; trust may also be keyed on its clone.
+        trust=[rt.cfg.agent_home / "src" / claim.repo],
+        plugins=_allowed_plugins(rt),
+    )
 
 
-def _block(rt, claim: Claim, cause: str, summary: str, action: str) -> None:
+def _block(rt, claim: Claim, cause: str, summary: str, action: str, kind: str = "ended") -> None:
     rt.sessions.kill(session_name(claim.issue_key, claim.phase))
-    esc = scoped(Escalation(2, cause, summary, action, waiting=True), claim.issue_key)
-    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
-    ledger.update_claim(rt.con, claim.issue_key, state="blocked")
+    key = claim.issue_key
+    notice = Notice(f"{key}:{cause}", summary, action, issue_key=key, event=kind)
+    d = state_dir(rt.cfg, key)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / BLOCKED).write_text(f"{cause}\n\n{notice.text()}\n")
+    rt.notifier.send(notice, rt.linear.issue(key))
+    ledger.update_claim(rt.con, key, state="blocked")
+
+
+def _end_done(rt, claim: Claim, *, emit: bool = True, **values) -> None:
+    if emit:
+        url = _pr_url(rt, claim)
+        detail = f"done: PR {url}" if url != "unknown" else "done, no PR"
+        # Before the claim update: a tick that dies between the two finishes the claim again on
+        # the next tick, and a duplicate event is acked away, where a lost one is never seen.
+        events.emit(
+            rt.con, "ended", rt.now(), issue_key=claim.issue_key, repo=claim.repo, detail=detail
+        )
+    ledger.update_claim(rt.con, claim.issue_key, state="done", **values)
 
 
 def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
@@ -200,17 +201,17 @@ def _relaunch(rt, claim: Claim) -> None:
     # The check output reaches a fix session only through its prompt; a restart needs it again.
     path = state_dir(rt.cfg, claim.issue_key) / FIX_CONTEXT
     extra = path.read_text() if claim.phase == "fix" and path.exists() else ""
-    launch(rt, claim, claim.phase, extra=extra)
+    launch(rt, claim, claim.phase, extra=f"{_RESTART}\n\n{extra}".strip())
 
 
 def _review_skipped(rt, claim: Claim, why: str) -> None:
-    # A review is advice on an open PR; losing it must neither block the claim nor page anyone.
+    # A review is advice on an open PR; losing it must not block the claim.
     key = claim.issue_key
     url = _pr_url(rt, claim)
     rt.sessions.kill(session_name(key, "review"))
     ledger.add_digest(rt.con, key, f"review skipped, {why}; PR: {url}", rt.now())
     _post_owner_items(rt, claim)
-    ledger.update_claim(rt.con, key, state="done")
+    _end_done(rt, claim)
 
 
 def _pr_url(rt, claim: Claim) -> str:
@@ -219,7 +220,7 @@ def _pr_url(rt, claim: Claim) -> str:
 
 
 def _over_usage_limit(rt) -> bool:
-    usage = latest_usage(rt.cfg.state_root, rt.now())
+    usage = latest_usage(rt.cfg.agent_state_root, rt.now())
     return usage is not None and (
         usage.five_hour_pct >= rt.cfg.five_hour_max_pct or usage.weekly_pct >= rt.cfg.weekly_max_pct
     )
@@ -233,40 +234,41 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
         (d / "pr-url").write_text(url)
         ledger.add_digest(rt.con, key, f"review skipped, usage over the limit; PR: {url}", rt.now())
         _post_owner_items(rt, claim)
-        ledger.update_claim(rt.con, key, state="done")
+        _end_done(rt, claim)
         return
     try:
         (d / "pr-url").write_text(url)
         (d / "pr.diff").write_text(rt.review_diff(claim) + "\n")
         earlier = ""
-        if ledger.meta_get(rt.con, f"review_fix:{key}") and (d / "review.md").exists():
+        posted = d / POSTED_REVIEW
+        if ledger.meta_get(rt.con, f"review_fix:{key}") and posted.exists():
             earlier = (
                 "\n## Your earlier review\n\nA fix round followed it. Judge the diff against these"
-                f" findings.\n\n{(d / 'review.md').read_text().strip()}\n"
+                f" findings.\n\n{posted.read_text().strip()}\n"
             )
-        (d / "review.md").unlink(missing_ok=True)
         (d / "review-input.md").write_text(
-            f"# Review {key}: {title}\n\nPR: {url}\n\nThe diff is in {d / 'pr.diff'}.\n\n"
+            f"# Review {key}: {title}\n\nPR: {url}\n\n"
+            f"The diff is in {agent_dir(rt.cfg, key) / 'pr.diff'}.\n\n"
             f"## Issue description, including the acceptance criteria\n\n{description}\n"
-            f"{amended_section(read_amended(d))}\n{earlier}"
+            f"{amended_section(read_amended(agent_dir(rt.cfg, key)))}\n{earlier}"
         )
-        launch(rt, claim, "review", started_at=start)
+        launch(rt, claim, "review")
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
         print(f"{key}: review not started: {exc}", file=sys.stderr)
         ledger.add_digest(rt.con, key, f"review not started ({exc}); PR: {url}", rt.now())
         _post_owner_items(rt, claim)
-        ledger.update_claim(rt.con, key, state="done")
+        _end_done(rt, claim)
         return
     ledger.update_claim(rt.con, key, phase="review", restarts=0, started_at=start)
 
 
 def _finish_review(rt, claim: Claim) -> None:
     key = claim.issue_key
-    review = state_dir(rt.cfg, key) / "review.md"
-    text = review.read_text() if review.exists() else ""
+    text = agentfs.read_text(agent_dir(rt.cfg, key), "review.md") or ""
     if not text.strip():
         _review_skipped(rt, claim, "the session finished without review.md")
         return
+    (state_dir(rt.cfg, key) / POSTED_REVIEW).write_text(text)
     url = _pr_url(rt, claim)
     fixed = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
     counter = f"review_post_failures:{key}"
@@ -298,7 +300,7 @@ def _finish_review(rt, claim: Claim) -> None:
     if owner:
         line += f"\n\n{owner}"
     _comment_or_digest(rt, claim, line)
-    ledger.update_claim(rt.con, key, state="done")
+    _end_done(rt, claim)
 
 
 def _comment_or_digest(rt, claim: Claim, line: str) -> None:
@@ -335,16 +337,12 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     start = rt.now()
     (d / OWNER_ITEMS).unlink(missing_ok=True)
     (d / FIX_CONTEXT).write_text(extra)
-    # The review's done.json goes first: left in place, a tick that dies before the launch would
-    # read it as the fix finishing and publish with no fix. Dying here instead relaunches the
-    # review, which costs a session but loses nothing.
-    (d / "done.json").unlink(missing_ok=True)
     # Both before the launch: a tick that dies after the session starts must find the claim in
     # the fix phase, not in review where it would start a reviewer beside the live fix.
     ledger.meta_set(rt.con, f"review_fix:{key}", "1")
     ledger.update_claim(rt.con, key, phase="fix", fix_attempts=0, restarts=0, started_at=start)
     try:
-        launch(rt, claim, "fix", extra=extra, started_at=start)
+        launch(rt, claim, "fix", extra=extra)
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
         print(f"{key}: review fix not started: {exc}", file=sys.stderr)
         ledger.add_digest(rt.con, key, f"review fix not started ({exc})", rt.now())
@@ -374,8 +372,6 @@ def start_rebase(rt, claim: Claim, base_sha: str) -> None:
     d = state_dir(rt.cfg, key)
     start = rt.now()
     (d / FIX_CONTEXT).write_text(extra)
-    # A stale done.json would be read as this session finishing.
-    (d / "done.json").unlink(missing_ok=True)
     # Before the launch, like the review fix: a tick that dies after the session starts must find
     # the claim running in the fix phase, with its publish reusing the open PR.
     ledger.meta_set(rt.con, f"{REBASE}:{key}", "1")
@@ -384,11 +380,11 @@ def start_rebase(rt, claim: Claim, base_sha: str) -> None:
         rt.con, key, state="running", phase="fix", fix_attempts=0, restarts=0, started_at=start
     )
     try:
-        launch(rt, claim, "fix", extra=extra, started_at=start)
+        launch(rt, claim, "fix", extra=extra)
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
         print(f"{key}: rebase not started: {exc}", file=sys.stderr)
         cause = f"{key}:rebase-start"
-        if not ledger.alert_seen(rt.con, cause, DEDUPE_S, rt.now()):
+        if not ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
             ledger.add_digest(rt.con, key, f"rebase not started ({exc})", rt.now())
             ledger.record_alert(rt.con, cause, 3, key, rt.now())
         ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
@@ -427,8 +423,28 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     if claim.phase == "review":
         _finish_review(rt, claim)
         return
+    review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
+    rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
+    found = _OWNER_HEADING.search(summary)
+    if found:
+        rest = summary[found.end() :]
+        # A heading with a list under it is a real request; "none" or nothing at all is filler.
+        if not rest.strip() or _NOTHING.fullmatch((rest.splitlines() or [""])[0]):
+            found = None
+    # A review fixer's owner items ride to the final comment instead: the PR is open and a
+    # second review follows.
+    if found and not review_fix and not rebasing:
+        _block(
+            rt,
+            claim,
+            "needs-owner",
+            f"The {ARCHETYPE[claim.phase]} needs you:\n{summary[found.start() :].strip()}"[:3000],
+            "Reply on this issue, then move it back to Todo; the rerun continues on the kept"
+            " branch",
+        )
+        return
     if claim.phase == "test":
-        head = rt.git_head(claim.worktree)
+        head = rt.git_head(claim)
         if head == claim.base_sha:
             _block(
                 rt,
@@ -441,19 +457,12 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         if claim.base_sha is not None:
             ledger.remember_tests(rt.con, key, claim.base_sha, head)
         start = rt.now()
-        launch(rt, claim, "impl", started_at=start)
+        launch(rt, replace(claim, tester_sha=head), "impl")
         ledger.update_claim(
             rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=start
         )
         return
-    review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
-    rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
-    if (
-        claim.phase == "fix"
-        and review_fix
-        and not rebasing
-        and (found := _OWNER_HEADING.search(summary))
-    ):
+    if claim.phase == "fix" and review_fix and not rebasing and found:
         # Kept apart from later check-fix summaries, which would overwrite it.
         (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[found.start() :].lstrip())
     issue = rt.linear.issue(key)
@@ -477,7 +486,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         owner = _owner_items(rt, claim)
         _comment_or_digest(rt, claim, f"{line}\n\n{owner}" if owner else line)
         ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
-        ledger.update_claim(rt.con, key, state="done")
+        _end_done(rt, claim, emit=not rebasing)
     elif result.status == "opened":
         if rebasing:
             base = rt.cfg.repos[claim.repo].base_branch
@@ -500,9 +509,12 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         if rebasing:
             # A merge adds no behaviour for a reviewer to judge, and the earlier review stands.
             ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
-            ledger.update_claim(rt.con, key, state="done", phase="review")
-        else:
+            _end_done(rt, claim, emit=False, phase="review")
+        elif "reviewer" in claim.sequence:
             _start_review(rt, claim, issue.title, issue.description, result.url)
+        else:
+            (state_dir(rt.cfg, key) / "pr-url").write_text(result.url)
+            _end_done(rt, claim)
     elif (
         result.status == "check_failed"
         and claim.fix_attempts > 0
@@ -525,9 +537,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             return
         extra = f"The check failed with:\n\n{result.detail}"
         if result.log:
-            log = state_dir(rt.cfg, key) / CHECK_OUTPUT
-            log.write_text(result.log)
-            extra += f"\n\nThis is an excerpt; the full output is in {log}."
+            (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
+            full = agent_dir(rt.cfg, key) / CHECK_OUTPUT
+            extra += f"\n\nThis is an excerpt; the full output is in {full}."
         if claim.fix_attempts == 0 and (note := _base_moved_note(rt, claim, result.detail)):
             extra = f"{note}\n\n{extra}"
         context = state_dir(rt.cfg, key) / FIX_CONTEXT
@@ -538,7 +550,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         context.write_text(extra)
         (state_dir(rt.cfg, key) / FAILURE_HASH).write_text(_digest(result.detail))
         start = rt.now()
-        launch(rt, claim, "fix", extra=extra, started_at=start)
+        launch(rt, claim, "fix", extra=extra)
         ledger.update_claim(
             rt.con,
             key,
@@ -557,6 +569,7 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             "check-failed",
             f"The check still fails after {rounds}:\n{result.detail}",
             f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
+            kind="cap",
         )
     else:
         _block(
@@ -568,13 +581,6 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             f" flocc release --keep-worktree {key}. If it is right, run"
             f" flocc release --accept-tests {key}",
         )
-
-
-def _asked_seconds(d: Path) -> float:
-    try:
-        return float((d / ASKED).read_text())
-    except (OSError, ValueError):
-        return 0.0
 
 
 _RUN_NOISE = re.compile(
@@ -687,150 +693,75 @@ def _base_moved_note(rt, claim: Claim, detail: str) -> str:
     )
 
 
-def _check_question(rt, claim: Claim, d: Path, name: str) -> None:
-    asking = d / "asking"
-    if not asking.exists() or (d / "asking-escalated").exists():
-        return
+def _idle_message(agent: Path) -> str | None:
+    """The last words of a session that stopped twice without flocc done; None when it did not."""
+    raw = agentfs.read_text(agent, "idle")
+    if raw is None:
+        return None
     try:
-        q = json.loads(asking.read_text())
-        at, text = float(q["at"]), str(q.get("question", ""))
-    except (OSError, ValueError, KeyError, TypeError):
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    return str(data.get("message", "")) if isinstance(data, dict) else ""
+
+
+def _stopped(rt, claim: Claim, name: str, message: str) -> None:
+    if claim.phase == "review":
+        _review_skipped(rt, claim, f"the reviewer stopped without flocc done ({name})")
         return
-    if rt.now() - at < QUESTION_WAIT_S:
-        return
-    if claim.phase in ("impl", "fix"):
-        where = f"in the Claude app (Remote Control session {name})"
-    else:
-        where = f"in its pane on the host (tmux -L flocc attach -t {name})"
-    esc = scoped(
-        Escalation(
-            2,
-            "question",
-            f"Unanswered question in session {name}: {text}",
-            f"Answer it {where};"
-            " a reply on this issue is delivered after the question is answered.",
-            waiting=True,
-        ),
-        claim.issue_key,
+    _block(
+        rt,
+        claim,
+        "idle",
+        f"{name} stopped twice without running flocc done. Its last words:\n{message or '(none)'}"[
+            :3000
+        ],
+        "Reply on this issue with what it needs, then move the issue back to Todo; the rerun"
+        " continues on the kept branch",
     )
-    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
-    (d / "asking-escalated").touch()
 
 
-def _check_idle(rt, claim: Claim, d: Path, name: str) -> None:
-    idle = d / "idle"
-    if not idle.exists() or (d / "asking").exists():
-        return
-    try:
-        raw = json.loads(idle.read_text())
-        at, message = float(raw["at"]), str(raw.get("message", ""))
-        waiting = raw.get("waiting_on_owner") is True
-    except (OSError, ValueError, KeyError, TypeError):
-        return
-    escalated = d / "idle-escalated"
-    if waiting or (escalated.exists() and escalated.read_text() == str(at)):
-        return
-    # Hooks remove `idle` when the session acts again, so one that is left was written by the
-    # last Stop. status.json is no wake signal: the status line also rewrites it on cache expiry
-    # and rate-limit resets, and goes quiet while the session waits on background agents.
-    if rt.now() - at < rt.cfg.idle_escalate_s:
-        return
-    if running_agents(d, run_id(claim.phase, claim.started_at), claim.phase):
-        return
-    if has_background(d):
-        return
-    minutes = int((rt.now() - at) / 60)
-    esc = scoped(
-        Escalation(
-            2,
-            "idle",
-            f"{name} has been idle for {minutes} min without finishing:"
-            f" {message or 'no last message'}",
-            "Reply on this issue to steer it, or release it with"
-            f" flocc release --keep-worktree {claim.issue_key}",
-            waiting=True,
-        ),
-        claim.issue_key,
-    )
-    rt.notifier.send(esc, rt.linear.issue(claim.issue_key), None)
-    escalated.write_text(str(at))
-
-
-def _check_stall(rt, claim: Claim, d: Path, name: str) -> None:
-    # A session mid-turn redraws its pane every second (spinner, elapsed time, streamed output),
-    # so a pane that stays the same across ticks is waiting on a dialog no hook reports. Ended
-    # turns and open questions have their own checks. flocc's status line is left out: it
-    # rewrites on cache expiry and rate-limit resets while the session sits still. Background
-    # agents' tool calls clear `idle`, and a turn cut off by a usage limit writes no `idle` and
-    # sits still until the reset, so both are left alone too.
-    if (d / "idle").exists() or (d / "asking").exists():
-        return
-    if running_agents(d, run_id(claim.phase, claim.started_at), claim.phase):
-        return
-    u = latest_usage(rt.cfg.state_root, rt.now())
-    if u is not None and max(u.five_hour_pct, u.weekly_pct) >= 100:
-        return
-    own = f"{claim.issue_key} · ctx"
-    rows = [
-        r
-        for r in rt.sessions.capture(name, STALL_LINES).splitlines()
-        if r.strip() and not r.strip().startswith(own)
-    ]
-    if not rows:
-        return
-    digest = hashlib.sha256("\n".join(rows).encode()).hexdigest()
-    pane = d / PANE
-    try:
-        seen = json.loads(pane.read_text())
-        same, since = seen["hash"] == digest, float(seen["since"])
-    except (OSError, ValueError, KeyError, TypeError):
-        same, since = False, rt.now()
-    if not same:
-        pane.write_text(json.dumps({"hash": digest, "since": rt.now()}))
-        return
-    escalated = d / STALL_ESCALATED
-    if rt.now() - since < rt.cfg.stall_escalate_s or (
-        escalated.exists() and escalated.read_text() == str(since)
-    ):
-        return
-    tail = "\n".join(
-        "".join(c if c.isprintable() else " " for c in r).rstrip() for r in rows[-STALL_TAIL:]
-    )
-    minutes = int((rt.now() - since) / 60)
+def _timed_out(rt, claim: Claim, name: str) -> None:
     key = claim.issue_key
-    esc = scoped(
-        Escalation(
-            2,
-            "stalled",
-            f"{name} has shown the same screen for {minutes} min in the middle of a turn,"
-            f" most likely a dialog waiting for an answer:\n```\n{tail}\n```",
-            f"See it with flocc peek {key} and answer with flocc press {key} <keys>"
-            f" (e.g. flocc press {key} Down Enter), or release it with"
-            f" flocc release --keep-worktree {key}",
-            waiting=True,
-        ),
-        key,
+    rt.sessions.kill(name)
+    line = f"stopped at the wall-clock limit ({name}); rerun with flocc release {key}"
+    ledger.add_digest(rt.con, key, line, rt.now())
+    _record_usage(rt, key, claim.phase, "end")
+    # Before the state change: a duplicate is acked away, a lost event is never seen.
+    events.emit(
+        rt.con, "ended", rt.now(), issue_key=key, repo=claim.repo, detail=f"timed out: {line}"
     )
-    rt.notifier.send(esc, rt.linear.issue(key), None)
-    escalated.write_text(str(since))
+    ledger.update_claim(rt.con, key, state="timed_out")
+    try:
+        rt.linear.comment(claim.issue_id, f"The {ARCHETYPE[claim.phase]} {line}.")
+    except LinearError as exc:
+        print(f"{key}: timeout comment not posted: {exc}", file=sys.stderr)
 
 
 def supervise(rt, claim: Claim) -> None:
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
     name = session_name(key, claim.phase)
-    done = d / "done.json"
-    if done.exists():
+    agent = agent_dir(rt.cfg, key)
+    raw_done = agentfs.read_text(agent, "done.json")
+    if raw_done is not None:
         try:
-            summary = json.loads(done.read_text()).get("summary", "")
-        except ValueError:  # still being written; the next tick reads it whole
+            data = json.loads(raw_done)
+            summary = str(data.get("summary", ""))
+            # flocc cannot delete in the agent's directory, so a previous session's file can
+            # outlive it; started_at is set before every launch.
+            stale = float(data.get("at", claim.started_at)) < claim.started_at
+        except (ValueError, TypeError, AttributeError):
+            # Still being written; the next tick reads it whole.
             return
-        rt.sessions.kill(name)
-        _finish_phase(rt, claim, summary)
-        return
-    if (d / "handoff-ready").exists():
-        rt.sessions.kill(name)
-        _relaunch(rt, claim)
+        if not stale:
+            rt.sessions.kill(name)
+            if claim.phase != "review":
+                (d / LAST_SUMMARY).write_text(summary)
+            _finish_phase(rt, claim, summary)
+            return
+    if (message := _idle_message(agent)) is not None:
+        _stopped(rt, claim, name, message)
         return
     if not rt.sessions.alive(name):
         if claim.restarts >= 1 and claim.phase == "review":
@@ -848,46 +779,10 @@ def supervise(rt, claim: Claim) -> None:
         _relaunch(rt, claim)
         ledger.update_claim(rt.con, key, restarts=claim.restarts + 1)
         return
-    elapsed = rt.now() - claim.started_at
-    if claim.phase == "review":
-        limit, held = rt.cfg.review_wall_clock_s, False
-    else:
-        limit = claim.wall_clock_s + _asked_seconds(d)
-        # A session waiting on an answer burns no tokens. The owner is paged QUESTION_WAIT_S after
-        # the question and gets as long again to answer; measured from the limit instead, a
-        # question asked near it would be paged and killed in the same tick. A torn marker holds
-        # nothing, or every tick would read it as a fresh question.
-        held = False
-        if (d / "asking").exists():
-            try:
-                asked_at = float(json.loads((d / "asking").read_text())["at"])
-            except (OSError, ValueError, KeyError, TypeError):
-                asked_at = float("-inf")
-            held = rt.now() - asked_at <= 2 * QUESTION_WAIT_S
-    if elapsed > limit and not held:
+    limit = rt.cfg.review_wall_clock_s if claim.phase == "review" else claim.wall_clock_s
+    if rt.now() - claim.started_at > limit:
         if claim.phase == "review":
             _record_usage(rt, key, claim.phase, "end")
             _review_skipped(rt, claim, f"stopped at the wall-clock limit ({name})")
             return
-        rt.sessions.kill(name)
-        line = f"stopped at the wall-clock limit ({name}); rerun with flocc release {key}"
-        ledger.add_digest(rt.con, key, line, rt.now())
-        _record_usage(rt, key, claim.phase, "end")
-        ledger.update_claim(rt.con, key, state="timed_out")
-        return
-    pct = context_pct(read_status(d) or {})
-    requested = d / "handoff-requested"
-    # One compaction first: the handoff applies only once the session has compacted. Not while a
-    # question is open: the keystrokes could select an option in its dialog.
-    if (
-        not (d / "asking").exists()
-        and pct is not None
-        and pct >= rt.cfg.context_restart_pct
-        and (d / "compacted").exists()
-        and not requested.exists()
-    ):
-        rt.sessions.send(name, HANDOFF_ASK.format(pct=pct))
-        requested.touch()
-    _check_question(rt, claim, d, name)
-    _check_idle(rt, claim, d, name)
-    _check_stall(rt, claim, d, name)
+        _timed_out(rt, claim, name)

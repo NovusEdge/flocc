@@ -61,12 +61,12 @@ func TestOpenKeepsAnExistingSecretsFile(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".config/flocc/secrets.toml")
 	os.MkdirAll(filepath.Dir(path), 0o700)
-	os.WriteFile(path, []byte("ntfy_topic = 'flocc-x'\n"), 0o600)
+	os.WriteFile(path, []byte("linear_key = 'flocc-x'\n"), 0o600)
 	s := Open(home, &bytes.Buffer{})
 	if s.Where() != path {
 		t.Fatal(s.Where())
 	}
-	if v, _ := s.Get(Ntfy); v != "flocc-x" {
+	if v, _ := s.Get(Linear); v != "flocc-x" {
 		t.Fatal(v)
 	}
 }
@@ -75,7 +75,7 @@ func TestOpenTightensALooseSecretsFile(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".config/flocc/secrets.toml")
 	os.MkdirAll(filepath.Dir(path), 0o700)
-	os.WriteFile(path, []byte("ntfy_topic = 'flocc-x'\n"), 0o644)
+	os.WriteFile(path, []byte("linear_key = 'flocc-x'\n"), 0o644)
 	os.Chmod(path, 0o644)
 	var notes bytes.Buffer
 	Open(home, &notes)

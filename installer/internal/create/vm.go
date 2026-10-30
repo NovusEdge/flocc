@@ -18,15 +18,22 @@ const (
 )
 
 type instance struct {
-	Status string            `json:"status"`
-	Config map[string]string `json:"config"`
+	Status          string                       `json:"status"`
+	Config          map[string]string            `json:"config"`
+	Devices         map[string]map[string]string `json:"devices"`
+	ExpandedDevices map[string]map[string]string `json:"expanded_devices"`
 }
 
-func (e *Env) instance(ctx context.Context) (instance, bool) {
+func (e *Env) instanceOf(ctx context.Context, name string) (instance, bool) {
 	var in instance
-	raw := e.out(ctx, e.incus("query", "/1.0/instances/"+e.Spec.Name))
-	return in, raw != "" && json.Unmarshal([]byte(raw), &in) == nil
+	raw := e.out(ctx, e.incus("query", "/1.0/instances/"+name))
+	if raw == "" || json.Unmarshal([]byte(raw), &in) != nil {
+		return instance{}, false
+	}
+	return in, true
 }
+
+func (e *Env) instance(ctx context.Context) (instance, bool) { return e.instanceOf(ctx, e.Spec.Name) }
 
 // Network is an instance state's network map as incus reports it.
 type Network map[string]struct {
@@ -47,15 +54,17 @@ func (n Network) FirstIPv4(subnet *net.IPNet) string {
 	return ""
 }
 
-func (e *Env) ipv4(ctx context.Context) string {
+func (e *Env) network(ctx context.Context, name string) Network {
 	var st struct {
 		Network Network `json:"network"`
 	}
-	if json.Unmarshal([]byte(e.out(ctx, e.incus("query", "/1.0/instances/"+e.Spec.Name+"/state"))), &st) != nil {
-		return ""
+	if json.Unmarshal([]byte(e.out(ctx, e.incus("query", "/1.0/instances/"+name+"/state"))), &st) != nil {
+		return nil
 	}
-	return st.Network.FirstIPv4(nil)
+	return st.Network
 }
+
+func (e *Env) ipv4(ctx context.Context) string { return e.network(ctx, e.Spec.Name).FirstIPv4(nil) }
 
 type VM struct{}
 

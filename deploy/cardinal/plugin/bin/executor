@@ -1,0 +1,10 @@
+#!/bin/sh
+# cardinal's one way to the executor VM. The forced command there splits the line with shlex,
+# so every argument goes single-quoted, with its own quotes escaped.
+set -eu
+line=""
+for arg in "$@"; do
+  quoted=$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")
+  line="$line '$quoted'"
+done
+exec ssh -F "${EXECUTOR_SSH_CONFIG:-/etc/flocc-cardinal/ssh_config}" executor "$line"

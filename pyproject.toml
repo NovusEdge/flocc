@@ -4,12 +4,10 @@ version = "0.12.0"
 requires-python = ">=3.13"
 dependencies = []
 
-[project.optional-dependencies]
-# Only flocc a2a serve imports these; the tick, the hooks and the MCP server stay stdlib.
-a2a = ["a2a-sdk[http-server]>=1.2.3,<1.3", "uvicorn>=0.54,<1"]
-
 [project.scripts]
 flocc = "flocc.cli:main"
+flocc-agent = "flocc.agentrun:main"
+flocc-cardinal-gate = "flocc.cardinalgate:main"
 
 [build-system]
 requires = ["uv_build>=0.9.9,<0.13"]
@@ -34,6 +32,4 @@ dev = [
   "pyrefly==1.3.2",
   "pytest>=9.1.1",
   "ruff==0.16.10",
-  "a2a-sdk[http-server]>=1.2.3,<1.3",
-  "uvicorn>=0.54,<1",
 ]

@@ -155,54 +155,6 @@ class Linear:
             {"id": issue_id, "body": f"{BOT_PREFIX} {text}"},
         )
 
-    def add_label(self, issue: Issue, name: str) -> None:
-        if name in issue.labels:
-            return
-        data = self._post(
-            "query($name: String!, $id: String!) {"
-            " issueLabels(filter: { name: { eq: $name } }) {"
-            " nodes { id team { id } parent { id groupType } } }"
-            " issue(id: $id) { labels { nodes { id parent { id } } } } }",
-            {"name": name, "id": issue.id},
-        )
-        # Names repeat across teams, and a label of another team cannot go on this issue.
-        usable = [
-            n
-            for n in data["issueLabels"]["nodes"]
-            if n["team"] is None or n["team"]["id"] == issue.team_id
-        ]
-        if not usable:
-            raise LinearError(
-                f"label {name!r} does not exist; create it in Linear (docs/book/setup/README.md)"
-            )
-        target = usable[0]
-        current = data["issue"]["labels"]["nodes"]
-        # issue.labels can be stale within a tick.
-        if any(c["id"] == target["id"] for c in current):
-            return
-        parent = target.get("parent")
-        # issueAddLabel does not evict siblings; Linear rejects the add with "labelIds not
-        # exclusive child labels". A group without a groupType is single-select. One
-        # issueUpdate swaps them together so a failed add cannot leave the issue with neither.
-        if parent and parent.get("groupType") != "multiSelect":
-            siblings = [
-                c["id"]
-                for c in current
-                if (c.get("parent") or {}).get("id") == parent["id"] and c["id"] != target["id"]
-            ]
-            self._post(
-                "mutation($id: String!, $add: [String!], $remove: [String!]) {"
-                " issueUpdate(id: $id, input: { addedLabelIds: $add, removedLabelIds: $remove })"
-                " { success } }",
-                {"id": issue.id, "add": [target["id"]], "remove": siblings},
-            )
-            return
-        self._post(
-            "mutation($id: String!, $label: String!) {"
-            " issueAddLabel(id: $id, labelId: $label) { success } }",
-            {"id": issue.id, "label": target["id"]},
-        )
-
     def missing_labels(self, team_key: str, names: list[str]) -> list[str]:
         usable: set[str] = set()
         # Chunked so a long name list cannot push a label past the 250-node page.
@@ -216,7 +168,7 @@ class Linear:
             )
             if not data["teams"]["nodes"]:
                 raise LinearError(f"team {team_key} does not exist or the key cannot see it")
-            # The same rule add_label applies: a workspace label or one of this team's.
+            # A workspace label, or one of this team's.
             usable |= {
                 n["name"]
                 for n in data["issueLabels"]["nodes"]
@@ -240,12 +192,3 @@ class Linear:
                 Comment(n["id"], n["body"], n["createdAt"], bool(user.get("isMe")), author)
             )
         return sorted(comments, key=lambda c: c.created_at)
-
-    def create_issue(self, team_id: str, title: str, description: str) -> str:
-        data = self._post(
-            "mutation($team: String!, $title: String!, $desc: String!) {"
-            " issueCreate(input: { teamId: $team, title: $title, description: $desc })"
-            " { issue { url } } }",
-            {"team": team_id, "title": title, "desc": description},
-        )
-        return data["issueCreate"]["issue"]["url"]

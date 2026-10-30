@@ -1,0 +1,53 @@
+#!/bin/sh
+# cardinal's plugin monitor: every line it prints wakes the session. It never exits, so whether
+# Claude Code restarts a monitor whose command ended does not matter.
+set -u
+config=${FOLLOW_SSH_CONFIG:-/etc/flocc-cardinal/ssh_config}
+up_s=${FOLLOW_UP_S:-60}
+pause_s=${FOLLOW_PAUSE_S:-5}
+max_s=${FOLLOW_MAX_S:-300}
+rounds=${FOLLOW_ROUNDS:-0}
+fails=0
+down=0
+hello=0
+flag="${TMPDIR:-/tmp}/flocc-follow-up.$$"
+trap 'rm -f "$flag"' EXIT
+n=0
+while [ "$rounds" -eq 0 ] || [ "$n" -lt "$rounds" ]; do
+  n=$((n + 1))
+  start=$(date +%s)
+  # --hello until one connection has printed the up line, then no more this down period: a
+  # flapping link must not wake cardinal on every reconnect, and a failed attempt must not use
+  # up the hello.
+  if [ "$down" -eq 1 ] && [ "$hello" -eq 0 ]; then
+    rm -f "$flag"
+    ssh -F "$config" executor events --follow --hello |
+      while IFS= read -r line; do
+        printf '%s\n' "$line"
+        case $line in *'"link": "up"'*) : >"$flag" ;; esac
+      done
+    if [ -e "$flag" ]; then
+      hello=1
+    fi
+  else
+    ssh -F "$config" executor events --follow
+  fi
+  # A follower never ends on its own while its link is up, so a connection that ended within
+  # up_s failed, whatever ssh returned. Only one that lasted longer ends the down period.
+  if [ $(($(date +%s) - start)) -lt "$up_s" ]; then
+    fails=$((fails + 1))
+  else
+    fails=0
+    down=0
+    hello=0
+  fi
+  if [ "$fails" -ge 5 ] && [ "$down" -eq 0 ]; then
+    echo '{"link": "down", "detail": "5 connections to the executor VM failed in a row"}'
+    down=1
+  fi
+  wait_s=$((pause_s * (fails + 1)))
+  if [ "$wait_s" -gt "$max_s" ]; then
+    wait_s=$max_s
+  fi
+  sleep "$wait_s"
+done

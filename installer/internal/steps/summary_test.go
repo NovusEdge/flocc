@@ -47,7 +47,7 @@ func summaryFake(doctorCode int, doctorOut string) *host.Fake {
 	return host.NewFake().
 		On(doctorCmd, doctorCode, doctorOut).
 		On(floccBin+" --version", 0, "flocc 0.4.0\n").
-		On(claudeBin+" auth status", 1, `{"loggedIn":false}`).
+		On(agentClaudeBin+" auth status", 1, `{"loggedIn":false}`).
 		On(floccBin+" status --json", 0, statusJSON())
 }
 
@@ -106,7 +106,7 @@ func TestSummaryFailsOnAnyOtherFailLine(t *testing.T) {
 func TestSummaryKeepsTheLoginFailLineWhenTheLoginIsNotPending(t *testing.T) {
 	fixedNow(t)
 	f := summaryFake(1, doctorReport)
-	f.Responses[claudeBin+" auth status"] = authFull
+	f.Responses[agentClaudeBin+" auth status"] = authFull
 	s := Summarize(context.Background(), testEnv(t, f))
 	if s.LoginPending || !s.Failing() || !slices.Equal(s.Failed, []string{strings.TrimSuffix(loginFailLine, "\n")}) {
 		t.Fatalf("%+v", s)

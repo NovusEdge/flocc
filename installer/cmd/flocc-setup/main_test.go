@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,11 +35,41 @@ func TestCheckPhase(t *testing.T) {
 }
 
 func TestHandoffArgs(t *testing.T) {
-	if got := handoffArgs(true); !slices.Equal(got, []string{"--phase", "service", "--answers", "-"}) {
+	if got := handoffArgs("service", true); !slices.Equal(got, []string{"--phase", "service", "--answers", "-"}) {
 		t.Fatalf("got %v", got)
 	}
-	if got := handoffArgs(false); !slices.Equal(got, []string{"--phase", "service"}) {
+	if got := handoffArgs("service", false); !slices.Equal(got, []string{"--phase", "service"}) {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestAgentPhaseRunsAsFloccAgent(t *testing.T) {
+	if err := checkPhase("agent", 0); err == nil {
+		t.Fatal("agent phase allowed as root")
+	}
+	if err := checkPhase("agent", 1001); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRootHandsOffToTheAgentThenTheService(t *testing.T) {
+	f := host.NewFake().OnName("chown", 0, "").OnName("chmod", 0, "").OnName("sudo", 0, "")
+	stage := fillStage(t, "flocc-setup")
+	for _, h := range []struct{ user, phase string }{{"flocc-agent", "agent"}, {"flocc", "service"}} {
+		if err := handoff(context.Background(), f, stage, h.user, handoffArgs(h.phase, true), []byte("doc")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var order []string
+	for _, c := range f.Interactives {
+		order = append(order, c.String())
+	}
+	want := []string{
+		"sudo -iu flocc-agent /home/flocc-agent/.cache/flocc-setup/flocc-setup --phase agent --answers -",
+		"sudo -iu flocc /home/flocc/.cache/flocc-setup/flocc-setup --phase service --answers -",
+	}
+	if !slices.Equal(order, want) {
+		t.Fatalf("%v", order)
 	}
 }
 
@@ -92,7 +123,7 @@ func TestCopyScriptHasNoExpansionAndCopiesTheStage(t *testing.T) {
 
 func TestSavedAnswersLiveOutsideTheStage(t *testing.T) {
 	got := savedAnswersPath("/home/flocc")
-	if got != "/home/flocc/.config/flocc/answers.toml" || strings.HasPrefix(got, serviceStage) {
+	if got != "/home/flocc/.config/flocc/answers.toml" || strings.HasPrefix(got, stageFor(steps.ServiceUser)) {
 		t.Fatal(got)
 	}
 }
@@ -127,7 +158,7 @@ func handoffFake(stage string) *host.Fake {
 func TestHandoffNeverWritesIntoTheServiceHomeAsRoot(t *testing.T) {
 	stage := fillStage(t, "flocc-setup", "flocc.bundle")
 	f := handoffFake(stage)
-	if err := handoff(context.Background(), f, stage, handoffArgs(false), nil); err != nil {
+	if err := handoff(context.Background(), f, stage, steps.ServiceUser, handoffArgs("service", false), nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range f.Calls {
@@ -144,7 +175,7 @@ func TestHandoffPipesTheAnswersToTheServicePhase(t *testing.T) {
 	stage := fillStage(t, "flocc-setup", "flocc.bundle")
 	f := handoffFake(stage)
 	doc := "[secrets]\nlinear_key = \"lin_api_s3cret\"\n"
-	if err := handoff(context.Background(), f, stage, handoffArgs(true), strings.NewReader(doc)); err != nil {
+	if err := handoff(context.Background(), f, stage, steps.ServiceUser, handoffArgs("service", true), []byte(doc)); err != nil {
 		t.Fatal(err)
 	}
 	call := "sudo -iu flocc /home/flocc/.cache/flocc-setup/flocc-setup --phase service --answers -"
@@ -353,6 +384,68 @@ func TestCheckStage(t *testing.T) {
 		if checkStage(d) == nil {
 			t.Errorf("%q: want refusal", d)
 		}
+	}
+}
+
+func TestCheckStageDir(t *testing.T) {
+	uid := strconv.Itoa(os.Getuid())
+	mk := func(mode os.FileMode) string {
+		d := filepath.Join(t.TempDir(), "stage")
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, mode); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if err := checkStageDir(mk(0o750), uid); err != nil {
+		t.Errorf("a 750 stage owned by the sudo user: %v", err)
+	}
+	for _, mode := range []os.FileMode{0o770, 0o707, 0o777} {
+		if checkStageDir(mk(mode), uid) == nil {
+			t.Errorf("mode %o: want refusal", mode)
+		}
+	}
+	if os.Getuid() != 0 && checkStageDir(mk(0o700), "1") == nil {
+		t.Error("a stage owned by someone other than SUDO_UID or root: want refusal")
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(mk(0o700), link); err != nil {
+		t.Fatal(err)
+	}
+	if checkStageDir(link, uid) == nil {
+		t.Error("a symlink: want refusal")
+	}
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if checkStageDir(file, uid) == nil {
+		t.Error("a file: want refusal")
+	}
+}
+
+func TestAgentPhaseGetsNoSecrets(t *testing.T) {
+	stage := fillStage(t, "flocc-setup")
+	f := host.NewFake().OnName("chown", 0, "").OnName("chmod", 0, "").OnName("sudo", 0, "")
+	_, in, err := readAnswers(strings.NewReader(secretsDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handoffAll(context.Background(), f, stage, []byte(secretsDoc), in, true, false); err != nil {
+		t.Fatal(err)
+	}
+	agent := "sudo -iu flocc-agent /home/flocc-agent/.cache/flocc-setup/flocc-setup --phase agent --answers -"
+	service := "sudo -iu flocc /home/flocc/.cache/flocc-setup/flocc-setup --phase service --answers -"
+	if strings.Contains(f.Stdins[agent], "secrets") || strings.Contains(f.Stdins[agent], "s3cret") {
+		t.Errorf("agent phase stdin carries secrets: %q", f.Stdins[agent])
+	}
+	if !strings.Contains(f.Stdins[agent], `team_key = 'NF'`) {
+		t.Errorf("agent phase lost the public answers: %q", f.Stdins[agent])
+	}
+	if f.Stdins[service] != secretsDoc {
+		t.Errorf("service phase stdin: %q", f.Stdins[service])
 	}
 }
 

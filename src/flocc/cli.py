@@ -3,21 +3,28 @@ import fcntl
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
-from flocc import gate, inbox, ledger, permission, usage
+from flocc import idle, ledger, usage
 from flocc.config import TRAILER, default_config_path, load
-from flocc.escalation import Escalation, validate
-from flocc.grants import for_phase
 
 
 def _state_dir() -> Path:
     return Path(os.environ["FLOCC_STATE"])
+
+
+_KEY = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
+
+
+def _issue_key(raw: str) -> str:
+    # fullmatch: a $ anchor would let a trailing newline through.
+    if not _KEY.fullmatch(raw):
+        raise argparse.ArgumentTypeError(f"{raw!r} is not an issue key such as NF-12")
+    return raw
 
 
 def cmd_statusline(args) -> int:
@@ -32,39 +39,6 @@ def cmd_statusline(args) -> int:
 
 def _pct(value: float | None) -> str:
     return "?" if value is None else f"{value:.0f}%"
-
-
-def cmd_escalate(args) -> int:
-    state = _state_dir()
-    esc = Escalation(
-        tier=args.tier,
-        cause=args.cause,
-        summary=args.summary,
-        action=args.action or "",
-        issue_key=state.name,
-        default=args.default,
-        deadline_min=args.deadline_min,
-        waiting=args.waiting,
-        scope="global" if args.is_global else "issue",
-    )
-    try:
-        validate(esc)
-    except ValueError as exc:
-        print(f"escalate: {exc}", file=sys.stderr)
-        return 2
-    state.mkdir(parents=True, exist_ok=True)
-    with (state / "escalations.jsonl").open("a") as f:
-        f.write(esc.to_json() + "\n")
-    print("recorded; the service routes it on its next run")
-    return 0
-
-
-def _ledger(args):
-    env = os.environ.get("FLOCC_LEDGER")
-    if env:
-        return ledger.connect(env)
-    path = Path(args.config) if args.config else default_config_path()
-    return ledger.connect(load(path).ledger_path)
 
 
 # Claude Code's own attribution; the session settings turn it off, this catches what slips by.
@@ -111,67 +85,53 @@ def _commit_msg(message_file: str, trailer_on: bool) -> int:
 
 
 def cmd_hook(args) -> int:
-    from flocc.worktree import git
-
     if args.name == "commit-msg":
         return _commit_msg(args.message_file, not args.no_trailer)
-    top = Path.cwd()
-    top = Path(git("rev-parse", "--show-toplevel", cwd=top))
-    con = _ledger(args)
-    mine = ledger.claim_for_worktree(con, str(top))
-    if mine is None:
-        return 0
-    if mine.phase == "review":
-        print("flocc: the review session is read-only; do not commit", file=sys.stderr)
-        return 1
-    shared = _shared_paths(args, mine.repo)
-    # A merge commit stages everything either side changed; only what differs from both parents is
-    # this commit's own edit or conflict resolution.
-    merging = (
-        subprocess.run(
-            ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
-            cwd=top,
-            capture_output=True,
-            check=False,
-        ).returncode
-        == 0
-    )
-    changed = set(git("diff", "--cached", "--name-only", cwd=top).splitlines())
-    if merging:
-        changed &= set(git("diff", "--cached", "--name-only", "MERGE_HEAD", cwd=top).splitlines())
-    staged = [n for n in sorted(changed) if not ledger.is_shared(n, shared)]
-    peers = ledger.in_repo(ledger.live_claims(con), mine.repo)
-    clash = ledger.file_conflicts(staged, peers, exclude=mine.issue_key)
-    if not clash:
-        return 0
-    for name, owner in clash.items():
-        print(
-            f"flocc: {name} is claimed by {owner}; message that session or escalate",
-            file=sys.stderr,
-        )
-    return 1
+    # Worktrees prepared by 0.12 still call pre-commit; it no longer checks anything.
+    return 0
 
 
-def _shared_paths(args, repo: str) -> tuple[str, ...]:
-    # A config that will not load must not stop a commit; the check then falls back to claims only.
+def cmd_guard(args) -> int:
+    from flocc.guard import decide
+
+    if not os.environ.get("FLOCC_PHASE"):
+        return 0
+    # Exit 0 always: a guard that fails must not stop the session, and it is not the boundary.
     try:
-        cfg = load(Path(args.config) if args.config else default_config_path())
-    except (OSError, ValueError, TypeError):
-        return ()
-    return cfg.repos[repo].shared_paths if repo in cfg.repos else ()
+        reason = decide(
+            _hook_input(strict=True),
+            os.environ.get("FLOCC_PHASE", ""),
+            os.environ.get("FLOCC_STATE", ""),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"flocc guard could not judge the call: {exc}", file=sys.stderr)
+        return 0
+    if reason:
+        decision = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+        print(json.dumps({"hookSpecificOutput": decision}))
+    return 0
 
 
 def cmd_tests_amended(args) -> int:
-    from flocc.worktree import changed_files
+    from flocc.publisher import AMENDED
+    from flocc.worktree import changed_files, git
 
     state = _state_dir()
-    claim = ledger.get_claim(_ledger(args), state.name)
-    if claim is None or claim.base_sha is None or claim.tester_sha is None:
+    try:
+        tester = json.loads((state / "tester.json").read_text())
+        base_sha, tester_sha = str(tester["base_sha"]), str(tester["tester_sha"])
+    except (OSError, ValueError, KeyError, TypeError):
         print(
-            f"tests-amended: no live claim with a tester commit for {state.name}", file=sys.stderr
+            f"tests-amended: no tester ran for {state.name}, so it has no tester files",
+            file=sys.stderr,
         )
         return 1
-    tester_files = changed_files(Path(claim.worktree), claim.base_sha, claim.tester_sha)
+    top = Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd()))
+    tester_files = changed_files(top, base_sha, tester_sha)
     foreign = [p for p in args.paths if p not in tester_files]
     if foreign:
         print(
@@ -179,7 +139,7 @@ def cmd_tests_amended(args) -> int:
             file=sys.stderr,
         )
         return 2
-    path = state / gate.AMENDED
+    path = state / AMENDED
     try:
         recorded = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -196,82 +156,14 @@ def cmd_tests_amended(args) -> int:
     return 0
 
 
-def cmd_claim(args) -> int:
-    key = _state_dir().name
-    for glob in args.globs:
-        if "**" in glob:
-            print(
-                f"claim: {glob} claims a whole tree; claim the files you will edit"
-                " (a * within one directory is fine)",
-                file=sys.stderr,
-            )
-            return 1
-    con = _ledger(args)
-    mine = ledger.get_claim(con, key)
-    if mine is None:
-        print(f"claim: no live claim for {key}", file=sys.stderr)
-        return 1
-    shared = _shared_paths(args, mine.repo)
-    globs = []
-    for glob in args.globs:
-        if not glob or glob.startswith("/") or ".." in PurePosixPath(glob).parts:
-            print(f"claim: {glob!r} is not a path inside the worktree", file=sys.stderr)
-            return 1
-        # file_conflicts also matches a glob against every parent directory of a staged file, so
-        # a glob that matches a directory claims everything under it, whatever it is spelled.
-        tree = glob.endswith("/") or next(
-            (p for p in Path(mine.worktree).glob(glob) if p.is_dir()), None
-        )
-        if tree:
-            where = glob if tree is True else tree.relative_to(mine.worktree)
-            print(
-                f"claim: {glob} matches the directory {where}; claim the files in it",
-                file=sys.stderr,
-            )
-            return 1
-        if ledger.is_shared(glob, shared):
-            print(f"claim: {glob} is shared; edit it without claiming")
-        else:
-            globs.append(glob)
-    if not globs:
-        return 0
-    try:
-        clash = ledger.add_paths(con, key, globs)
-    except KeyError:
-        print(f"claim: no live claim for {key}", file=sys.stderr)
-        return 1
-    if clash:
-        for glob, owner in clash.items():
-            print(f"claim: {glob} overlaps {owner}'s claim", file=sys.stderr)
-        return 1
-    print("claimed")
-    return 0
-
-
 def cmd_context(args) -> int:
-    from flocc.sessions import session_name
-
     state = _state_dir()
     context = state / "context.md"
     if context.exists():
         print(context.read_text())
-    # Peers come from the live ledger, so a session sees issues admitted after it started.
-    live = ledger.live_claims(_ledger(args))
-    mine = next((c for c in live if c.issue_key == state.name), None)
-    peers = [c for c in live if mine and c.repo == mine.repo and c.issue_key != state.name]
-    names = ", ".join(session_name(c.issue_key, c.phase) for c in peers) or "none"
-    print(
-        f"## Peers in this repo\n\n{names}. The flocc-a2a tool `agents` lists every host's"
-        " issues; message one with `send`.\n"
-    )
-    g = for_phase(state / "grants.json", os.environ.get("FLOCC_PHASE", ""))
-    items = [f"launches {g.launches}"] if g.launches is not None else []
-    items += [f"agent {a}" for a in g.agents] + [f"workflow {w}" for w in g.workflows]
-    items += [f"fix-rounds {g.fix_rounds}"] if g.fix_rounds is not None else []
-    print(f"## Grants\n\n{', '.join(items) or 'none'}.\n")
-    handoff = state / "handoff.md"
-    if handoff.exists():
-        print(handoff.read_text())
+    last = state / "last-summary.md"
+    if last.exists():
+        print(f"## The previous step's summary\n\n{last.read_text()}")
     return 0
 
 
@@ -291,158 +183,52 @@ def _hook_input(strict: bool = False) -> dict:
     return {}
 
 
-def cmd_gate(args) -> int:
-    run = os.environ.get("FLOCC_RUN")
-    phase = os.environ.get("FLOCC_PHASE")
-    # Exit 2 on SubagentStop blocks the stop and keeps the agent alive, so bookkeeping
-    # failures exit 1, which Claude Code treats as non-blocking.
-    if args.stopped or args.answered:
-        try:
-            state = _state_dir()
-            if args.stopped:
-                agent_type = str(_hook_input().get("agent_type", ""))
-                gate.record_stop(state, run, time.time(), agent_type, phase)
-            else:
-                gate.clear_question(state, time.time())
-        except Exception as exc:  # noqa: BLE001 - must not block the stop
-            print(f"flocc gate could not record the event: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    # Exit 2 refuses a PreToolUse call in every Claude Code version, whatever the hook's
-    # onFailure setting does; any error of the gate's own must refuse, never allow.
-    try:
-        state = _state_dir()
-        payload = _hook_input(strict=True)
-        if payload.get("tool_name") == "AskUserQuestion":
-            # A question spends nothing, so a bookkeeping failure must not refuse it.
-            try:
-                gate.note_question(state, payload, time.time())
-            except Exception as exc:  # noqa: BLE001
-                print(f"flocc gate could not record the question: {exc}", file=sys.stderr)
-                return 1
-            return 0
-        flags = frozenset(filter(None, os.environ.get(gate.LAUNCH_GRANTS_ENV, "").split(",")))
-        reason = gate.run_gate(payload, state, phase, run, time.time(), flags)
-        if reason is not None:
-            out = {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-            print(json.dumps(out))
-    except Exception as exc:  # noqa: BLE001 - see above
-        print(f"flocc gate failed, so the launch is refused: {exc}", file=sys.stderr)
-        return 2
-    return 0
-
-
-def cmd_idle(args) -> int:
-    # Exit 2 on Stop blocks the stop and keeps the session running; see cmd_gate.
-    try:
-        gate.note_idle(_state_dir(), _hook_input(), time.time())
-    except Exception as exc:  # noqa: BLE001 - must not block the stop
-        print(f"flocc idle could not record the stop: {exc}", file=sys.stderr)
-        return 1
-    return 0
-
-
-def _context_out(event: str, text: str) -> None:
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
-
-
-def cmd_inbox(args) -> int:
-    from flocc import delivery
-
-    # A failure must not block the call or the prompt it rides on; the rows wait for the next hook.
-    try:
-        payload = _hook_input()
-        if payload.get("agent_id"):
-            return 0
-        event = str(payload.get("hook_event_name") or "PostToolUse")
-        state = _state_dir()
-        if event == "SessionStart":
-            text = delivery.session_text(state, time.time())
-        elif delivery.ending(state):
-            return 0
-        else:
-            text = delivery.take(state, time.time())
-        if text:
-            _context_out(event, text)
-    except Exception as exc:  # noqa: BLE001
-        print(f"flocc inbox delivered nothing: {exc}", file=sys.stderr)
-    return 0
+STOP_REASON = (
+    "flocc done has not run, so this run is not finished. Finish the work and run flocc done,"
+    ' or write what needs the owner under a line that starts with "Needs the owner" in your'
+    " summary and run flocc done. Nobody answers questions in this session."
+)
 
 
 def cmd_stop(args) -> int:
-    from flocc import delivery
-
-    # Exit 2 on Stop blocks the stop; bookkeeping failures exit 1 as cmd_gate and cmd_idle do.
+    # Exit 2 on Stop would block the stop; bookkeeping failures exit 1 so they never do.
     try:
         state = _state_dir()
         payload = _hook_input()
     except Exception as exc:  # noqa: BLE001
         print(f"flocc stop could not read its input: {exc}", file=sys.stderr)
         return 1
-    # The inbox and note_idle still run when this fails, so the supervisor sees the session idle.
-    failed = 0
-    try:
-        gate.clear_question(state, time.time())
-        gate.note_background(state, payload)
-    except Exception as exc:  # noqa: BLE001
-        print(f"flocc stop could not record the answer: {exc}", file=sys.stderr)
-        failed = 1
-    if (state / inbox.MARKER).exists() and not delivery.ending(state):
+    if args.failure:
+        # autoContinueAtUsageLimit resumes the turn after the reset.
+        if payload.get("error") == "rate_limit":
+            return 0
+        message = payload.get("last_assistant_message") or str(payload.get("error", ""))
+        payload = {"last_assistant_message": message}
+    else:
+        failed = 0
         try:
-            text = delivery.take(state, time.time())
+            idle.note_background(state, payload)
         except Exception as exc:  # noqa: BLE001
-            print(f"flocc stop delivered nothing: {exc}", file=sys.stderr)
-            text = ""
-        if text:
-            # Continues the turn; Claude Code's stop_hook_active protection bounds the loop.
-            _context_out("Stop", text)
+            print(f"flocc stop could not record the background tasks: {exc}", file=sys.stderr)
+            failed = 1
+        # Background work or a scheduled wakeup brings the session back on its own.
+        if (state / "done.json").exists() or idle.has_background(state):
+            return failed
+        if not payload.get("stop_hook_active"):
+            # Hook JSON is read on exit 0 only.
+            print(json.dumps({"decision": "block", "reason": STOP_REASON}))
             return 0
     try:
-        gate.note_idle(state, payload, time.time())
+        idle.note_idle(state, payload, time.time())
     except Exception as exc:  # noqa: BLE001
         print(f"flocc stop could not record the stop: {exc}", file=sys.stderr)
         return 1
-    return failed
-
-
-def cmd_permission(args) -> int:
-    # Exit 1 is non-blocking for every event this hook is registered on, and printing nothing
-    # leaves the decision to Claude Code.
-    try:
-        payload = _hook_input(strict=True)
-        out = permission.handle(
-            payload,
-            _state_dir(),
-            os.environ.get("FLOCC_PHASE"),
-            os.environ.get("FLOCC_RUN"),
-            time.time(),
-        )
-    except Exception as exc:  # noqa: BLE001 - see above
-        print(f"flocc permission failed, so it made no decision: {exc}", file=sys.stderr)
-        return 1
-    if out is not None:
-        print(json.dumps(out))
     return 0
 
 
 def _session_bookkeeping(state: Path) -> None:
     state.mkdir(parents=True, exist_ok=True)
     payload = _hook_input()
-    if payload.get("source") == "compact":
-        # status.json still holds the pre-compaction reading; the supervisor would hand off at once.
-        (state / "compacted").touch()
-        (state / "status.json").unlink(missing_ok=True)
-    else:
-        # Background agents survive compaction, so only a real start resets the running count.
-        run = os.environ.get("FLOCC_RUN")
-        (state / gate.LAST_STOP).touch()
-        gate.record_session(state, run, time.time(), os.environ.get("FLOCC_PHASE"))
     pad = payload.get("scratchpad_dir")
     if isinstance(pad, str) and pad:
         known = state / "scratchpads"
@@ -463,28 +249,19 @@ def cmd_session_start(args) -> int:
 
 def cmd_done(args) -> int:
     state = _state_dir()
-    (state / "done.json").write_text(json.dumps({"summary": args.summary, "at": time.time()}))
-    print("phase marked done; the service takes over on its next run")
-    return 0
-
-
-def cmd_review_done(args) -> int:
-    state = _state_dir()
-    review = state / "review.md"
-    if not review.exists() or not review.read_text().strip():
-        print(f"review-done: write {review} first", file=sys.stderr)
-        return 1
-    (state / "done.json").write_text(json.dumps({"summary": "review", "at": time.time()}))
-    print("review marked done; the service posts it on its next run")
-    return 0
-
-
-def cmd_handoff_ready(args) -> int:
-    state = _state_dir()
-    if not (state / "handoff.md").exists():
-        print(f"handoff-ready: write {state / 'handoff.md'} first", file=sys.stderr)
-        return 1
-    (state / "handoff-ready").touch()
+    if os.environ.get("FLOCC_PHASE") == "review":
+        review = state / "review.md"
+        if not review.exists() or not review.read_text().strip():
+            print(f"done: write {review} first; the service posts it", file=sys.stderr)
+            return 1
+        summary = "review"
+    elif not (args.summary or "").strip():
+        print("done: pass --summary '<what you did, for the PR body>'", file=sys.stderr)
+        return 2
+    else:
+        summary = args.summary
+    (state / "done.json").write_text(json.dumps({"summary": summary, "at": time.time()}))
+    print("marked done; the service takes over on its next run")
     return 0
 
 
@@ -541,15 +318,21 @@ def cmd_release(args) -> int:
     from flocc.tick import build_runtime, tick_lock
 
     cfg, path = _config(args)
+    if args.hold_only:
+        return _lift_hold(cfg, args.key)
     with tick_lock(cfg.tick_lock) as held:
         if not held:
             print("release: a tick is running; try again in a moment", file=sys.stderr)
             return 1
-        rt = build_runtime(cfg, path)
-        claim = ledger.get_claim(rt.con, args.key)
+        con = ledger.connect(cfg.ledger_path)
+        claim = ledger.get_claim(con, args.key)
         if claim is None:
+            if ledger.remove_hold(con, args.key):
+                print(f"released the hold on {args.key}")
+                return 0
             print(f"release: no claim for {args.key}", file=sys.stderr)
             return 1
+        rt = build_runtime(cfg, path)
         keep = args.keep_worktree or args.accept_tests
         if args.accept_tests:
             # The rerun resumes at the implementer only with the remembered tester commit, and
@@ -557,7 +340,8 @@ def cmd_release(args) -> int:
             if ledger.remembered_tests(rt.con, args.key) is None:
                 print(f"release: {args.key} has no tester commit to accept", file=sys.stderr)
                 return 1
-            ledger.accept_tests(rt.con, args.key, rt.git_head(claim.worktree))
+            ledger.accept_tests(rt.con, args.key, rt.git_head(claim))
+        ledger.remove_hold(rt.con, args.key)
         release_claim(rt, claim, keep_worktree=keep)
     wt = "kept" if keep else "removed"
     accepted = ", tester files accepted as they stand" if args.accept_tests else ""
@@ -565,8 +349,125 @@ def cmd_release(args) -> int:
     return 0
 
 
+def cmd_fix(args) -> int:
+    from flocc.control import Refused, start_fix
+    from flocc.supervisor import LaunchError
+    from flocc.tick import build_runtime, tick_lock
+
+    cfg, path = _config(args)
+    with tick_lock(cfg.tick_lock) as held:
+        if not held:
+            print("fix: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        rt = build_runtime(cfg, path)
+        try:
+            claim = start_fix(rt, args.key, args.note)
+        except Refused as exc:
+            print(f"fix: {exc}", file=sys.stderr)
+            return 1
+        except (LaunchError, subprocess.SubprocessError, OSError) as exc:
+            print(f"fix: the fixer did not start: {exc}", file=sys.stderr)
+            return 1
+    print(
+        f"started a fixer on {args.key}, fix round {claim.fix_attempts} of {cfg.check_fix_rounds}"
+    )
+    return 0
+
+
+def cmd_run_summary(args) -> int:
+    from flocc.status import issue_lines
+    from flocc.summary import run_summary
+
+    cfg, _ = _config(args)
+
+    def log_lines(key: str, n: int) -> list[tuple[int, str]]:
+        try:
+            return issue_lines(cfg, key, n)
+        except (OSError, subprocess.SubprocessError):
+            return []
+
+    print(run_summary(cfg, ledger.connect(cfg.ledger_path), args.key, time.time(), log_lines))
+    return 0
+
+
+def cmd_digest_data(args) -> int:
+    from flocc.summary import digest_data
+
+    cfg, _ = _config(args)
+    con = ledger.connect(cfg.ledger_path)
+    if args.done is not None:
+        ledger.clear_digest(con, args.done)
+        print(f"cleared digest lines through {args.done}")
+        return 0
+    print(digest_data(cfg, con, time.time())[0])
+    return 0
+
+
+def cmd_cleanup(args) -> int:
+    from flocc.agent import Agent
+    from flocc.cleanup import cleanup
+    from flocc.tick import tick_lock
+
+    cfg, _ = _config(args)
+    with tick_lock(cfg.tick_lock) as held:
+        if not held:
+            print("cleanup: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        try:
+            out = cleanup(cfg, ledger.connect(cfg.ledger_path), Agent(cfg), time.time())
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"cleanup: {exc}", file=sys.stderr)
+            return 1
+    print(f"removed {len(out['removed'])}")
+    for path in out["removed"][:20]:
+        print(f"  {path}")
+    for k in out["kept"]:
+        print(f"kept {k['path']}: {k['why']}")
+    return 0
+
+
+def _lift_hold(cfg, key: str) -> int:
+    # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
+    # the timed-out restart, or a move to Todo made while it was held, would start it again.
+    # Under the tick lock: a tick could otherwise time the run out between the state read and the
+    # removal, and the next restart would rerun it.
+    from flocc.tick import tick_lock
+
+    with tick_lock(cfg.tick_lock) as held:
+        if not held:
+            print("release: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        con = ledger.connect(cfg.ledger_path)
+        claim = ledger.get_claim(con, key)
+        if claim is not None and claim.state != "running":
+            state = claim.state.replace("_", " ")
+            print(f"release: {key}'s run is {state}; only the owner reruns it", file=sys.stderr)
+            return 1
+        if not ledger.remove_hold(con, key):
+            print(f"release: {key} has no hold", file=sys.stderr)
+            return 1
+    print(f"released the hold on {key}")
+    return 0
+
+
+def cmd_hold(args) -> int:
+    cfg, _ = _config(args)
+    con = ledger.connect(cfg.ledger_path)
+    ledger.add_hold(con, args.key, args.reason.strip() or "held by cardinal", time.time())
+    claim = ledger.get_claim(con, args.key)
+    if claim is not None and claim.state == "running":
+        print(
+            f"held {args.key}; its run in progress goes on, and nothing starts it again until"
+            f" flocc release {args.key}"
+        )
+    else:
+        print(f"held {args.key}; nothing starts it until flocc release {args.key}")
+    return 0
+
+
 def cmd_canary(args) -> int:
-    from flocc import canary, publisher, worktree
+    from flocc import canary
+    from flocc.agent import Agent
     from flocc.tick import tick_lock
 
     cfg, _ = _config(args)
@@ -599,22 +500,11 @@ def cmd_canary(args) -> int:
         check = cfg.repos[args.repo].check if mark and mark.get("check") else None
         try:
             if check:
-                sha, failure = publisher.check_at_base(
-                    cfg.repos[args.repo],
-                    cfg.worktree_root,
-                    cfg.setup_timeout_s,
-                    cfg.check_timeout_s,
-                    cfg.shared_uv_cache,
-                )
+                sha, failure = Agent(cfg).check_base(args.repo)
                 code = 1 if failure else 0
                 out = failure.log or failure.detail if failure else ""
             else:
-                code, out, sha = worktree.setup_at_base(
-                    cfg.repos[args.repo],
-                    cfg.worktree_root,
-                    cfg.setup_timeout_s,
-                    cfg.shared_uv_cache,
-                )
+                code, out, sha = Agent(cfg).setup_base(args.repo)
         except (subprocess.SubprocessError, OSError) as exc:
             why = getattr(exc, "stderr", None) or exc
             print(f"canary: {args.repo}'s base was not checked out: {why}", file=sys.stderr)
@@ -648,27 +538,51 @@ def cmd_doctor(args) -> int:
     if args.json:
         return doctor_json(cfg, path)
     print(f"ok    config: {path}")
-    return run_doctor(cfg)
+    return run_doctor(cfg, path)
 
 
 def cmd_status(args) -> int:
-    from flocc.sessions import Sessions
-    from flocc.status import collect
+    from flocc.agent import Agent
+    from flocc.status import age_text, collect
 
     cfg, _ = _config(args)
-    report = collect(cfg, Sessions(), claude=shutil.which("claude"))
+    agent = Agent(cfg)
+    report = collect(cfg, agent.sessions(), claude=agent.claude_argv())
     if args.json:
         print(json.dumps(report))
         return 0
     print(f"{report['host']} ({report['mode']}), v{_version()}, cap {report['session_cap']}")
+    cap = report.get("check_fix_rounds", "?")
+    rows = [*report["claims"], *report.get("finished", [])]
+    if rows:
+        print(f"  {'ISSUE':<9}{'STEP':<10}{'STATE':<11}{'FIX':<5}{'AGE':<6}{'CTX':<6}SESSION")
     for c in report["claims"]:
         alive = "up" if c["tmux_alive"] else "down"
-        line = f"  {c['issue']}  {c['phase']}  {c['state']}  ctx {_pct(c['context_pct'])}  {alive}"
-        print(f"{line}  launches {c['launches']}/{c['launch_limit']}")
+        fix = f"{c.get('fix_attempts', 0)}/{cap}"
+        step = c.get("archetype", c["phase"])
+        age = age_text(c["started_age_s"])
+        print(
+            f"  {c['issue']:<9}{step:<10}{c['state']:<11}{fix:<5}{age:<6}"
+            f"{_pct(c['context_pct']):<6}{alive}"
+        )
+    for c in report.get("finished", []):
+        fix = f"{c['fix_attempts']}/{cap}"
+        age = age_text(c["started_age_s"])
+        line = f"  {c['issue']:<9}{c['archetype']:<10}{c['state']:<11}{fix:<5}{age:<6}{'-':<6}-"
+        print(f"{line}  {c['pr_url']}" if c["pr_url"] else line)
     if report["ledger_error"]:
         print(f"  ledger unreadable: {report['ledger_error']}")
-    elif not report["claims"]:
+    elif not rows:
         print("  no live claims")
+    for h in report.get("holds", []):
+        print(f"  held {h['issue']}: {h['reason']} ({age_text(h['age_s'])})")
+    ev = report.get("events") or {}
+    if ev.get("unacked"):
+        stuck = f"; {ev['attention']} needs attention" if ev.get("attention") else ""
+        print(
+            f"  events waiting for cardinal: {ev['unacked']},"
+            f" oldest {age_text(ev['oldest_age_s'])}{stuck}"
+        )
     if report["claude_login"]:
         print(f"  claude login {report['claude_login']}")
     for name, value in report["token_expiry"].items():
@@ -682,7 +596,9 @@ def cmd_status(args) -> int:
         )
         age = t.get("age_s")
         print(
-            f"  last tick {_age(age)} ago, {state}" if age is not None else f"  last tick {state}"
+            f"  last tick {age_text(age)} ago, {state}"
+            if age is not None
+            else f"  last tick {state}"
         )
     u = report["usage"]
     if u is None:
@@ -691,19 +607,18 @@ def cmd_status(args) -> int:
         print(f"  usage 5h {_pct(u['five_hour_pct'])}  wk {_pct(u['weekly_pct'])}")
     if report["disk"]:
         print(f"  disk {report['disk']['free_bytes'] / 2**30:.1f} GiB free")
-    if report.get("a2a"):
-        print(f"  a2a service {report['a2a']}")
     return 0
 
 
 def _live_session(args):
-    from flocc.sessions import Sessions, session_name
+    from flocc.agent import Agent
+    from flocc.sessions import session_name
     from flocc.status import _read_ledger
 
     cfg, _ = _config(args)
     claims, _, _ = _read_ledger(cfg.ledger_path)
     claim = next((c for c in claims if c.issue_key == args.key), None)
-    sessions = Sessions()
+    sessions = Agent(cfg).sessions()
     name = session_name(claim.issue_key, claim.phase) if claim else None
     if name and sessions.alive(name):
         return sessions, name
@@ -714,7 +629,7 @@ def _live_session(args):
 def cmd_peek(args) -> int:
     sessions, name = _live_session(args)
     # Blank rows below the prompt count toward the capture, so ask for more than N.
-    text = sessions.capture(name, max(args.lines, 1) + 200) if sessions else ""
+    text = sessions.capture(name, max(args.lines, 1) + 200) if sessions and name else ""
     rows = text.rstrip().splitlines()
     if not rows:
         if sessions:
@@ -722,40 +637,6 @@ def cmd_peek(args) -> int:
         return 3
     for row in rows[-max(args.lines, 1) :]:
         print("".join(c if c.isprintable() else " " for c in row))
-    return 0
-
-
-# Enough to move through and answer any Claude Code dialog. Control keys stay out: C-c and C-d
-# end the Claude session, and a dialog never needs them. Single characters are letters and
-# digits only: tmux reads a lone ";" as a command separator and "-x" as a flag.
-PRESS_KEYS = frozenset(
-    {"Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "Space", "BSpace"}
-)
-
-
-def cmd_press(args) -> int:
-    bad = [k for k in args.keys if k not in PRESS_KEYS and not (len(k) == 1 and k.isalnum())]
-    if bad:
-        allowed = " ".join(sorted(PRESS_KEYS))
-        print(
-            f"press: not a key flocc sends: {' '.join(bad)}; use {allowed}, a letter or a digit",
-            file=sys.stderr,
-        )
-        return 2
-    sessions, name = _live_session(args)
-    if not sessions:
-        return 3
-    sessions.press(name, args.keys)
-    print(f"pressed {' '.join(args.keys)} in {name}; flocc peek {args.key} shows the result")
-    return 0
-
-
-def cmd_say(args) -> int:
-    sessions, name = _live_session(args)
-    if not sessions:
-        return 3
-    sessions.send(name, " ".join(args.text))
-    print(f"sent to {name}; flocc peek {args.key} shows the reply")
     return 0
 
 
@@ -786,35 +667,49 @@ def cmd_logs(args) -> int:
     os.execvp(argv[0], argv)
 
 
-def cmd_permissions(args) -> int:
+def cmd_attach(args) -> int:
     cfg, _ = _config(args)
-    since = time.time() - args.days * 86400
-    print(permission.report(permission.load_entries(cfg.state_root, since), since))
+    argv = [*cfg.agent_run, "attach", args.session]
+    os.execvp(argv[0], argv)
+
+
+def cmd_events(args) -> int:
+    from flocc import events
+
+    cfg, _ = _config(args)
+    con = ledger.connect(cfg.ledger_path)
+    if not args.follow:
+        for text in events.lines(events.unacked(con), time.time()):
+            print(text)
+        return 0
+    # sshd ends the session of a vanished client, and the follower is reparented; it notices on
+    # its next poll instead of on a write that may be hours away.
+    parent = os.getppid()
+    try:
+        events.follow(
+            con,
+            lambda text: print(text, flush=True),
+            time.time,
+            time.sleep,
+            alive=lambda: os.getppid() == parent,
+            hello=args.hello,
+        )
+    except BrokenPipeError:
+        # Python flushes stdout again at exit and would print a second traceback.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
-def cmd_attach(args) -> int:
-    from flocc.sessions import SOCKET
+def cmd_ack(args) -> int:
+    from flocc import events
 
-    # Typing into an attached pane goes nowhere, so the way out and the way to answer are shown
-    # in tmux's status line, where the attached screen does not cover them.
-    hint = "read-only · Ctrl-b d detaches, the session keeps running · answer with flocc press"
-    print(f"Attaching {args.session} {hint}", file=sys.stderr)
-    argv = [
-        "tmux",
-        "-L",
-        SOCKET,
-        "attach",
-        "-r",
-        "-t",
-        args.session,
-        ";",
-        "display-message",
-        "-d",
-        "15000",
-        hint,
-    ]
-    os.execvp(argv[0], argv)
+    cfg, _ = _config(args)
+    n, unknown = events.ack(ledger.connect(cfg.ledger_path), args.ids, time.time())
+    missing = f"; no event {', '.join(map(str, unknown))}" if unknown else ""
+    print(f"acked {n}{missing}")
+    return 0
 
 
 def _expiry(value: str, now: float) -> str:
@@ -827,72 +722,16 @@ def _expiry(value: str, now: float) -> str:
     return f"expires {day} ({int((at - now) // 86400)} days)"
 
 
-def _age(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    if seconds < 3600:
-        return f"{seconds / 60:.0f}m"
-    if seconds < 172800:
-        return f"{seconds / 3600:.0f}h"
-    return f"{seconds / 86400:.0f}d"
-
-
-def cmd_a2a(args) -> int:
-    from flocc.a2aconf import NotConfigured, load
-    from flocc.worktree import git
-
-    cfg, _ = _config(args)
-    try:
-        load()
-    except NotConfigured as exc:
-        # Exit 0: the unit restarts only on failure, and a host shipped without A2A has nothing
-        # to serve.
-        print(f"a2a serve: {exc}; run flocc ship from the desktop", file=sys.stderr)
-        return 0
-    host = args.bind
-    if host is None:
-        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, check=False)
-        host = out.stdout.split()[0] if out.returncode == 0 and out.stdout.split() else None
-    if host is None:
-        print("a2a serve: no tailnet address yet; systemd restarts this", file=sys.stderr)
-        return 1
-    try:
-        from flocc import a2aserver
-    except ImportError:
-        print(
-            "a2a serve: install flocc with the a2a extra: uv tool install '.[a2a]'", file=sys.stderr
-        )
-        return 1
-    a2aserver.write_served(cfg, git("rev-parse", "HEAD", cwd=cfg.plugin_dir.parent))
-    a2aserver.serve(cfg, host, args.port)
-    return 0
-
-
-def cmd_mcp_a2a(args) -> int:
-    from flocc import mcp_a2a
-
-    return mcp_a2a.main()
-
-
 COMMANDS = {
-    "inbox": cmd_inbox,
     "stop": cmd_stop,
-    "a2a": cmd_a2a,
-    "mcp-a2a": cmd_mcp_a2a,
     "statusline": cmd_statusline,
-    "escalate": cmd_escalate,
     "hook": cmd_hook,
-    "claim": cmd_claim,
+    "guard": cmd_guard,
     "tests-amended": cmd_tests_amended,
     "context": cmd_context,
-    "gate": cmd_gate,
-    "idle": cmd_idle,
-    "permission": cmd_permission,
     "session-start": cmd_session_start,
     "commit": cmd_commit,
     "done": cmd_done,
-    "review-done": cmd_review_done,
-    "handoff-ready": cmd_handoff_ready,
     "tick": cmd_tick,
     "run": cmd_run,
     "release": cmd_release,
@@ -901,10 +740,14 @@ COMMANDS = {
     "status": cmd_status,
     "logs": cmd_logs,
     "peek": cmd_peek,
-    "press": cmd_press,
-    "say": cmd_say,
-    "permissions": cmd_permissions,
     "attach": cmd_attach,
+    "events": cmd_events,
+    "ack": cmd_ack,
+    "hold": cmd_hold,
+    "fix": cmd_fix,
+    "run-summary": cmd_run_summary,
+    "digest-data": cmd_digest_data,
+    "cleanup": cmd_cleanup,
 }
 
 
@@ -925,57 +768,50 @@ def build_parser() -> argparse.ArgumentParser:
     def add(name, text):
         return sub.add_parser(name, help=text, description=text)
 
-    a2a = add("a2a", "Serve this host's A2A endpoint on the tailnet")
-    a2a.add_argument("action", choices=["serve"], help="what to do")
-    a2a.add_argument("--bind", default=None, help="address to bind (default: tailscale ip -4)")
-    a2a.add_argument("--port", type=int, default=7443, help="port to bind")
-    add("mcp-a2a", "Run the flocc-a2a MCP server on stdio")
     add("statusline", "Record session usage from stdin and print the status line")
-    esc = add("escalate", "Record an escalation for the service to route")
-    esc.add_argument("--tier", type=int, required=True, help="escalation tier")
-    esc.add_argument("--cause", required=True, help="why it is escalated")
-    esc.add_argument("--summary", required=True, help="one-line summary")
-    esc.add_argument("--action", help="what the human should do")
-    esc.add_argument("--default", help="what happens if nobody answers")
-    esc.add_argument("--deadline-min", type=int, help="minutes until the default applies")
-    esc.add_argument("--waiting", action="store_true", help="session waits for the answer")
-    esc.add_argument("--global", dest="is_global", action="store_true", help="affects all issues")
     hook = add("hook", "Git hook entry point")
     hook.add_argument("name", choices=["pre-commit", "commit-msg"], help="which hook is running")
     hook.add_argument("--no-trailer", action="store_true", help="skip the commit trailer")
     hook.add_argument("message_file", nargs="?", help="commit message file (commit-msg)")
-    claim = add("claim", "Claim file globs for this issue")
-    claim.add_argument("globs", nargs="+", help="file globs to claim")
+    add("guard", "Hook (PreToolUse): deny dialogs, pushes and GitHub writes")
     amended = add("tests-amended", "Declare tester files you changed because a test was wrong")
     amended.add_argument("paths", nargs="+", help="repo-relative paths of the amended tester files")
     amended.add_argument("--reason", required=True, help="why the test was wrong")
-    add("context", "Print the issue's claims and context")
-    gate = add("gate", "Hook: allow or refuse a subagent or workflow launch, track questions")
-    which = gate.add_mutually_exclusive_group()
-    which.add_argument("--stopped", action="store_true", help="SubagentStop: an agent finished")
-    which.add_argument("--answered", action="store_true", help="PostToolUse: a question answered")
-    add("idle", "Hook (Stop): record that the session ended its turn, with its last message")
-    add("inbox", "Hook: hand this session its pending A2A messages")
-    add("stop", "Hook (Stop): answered-question check, then mail, else record the idle stop")
-    add("permission", "Hook: log an auto-mode block or prompt")
-    add("session-start", "Hook: record compaction and the scratchpad, print the context")
+    add("context", "Print the issue's context")
+    stop = add("stop", "Hook (Stop, StopFailure): refuse one early stop, then record the idle stop")
+    stop.add_argument("--failure", action="store_true", help="the turn ended on an API error")
+    add("session-start", "Hook: record the scratchpad, print the context")
     com = add("commit", "Commit only the given paths, one commit at a time per worktree")
     com.add_argument("-m", dest="message", required=True, help="commit message")
     com.add_argument("paths", nargs=argparse.REMAINDER, help="-- then the paths to commit")
-    done = add("done", "Mark the work done")
-    done.add_argument("--summary", required=True, help="what was done")
-    add("review-done", "Mark the review done (reads review.md)")
-    add("handoff-ready", "Mark handoff.md ready")
+    done = add("done", "Mark this step done (the reviewer's review.md, or --summary)")
+    done.add_argument("--summary", default=None, help="what was done, for the PR body")
     add("tick", "Run one service tick")
     add("run", "Run ticks in a loop")
     rel = add("release", "Clear a claim and kill its session")
-    rel.add_argument("key", help="issue key, e.g. NF-12")
+    rel.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     rel.add_argument("--keep-worktree", action="store_true", help="leave the worktree on disk")
     rel.add_argument(
         "--accept-tests",
         action="store_true",
         help="approve the tester's files as they stand on the branch (keeps the worktree)",
     )
+    rel.add_argument(
+        "--hold-only",
+        action="store_true",
+        help="only lift a hold; refused for a blocked, timed-out or done run (cardinal's release)",
+    )
+    hold = add("hold", "Start nothing for an issue until flocc release lifts the hold")
+    hold.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    hold.add_argument("--reason", default="", help="why, for flocc status")
+    fix = add("fix", "Start one fixer with a note on a blocked or timed-out run, within the cap")
+    fix.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    fix.add_argument("--note", required=True, help="what the fixer should fix")
+    rs = add("run-summary", "Print a run's summary, why it stopped and a log tail, at a fixed size")
+    rs.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    dd = add("digest-data", "Print what the daily digest covers; --done N clears it once sent")
+    dd.add_argument("--done", type=int, default=None, metavar="N", help="clear lines through N")
+    add("cleanup", "Remove worktrees, state and scratchpads no claim owns")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )
@@ -992,17 +828,13 @@ def build_parser() -> argparse.ArgumentParser:
     peek = add("peek", "Print the tail of an issue's live session")
     peek.add_argument("key", help="issue key, e.g. NF-12")
     peek.add_argument("-n", dest="lines", type=int, default=40, help="lines to print")
-    press = add("press", "Press keys in an issue's live session, e.g. to answer a dialog")
-    press.add_argument("key", help="issue key, e.g. NF-12")
-    press.add_argument("keys", nargs="+", help="Enter, Escape, Up, Down, Tab, ... or one character")
-    say = add("say", "Type a message into an issue's live session and press Enter")
-    say.add_argument("key", help="issue key, e.g. NF-12")
-    say.add_argument("text", nargs="+", help="the message")
-    perms = add("permissions", "Summarise the auto-mode blocks and prompts sessions met")
-    perms.add_argument("action", choices=["report"], help="what to show")
-    perms.add_argument("--days", type=int, default=7, help="how many days back")
     attach = add("attach", "Attach read-only to an agent's tmux session")
     attach.add_argument("session", help="session name, e.g. NF-12 or NF-12-review")
+    ev = add("events", "Print unacknowledged events as JSON lines; --follow keeps printing")
+    ev.add_argument("--follow", action="store_true", help="print each batch as it closes")
+    ev.add_argument("--hello", action="store_true", help='print {"link": "up"} on connect')
+    ack = add("ack", "Acknowledge events by id; acking twice is harmless")
+    ack.add_argument("ids", nargs="+", type=int, help="event ids from flocc events")
     return parser
 
 

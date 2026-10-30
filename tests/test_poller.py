@@ -4,32 +4,31 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
-from flocc import ledger
-from flocc.config import TRAILER, RepoConfig, load
+from flocc import events, ledger
+from flocc.config import TRAILER, load
 from flocc.context import state_dir
-from flocc.escalation import Notifier
-from flocc.grants import Grants, for_phase, set_block
 from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
+from flocc.notice import Notifier
 from flocc.poller import (
-    clean_scratchpads,
     forward_comments,
-    maybe_digest,
+    maybe_daily,
     poll,
     reap_worktrees,
+    release_claim,
     repo_for,
     restart_timed_out,
-    route_escalations,
 )
 from flocc.runtime import Runtime
 from flocc.supervisor import LaunchError
 from flocc.tick import tick, tick_lock
-from flocc.worktree import git, prepare_worktree, recover_tests
-from tests.fakes import FakeNotifier, FakeSessions
+from flocc.worktree import fetch_agent_branch, git, prepare_worktree, recover_tests
+from tests.fakes import FakeAgent, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
 CFG = load(EXAMPLE)
-GOOD = "Do it.\n\n## Acceptance criteria\n\n- works\n"
+GOOD = "Do it.\n\nRun: tester, executor, reviewer\n\n## Acceptance criteria\n\n- works\n"
+PLAIN = "Do it.\n\n## Acceptance criteria\n\n- works\n"
 DEPENDS = "```agent\ndepends_on: [NF-404]\n```\n\n" + GOOD
 
 
@@ -81,9 +80,6 @@ class PollLinear:
             raise LinearError("Entity not found: Issue")
         return issue(key)
 
-    def add_label(self, i, name):
-        pass
-
     def unstart(self, i):
         self.unstarted.append(i.key)
 
@@ -95,10 +91,10 @@ def rt(tmp_cfg, tmp_path, monkeypatch):
         path.mkdir(parents=True, exist_ok=True)
         return path, f"agent/{key.lower()}", "sha0"
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", fake_prepare)
-    monkeypatch.setattr("flocc.poller.install_hook", lambda *a, **kw: None)
     monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: None)
+    monkeypatch.setattr("flocc.poller.fetch_agent_branch", lambda *a: "sha0")
     return Runtime(
+        agent=FakeAgent(tmp_cfg, fake_prepare),
         cfg=tmp_cfg,
         con=ledger.connect(tmp_cfg.ledger_path),
         linear=PollLinear([]),
@@ -135,14 +131,36 @@ def test_poll_launches_tester(rt):
     assert (state_dir(rt.cfg, "NF-9") / "context.md").exists()
 
 
-def test_a_shared_path_in_the_agent_block_is_not_recorded_as_a_claim(rt):
-    backend = replace(rt.cfg.repos["backend"], shared_paths=("docs/verification.md",))
-    rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
-    block = "```agent\npaths: docs/verification.md, src/a.py\n```\n\n"
-    rt.linear.ready = [issue(desc=block + GOOD)]
+def test_the_default_sequence_starts_at_the_executor_with_no_tester(rt):
+    rt.linear.ready = [issue(desc=PLAIN)]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
-    assert c is not None and c.paths == ["src/a.py"]
+    assert c is not None and c.sequence == ["executor", "reviewer"]
+    assert (c.phase, c.tester_sha) == ("impl", None) and rt.sessions.started[0][0] == "NF-9"
+
+
+def test_a_start_refreshes_the_service_clones_base(rt, monkeypatch):
+    seen = []
+    monkeypatch.setattr("flocc.poller.origin_base", lambda repo: seen.append(repo))
+    rt.linear.ready = [issue(desc=PLAIN)]
+    poll(rt)
+    assert seen == [next(iter(rt.cfg.repos.values()))]
+
+
+def test_a_run_line_is_recorded_on_the_claim(rt):
+    rt.linear.ready = [issue(desc=PLAIN.replace("Do it.", "Do it.\n\nRun: tester, executor"))]
+    poll(rt)
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.sequence == ["tester", "executor"] and c.phase == "test"
+
+
+def test_an_unknown_archetype_skips_the_issue_with_one_comment(rt):
+    rt.linear.ready = [issue(desc=PLAIN + "\nRun: executor, planner\n")]
+    poll(rt)
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    (comment,) = rt.linear.comments
+    assert "unknown archetype: planner" in comment[1] and comment[1].startswith("Skipping:")
 
 
 def test_unreadable_dependency_holds_only_that_issue(rt):
@@ -154,16 +172,22 @@ def test_unreadable_dependency_holds_only_that_issue(rt):
     assert len(rt.linear.comments) == 1 and "NF-404" in rt.linear.comments[0][1]
 
 
+@pytest.mark.parametrize("line", ["paths: src/**", "allow: Agent"])
+def test_a_retired_agent_block_key_skips_the_issue_with_one_comment(rt, line):
+    rt.linear.ready = [issue(desc=GOOD + f"\n```agent\n{line}\n```\n")]
+    poll(rt)
+    poll(rt)
+    assert len(rt.linear.comments) == 1
+    assert rt.linear.comments[0][1].startswith("Skipping: agent block: unknown keys")
+    assert ledger.get_claim(rt.con, "NF-9") is None
+
+
 def test_rerun_ignores_files_from_the_previous_claim(rt):
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
-    old = json.dumps({"tier": 2, "cause": "x", "summary": "s", "action": "a", "waiting": True})
-    (d / "escalations.jsonl").write_text(old + "\n")
     (d / "done.json").write_text(json.dumps({"summary": "the previous claim's"}))
     rt.linear.ready = [issue()]
     poll(rt)
-    route_escalations(rt)
-    assert rt.notifier.sent == []
     assert not (d / "done.json").exists()
 
 
@@ -171,7 +195,7 @@ def test_a_resume_at_the_implementer_keeps_the_amended_tests_record(rt, monkeypa
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
         "flocc.poller.contains",
-        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+        lambda path, sha, ref="": sha == "sha-tests" and ref == "refs/flocc/NF-9",
     )
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
@@ -185,19 +209,16 @@ def test_rerun_on_a_branch_with_the_tests_resumes_at_the_implementer(rt, monkeyp
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
         "flocc.poller.contains",
-        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+        lambda path, sha, ref="": sha == "sha-tests" and ref == "refs/flocc/NF-9",
     )
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir()
-    (d / "handoff.md").write_text("the previous claim's notes")
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
     assert c is not None
     assert (c.phase, c.base_sha, c.tester_sha) == ("impl", "sha-old-base", "sha-tests")
     assert rt.sessions.started[0][0] == "NF-9" and rt.linear.started == ["NF-9"]
-    assert not (d / "handoff.md").exists()
-    assert (d / "handoff.prev.md").read_text() == "the previous claim's notes"
 
 
 def test_a_fresh_claim_gets_its_own_review_fix_round(rt):
@@ -223,7 +244,7 @@ def test_a_fresh_claim_forgets_the_last_run_s_rebase_and_base_hold(rt):
 
 def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
-    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": False)
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="": False)
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -234,7 +255,7 @@ def test_rerun_without_the_tests_on_the_branch_starts_at_the_tester(rt, monkeypa
 
 def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
-    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": True)
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="": True)
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -245,7 +266,7 @@ def test_rerun_after_the_tests_were_merged_starts_at_the_tester(rt, monkeypatch)
 
 def test_tests_recovered_from_the_branch_are_remembered_and_resume_the_implementer(rt, monkeypatch):
     monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: ("sha-fork", "sha-tests"))
-    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": ref == "HEAD")
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="": ref == "refs/flocc/NF-9")
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -259,7 +280,7 @@ def test_a_rebased_branch_recovers_the_tests_and_updates_the_record(rt, monkeypa
     monkeypatch.setattr("flocc.poller.recover_tests", lambda *a: ("sha-new-base", "sha-tests"))
     monkeypatch.setattr(
         "flocc.poller.contains",
-        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+        lambda path, sha, ref="": sha == "sha-tests" and ref == "refs/flocc/NF-9",
     )
     rt.linear.ready = [issue()]
     poll(rt)
@@ -276,7 +297,7 @@ def test_remembered_tests_are_not_recovered_again(rt, monkeypatch):
         raise AssertionError("recovery ran with tests already remembered")
 
     monkeypatch.setattr("flocc.poller.recover_tests", recover)
-    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="HEAD": ref == "HEAD")
+    monkeypatch.setattr("flocc.poller.contains", lambda path, sha, ref="": ref == "refs/flocc/NF-9")
     rt.linear.ready = [issue()]
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
@@ -284,10 +305,12 @@ def test_remembered_tests_are_not_recovered_again(rt, monkeypatch):
 
 
 def test_a_branch_from_another_host_resumes_at_the_implementer(rt, origin, tmp_path, monkeypatch):
-    monkeypatch.setattr("flocc.poller.prepare_worktree", prepare_worktree)
+    rt.agent.prepare_fn = prepare_worktree
     monkeypatch.setattr("flocc.poller.recover_tests", recover_tests)
+    monkeypatch.setattr("flocc.poller.fetch_agent_branch", fetch_agent_branch)
     backend = replace(rt.cfg.repos["backend"], path=origin)
     rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
+    rt.agent.cfg = rt.cfg
     other = tmp_path / "other-host"
     subprocess.run(
         ["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)],
@@ -312,10 +335,12 @@ def test_a_branch_from_another_host_resumes_at_the_implementer(rt, origin, tmp_p
 
 
 def test_a_branch_rebased_on_the_host_resumes_at_the_implementer(rt, origin, tmp_path, monkeypatch):
-    monkeypatch.setattr("flocc.poller.prepare_worktree", prepare_worktree)
+    rt.agent.prepare_fn = prepare_worktree
     monkeypatch.setattr("flocc.poller.recover_tests", recover_tests)
+    monkeypatch.setattr("flocc.poller.fetch_agent_branch", fetch_agent_branch)
     backend = replace(rt.cfg.repos["backend"], path=origin)
     rt.cfg = replace(rt.cfg, repos={**rt.cfg.repos, "backend": backend})
+    rt.agent.cfg = rt.cfg
     path, _, fork = prepare_worktree(backend, rt.cfg.worktree_root, "NF-9")
     (path / "test_x.py").write_text("assert True\n")
     git("add", ".", cwd=path)
@@ -339,16 +364,14 @@ def test_a_branch_rebased_on_the_host_resumes_at_the_implementer(rt, origin, tmp
 
 
 @pytest.mark.parametrize("state", ["done", "timed_out", "blocked"])
-def test_finished_or_blocked_claim_back_in_todo_is_released_and_rerun(rt, monkeypatch, state):
-    removed = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: removed.append(a))
+def test_finished_or_blocked_claim_back_in_todo_is_released_and_rerun(rt, state):
     ledger.insert_claim(rt.con, make("NF-9", state=state))
     rt.linear.ready = [issue()]
     poll(rt)
     poll(rt)
     c = ledger.get_claim(rt.con, "NF-9")
     assert c is not None and c.state == "running" and c.started_at == 1000.0
-    assert removed == []
+    assert rt.agent.removed == []
     assert [text for _, text in rt.linear.comments] == [
         "moved back to Todo; restarting from a fresh claim."
     ]
@@ -370,7 +393,7 @@ def test_running_claim_in_todo_is_left_alone(rt, phase):
 def test_rerun_resumes_at_the_implementer_and_clears_the_old_alerts(rt, monkeypatch):
     monkeypatch.setattr(
         "flocc.poller.contains",
-        lambda path, sha, ref="HEAD": sha == "sha-tests" and ref == "HEAD",
+        lambda path, sha, ref="": sha == "sha-tests" and ref == "refs/flocc/NF-9",
     )
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     ledger.insert_claim(rt.con, make("NF-9", state="blocked"))
@@ -449,14 +472,14 @@ def test_skip_unmapped_says_so_once_when_a_relabelled_rerun_releases_its_claim(r
 
 def test_poll_respects_cap(rt):
     for key in ("NF-1", "NF-2"):
-        ledger.insert_claim(rt.con, make(key, ()))
+        ledger.insert_claim(rt.con, make(key))
     rt.linear.ready = [issue()]
     poll(rt)
     assert ledger.get_claim(rt.con, "NF-9") is None
 
 
 def test_forward_only_owner_comments(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
+    ledger.insert_claim(rt.con, make("NF-1"))
     rt.linear.replies = {
         "id-NF-1": [
             Comment("c1", f"{BOT_PREFIX} question", "2026-10-09T10:00:00Z", mine=True),
@@ -473,7 +496,7 @@ def test_forward_only_owner_comments(rt):
 
 def test_forward_steer_author_comments(rt):
     rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
-    ledger.insert_claim(rt.con, make("NF-1", ()))
+    ledger.insert_claim(rt.con, make("NF-1"))
     rt.linear.replies = {
         "id-NF-1": [
             Comment("c1", "owner says hi", "2026-10-09T10:00:00Z", mine=True),
@@ -493,7 +516,7 @@ def test_forward_steer_author_comments(rt):
 
 
 def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
+    ledger.insert_claim(rt.con, make("NF-1"))
     rt.linear.replies = {
         "id-NF-1": [
             Comment("c1", "a teammate's aside", "2026-10-09T10:00:00Z", mine=False),
@@ -509,151 +532,65 @@ def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
     assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
 
 
-def test_a_reply_is_held_while_a_question_is_open_and_delivered_after(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [
-            Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True),
-        ]
-    }
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "asking").write_text("{}")
-    before = ledger.get_claim(rt.con, "NF-1")
-    forward_comments(rt)
-    after = ledger.get_claim(rt.con, "NF-1")
-    assert rt.sessions.sent == [] and before is not None and after is not None
-    assert after.last_comment_at == before.last_comment_at
-    assert not (d / "grants.json").exists()
-    (d / "asking").unlink()
-    forward_comments(rt)
-    assert [body for _, body in rt.sessions.sent] == [
-        "The owner replied on Linear: allow: launches 4"
-    ]
-    assert for_phase(d / "grants.json", "test").launches == 4
-
-
-def test_an_open_question_does_not_hold_other_claims(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    ledger.insert_claim(rt.con, make("NF-2", ()))
-    rt.linear.replies = {
-        "id-NF-2": [Comment("c1", "use B", "2026-10-09T10:00:00Z", mine=True)],
-    }
-    rt.sessions.alive_names.update({"NF-1-test", "NF-2-test"})
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "asking").write_text("{}")
-    forward_comments(rt)
-    assert rt.sessions.sent == [("NF-2-test", "The owner replied on Linear: use B")]
-
-
-def test_owner_and_steer_author_allow_comments_grant_for_the_running_phase(rt):
-    rt.cfg = replace(rt.cfg, steer_authors=("hermes-id",))
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [
-            Comment("c1", "go ahead\nallow: launches 4", "2026-10-09T10:00:00Z", mine=True),
-            Comment("c2", "allow: agent code-mapper", "2026-10-09T10:01:00Z", author="hermes-id"),
-            Comment("c3", "allow: agent general-purpose", "2026-10-09T10:02:00Z", author="x"),
-        ]
-    }
-    rt.sessions.alive_names.add("NF-1-test")
-    forward_comments(rt)
-    path = state_dir(rt.cfg, "NF-1") / "grants.json"
-    assert for_phase(path, "test") == Grants(launches=4, agents=("code-mapper",))
-    assert for_phase(path, "impl").launches is None
-    assert rt.sessions.sent[0][1].startswith("The owner replied on Linear: go ahead")
-
-
-def test_bad_allow_comment_is_answered_once_and_keeps_grants(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [
-            Comment("c1", "allow: launches 9", "2026-10-09T10:00:00Z", mine=True),
-            Comment("c2", "allow: launches lots", "2026-10-09T10:01:00Z", mine=True),
-        ]
-    }
-    rt.sessions.alive_names.add("NF-1-test")
-    forward_comments(rt)
-    # Real Linear returns each comment once (last_comment_at advances); PollLinear ignores it.
-    assert for_phase(state_dir(rt.cfg, "NF-1") / "grants.json", "test").launches == 9
-    replies = [body for _, body in rt.linear.comments if "launches lots" in body]
-    assert len(replies) == 1
-
-
-def test_grants_wait_for_a_live_session(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    rt.linear.replies = {
-        "id-NF-1": [Comment("c1", "allow: launches 4", "2026-10-09T10:00:00Z", mine=True)]
-    }
-    forward_comments(rt)  # session down: nothing applied, nothing advanced
-    assert not (state_dir(rt.cfg, "NF-1") / "grants.json").exists()
-
-
 def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir(parents=True)
-    from_before = Grants(launches=5)
-    set_block(d / "grants.json", from_before)
-    names = ("scratchpads", "compacted", "asking", "tests-amended.json")
+    names = ("tests-amended.json", "last-summary.md")
     for name in names:
         (d / name).write_text("x")
     rt.linear.ready = [issue()]
     poll(rt)
     for name in names:
         assert not (d / name).exists()
-    assert for_phase(d / "grants.json", "impl").launches is None
 
 
-def test_escalations_sent_before_a_failure_are_not_resent(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True)
-    lines = [json.dumps({"tier": 3, "cause": c, "summary": "s"}) for c in ("a", "b")]
-    (d / "escalations.jsonl").write_text("".join(f"{line}\n" for line in lines))
-    sent = []
-
-    def flaky(esc, issue, team_id):
-        if esc.cause == "NF-1:b" and "failed" not in sent:
-            sent.append("failed")
-            raise LinearError("down")
-        sent.append(esc.cause)
-
-    rt.notifier.send = flaky
-    with pytest.raises(LinearError):
-        route_escalations(rt)
-    route_escalations(rt)
-    assert sent == ["NF-1:a", "failed", "NF-1:b"]
-
-
-def test_route_escalations_reads_only_new_lines(rt):
-    ledger.insert_claim(rt.con, make("NF-1", ()))
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True)
-    line = json.dumps({"tier": 3, "cause": "c", "summary": "s", "issue_key": "NF-1"})
-    (d / "escalations.jsonl").write_text(line + "\nnot json\n")
-    route_escalations(rt)
-    route_escalations(rt)
-    assert [e.cause for e in rt.notifier.sent] == ["NF-1:c", "NF-1:malformed-escalation"]
-
-
-def test_digest_posts_once_per_day(rt, monkeypatch):
-    ledger.add_digest(rt.con, "NF-1", "draft PR ready", 1)
+def test_the_daily_event_is_emitted_once_per_day(rt, monkeypatch):
     monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
-    maybe_digest(rt)
-    maybe_digest(rt)
-    assert len(rt.linear.comments) == 1 and "draft PR ready" in rt.linear.comments[0][1]
+    maybe_daily(rt)
+    maybe_daily(rt)
+    assert [(e.kind, e.detail) for e in events.unacked(rt.con)] == [("daily", "2026-10-09")]
+    assert rt.linear.comments == []
 
 
-def test_digest_is_kept_when_posting_fails(rt, monkeypatch):
-    ledger.add_digest(rt.con, "NF-1", "draft PR ready", 1)
-    monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (19, "2026-10-09"))
-    rt.linear.comment_fails = True
-    with pytest.raises(LinearError):
-        maybe_digest(rt)
-    assert len(ledger.pending_digest(rt.con)) == 1
-    assert ledger.meta_get(rt.con, "digest_date") is None
+def test_no_daily_event_before_the_digest_hour(rt, monkeypatch):
+    monkeypatch.setattr("flocc.poller._local_hour_and_date", lambda now: (7, "2026-10-09"))
+    maybe_daily(rt)
+    assert events.unacked(rt.con) == []
+
+
+def test_a_bad_run_line_is_one_bad_sequence_event(rt):
+    bad = "Run: planner, executor\n\n## Acceptance criteria\n\n- works\n"
+    rt.linear.ready = [issue(desc=bad)]
+    poll(rt)
+    poll(rt)
+    [e] = events.unacked(rt.con)
+    assert e.kind == "bad-sequence" and e.issue_key == "NF-9" and "planner" in e.detail
+
+
+def test_linear_is_a_service_error_after_three_failed_ticks(rt):
+    from flocc.tick import LINEAR_FAILS_BEFORE_EVENT, _page_after_repeats
+
+    for _ in range(LINEAR_FAILS_BEFORE_EVENT):
+        _page_after_repeats(
+            rt.con,
+            rt.notifier,
+            "linear_failures",
+            "linear-api",
+            "Linear",
+            LinearError("down"),
+            "Check the key",
+            LINEAR_FAILS_BEFORE_EVENT,
+        )
+    [page] = rt.notifier.sent
+    assert page.event == "service-error" and "3 ticks" in page.summary
+
+
+def test_a_held_issue_is_not_started(rt, capsys):
+    ledger.add_hold(rt.con, "NF-9", "waiting on NF-2", 1.0)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None and rt.sessions.started == []
+    assert "held by cardinal: waiting on NF-2" in capsys.readouterr().err
 
 
 def test_tick_lock_is_exclusive(tmp_path):
@@ -675,8 +612,8 @@ def test_prepare_failure_comments_once_with_stderr(rt, monkeypatch):
     def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.CalledProcessError(1, ["./setup"], stderr="setup: npm is missing\n")
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", failing)
-    rt.notifier = Notifier(rt.cfg, rt.con, rt.linear, rt.now, push=lambda *a: None)
+    rt.agent.prepare_fn = failing
+    rt.notifier = Notifier(rt.con, rt.linear, rt.now)
     rt.linear.ready = [issue()]
     poll(rt)
     poll(rt)
@@ -687,7 +624,7 @@ def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
     def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", slow)
+    rt.agent.prepare_fn = slow
     rt.linear.ready = [issue()]
     poll(rt)
     [esc] = rt.notifier.sent
@@ -698,12 +635,15 @@ def test_setup_timeout_is_a_prepare_failure(rt, monkeypatch):
 def _broken_main(rt, monkeypatch, at_base="sha-main"):
     calls = []
 
+    rt.agent.at_base = at_base
+
     def failing(repo, root, key, setup_timeout_s, shared_uv_cache):
         calls.append(key)
-        raise subprocess.CalledProcessError(1, ["./setup"], stderr="mise: no version set for go\n")
+        exc = subprocess.CalledProcessError(1, ["./setup"], stderr="mise: no version set for go\n")
+        exc.__dict__["at_base"] = rt.agent.at_base
+        raise exc
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", failing)
-    monkeypatch.setattr("flocc.poller.head_at_base", lambda repo, path: at_base)
+    rt.agent.prepare_fn = failing
     monkeypatch.setattr("flocc.poller.origin_base", lambda repo: "sha-main")
     return calls
 
@@ -719,19 +659,18 @@ def test_a_kept_worktree_or_a_git_failure_never_marks_the_repo(rt, monkeypatch):
             raise subprocess.CalledProcessError(128, ["git", "fetch"], stderr="network down")
         raise subprocess.CalledProcessError(1, ["./setup"], stderr="uncommitted junk\n")
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", fetch_fails)
+    rt.agent.prepare_fn = fetch_fails
     rt.linear.ready = [issue("NF-9"), issue("NF-10")]
     poll(rt)
     assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
-    assert all(e.tier == 2 for e in rt.notifier.sent)
 
 
-def test_a_failed_escalation_leaves_no_silent_hold(rt, monkeypatch):
+def test_a_failed_notice_leaves_no_silent_hold(rt, monkeypatch):
     from flocc import canary
 
     _broken_main(rt, monkeypatch)
 
-    def down(esc, issue, team_id):
+    def down(notice, issue=None):
         raise LinearError("down")
 
     rt.notifier.send = down
@@ -748,7 +687,7 @@ def test_setup_failing_on_untouched_main_marks_the_repo_and_holds_its_issues(rt,
     poll(rt)
     assert calls == ["NF-9"]
     [esc] = rt.notifier.sent
-    assert esc.tier == 1 and esc.issue_key == "NF-9" and esc.cause.endswith("main-broken")
+    assert esc.issue_key == "NF-9" and esc.cause.endswith("main-broken")
     assert "mise: no version set for go" in esc.summary and "flocc canary" in esc.action
     assert ledger.get_claim(rt.con, "NF-10") is None
 
@@ -761,12 +700,12 @@ def test_a_setup_timeout_on_untouched_main_never_marks_the_repo(rt, monkeypatch)
     def slow(repo, root, key, setup_timeout_s, shared_uv_cache):
         raise subprocess.TimeoutExpired(["./setup"], setup_timeout_s, stderr="still installing")
 
-    monkeypatch.setattr("flocc.poller.prepare_worktree", slow)
+    rt.agent.prepare_fn = slow
     rt.linear.ready = [issue("NF-9")]
     poll(rt)
     assert canary.get_mark(rt.con, next(iter(rt.cfg.repos))) is None
     [esc] = rt.notifier.sent
-    assert esc.tier == 2 and esc.cause == "NF-9:prepare"
+    assert esc.cause == "NF-9:prepare"
 
 
 def test_setup_failing_on_the_issues_own_commits_is_the_issues(rt, monkeypatch):
@@ -774,7 +713,6 @@ def test_setup_failing_on_the_issues_own_commits_is_the_issues(rt, monkeypatch):
     rt.linear.ready = [issue("NF-9"), issue("NF-10")]
     poll(rt)
     assert calls == ["NF-9", "NF-10"]
-    assert all(e.tier == 2 for e in rt.notifier.sent)
 
 
 def test_a_new_commit_on_main_lets_the_next_issue_try_again(rt, monkeypatch):
@@ -799,7 +737,7 @@ def test_main_broken_marks_even_when_the_issues_prepare_alert_is_recent(rt, monk
     calls = _broken_main(rt, monkeypatch, at_base=None)
     rt.linear.ready = [issue("NF-9")]
     poll(rt)
-    monkeypatch.setattr("flocc.poller.head_at_base", lambda repo, path: "sha-main")
+    rt.agent.at_base = "sha-main"
     poll(rt)
     poll(rt)
     assert calls == ["NF-9", "NF-9"]
@@ -814,17 +752,15 @@ def test_tick_pages_once_runtime_setup_failures_repeat(tmp_cfg, tmp_path, monkey
         publish_gh_token_file=tmp_path / "gh-publish.token",
     )
 
-    def missing(name):
-        raise RuntimeError(f"{name} is not on PATH")
+    def broken(_key):
+        raise RuntimeError("agent unreachable")
 
-    monkeypatch.setattr("flocc.tick._which", missing)
-    pushes = []
-    monkeypatch.setattr("flocc.tick.ntfy_push", lambda *a, **kw: pushes.append(a), raising=False)
-    for _ in range(5):
-        with pytest.raises(RuntimeError, match="not on PATH"):
+    monkeypatch.setattr("flocc.tick.http_transport", broken)
+    for _ in range(6):
+        with pytest.raises(RuntimeError, match="agent unreachable"):
             tick(cfg, tmp_path / "c.toml")
-    [(url, _, message, priority, *_)] = pushes
-    assert url == cfg.ntfy_url and priority == 5 and "not on PATH" in message
+    [(_, key, line)] = ledger.pending_digest(ledger.connect(cfg.ledger_path))
+    assert key is None and "agent unreachable" in line
 
 
 def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
@@ -834,14 +770,12 @@ def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
         raise RuntimeError("tmux: no server running")
 
     monkeypatch.setattr("flocc.tick.poll", tmux_down)
-    for _ in range(4):
+    for _ in range(5):
         with pytest.raises(RuntimeError):
             tick(rt.cfg, tmp_path / "c.toml")
-    assert rt.notifier.sent == []
-    with pytest.raises(RuntimeError):
-        tick(rt.cfg, tmp_path / "c.toml")
     [esc] = rt.notifier.sent
-    assert (esc.tier, esc.scope) == (1, "global") and "tmux: no server" in esc.summary
+    assert esc.issue_key is None and "tmux: no server" in esc.summary
+    assert esc.event == "service-error"
     monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
     assert tick(rt.cfg, tmp_path / "c.toml") == 0
     assert ledger.meta_get(rt.con, "tick_failures") == "0"
@@ -849,7 +783,7 @@ def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
 
 def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkeypatch):
     for key in ("NF-1", "NF-2"):
-        ledger.insert_claim(rt.con, make(key, ()))
+        ledger.insert_claim(rt.con, make(key))
     supervised, polled = [], []
 
     def supervise(rt, claim):
@@ -867,11 +801,9 @@ def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkey
 
 def test_tick_with_a_deleted_issue_still_polls_and_pages_naming_it(rt, tmp_path, monkeypatch):
     for key in ("NF-1", "NF-2"):
-        ledger.insert_claim(rt.con, make(key, ()))
+        ledger.insert_claim(rt.con, make(key))
         d = state_dir(rt.cfg, key)
         d.mkdir(parents=True)
-        esc = {"tier": 3, "cause": "note", "summary": "s", "action": "a"}
-        (d / "escalations.jsonl").write_text(json.dumps(esc) + "\n")
     rt.linear.deleted = ("NF-1",)
     rt.sessions.alive_names = {"NF-1-test", "NF-2-test"}
     rt.linear.replies = {"id-NF-2": [Comment("c1", "go", "2026-10-09T10:00:00Z", mine=True)]}
@@ -882,9 +814,8 @@ def test_tick_with_a_deleted_issue_still_polls_and_pages_naming_it(rt, tmp_path,
     for _ in range(5):
         assert tick(rt.cfg, tmp_path / "c.toml") == 1
     assert len(polled) == 5
-    assert [e.cause for e in rt.notifier.sent[:1]] == ["NF-2:note"]
     assert rt.sessions.sent[0] == ("NF-2-test", "The owner replied on Linear: go")
-    [page] = [e for e in rt.notifier.sent if e.tier == 1]
+    [page] = [e for e in rt.notifier.sent if e.cause == "linear-api"]
     assert "NF-1" in page.summary and "flocc release NF-1" in page.action
 
 
@@ -897,7 +828,6 @@ def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monke
         publish_gh_token_file=tmp_path / "gh-publish.token",
     )
     cfg.agent_gh_token_file.unlink()
-    monkeypatch.setattr("flocc.tick._which", lambda name: f"/opt/{name}")
     transports = []
     monkeypatch.setattr("flocc.tick.http_transport", transports.append)
     with pytest.raises(RuntimeError, match="gh-agent.token"):
@@ -905,21 +835,6 @@ def test_tick_without_agent_token_fails_before_any_work(tmp_cfg, tmp_path, monke
     assert transports == []
     con = ledger.connect(cfg.ledger_path)
     assert ledger.live_claims(con) == [] and ledger.meta_get(con, "tick_failures") == "1"
-
-
-def test_review_session_escalations_go_to_the_digest_only(rt):
-    claim = make("NF-1", ())
-    claim.phase = "review"
-    ledger.insert_claim(rt.con, claim)
-    d = state_dir(rt.cfg, "NF-1")
-    d.mkdir(parents=True)
-    line = json.dumps({"tier": 1, "cause": "c", "summary": "boom", "issue_key": "NF-1"})
-    (d / "escalations.jsonl").write_text(line + "\n")
-    route_escalations(rt)
-    route_escalations(rt)
-    assert rt.notifier.sent == []
-    [(_, key, text)] = ledger.pending_digest(rt.con)
-    assert key == "NF-1" and "review session escalated" in text and "boom" in text
 
 
 def test_low_disk_holds_a_start(rt):
@@ -940,14 +855,12 @@ def finished(rt, key, state="done"):
     "state_type, removed",
     [("completed", True), ("canceled", True), ("unstarted", False), ("started", False)],
 )
-def test_reap_removes_worktrees_of_closed_issues_only(rt, monkeypatch, state_type, removed):
-    wt = finished(rt, "NF-5", state="timed_out")
+def test_reap_removes_worktrees_of_closed_issues_only(rt, state_type, removed):
+    finished(rt, "NF-5", state="timed_out")
     rt.linear.state_types = lambda keys: {k: state_type for k in keys}
-    monkeypatch.setattr("flocc.poller.has_uncommitted_changes", lambda path: False)
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
-    assert calls == ([("worktree", "remove", "--force", str(wt))] if removed else [])
+    assert rt.agent.removed == ([("NF-5", True)] if removed else [])
+    assert (ledger.get_claim(rt.con, "NF-5") is None) is removed
 
 
 def timed_out(rt, monkeypatch, commit_times, state_type="started", key="NF-5"):
@@ -971,6 +884,13 @@ def test_a_timeout_with_new_commits_restarts_once(rt, monkeypatch):
     ledger.update_claim(rt.con, "NF-5", base_sha="sha-base", started_at=1000.0, phase="impl")
     restart_timed_out(rt)
     assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == ["NF-5"]
+
+
+def test_a_held_timed_out_run_is_not_restarted(rt, monkeypatch):
+    timed_out(rt, monkeypatch, [1500, 500])
+    ledger.add_hold(rt.con, "NF-5", "owner said wait", 1.0)
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == []
 
 
 @pytest.mark.parametrize(
@@ -1019,22 +939,19 @@ def test_a_blocked_claim_is_not_restarted(rt, monkeypatch):
     assert ledger.get_claim(rt.con, "NF-5") is not None
 
 
-def test_reap_leaves_live_claims_and_skips_missing_worktrees(rt, monkeypatch):
+def test_reap_leaves_live_claims_alone(rt):
     for key, state in (("NF-1", "running"), ("NF-2", "blocked")):
         (rt.cfg.worktree_root / key).mkdir()
         ledger.insert_claim(
             rt.con, make(key, state=state, worktree=str(rt.cfg.worktree_root / key))
         )
-    finished(rt, "NF-3").rmdir()
     asked = []
-    rt.linear.state_types = lambda keys: asked.append(keys) or {k: "completed" for k in keys}
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
+    rt.linear.state_types = lambda keys: asked.append(keys) or {k: "started" for k in keys}
     reap_worktrees(rt)
-    assert calls == [] and asked == []
+    assert rt.agent.removed == [] and asked == []
 
 
-def test_reap_survives_a_linear_error_and_a_failed_removal(rt, monkeypatch, capsys):
+def test_reap_survives_a_linear_error_and_a_failed_removal(rt, capsys):
     finished(rt, "NF-5")
     finished(rt, "NF-6")
 
@@ -1043,27 +960,26 @@ def test_reap_survives_a_linear_error_and_a_failed_removal(rt, monkeypatch, caps
             raise LinearError("rate limited")
         return {"NF-6": "completed"}
 
-    def failing(*a, cwd):
-        raise subprocess.CalledProcessError(1, "git")
+    def failing(key, keep_dirty=False):
+        raise subprocess.CalledProcessError(1, "sudo")
 
     rt.linear.state_types = state_types
-    monkeypatch.setattr("flocc.poller.git", failing)
+    rt.agent.remove = failing
     reap_worktrees(rt)
     err = capsys.readouterr().err
     assert "NF-5 state not read" in err and "NF-6" in err
+    assert ledger.get_claim(rt.con, "NF-6") is not None
 
 
-def test_reap_treats_a_deleted_issue_as_closed(rt, monkeypatch):
-    wt = finished(rt, "NF-5")
+def test_reap_treats_a_deleted_issue_as_closed(rt):
+    finished(rt, "NF-5")
 
     def gone(keys):
         raise LinearError("Entity not found: Issue")
 
     rt.linear.state_types = gone
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
-    assert calls == [("worktree", "remove", "--force", str(wt))]
+    assert rt.agent.removed == [("NF-5", False)]
 
 
 @pytest.mark.parametrize(
@@ -1075,160 +991,58 @@ def test_reap_treats_a_deleted_issue_as_closed(rt, monkeypatch):
     ],
 )
 def test_reap_keeps_a_timed_out_worktree_with_uncommitted_changes(
-    rt, monkeypatch, capsys, claim_state, dirty, removed
+    rt, capsys, claim_state, dirty, removed
 ):
     finished(rt, "NF-5", state=claim_state)
     rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
-    monkeypatch.setattr("flocc.poller.has_uncommitted_changes", lambda path: dirty)
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
+
+    def remove(key, keep_dirty=False):
+        kept = keep_dirty and dirty
+        return {"removed": not kept, "dirty": kept}
+
+    rt.agent.remove = remove
     reap_worktrees(rt)
-    assert bool(calls) is removed
+    assert (ledger.get_claim(rt.con, "NF-5") is None) is removed
     assert ("uncommitted" in capsys.readouterr().err) is (not removed)
     reap_worktrees(rt)
     assert "uncommitted" not in capsys.readouterr().err
 
 
-def test_reap_keeps_a_timed_out_worktree_holding_only_an_untracked_file(origin, rt):
-    path, _, _ = prepare_worktree(RepoConfig(origin), rt.cfg.worktree_root, "NF-5")
-    (path / "new.py").write_text("work\n")
-    ledger.insert_claim(rt.con, make("NF-5", state="timed_out", worktree=str(path)))
-    rt.cfg.repos["backend"] = RepoConfig(origin)
-    rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
-    reap_worktrees(rt)
-    assert (path / "new.py").exists()
-    ledger.update_claim(rt.con, "NF-5", state="done")
-    reap_worktrees(rt)
-    assert not path.exists()
-
-
-def test_reap_clears_caches_a_killed_setup_left(rt):
-    stale = rt.cfg.worktree_root / ".uv-cache-NF-1"
-    (stale / "wheels").mkdir(parents=True)
-    shared = rt.cfg.worktree_root / ".uv-cache"
-    (shared / "wheels").mkdir(parents=True)
-    reap_worktrees(rt)
-    assert not stale.exists()
-    assert shared.exists()
-
-
-def test_reap_removes_stray_canary_dirs_and_prunes_the_repos(rt, monkeypatch):
-    stray = rt.cfg.worktree_root / ".canary-x"
-    stray.mkdir(parents=True)
-    (stray / "file").write_text("x")
-    ran = []
-    next(iter(rt.cfg.repos.values())).path.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "flocc.poller.subprocess.run", lambda argv, **kw: ran.append((argv, kw["cwd"]))
-    )
-    reap_worktrees(rt)
-    assert not stray.exists()
-    paths = {repo.path for repo in rt.cfg.repos.values() if repo.path.exists()}
-    assert paths and {cwd for _, cwd in ran} == paths
-    assert all(argv == ["git", "worktree", "prune"] for argv, _ in ran)
-
-
-def test_reap_prune_failure_is_tolerated(rt, monkeypatch):
-    def broken(argv, **kw):
-        raise OSError("no git")
-
-    monkeypatch.setattr("flocc.poller.subprocess.run", broken)
-    reap_worktrees(rt)
-
-
-def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt, monkeypatch):
+def test_reap_does_not_read_a_wrong_workspace_error_as_a_deleted_issue(rt):
     finished(rt, "NF-5")
 
     def wrong(keys):
         raise LinearError("Team not found")
 
     rt.linear.state_types = wrong
-    calls = []
-    monkeypatch.setattr("flocc.poller.git", lambda *a, cwd: calls.append(a))
     reap_worktrees(rt)
-    assert calls == []
+    assert rt.agent.removed == []
 
 
-def pads(rt, key, lines):
-    d = state_dir(rt.cfg, key)
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "scratchpads").write_text("".join(f"{x}\n" for x in lines))
-    return d
+def test_done_or_canceled_removes_everything_but_the_branch(rt):
+    claim = make("NF-9", state="done")
+    ledger.insert_claim(rt.con, claim)
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir(parents=True)
+    (d / "pr-url").write_text("https://pr/9")
+    reap_worktrees(rt)
+    assert rt.agent.removed == [("NF-9", False)]
+    assert ledger.get_claim(rt.con, "NF-9") is None and not d.exists()
 
 
-def test_cleanup_removes_a_finished_runs_scratchpads_only(rt, tmp_path, monkeypatch):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    done_pad = root / "proj" / "s1" / "scratchpad"
-    live_pad = root / "proj" / "s2" / "scratchpad"
-    done_pad.mkdir(parents=True)
-    live_pad.mkdir(parents=True)
-    ledger.insert_claim(rt.con, make("NF-1", (), state="blocked"))
-    ledger.insert_claim(rt.con, make("NF-2", ()))
-    d1 = pads(rt, "NF-1", [done_pad])
-    pads(rt, "NF-2", [live_pad])
-    clean_scratchpads(rt)
-    assert not done_pad.exists() and live_pad.exists()
-    assert not (d1 / "scratchpads").exists()
+def test_a_timed_out_run_keeps_its_dirty_worktree(rt):
+    ledger.insert_claim(rt.con, make("NF-9", state="timed_out"))
+    rt.agent.remove = lambda key, keep_dirty=False: {"removed": False, "dirty": True}
+    reap_worktrees(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is not None
 
 
-def test_cleanup_only_removes_full_session_paths(rt, tmp_path, monkeypatch):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    project = root / "proj"
-    (project / "s1" / "scratchpad").mkdir(parents=True)
-    outside = tmp_path / "keep"
-    outside.mkdir()
-    ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
-    (project / "s2" / "scratchpad").mkdir(parents=True)
-    listed = [root, project, project / "s1", outside, "", "/", f"{project}/../.."]
-    pads(rt, "NF-1", [*listed, project / "s2" / "scratchpad"])
-    clean_scratchpads(rt)
-    assert root.exists() and (project / "s1" / "scratchpad").exists() and outside.exists()
-    assert not (project / "s2" / "scratchpad").exists()
-
-
-def test_cleanup_does_not_follow_links(rt, tmp_path, monkeypatch):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    other = root / "proj" / "s2" / "scratchpad"
-    other.mkdir(parents=True)
-    outside = tmp_path / "keep"
-    outside.mkdir()
-    s1 = root / "proj" / "s1"
-    s1.mkdir(parents=True)
-    in_tree = s1 / "scratchpad"
-    in_tree.symlink_to(other)
-    out_tree = s1 / "elsewhere"
-    out_tree.symlink_to(outside)
-    via_parent = s1 / "up"
-    via_parent.symlink_to(root / "proj" / "s2")
-    ledger.insert_claim(rt.con, make("NF-1", (), state="done"))
-    pads(rt, "NF-1", [in_tree, out_tree, via_parent / "scratchpad"])
-    clean_scratchpads(rt)
-    assert other.exists() and outside.exists()
-
-
-def test_cleanup_covers_a_listing_with_no_claim(rt, tmp_path, monkeypatch):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    pad = root / "proj" / "s1" / "scratchpad"
-    pad.mkdir(parents=True)
-    d = pads(rt, "NF-7", [pad])
-    clean_scratchpads(rt)
-    assert not pad.exists() and not (d / "scratchpads").exists()
-
-
-def test_cleanup_skips_an_unreadable_listing(rt, tmp_path, monkeypatch, capsys):
-    root = tmp_path / "claude-1000"
-    monkeypatch.setattr("flocc.poller.scratch_root", lambda: root)
-    pad = root / "proj" / "s1" / "scratchpad"
-    pad.mkdir(parents=True)
-    (state_dir(rt.cfg, "NF-1") / "scratchpads").mkdir(parents=True)
-    bad = state_dir(rt.cfg, "NF-2")
-    bad.mkdir(parents=True)
-    (bad / "scratchpads").write_bytes(b"\xff\xfe\n")
-    pads(rt, "NF-3", [pad])
-    clean_scratchpads(rt)
-    assert not pad.exists()
-    assert capsys.readouterr().err.count("not cleaned") == 2
+def test_release_removes_the_worktree_and_both_state_directories(rt):
+    claim = make("NF-9")
+    ledger.insert_claim(rt.con, claim)
+    state_dir(rt.cfg, "NF-9").mkdir(parents=True)
+    release_claim(rt, claim)
+    assert rt.agent.removed == [("NF-9", False)] and not state_dir(rt.cfg, "NF-9").exists()
+    ledger.insert_claim(rt.con, claim)
+    release_claim(rt, claim, keep_worktree=True)
+    assert rt.agent.removed == [("NF-9", False)]

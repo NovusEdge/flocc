@@ -1,26 +1,22 @@
 import json
-import os
 import subprocess
-import time
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from flocc import canary, ledger
+from flocc import canary, events, ledger
 from flocc.agentblock import IssueSettings, settings_to_json
-from flocc.context import state_dir
-from flocc.gate import record_session, record_stop, run_gate, run_id
-from flocc.grants import Grants, add_comment, for_phase
+from flocc.agentfs import AgentFileError
+from flocc.context import agent_dir, state_dir
 from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.publisher import BranchMoved, PublishResult
 from flocc.runtime import Runtime
-from flocc.supervisor import QUESTION_WAIT_S, LaunchError, supervise
+from flocc.supervisor import BLOCKED, LaunchError, supervise
 from flocc.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
-
-IDLE_S = 1800.0
 
 
 @pytest.fixture
@@ -73,6 +69,89 @@ def usage_status(ctx=10.0):
     }
 
 
+def test_a_block_is_an_ended_event_and_writes_why(rt):
+    add(rt)
+    rt.git_head = lambda path: "sha-base"
+    done(rt)
+    supervise(rt, current(rt))
+    assert rt.notifier.sent[0].event == "ended"
+    text = (state_dir(rt.cfg, "NF-1") / BLOCKED).read_text()
+    assert text.startswith("no-tests\n\n") and "without committing tests" in text
+
+
+def test_a_used_fix_cap_is_a_cap_event(rt):
+    add(rt, phase="fix", fix_attempts=rt.cfg.check_fix_rounds)
+    rt.sessions.alive_names.add("NF-1")
+    rt.publish_fn = lambda claim, title, summary, **kw: PublishResult("check_failed", "E boom")
+    done(rt, "fixed")
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and rt.notifier.sent[-1].event == "cap"
+
+
+def test_a_finished_sequence_is_an_ended_event_with_the_pr(rt):
+    add(rt, phase="impl", sequence=["executor"])
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    [e] = events.unacked(rt.con)
+    assert e.kind == "ended" and e.issue_key == "NF-1" and "https://pr/1" in e.detail
+
+
+def test_a_finished_rebase_emits_no_event(rt):
+    add(rt, phase="fix")
+    ledger.meta_set(rt.con, "rebase:NF-1", "1")
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Merged main.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and events.unacked(rt.con) == []
+
+
+def test_a_timed_out_run_is_an_ended_event_and_a_comment(rt):
+    add(rt, phase="impl", started_at=0.0, wall_clock_s=10)
+    rt.sessions.alive_names.add("NF-1")
+    supervise(rt, current(rt))
+    assert current(rt).state == "timed_out"
+    [e] = events.unacked(rt.con)
+    assert e.kind == "ended" and e.detail.startswith("timed out")
+    assert "wall-clock limit" in rt.linear.comments[-1]
+
+
+def test_review_md_that_is_a_link_is_never_posted(rt, tmp_path):
+    add(rt, phase="review")
+    rt.sessions.alive_names.add("NF-1-review")
+    secret = tmp_path / "linear.key"
+    secret.write_text("lin_api_secret")
+    (state_dir(rt.cfg, "NF-1") / "review.md").symlink_to(secret)
+    done(rt, "review")
+    with pytest.raises(AgentFileError):
+        supervise(rt, current(rt))
+    assert rt.pr_comments == []
+
+
+def test_session_files_are_read_from_the_agent_state_root(rt, tmp_path):
+    rt.cfg = replace(rt.cfg, agent_state_root=tmp_path / "agent-state")
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    (tmp_path / "agent-state" / "NF-1").mkdir(parents=True)
+    (tmp_path / "agent-state" / "NF-1" / "done.json").write_text('{"summary": "tests"}')
+    supervise(rt, current(rt))
+    assert current(rt).phase == "impl"
+
+
+def test_a_done_file_from_before_the_phase_started_is_ignored(rt, tmp_path):
+    rt.cfg = replace(rt.cfg, agent_state_root=tmp_path / "agent-state")
+    add(rt, phase="fix", started_at=200.0)
+    rt.sessions.alive_names.add("NF-1")
+    agent = tmp_path / "agent-state" / "NF-1"
+    agent.mkdir(parents=True)
+    (agent / "done.json").write_text('{"summary": "old", "at": 100}')
+    supervise(rt, current(rt))
+    assert rt.sessions.killed == [] and current(rt).phase == "fix"
+    (agent / "done.json").write_text('{"summary": "new", "at": 300}')
+    supervise(rt, current(rt))
+    assert rt.sessions.killed == ["NF-1"]
+
+
 def test_tester_done_starts_implementer(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
@@ -82,6 +161,10 @@ def test_tester_done_starts_implementer(rt):
     assert c.phase == "impl" and c.tester_sha == "sha-tests"
     assert rt.sessions.killed == ["NF-1-test"] and rt.sessions.started[0][0] == "NF-1"
     assert not (state_dir(rt.cfg, "NF-1") / "done.json").exists()
+    assert json.loads(rt.sessions.starts[0]["files"]["tester.json"]) == {
+        "base_sha": "sha-base",
+        "tester_sha": "sha-tests",
+    }
     supervise(rt, c)
     assert len(rt.sessions.started) == 1
     assert ledger.remembered_tests(rt.con, "NF-1") == ("sha-base", "sha-tests")
@@ -92,17 +175,16 @@ def test_failed_start_puts_the_markers_back(rt):
     rt.sessions.alive_names.add("NF-1-test")
     done(rt, "tests written")
     d = state_dir(rt.cfg, "NF-1")
-    (d / "handoff-requested").touch()
     before = (d / "done.json").read_text()
     working = rt.sessions.start
 
-    def down(name, cwd, argv):
+    def down(name, cwd, argv, **kw):
         raise subprocess.CalledProcessError(1, ["tmux"])
 
     rt.sessions.start = down
     with pytest.raises(subprocess.CalledProcessError):
         supervise(rt, current(rt))
-    assert (d / "done.json").read_text() == before and (d / "handoff-requested").exists()
+    assert (d / "done.json").read_text() == before
     c = current(rt)
     assert c.phase == "test" and c.restarts == 0
     rt.sessions.start = working
@@ -377,7 +459,7 @@ def test_a_pr_closed_during_the_fix_ends_the_claim(rt):
 def test_a_tick_that_dies_after_the_fix_launch_does_not_post_or_relaunch_a_review(rt):
     review_session(rt, CHANGES)
 
-    def dies(name, cwd, argv):
+    def dies(name, cwd, argv, **kw):
         raise KeyboardInterrupt
 
     rt.sessions.start = dies
@@ -688,13 +770,10 @@ def test_fix_session_keeps_the_check_output_across_restarts(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
     add(rt, phase="impl", tester_sha="sha-tests")
     done(rt)
-    supervise(rt, current(rt))
-    (state_dir(rt.cfg, "NF-1") / "handoff-ready").touch()
-    supervise(rt, current(rt))
-    assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
+    supervise(rt, current(rt))  # check fails: fix starts
     rt.sessions.alive_names.clear()
-    supervise(rt, current(rt))
-    assert len(rt.sessions.started) == 3
+    supervise(rt, current(rt))  # the fix session died: relaunched once
+    assert len(rt.sessions.started) == 2
     assert any("E1 boom" in arg for arg in rt.sessions.started[-1][1])
 
 
@@ -725,22 +804,14 @@ def test_dead_session_restarts_once_then_blocks(rt):
     rt.sessions.alive_names.clear()
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
-    assert rt.notifier.sent[-1].waiting is True
 
 
-def test_launch_trusts_the_worktree_and_its_checkout(rt):
-    cj = rt.cfg.claude_json
-    cj.write_text(json.dumps({"userID": "u", "projects": {"/other": {"allowedTools": ["x"]}}}))
-    cj.chmod(0o600)
+def test_launch_asks_for_trust_in_the_worktree_and_its_clone(rt):
     add(rt)
     supervise(rt, current(rt))
-    assert rt.sessions.started[0][0] == "NF-1-test"
-    data = json.loads(cj.read_text())
-    checkout = str(rt.cfg.repos["backend"].path)
-    assert data["projects"]["/wt/NF-1"]["hasTrustDialogAccepted"] is True
-    assert data["projects"][checkout]["hasTrustDialogAccepted"] is True
-    assert data["userID"] == "u" and data["projects"]["/other"] == {"allowedTools": ["x"]}
-    assert cj.stat().st_mode & 0o777 == 0o600
+    (start,) = rt.sessions.starts
+    assert start["name"] == "NF-1-test" and start["cwd"] == Path("/wt/NF-1")
+    assert start["trust"] == [rt.cfg.agent_home / "src" / "backend"]
 
 
 def test_launch_fails_without_agent_token(rt):
@@ -757,8 +828,8 @@ def test_linear_error_in_block_retries_next_tick(rt):
     done(rt)
     calls = []
 
-    def flaky(esc, issue, team_id):
-        calls.append(esc)
+    def flaky(notice, issue=None):
+        calls.append(notice)
         if len(calls) == 1:
             raise LinearError("timeout")
 
@@ -778,92 +849,6 @@ def test_wall_clock(rt):
     assert current(rt).state == "timed_out"
     [(_, key, line)] = ledger.pending_digest(rt.con)
     assert key == "NF-1" and "flocc release NF-1" in line
-
-
-def test_an_open_question_holds_off_the_wall_clock(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    rt.now = lambda: 100.0 + 3601
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text(
-        json.dumps({"at": 100.0 + 3600, "question": "Q?"})
-    )
-    supervise(rt, current(rt))
-    assert current(rt).state == "running" and "NF-1-test" not in rt.sessions.killed
-    (state_dir(rt.cfg, "NF-1") / "asking").unlink()
-    supervise(rt, current(rt))
-    assert current(rt).state == "timed_out"
-
-
-def test_the_time_a_question_was_open_is_credited_to_the_wall_clock(rt):
-    add(rt, wall_clock_s=3 * 3600)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asked-seconds").write_text("10800")
-    rt.now = lambda: 100.0 + 4 * 3600
-    supervise(rt, current(rt))
-    assert current(rt).state == "running"
-    rt.now = lambda: 100.0 + 6 * 3600 + 1
-    supervise(rt, current(rt))
-    assert current(rt).state == "timed_out"
-
-
-def test_a_question_left_open_forever_times_out_after_the_wait(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    asked = 100.0 + 3500
-    (d / "asking").write_text(json.dumps({"at": asked, "question": "Q?"}))
-    # Asked just before the limit: the page goes out after QUESTION_WAIT_S, and the owner still
-    # gets as long again to answer it.
-    rt.now = lambda: asked + QUESTION_WAIT_S + 600
-    supervise(rt, current(rt))
-    assert current(rt).state == "running"
-    rt.now = lambda: asked + 2 * QUESTION_WAIT_S + 1
-    supervise(rt, current(rt))
-    assert current(rt).state == "timed_out"
-
-
-def test_a_torn_question_marker_does_not_hold_off_the_wall_clock(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text("{torn")
-    rt.now = lambda: 100.0 + 3601
-    supervise(rt, current(rt))
-    assert current(rt).state == "timed_out"
-
-
-def test_an_open_question_never_holds_off_the_review_limit(rt):
-    rt.cfg = replace(rt.cfg, review_wall_clock_s=60)
-    review_session(rt, text=None)
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text(json.dumps({"at": 100.0, "question": "Q?"}))
-    rt.now = lambda: 100.0 + 61
-    supervise(rt, current(rt))
-    assert current(rt).state == "done"
-
-
-def test_high_context_requests_handoff_once(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    (state_dir(rt.cfg, "NF-1") / "compacted").touch()
-    write_status(state_dir(rt.cfg, "NF-1"), usage_status(ctx=70))
-    supervise(rt, current(rt))
-    supervise(rt, current(rt))
-    assert len(rt.sessions.sent) == 1 and "handoff" in rt.sessions.sent[0][1]
-
-
-def test_handoff_ready_restarts_same_phase_with_a_clean_slate(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    write_status(d, usage_status(ctx=70))
-    (d / "handoff-ready").touch()
-    (d / "handoff-requested").touch()
-    supervise(rt, current(rt))
-    assert rt.sessions.killed == ["NF-1-test"] and rt.sessions.started[0][0] == "NF-1-test"
-    for name in ("handoff-ready", "handoff-requested", "status.json"):
-        assert not (d / name).exists()
-    supervise(rt, current(rt))
-    assert rt.sessions.sent == [], "the old session's 70% must not ask the new one to hand off"
 
 
 def test_comment_already_posted_is_not_posted_again(rt):
@@ -919,21 +904,6 @@ def env_of(argv):
     return dict(x.split("=", 1) for x in argv[2:end])
 
 
-def test_phase_sessions_share_one_run_id_across_relaunches(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    done(rt)
-    supervise(rt, current(rt))
-    started = current(rt).started_at
-    env = env_of(rt.sessions.started[-1][1])
-    assert env["FLOCC_RUN"] == f"impl@{started}"
-    assert env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] == "1"
-    assert env["CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS"] == "1"
-    rt.sessions.alive_names.clear()
-    supervise(rt, current(rt))  # a crash relaunch of the same phase
-    assert env_of(rt.sessions.started[-1][1])["FLOCC_RUN"] == f"impl@{started}"
-
-
 def test_only_implementer_and_fix_sessions_use_remote_control(rt):
     add(rt)
     supervise(rt, current(rt))  # tester relaunch
@@ -944,365 +914,152 @@ def test_only_implementer_and_fix_sessions_use_remote_control(rt):
     assert "--remote-control" in rt.sessions.started[-1][1]
 
 
-def test_launch_records_block_grants_without_beating_comment_grants(rt):
-    add(rt, settings_json=settings_to_json(IssueSettings(allow="launches 12")))
-    path = state_dir(rt.cfg, "NF-1") / "grants.json"
-    from_comment = Grants(launches=20)
-    add_comment(path, from_comment, "impl")
-    rt.sessions.alive_names.add("NF-1-test")
-    done(rt)
+def test_launch_sends_the_allowed_plugins(rt):
+    add(rt)
     supervise(rt, current(rt))
-    assert for_phase(path, "impl").launches == 20
-
-
-def test_unlisted_installed_plugins_are_disabled_at_launch(rt):
+    assert rt.sessions.starts[-1]["plugins"] is None
     rt.cfg.agent_plugins_file.write_text("docket@NovusEdge\n")
-    rt.cfg.installed_plugins_file.write_text(
-        json.dumps({"plugins": {"docket@NovusEdge": [], "glowup@glowup": []}})
-    )
-    add(rt)
-    supervise(rt, current(rt))  # not alive: relaunch
-    argv = rt.sessions.started[-1][1]
-    settings = json.loads(argv[argv.index("--settings") + 1])
-    assert settings["enabledPlugins"] == {"glowup@glowup": False}
-
-
-def test_no_handoff_before_the_first_compaction(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    write_status(d, usage_status(ctx=70))
-    supervise(rt, current(rt))
-    assert rt.sessions.sent == []
-    (d / "compacted").touch()
-    supervise(rt, current(rt))
-    assert len(rt.sessions.sent) == 1 and "handoff" in rt.sessions.sent[0][1]
-
-
-def test_relaunch_clears_compaction_and_question_markers(rt):
-    add(rt)
-    d = state_dir(rt.cfg, "NF-1")
-    names = ("compacted", "asking", "asking-escalated", "idle", "idle-escalated")
-    for name in names:
-        (d / name).write_text("{}")
-    supervise(rt, current(rt))  # not alive: relaunch
-    for name in names:
-        assert not (d / name).exists()
-
-
-def idle_session(rt, at=100.0 - IDLE_S, message="please run it for me"):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "idle").write_text(json.dumps({"at": at, "message": message}))
-    return d
-
-
-def test_an_idle_session_is_escalated_once_per_idle_period(rt):
-    d = idle_session(rt)
-    supervise(rt, current(rt))
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.tier == 2 and esc.waiting and esc.issue_key == "NF-1"
-    assert esc.summary == (
-        "NF-1-test has been idle for 30 min without finishing: please run it for me"
-    )
-    assert "release --keep-worktree NF-1" in esc.action
-    (d / "idle").write_text(json.dumps({"at": 50.0 - IDLE_S, "message": "again"}))
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 2 and "again" in rt.notifier.sent[1].summary
-
-
-def test_an_idle_session_with_no_message_says_so(rt):
-    idle_session(rt, message="")
-    supervise(rt, current(rt))
-    assert rt.notifier.sent[0].summary.endswith("without finishing: no last message")
-
-
-def test_a_session_idle_for_less_than_the_threshold_is_left_alone(rt):
-    idle_session(rt, at=100.0 - IDLE_S + 1)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_status_rewrite_does_not_postpone_the_escalation(rt):
-    # A cache expiry or a rate-limit reset rewrites status.json while the session sits idle.
-    d = idle_session(rt)
-    write_status(d, usage_status())
-    os.utime(d / "status.json", (time.time(), time.time()))
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 1
-
-
-def agent_call(name):
-    return {"tool_name": "Agent", "tool_input": {"subagent_type": f"flocc:{name}"}}
-
-
-def test_a_session_waiting_on_background_agents_is_left_alone(rt):
-    d = idle_session(rt)
-    run = run_id("test", current(rt).started_at)
-    record_session(d, run, 0.0, "test")
-    assert run_gate(agent_call("source-finder"), d, "test", run, 1.0) is None
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-    record_stop(d, run, 2.0, "source-finder", "test")
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 1
-
-
-def test_a_session_that_already_escalated_and_waits_is_left_alone(rt):
-    d = idle_session(rt)
-    (d / "idle").write_text(
-        json.dumps({"at": 100.0 - IDLE_S, "message": "m", "waiting_on_owner": True})
-    )
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_an_idle_session_with_an_open_question_is_left_to_the_question_check(rt):
-    d = idle_session(rt)
-    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-@pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
-def test_a_malformed_idle_file_is_ignored(rt, content):
-    d = idle_session(rt)
-    (d / "idle").write_text(content)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-DIALOG = """\
- Do you want to proceed?
- > 1. Yes
-   2. No
-NF-1 · ctx 8% · 5h 20% · wk 25%
-"""
-
-
-def stalled(rt, pane=DIALOG):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    rt.sessions.panes["NF-1-test"] = pane
-    return state_dir(rt.cfg, "NF-1")
-
-
-def at(rt, t):
-    rt.now = lambda: t
-
-
-def test_a_screen_unchanged_mid_turn_is_escalated_once_with_its_tail(rt):
-    stalled(rt)
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.tier == 2 and esc.waiting and esc.cause == "NF-1:stalled"
-    assert esc.summary.startswith("NF-1-test has shown the same screen for 20 min")
-    assert esc.summary.endswith("```\n Do you want to proceed?\n > 1. Yes\n   2. No\n```")
-    assert "flocc press NF-1 Down Enter" in esc.action
-
-
-def test_a_changing_screen_restarts_the_stall_clock(rt):
-    stalled(rt)
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    rt.sessions.panes["NF-1-test"] = "✻ Running… (20m 1s)\n"
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_status_line_rewrite_does_not_restart_the_stall_clock(rt):
-    stalled(rt)
-    supervise(rt, current(rt))
-    rt.sessions.panes["NF-1-test"] = DIALOG.replace("5h 20%", "5h 0%")
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 1
-
-
-@pytest.mark.parametrize("marker", ["idle", "asking"])
-def test_an_ended_turn_or_open_question_is_not_a_stall(rt, marker):
-    d = stalled(rt)
-    (d / marker).write_text(json.dumps({"at": 100.0 + rt.cfg.stall_escalate_s, "message": "m"}))
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_still_screen_while_background_agents_run_is_not_a_stall(rt):
-    d = stalled(rt)
-    run = run_id("test", current(rt).started_at)
-    record_session(d, run, 0.0, "test")
-    assert run_gate(agent_call("source-finder"), d, "test", run, 1.0) is None
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_idle_with_background_tasks_is_busy(rt):
-    d = idle_session(rt)
-    (d / "background").write_text('["shell"]')
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_stale_background_marker_does_not_hide_a_stall(rt):
-    d = stalled(rt)
-    (d / "background").write_text('["shell"]')
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert len(rt.notifier.sent) == 1
-
-
-def test_a_still_screen_at_a_usage_limit_is_not_a_stall(rt):
-    d = stalled(rt)
-    full = {"used_percentage": 100.0, "resets_at": 4_000_000_000}
-    write_status(d, {"rate_limits": {"five_hour": full, "seven_day": full}})
-    supervise(rt, current(rt))
-    at(rt, 100.0 + rt.cfg.stall_escalate_s)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_a_relaunch_forgets_the_last_screen(rt):
-    d = stalled(rt)
-    supervise(rt, current(rt))
-    assert (d / "pane.json").exists()
+    ledger.update_claim(rt.con, "NF-1", restarts=0)
     rt.sessions.alive_names.clear()
     supervise(rt, current(rt))
-    assert not (d / "pane.json").exists()
+    assert rt.sessions.starts[-1]["plugins"] == ("docket@NovusEdge",)
 
 
-def test_a_stale_question_is_escalated_once(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(
-        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
-    )
-    supervise(rt, current(rt))
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.tier == 2 and "A or B?" in esc.summary
-
-
-def test_no_handoff_is_requested_while_a_question_is_open(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    write_status(d, usage_status(ctx=70))
-    (d / "compacted").touch()
-    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
-    supervise(rt, current(rt))
-    assert rt.sessions.sent == [] and not (d / "handoff-requested").exists()
-    (d / "asking").unlink()
-    supervise(rt, current(rt))
-    assert len(rt.sessions.sent) == 1 and (d / "handoff-requested").exists()
-
-
-def test_a_tester_question_escalation_points_at_the_pane(rt):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(
-        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
-    )
-    supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.action == (
-        "Answer it in its pane on the host (tmux -L flocc attach -t NF-1-test);"
-        " a reply on this issue is delivered after the question is answered."
-    )
-
-
-def test_an_implementer_question_escalation_points_at_the_app(rt):
+def test_launch_hands_the_session_its_files_and_clears_the_old_markers(rt):
     add(rt, phase="impl", tester_sha="sha-tests")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "context.md").write_text("CTX")
+    (d / "last-summary.md").write_text("tests for A")
+    supervise(rt, current(rt))
+    (start,) = rt.sessions.starts
+    assert start["state"] == agent_dir(rt.cfg, "NF-1")
+    assert start["files"]["context.md"] == "CTX"
+    assert start["files"]["last-summary.md"] == "tests for A"
+    assert json.loads(start["files"]["tester.json"]) == {
+        "base_sha": "sha-base",
+        "tester_sha": "sha-tests",
+    }
+    assert {"done.json", "idle", "status.json", "review.md"} <= set(start["clear"])
+    env = start["argv"]
+    assert "FLOCC_STATE=" + str(agent_dir(rt.cfg, "NF-1")) in env
+    assert not any(a.startswith("FLOCC_CONFIG=") for a in env)
+    assert "--remote-control" in env
+
+
+def test_relaunch_clears_the_idle_marker(rt):
+    add(rt)
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "idle").write_text("{}")
+    rt.sessions.alive_names.clear()
+    ledger.update_claim(rt.con, "NF-1", restarts=0)
+    from flocc.supervisor import launch
+
+    launch(rt, current(rt), "test")
+    assert not (d / "idle").exists()
+
+
+def test_an_idle_marker_ends_the_run_blocked(rt):
+    add(rt, phase="impl")
     rt.sessions.alive_names.add("NF-1")
     d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(
-        json.dumps({"at": 100.0 - QUESTION_WAIT_S - 1, "question": "A or B?"})
-    )
+    (d / "idle").write_text(json.dumps({"at": 50.0, "message": "Which option do you want?"}))
     supervise(rt, current(rt))
-    (esc,) = rt.notifier.sent
-    assert esc.action == (
-        "Answer it in the Claude app (Remote Control session NF-1);"
-        " a reply on this issue is delivered after the question is answered."
-    )
+    assert current(rt).state == "blocked" and rt.sessions.killed == ["NF-1"]
+    (notice,) = rt.notifier.sent
+    assert notice.cause == "NF-1:idle" and "Which option do you want?" in notice.summary
 
 
-def test_a_fresh_question_is_not_escalated(rt):
+def test_an_idle_reviewer_skips_the_review_without_blocking(rt):
+    add(rt, phase="review")
+    rt.sessions.alive_names.add("NF-1-review")
+    (state_dir(rt.cfg, "NF-1") / "idle").write_text(json.dumps({"at": 50.0, "message": ""}))
+    supervise(rt, current(rt))
+    assert current(rt).state == "done"
+    assert any("review skipped" in line for _, _, line in ledger.pending_digest(rt.con))
+
+
+def test_a_crash_restarts_once_with_a_note_then_blocks(rt):
+    add(rt, phase="impl")
+    supervise(rt, current(rt))
+    name, argv = rt.sessions.started[-1]
+    assert name == "NF-1" and current(rt).restarts == 1
+    assert any("ended before flocc done" in a for a in argv)
+    rt.sessions.alive_names.discard("NF-1")
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and rt.notifier.sent[-1].cause == "NF-1:crash"
+
+
+@pytest.mark.parametrize("phase, alive", [("impl", "NF-1"), ("test", "NF-1-test")])
+def test_needs_the_owner_ends_the_run_blocked(rt, phase, alive):
+    add(rt, phase=phase)
+    rt.sessions.alive_names.add(alive)
+    done(rt, "Did half.\n\nNeeds the owner: which currency is the default?")
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and not published
+    (notice,) = rt.notifier.sent
+    assert notice.cause == "NF-1:needs-owner" and "which currency" in notice.summary
+
+
+@pytest.mark.parametrize(
+    "line", ["Needs the owner: none", "- Needs the owner: n/a", "**Needs the owner:** Nothing."]
+)
+def test_a_none_line_under_needs_the_owner_does_not_block(rt, line):
+    add(rt, phase="impl")
+    rt.sessions.alive_names.add("NF-1")
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
+    done(rt, f"Done.\n\n{line}")
+    supervise(rt, current(rt))
+    assert current(rt).state != "blocked" and published
+
+
+def test_a_review_fixer_s_owner_items_do_not_block(rt):
+    add(rt, phase="fix")
+    ledger.meta_set(rt.con, "review_fix:NF-1", "1")
+    rt.sessions.alive_names.add("NF-1")
+    rt.publish_fn = lambda *a, **kw: PublishResult("opened", url="https://pr/1", existing=True)
+    done(rt, "Fixed two.\n\nNeeds the owner: run the migration by hand.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "running" and current(rt).phase == "review"
+
+
+def test_without_a_reviewer_the_run_ends_when_the_pr_opens(rt):
+    add(rt, phase="impl", sequence=["executor"])
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and current(rt).phase == "impl"
+    assert "https://pr/1" in rt.linear.comments[0]
+    assert not any(name == "NF-1-review" for name, _ in rt.sessions.started)
+
+
+def test_a_finished_step_leaves_its_summary_for_the_next(rt):
     add(rt)
     rt.sessions.alive_names.add("NF-1-test")
-    d = state_dir(rt.cfg, "NF-1")
-    (d / "asking").write_text(json.dumps({"at": 100.0, "question": "A or B?"}))
+    done(rt, "tests for A and B")
     supervise(rt, current(rt))
-    assert rt.notifier.sent == []
+    assert (state_dir(rt.cfg, "NF-1") / "last-summary.md").read_text() == "tests for A and B"
 
 
 def settings_of(argv):
     return json.loads(argv[argv.index("--settings") + 1])
 
 
-def test_launch_applies_block_grants_to_the_session(rt):
-    add(rt, settings_json=settings_to_json(IssueSettings(allow="agent general-purpose")))
-    rt.sessions.alive_names.add("NF-1-test")
-    done(rt)
-    supervise(rt, current(rt))
-    deny = settings_of(rt.sessions.started[-1][1])["permissions"]["deny"]
-    assert "Agent(general-purpose)" not in deny
-    raw = json.loads((state_dir(rt.cfg, "NF-1") / "grants.json").read_text())
-    assert raw["block"]["agents"] == ["general-purpose"]
-
-
-def test_launch_tells_the_gate_which_grants_the_session_started_with(rt):
-    add(rt, settings_json=settings_to_json(IssueSettings(allow="agent general-purpose")))
-    path = state_dir(rt.cfg, "NF-1") / "grants.json"
-    add_comment(path, Grants(workflows=("big-build",), agents=("code-mapper",)), "impl")
-    rt.sessions.alive_names.add("NF-1-test")
-    done(rt)
-    supervise(rt, current(rt))
-    env = env_of(rt.sessions.started[-1][1])
-    assert env["FLOCC_LAUNCH_GRANTS"] == "agent:general-purpose,workflow:big-build"
-
-
-def test_launch_without_flag_grants_sets_an_empty_value(rt):
-    add(rt)
-    supervise(rt, current(rt))
-    assert env_of(rt.sessions.started[-1][1])["FLOCC_LAUNCH_GRANTS"] == ""
-
-
-@pytest.mark.parametrize("content", ["[]", '{"at": "x"}', "not json", "{}"])
-def test_a_malformed_question_file_is_ignored(rt, content):
-    add(rt)
-    rt.sessions.alive_names.add("NF-1-test")
-    (state_dir(rt.cfg, "NF-1") / "asking").write_text(content)
-    supervise(rt, current(rt))
-    assert rt.notifier.sent == []
-
-
-def test_review_and_fix_launches_carry_their_own_run_id_and_remote_control(rt):
+def test_only_fix_launches_get_remote_control(rt):
     rt.publish_fn = lambda c, t, s: PublishResult("check_failed", "E1 boom")
     add(rt, phase="impl", tester_sha="sha-tests")
     done(rt)
     supervise(rt, current(rt))  # check fails: fix
-    c = current(rt)
     argv = rt.sessions.started[-1][1]
-    assert c.phase == "fix" and env_of(argv)["FLOCC_RUN"] == f"fix@{c.started_at}"
-    assert "--remote-control" in argv
+    assert current(rt).phase == "fix" and "--remote-control" in argv
+    assert "FLOCC_RUN" not in env_of(argv)
     rt.publish_fn = lambda c, t, s: PublishResult("opened", url="https://pr/1")
     done(rt)
     supervise(rt, current(rt))  # PR opens: review
-    c = current(rt)
     argv = rt.sessions.started[-1][1]
-    assert c.phase == "review" and env_of(argv)["FLOCC_RUN"] == f"review@{c.started_at}"
-    assert "--remote-control" not in argv
+    assert current(rt).phase == "review" and "--remote-control" not in argv
 
 
 BASE_SHA = "0123456789abcdef"
@@ -1533,3 +1290,21 @@ def test_a_check_fix_round_after_a_rebase_keeps_the_merge_instruction(rt):
     supervise(rt, current(rt))
     prompt = next(a for a in rt.sessions.started[-1][1] if "E1 boom" in a)
     assert "merge origin/main please" in prompt
+
+
+def test_block_comments_on_the_issue_without_labels(rt):
+    from flocc.notice import Notifier
+
+    rt.notifier = Notifier(rt.con, rt.linear, rt.now)
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    rt.git_head = lambda path: "sha-base"
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    assert rt.linear.comments == [
+        (
+            "The tester finished without committing tests.\n"
+            "Action: Add detail to the acceptance criteria, then run flocc release NF-1"
+        )
+    ]

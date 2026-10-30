@@ -11,7 +11,6 @@ def test_the_installers_rendered_config_loads():
     cfg = load(GOLDEN)
     assert cfg.team_key == "NF"
     assert cfg.digest_issue == "NF-186"
-    assert cfg.ntfy_url == "https://ntfy.sh/flocc-test"
     repo = cfg.repos["nimblefox-template"]
     assert repo.draft is False
     assert repo.check == "mise exec -- just check"

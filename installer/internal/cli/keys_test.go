@@ -27,7 +27,7 @@ func TestReportMakesEachNextStepATodoOnce(t *testing.T) {
 	rec := &ui.Recorder{}
 	d.ui = ui.New(rec)
 	code := report(d, []string{"GitHub agent token: bad; run flocc keys rotate github", "GitHub publish token: bad; run flocc keys rotate github",
-		"ntfy topic: missing; run flocc keys", "other: no next step"})
+		"GitHub publish token: missing; run flocc keys", "other: no next step"})
 	d.ui.Close()
 	if code != 1 || strings.Join(rec.Todos, "|") != "run flocc keys rotate github|run flocc keys" {
 		t.Fatalf("%d %q", code, rec.Todos)

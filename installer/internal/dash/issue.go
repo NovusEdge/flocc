@@ -9,7 +9,7 @@ import (
 	kb "charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
@@ -30,10 +30,6 @@ func (m *Model) open() tea.Cmd {
 		}
 	case hostsPane:
 		return m.openHost()
-	case cardinalPane:
-		if len(m.cards) > 0 {
-			m.screen = cardinalScreen
-		}
 	}
 	return nil
 }
@@ -95,7 +91,7 @@ func (m *Model) issueBar() []kb.Binding {
 
 func (m *Model) issueView() string {
 	iw, _ := theme.Inner(m.w, m.h)
-	key := saved.Sanitize(m.cur[1])
+	key := safe.Sanitize(m.cur[1])
 	title := key
 	if t := m.titles[m.cur[1]].Title; t != "" {
 		title += theme.Sep + t
@@ -134,7 +130,7 @@ func (m *Model) outputPane(title, hint string, w, h int) string {
 
 func (m *Model) issueFacts(r row) []string {
 	c := r.claim
-	state, updated := saved.Sanitize(c.State), ""
+	state, updated := safe.Sanitize(c.State), ""
 	if c.UpdatedAge != nil {
 		state += " " + ship.Age(*c.UpdatedAge)
 		updated = theme.Sep + "updated " + ship.Age(*c.UpdatedAge) + " ago"
@@ -146,14 +142,14 @@ func (m *Model) issueFacts(r row) []string {
 	if c.ContextPct != nil {
 		ctx = fmt.Sprintf("%.0f%%", *c.ContextPct)
 	}
-	where := saved.Sanitize(r.host) + theme.Sep + "started " + ship.Age(c.StartedAge) + " ago" + updated
+	where := safe.Sanitize(r.host) + theme.Sep + "started " + ship.Age(c.StartedAge) + " ago" + updated
 	if r.stale {
 		where += m.th.Dim.Render(" (stale)")
 	}
 	return []string{
 		m.label(7, "phase", m.phaseLine(c)),
 		m.label(7, "state", state),
-		m.label(7, "session", fmt.Sprintf("%s%scontext %s%slaunches %d/%d", session, theme.Sep, ctx, theme.Sep, c.Launches, c.LaunchLimit)),
+		m.label(7, "session", fmt.Sprintf("%s%scontext %s", session, theme.Sep, ctx)),
 		m.label(7, "host", where),
 	}
 }
@@ -164,7 +160,7 @@ func (m *Model) phaseLine(c ship.Claim) string {
 	glyph := stateGlyph(m.th, m.spin.View(), c.State)
 	i := slices.Index(phases, c.Phase)
 	if i < 0 {
-		return saved.Sanitize(c.Phase) + " " + glyph
+		return safe.Sanitize(c.Phase) + " " + glyph
 	}
 	parts := make([]string, len(phases))
 	for j, p := range phases {

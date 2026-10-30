@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/NovusEdge/flocc/installer/internal/githubapi"
@@ -66,8 +65,6 @@ type fixture struct {
 	store  logStore
 	events []string
 	rec    *ui.Recorder
-	mu     sync.Mutex
-	pushes []*http.Request
 }
 
 // text is every word the session was sent: notes, rows, details and errors.
@@ -95,15 +92,8 @@ func newFixture(t *testing.T, gh, lin *replay.Server, p *script) *fixture {
 	f := &fixture{rec: &ui.Recorder{}}
 	p.t = t
 	f.store = logStore{m: map[Slot]string{}, events: &f.events}
-	ntfy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		f.pushes = append(f.pushes, r)
-		f.mu.Unlock()
-	}))
-	t.Cleanup(ntfy.Close)
-	f.env = Env{Store: f.store, Prompt: p, UI: ui.New(f.rec), HTTP: http.DefaultClient, NtfyBase: ntfy.URL,
-		Open:     func(u string) { f.events = append(f.events, "open "+u) },
-		NewTopic: func() string { return "flocc-test" }}
+	f.env = Env{Store: f.store, Prompt: p, UI: ui.New(f.rec), HTTP: http.DefaultClient,
+		Open: func(u string) { f.events = append(f.events, "open "+u) }}
 	if gh != nil {
 		f.env.GitHubAPI = gh.URL
 	}
@@ -143,12 +133,11 @@ func TestFillAsksForEachKeyInOrderAndStoresIt(t *testing.T) {
 		"open https://linear.app/settings/account/security", "set linear_key",
 		"open https://github.com/settings/personal-access-tokens/new", "set agent_token",
 		"open https://github.com/settings/personal-access-tokens/new", "set publish_token",
-		"set ntfy_topic",
 	}
 	if strings.Join(order, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("%q", order)
 	}
-	if f.store.m[Publish] != "github_pat_publish" || f.store.m[Ntfy] != "flocc-test" {
+	if f.store.m[Publish] != "github_pat_publish" {
 		t.Fatalf("%v", f.store.m)
 	}
 	for _, secret := range []string{"lin_api_k", "github_pat_agent", "github_pat_publish"} {
@@ -159,13 +148,13 @@ func TestFillAsksForEachKeyInOrderAndStoresIt(t *testing.T) {
 }
 
 func TestFillAsksThroughTheUISession(t *testing.T) {
-	rec := &ui.Recorder{Answers: []any{"lin_api_k", "github_pat_agent", "github_pat_publish", true}}
+	rec := &ui.Recorder{Answers: []any{"lin_api_k", "github_pat_agent", "github_pat_publish"}}
 	f := newFixture(t, ghServer(t, userOK), linServer(t, "viewer-ok.http"), &script{})
 	f.env.Prompt = ui.Prompts{S: ui.New(rec)}
 	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.Asked) != 4 || rec.Asked[0].Kind != ui.PSecret || rec.Asked[3].Kind != ui.PConfirm {
+	if len(rec.Asked) != 3 || rec.Asked[0].Kind != ui.PSecret || rec.Asked[2].Kind != ui.PSecret {
 		t.Fatalf("%+v", rec.Asked)
 	}
 }
@@ -183,7 +172,7 @@ func TestEachLiveCheckIsAStepWithItsOwnDetail(t *testing.T) {
 		}
 	}
 	want := map[string]string{"Check Linear API key": "asking Linear", "Check GitHub agent token (read-only)": "asking GitHub",
-		"Check GitHub publish token": "asking GitHub", "Check ntfy topic": "sending a test push"}
+		"Check GitHub publish token": "asking GitHub"}
 	for name, detail := range want {
 		if asking[name] != detail {
 			t.Errorf("%s: %q", name, asking[name])
@@ -326,7 +315,7 @@ func TestTailscaleOutageLeavesTheClientUnchecked(t *testing.T) {
 
 func TestFillWithTheRequiredSlotsNeverAsksForTailscale(t *testing.T) {
 	f := newFixture(t, nil, nil, &script{})
-	f.store.m[Linear], f.store.m[Agent], f.store.m[Publish], f.store.m[Ntfy] = "lin_api_k", "github_pat_a", "github_pat_p", "t"
+	f.store.m[Linear], f.store.m[Agent], f.store.m[Publish] = "lin_api_k", "github_pat_a", "github_pat_p"
 	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil || len(f.rec.Asked) != 0 {
 		t.Fatalf("%v %+v", err, f.rec.Asked)
 	}
@@ -339,13 +328,10 @@ func TestCheckFailsTheRowOfEachProblemAndChecksAStoredTailscaleClient(t *testing
 	f.env.TailscaleAPI = ts.URL
 	f.store.m[Linear], f.store.m[Agent], f.store.m[Publish], f.store.m[Tailscale] = "lin_api_k", "github_pat_a", "github_pat_p", "kid:ksecret"
 	got := Check(context.Background(), f.env, onlyA)
-	if len(got) != 5 || !strings.HasSuffix(got[3], "Tailscale refused the client; make a new one") {
+	if len(got) != 4 || !strings.HasSuffix(got[3], "Tailscale refused the client; make a new one") {
 		t.Fatalf("%q", got)
 	}
 	if r := f.row("Check Linear API key"); r.State != ui.Failed || strings.Contains(r.Err, "; run ") {
-		t.Errorf("%+v", r)
-	}
-	if r := f.row("Check ntfy topic"); r.State != ui.Failed || r.Err != "missing" {
 		t.Errorf("%+v", r)
 	}
 	if !f.env.UI.Failed() {
@@ -464,29 +450,6 @@ func TestAGitHubOutageIsNotABadToken(t *testing.T) {
 	}
 }
 
-func TestNtfyShowsTheAppLinkAndResendsUntilThePushArrives(t *testing.T) {
-	f := newFixture(t, nil, nil, &script{confirms: []bool{false, true, true}})
-	f.store.m[Linear], f.store.m[Agent], f.store.m[Publish] = "lin_api_k", "github_pat_a", "github_pat_p"
-	if err := Fill(context.Background(), f.env, Mapped{}, Slots); err != nil {
-		t.Fatal(err)
-	}
-	var note ui.Event
-	for _, e := range f.rec.Events {
-		if e.Kind == ui.KNote && e.Name == "ntfy topic" {
-			note = e
-		}
-	}
-	if !strings.Contains(note.Text, "https://ntfy.sh/flocc-test") || !strings.Contains(note.Text, "█") || strings.Contains(note.Text, "\r") {
-		t.Fatalf("%q", note.Text)
-	}
-	if f.row("Check ntfy topic").State != ui.Done || len(f.rec.Todos) != 0 {
-		t.Fatalf("%+v %v", f.rec.Rows(), f.rec.Todos)
-	}
-	if len(f.pushes) != 2 || f.pushes[0].URL.Path != "/flocc-test" || f.pushes[0].Header.Get("Priority") != "5" || f.pushes[0].Header.Get("Title") != "flocc" {
-		t.Fatalf("%d pushes", len(f.pushes))
-	}
-}
-
 func TestGitHubPagesArePrefilled(t *testing.T) {
 	m := Mapped{Repos: []githubapi.Target{{Slug: "o/a"}, {Slug: "o/b"}}}
 	raw, help := Page(Agent, m)
@@ -536,7 +499,7 @@ func TestCheckSendsARejectedKeyToRotate(t *testing.T) {
 	f := newFixture(t, gh, linServer(t, "bad-key.http"), &script{})
 	f.store.m[Linear], f.store.m[Agent], f.store.m[Publish] = "lin_api_k", "github_pat_a", "github_pat_p"
 	got := Check(context.Background(), f.env, onlyA)
-	if len(got) != 4 {
+	if len(got) != 3 {
 		t.Fatalf("%q", got)
 	}
 	for i, verb := range []string{"linear", "github", "github"} {
@@ -551,7 +514,7 @@ func TestCheckNamesEveryProblem(t *testing.T) {
 	f := newFixture(t, gh, linServer(t, "bad-key.http"), &script{})
 	f.store.m[Linear], f.store.m[Agent] = "lin_api_k", "github_pat_push"
 	got := strings.Join(Check(context.Background(), f.env, onlyA), "\n")
-	for _, want := range []string{"Authentication required", "o/a: the token can push", "GitHub publish token: missing", "ntfy topic: missing"} {
+	for _, want := range []string{"Authentication required", "o/a: the token can push", "GitHub publish token: missing"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q missing from:\n%s", want, got)
 		}

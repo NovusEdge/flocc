@@ -10,15 +10,15 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal"
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/rootpass"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/tailnet"
+	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
 // setupOps are the existing functions flocc setup calls, as fields so its tests can replace each.
@@ -41,13 +41,8 @@ type setupOps struct {
 	readHost        func(ctx context.Context, h hosts.Host) hostState
 	offline         func(ctx context.Context, name string) bool
 	oldUsers        func(ctx context.Context, machine string) ([]oldUser, error)
-	findUser        func(ctx context.Context, machine, user string) (oldUser, bool)
-	cardinal        func() (saved.Saved, bool, error)
-	cardStatus      func(ctx context.Context, s saved.Saved) (steps.CardinalStatus, error)
-	cardSetup       func(ctx context.Context, s saved.Saved, o cardinal.SetupOptions) error
 	removeOld       func(ctx context.Context, machine string, users []string) error
 	login           func(ctx context.Context, name, email string) error
-	cardLogin       func(ctx context.Context, s saved.Saved, email string) error
 }
 
 // machineState is what a machine allows. Err is set when ssh could not reach it.
@@ -58,7 +53,6 @@ type machineState struct {
 
 func newSetupOps(d *deps) setupOps {
 	mux, _ := ship.SSHMux()
-	cd := d.cardinalDeps()
 	return setupOps{
 		checkout: func() (string, string, error) { return checkoutVersion(d) },
 		seedEnv:  func(root string) { seedEnv(d, root) },
@@ -90,26 +84,54 @@ func newSetupOps(d *deps) setupOps {
 		oldUsers: func(ctx context.Context, m string) ([]oldUser, error) {
 			return findOld(ctx, owner(d, mux, m), steps.OldUsers)
 		},
-		findUser: func(ctx context.Context, m, user string) (oldUser, bool) {
-			found, err := findOld(ctx, owner(d, mux, m), []string{user})
-			if err != nil || len(found) == 0 {
-				return oldUser{}, false
-			}
-			return found[0], true
-		},
-		cardinal: func() (saved.Saved, bool, error) {
-			s, err := saved.Load(saved.Dir(d.home), saved.DefaultUser)
-			if errors.Is(err, os.ErrNotExist) {
-				return s, false, nil
-			}
-			return s, err == nil, err
-		},
-		cardStatus: cd.Status,
-		cardSetup:  cd.Setup,
-		removeOld:  cd.RemoveOld,
-		login:      func(ctx context.Context, name, email string) error { return loginWith(ctx, d, name, email) },
-		cardLogin:  cd.Login,
+		removeOld: func(ctx context.Context, m string, users []string) error { return removeOld(ctx, d, mux, m, users) },
+		login:     func(ctx context.Context, name, email string) error { return loginWith(ctx, d, name, email) },
 	}
+}
+
+// removeOld purges each agreed old user on machine in one root pass.
+func removeOld(ctx context.Context, d *deps, mux []string, machine string, users []string) error {
+	if !d.tty {
+		return errors.New("the machine's sudo asks for a password; run this in a terminal")
+	}
+	if err := ship.Connect(ctx, d.run, ship.Dest{SSH: machine, Opts: mux}, machine, d.tty); err != nil {
+		return err
+	}
+	m, err := host.Must(ctx, owner(d, mux, machine), host.Cmd{Name: "uname", Args: []string{"-m"}})
+	if err != nil {
+		return err
+	}
+	arch, err := ship.ArchFor(m)
+	if err != nil {
+		return err
+	}
+	root, err := d.repoRoot()
+	if err != nil {
+		return fmt.Errorf("removing old users builds flocc-setup from the flocc checkout it runs in; cd into it: %w", err)
+	}
+	bin, err := rootpass.Build(ctx, d.run, d.ui, root, arch, "flocc-setup")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(bin)
+	d.ui.Note("Root pass", "removing "+strings.Join(users, ", ")+"\nsudo asks for your password on "+machine+" once")
+	calls := make([][]string, len(users))
+	for i, u := range users {
+		calls[i] = []string{"--phase", "old-user-remove", "--user", u}
+	}
+	reports, err := rootpass.Run(ctx, d.run, rootpass.Pass{Machine: machine, Opts: mux, Prefix: "/tmp/flocc-remove",
+		Files: []string{filepath.Join(bin, "flocc-setup")}, Calls: calls, Why: "root pass: sudo on " + machine + " asks for your password"})
+	for i, r := range reports {
+		title := "Removed " + users[i]
+		if r.Error != "" {
+			title = "Removing " + users[i] + " failed"
+		}
+		if len(r.Steps) > 0 || len(r.Notes) > 0 {
+			d.ui.Group(title)
+			ui.Rows(d.ui, rootpass.Events(r))
+		}
+	}
+	return err
 }
 
 // tailscaleAPI is a var so tests can point the client at a local server.
@@ -262,7 +284,7 @@ func tailnetOffline(ctx context.Context, r host.Runner, name string) bool {
 
 var pyVersion = regexp.MustCompile(`(?m)^version = "([^"]+)"`)
 
-// checkoutVersion is the flocc checkout this runs in, which ship, create and cardinal build from,
+// checkoutVersion is the flocc checkout this runs in, which ship and create build from,
 // and the version its pyproject.toml declares.
 func checkoutVersion(d *deps) (string, string, error) {
 	root, err := d.repoRoot()

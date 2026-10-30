@@ -27,7 +27,7 @@ func TestFactsSanitizeHostStrings(t *testing.T) {
 func TestSourceRunUsesTheCachedDestAndScrubs(t *testing.T) {
 	const token = "SECRETTOKEN"
 	minted := 0
-	src := newSource("", t.TempDir(), t.TempDir())
+	src := newSource("", t.TempDir())
 	src.cache = newDestCache(func(context.Context, FleetHost) (Dest, error) {
 		minted++
 		return Dest{SSH: token + "@ssh.app.daytona.io", Token: token}, nil
@@ -61,7 +61,7 @@ func TestSourceRunUsesTheCachedDestAndScrubs(t *testing.T) {
 
 func TestSourceRunKeepsTheCachedDestAfterAnOrdinaryExit(t *testing.T) {
 	minted := 0
-	src := newSource("", t.TempDir(), t.TempDir())
+	src := newSource("", t.TempDir())
 	src.cache = newDestCache(func(context.Context, FleetHost) (Dest, error) {
 		minted++
 		return Dest{SSH: "t@h", Token: "t"}, nil

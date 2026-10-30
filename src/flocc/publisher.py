@@ -3,20 +3,26 @@ import os
 import re
 import shlex
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from flocc import agentfs
 from flocc.config import TRAILER, RepoConfig
-from flocc.gate import AMENDED
+from flocc.context import state_dir
 from flocc.ledger import Claim
 from flocc.worktree import (
+    agent_ref,
     base_checkout,
     changed_files,
+    fetch_agent_branch,
     git,
+    origin_base,
     run_bounded,
     setup_in_checkout,
 )
 
+AMENDED = "tests-amended.json"
 _TAIL = 3000
 # Stands in for the base checkout's path when its failure is compared with a branch's.
 BASE_CHECKOUT = "<checkout>"
@@ -47,6 +53,12 @@ class PublishResult:
     label_error: str = ""  # why the amended-tests label was not added to the open PR
 
 
+def pr_url(rt, claim: Claim) -> str | None:
+    path = state_dir(rt.cfg, claim.issue_key) / "pr-url"
+    url = path.read_text().strip() if path.exists() else ""
+    return url if url and url != "unknown" else None
+
+
 def failure_excerpt(out: str, limit: int = _TAIL) -> str:
     # A check over several components prints the failing one first and passing ones after it, so
     # the tail alone showed only passing tests (NF-340, 2026-10-20).
@@ -70,8 +82,8 @@ def failure_excerpt(out: str, limit: int = _TAIL) -> str:
 
 def read_amended(state: Path) -> dict[str, dict]:
     try:
-        data = json.loads((state / AMENDED).read_text())
-    except (OSError, ValueError):
+        data = json.loads(agentfs.read_text(state, AMENDED) or "{}")
+    except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -103,12 +115,12 @@ def _test_names(lines: list[str]) -> set[str]:
     return {m[1] or m[2] or m[4] for line in lines if (m := _TEST_NAME.match(line))}
 
 
-def weakens_test(wt: Path, since: str, path: str) -> str | None:
+def weakens_test(wt: Path, since: str, path: str, head: str = "HEAD") -> str | None:
     """Why the change to a tester's file since `since` drops or disables a test, if it does.
 
     Not covered: subtests, parametrize cases and a test wrapped in a comment; the reviewer reads
     the amendment diff for those."""
-    diff = git("diff", "-U0", f"{since}..HEAD", "--", path, cwd=wt)
+    diff = git("diff", "-U0", f"{since}..{head}", "--", path, cwd=wt)
     removed = [x[1:] for x in diff.splitlines() if x.startswith("-") and not x.startswith("---")]
     added = [x[1:] for x in diff.splitlines() if x.startswith("+") and not x.startswith("+++")]
     # First: a skip wrapper such as it.skipIf(c)('a') hides the name, which would read as removal.
@@ -169,13 +181,13 @@ def check_at_base(
         )
 
 
-def _without_merged_base(wt: Path, since: str, base_branch: str) -> str:
-    """`since`, or the tree it makes when merged with the base commits HEAD took in.
+def _without_merged_base(wt: Path, since: str, base_branch: str, head: str = "HEAD") -> str:
+    """`since`, or the tree it makes when merged with the base commits `head` took in.
 
     After a merge from the base, the two-dot diff from the tester's commit lists every file the
     base changed; against this tree only the branch's own edits and conflict resolutions differ."""
     try:
-        taken = git("merge-base", "HEAD", f"origin/{base_branch}", cwd=wt)
+        taken = git("merge-base", head, f"origin/{base_branch}", cwd=wt)
     except subprocess.CalledProcessError:
         return since
     ancestor = subprocess.run(
@@ -194,6 +206,42 @@ def _without_merged_base(wt: Path, since: str, base_branch: str) -> str:
     return merged.stdout.split()[0] if merged.returncode in (0, 1) and merged.stdout else since
 
 
+def _tests_guard(
+    claim: Claim,
+    repo: RepoConfig,
+    repo_path: Path,
+    ref: str,
+    accepted_sha: str | None,
+    amended: dict[str, dict] | None,
+) -> PublishResult | None:
+    assert claim.base_sha is not None and claim.tester_sha is not None
+    tester_files = changed_files(repo_path, claim.base_sha, claim.tester_sha)
+    since = _without_merged_base(repo_path, accepted_sha or claim.tester_sha, repo.base_branch, ref)
+    touched = changed_files(repo_path, since, ref) & tester_files
+    weakened = {}
+    for path in touched & set(amended or {}):
+        if why := weakens_test(repo_path, since, path, ref):
+            weakened[path] = why
+    touched -= set(amended or {})
+    if touched or weakened:
+        parts = [*sorted(touched), *(f"{p} {why}" for p, why in sorted(weakened.items()))]
+        return PublishResult("tests_touched", ", ".join(parts))
+    return None
+
+
+def check_worktree(command: str, wt: Path, timeout_s: float) -> dict:
+    """The repo's check in wt: status ok, dirty, failed or timeout, its output, and the head."""
+    head = git("rev-parse", "HEAD", cwd=wt)
+    # Only commits are pushed and guarded; a check on the working tree would pass on files the PR
+    # leaves out.
+    dirty = git("status", "--porcelain", cwd=wt)
+    if dirty:
+        return {"status": "dirty", "output": dirty, "head": head}
+    code, out = run_bounded(shlex.split(command), wt, timeout_s)
+    status = "timeout" if code is None else "ok" if code == 0 else "failed"
+    return {"status": status, "output": out, "head": git("rev-parse", "HEAD", cwd=wt)}
+
+
 def publish(
     claim: Claim,
     repo: RepoConfig,
@@ -206,39 +254,48 @@ def publish(
     accepted_sha: str | None = None,
     amended: dict[str, dict] | None = None,
     reuse_only: bool = False,
+    *,
+    check: Callable[[Claim, RepoConfig, float], dict],
 ) -> PublishResult:
     wt = Path(claim.worktree)
-    if claim.base_sha is None or claim.tester_sha is None:
-        raise ValueError(f"{claim.issue_key} has no recorded tester commit to guard")
-    tester_files = changed_files(wt, claim.base_sha, claim.tester_sha)
-    since = _without_merged_base(wt, accepted_sha or claim.tester_sha, repo.base_branch)
-    touched = changed_files(wt, since, "HEAD") & tester_files
-    weakened = {}
-    for path in touched & set(amended or {}):
-        if why := weakens_test(wt, since, path):
-            weakened[path] = why
-    touched -= set(amended or {})
-    if touched or weakened:
-        parts = [*sorted(touched), *(f"{p} {why}" for p, why in sorted(weakened.items()))]
-        return PublishResult("tests_touched", ", ".join(parts))
-    # Only commits are pushed, and the guard above compares commits only; a check on the working
-    # tree would pass on files the PR leaves out.
-    dirty = git("status", "--porcelain", cwd=wt)
-    if dirty:
-        detail = f"Uncommitted changes; commit them or remove them, then finish again:\n{dirty}"
+    if claim.base_sha is None:
+        raise ValueError(f"{claim.issue_key} has no recorded base commit")
+    head = fetch_agent_branch(repo.path, wt, claim.branch, claim.issue_key)
+    ref = agent_ref(claim.issue_key)
+    # The guard's merge-base needs this clone's origin/<base> current; the agent's fetch updates
+    # only its own clone.
+    origin_base(repo)
+    # No tester ran: there are no tester files to guard.
+    if claim.tester_sha is not None and (
+        touched := _tests_guard(claim, repo, repo.path, ref, accepted_sha, amended)
+    ):
+        return touched
+    ran = check(claim, repo, check_timeout_s)
+    out = str(ran.get("output", ""))
+    if ran["status"] == "dirty":
+        detail = f"Uncommitted changes; commit them or remove them, then finish again:\n{out}"
         return PublishResult("check_failed", detail[:_TAIL])
-    if failed := run_check(repo, wt, check_timeout_s):
-        return failed
+    if ran["status"] == "timeout":
+        detail = f"`{repo.check}` timed out after {check_timeout_s}s\n\n{out[-_TAIL:]}"
+        return PublishResult("check_failed", detail.strip(), log=out)
+    if ran["status"] != "ok":
+        return PublishResult("check_failed", failure_excerpt(out), log=out)
+    if ran["head"] != head:
+        return PublishResult(
+            "check_failed",
+            "The branch moved while the check ran: commit nothing during the check, then finish"
+            " again.",
+        )
     # Commits made with --no-verify skip the hook; noted, not blocked, since the work is sound.
     untrailed = ()
     if trailer:
         out = git(
             "log",
-            f"{claim.base_sha}..{claim.branch}",
+            f"{claim.base_sha}..{ref}",
             "--format=%h",
             "--invert-grep",
             f"--grep=^{TRAILER}: ",
-            cwd=wt,
+            cwd=repo.path,
         )
         untrailed = tuple(out.split())
     env = {**os.environ, "GH_TOKEN": token}
@@ -252,11 +309,10 @@ def publish(
                 "credential.helper=!gh auth git-credential",
                 "push",
                 "-q",
-                "-u",
                 "origin",
-                claim.branch,
+                f"{ref}:refs/heads/{claim.branch}",
             ],
-            cwd=wt,
+            cwd=repo.path,
             env=env,
             check=True,
             capture_output=True,
@@ -281,7 +337,7 @@ def publish(
             "--jq",
             ".[0].url // empty",
         ],
-        cwd=wt,
+        cwd=repo.path,
         env=env,
         check=True,
         capture_output=True,
@@ -296,7 +352,7 @@ def publish(
         try:
             runner(
                 ["gh", "pr", "edit", url, "--add-label", repo.amended_label],
-                cwd=wt,
+                cwd=repo.path,
                 env=env,
                 check=True,
                 capture_output=True,
@@ -330,7 +386,7 @@ def publish(
             "--body",
             f"Fixes {claim.issue_key}\n\n{summary}{amended_section(amended)}",
         ],
-        cwd=wt,
+        cwd=repo.path,
         env=env,
         check=True,
         capture_output=True,
@@ -356,8 +412,7 @@ def review_comment(review: str) -> str:
 def pr_view(claim: Claim, url: str, token: str, runner=subprocess.run) -> dict:
     out = runner(
         ["gh", "pr", "view", url, "--json", "state,mergedAt,files,mergeable,headRefOid"],
-        # A finished claim's worktree may already be reaped.
-        cwd=claim.worktree if Path(claim.worktree).exists() else None,
+        cwd=None,
         env={**os.environ, "GH_TOKEN": token},
         check=True,
         capture_output=True,
@@ -371,7 +426,6 @@ def comment_on_pr(claim: Claim, url: str, body: str, token: str, runner=subproce
     runner(
         ["gh", "pr", "comment", url, "--body-file", "-"],
         input=body,
-        cwd=claim.worktree,
         env={**os.environ, "GH_TOKEN": token},
         check=True,
         capture_output=True,

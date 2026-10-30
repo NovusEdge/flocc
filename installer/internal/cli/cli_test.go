@@ -205,14 +205,10 @@ func TestSessionModeDefaultsToFullScreenForLongCommands(t *testing.T) {
 		{[]string{"host", "create", "x", "--on", "m"}, ui.ModeFull},
 		{[]string{"ship"}, ui.ModeFull},
 		{[]string{"login"}, ui.ModeFull},
-		{[]string{"cardinal", "setup"}, ui.ModeFull},
-		{[]string{"cardinal", "login"}, ui.ModeFull},
 		{[]string{"keys"}, ui.ModeInline},
 		{[]string{"host", "add", "x"}, ui.ModeInline},
-		{[]string{"cardinal", "status"}, ui.ModeInline},
 		{[]string{"status"}, ui.ModePlain},
 		{[]string{"host", "run", "x"}, ui.ModePlain},
-		{[]string{"cardinal", "attach"}, ui.ModePlain},
 	} {
 		d, _, _ := testDeps(t)
 		d.tty, d.outTTY = true, func() bool { return true }

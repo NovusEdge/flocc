@@ -138,8 +138,8 @@ func TestReplayKeepsDataOutOfTheDrawing(t *testing.T) {
 	if got, ok := r.Data("summary"); !ok || got != `{"a":2}` {
 		t.Errorf("got %q %v", got, ok)
 	}
-	if _, ok := r.Data("cardinal"); ok {
-		t.Error("cardinal was never sent")
+	if _, ok := r.Data("other"); ok {
+		t.Error("other was never sent")
 	}
 	for _, e := range rec.Events {
 		if e.Kind == KData {

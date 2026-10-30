@@ -110,7 +110,7 @@ func TestDotEnvOutsideAFloccCheckoutIsIgnored(t *testing.T) {
 
 func TestEnvKeysFailsOnAFailedStore(t *testing.T) {
 	d, _, _ := rotateDeps(t, &hostScript{})
-	flocc(t, d, "FLOCC_NTFY_TOPIC=new-topic\n")
+	flocc(t, d, "FLOCC_GITHUB_AGENT_TOKEN=github_pat_agent\n")
 	d.store = func() keys.Store { return failingStore{} }
 	if err := envKeys(context.Background(), d, keys.Slots); err == nil {
 		t.Fatal("no error")
@@ -128,7 +128,7 @@ func TestSeedEnvMakesDotEnvFromTheExampleAndSaysSo(t *testing.T) {
 	rec := &ui.Recorder{}
 	d.ui = ui.New(rec)
 	root := flocc(t, d, "")
-	if err := os.WriteFile(filepath.Join(root, ".env.example"), []byte("FLOCC_NTFY_TOPIC=\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".env.example"), []byte("FLOCC_LINEAR_API_KEY=\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	seedEnv(d, root)

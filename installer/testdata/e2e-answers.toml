@@ -1,6 +1,5 @@
 team_key = "NF"
 digest_issue = "NF-186"
-ntfy_topic = "la-e2e-throwaway-topic-do-not-subscribe"
 
 [[repos]]
 name = "hello-world"

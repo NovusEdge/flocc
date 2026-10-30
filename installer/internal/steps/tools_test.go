@@ -62,7 +62,7 @@ func TestToolsApplySetsOnlyTheMissingOnes(t *testing.T) {
 
 func TestToolsWithoutMiseSaysToInstallIt(t *testing.T) {
 	e := toolsEnv(t, host.NewFake(), false)
-	if ok, detail, _ := (Tools{}).Check(context.Background(), e); ok || detail != "mise is not installed for the service user" {
+	if ok, detail, _ := (Tools{}).Check(context.Background(), e); ok || detail != "mise is not installed for this user" {
 		t.Fatalf("%v %q", ok, detail)
 	}
 	if err := (Tools{}).Apply(context.Background(), e); err == nil {

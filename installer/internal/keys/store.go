@@ -2,8 +2,6 @@
 package keys
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -22,37 +20,18 @@ const (
 	Linear  Slot = "linear_key"
 	Agent   Slot = "agent_token"
 	Publish Slot = "publish_token"
-	Ntfy    Slot = "ntfy_topic"
 
 	// Tailscale holds "id:secret" of an OAuth client. It is optional, so it is not in Slots: ship
 	// and the answers document would refuse a desktop that never made one.
 	Tailscale Slot = "tailscale_oauth"
 )
 
-// A2A tokens are not in Slots: ship makes them itself, so nothing asks the owner for one.
-const A2AOwner Slot = "a2a_owner"
-
-func A2AHost(name string) Slot { return Slot("a2a_host:" + name) }
-
-// EnsureToken returns the slot's token, making and storing a random one first if it has none.
-func EnsureToken(st Store, s Slot) (string, error) {
-	if v, err := st.Get(s); err != nil || v != "" {
-		return v, err
-	}
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	v := hex.EncodeToString(b)
-	return v, st.Set(s, v)
-}
-
 // Slots is the required keys in fill order: the publish token's page opens only after the agent
 // token passes.
-var Slots = []Slot{Linear, Agent, Publish, Ntfy}
+var Slots = []Slot{Linear, Agent, Publish}
 
 // fillOrder is Slots with the optional slot, which Fill asks for only when the caller names it.
-var fillOrder = []Slot{Linear, Agent, Publish, Tailscale, Ntfy}
+var fillOrder = []Slot{Linear, Agent, Publish, Tailscale}
 
 func (s Slot) Title() string {
 	switch s {
@@ -65,7 +44,7 @@ func (s Slot) Title() string {
 	case Tailscale:
 		return "Tailscale OAuth client"
 	}
-	return "ntfy topic"
+	return string(s)
 }
 
 type Store interface {

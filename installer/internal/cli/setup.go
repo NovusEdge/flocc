@@ -9,12 +9,11 @@ import (
 
 	"charm.land/huh/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal"
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/create"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/keys"
+	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -32,15 +31,14 @@ const (
 )
 
 type wizard struct {
-	ctx       context.Context
-	d         *deps
-	ops       setupOps
-	version   [3]int
-	pending   bool                    // a row ended pending: setup is not finished
-	stopped   bool                    // a prompt was cancelled: nothing more is asked or run
-	failed    map[string]bool         // by saved.HostPart: machines whose host failed, which steps 4-6 skip
-	probed    map[string]machineState // by saved.HostPart
-	cardLogin string                  // cardinal's login from its last status
+	ctx     context.Context
+	d       *deps
+	ops     setupOps
+	version [3]int
+	pending bool                    // a row ended pending: setup is not finished
+	stopped bool                    // a prompt was cancelled: nothing more is asked or run
+	failed  map[string]bool         // by safe.HostPart: machines whose host failed, which steps 4-6 skip
+	probed  map[string]machineState // by safe.HostPart
 }
 
 func setupCmd(ctx context.Context, d *deps, args []string) int {
@@ -57,7 +55,7 @@ func setupCmd(ctx context.Context, d *deps, args []string) int {
 
 func runSetup(ctx context.Context, d *deps, ops setupOps) int {
 	w := &wizard{ctx: ctx, d: d, ops: ops, failed: map[string]bool{}, probed: map[string]machineState{}}
-	d.ui.Plan([]string{"Checkout", "Keys", "Tailnet", "Hosts", "Old versions", "Cardinal", "Logins"})
+	d.ui.Plan([]string{"Checkout", "Keys", "Tailnet", "Hosts", "Old versions", "Logins"})
 	w.run()
 	return w.summary()
 }
@@ -78,7 +76,7 @@ func (w *wizard) run() {
 		return
 	}
 	// The publish token's page lists the mapped repos, so it comes after the host.
-	if !w.fillKeys([]keys.Slot{keys.Publish, keys.Ntfy}, true) || w.stopped {
+	if !w.fillKeys([]keys.Slot{keys.Publish}, true) || w.stopped {
 		return
 	}
 	machines := machinesOf(list)
@@ -86,30 +84,23 @@ func (w *wizard) run() {
 	if w.stopped {
 		return
 	}
-	cs := w.cardinal(machines, remove)
-	if w.stopped {
-		return
-	}
 	w.removeRest(machines, remove)
-	w.logins(checked, cs)
+	w.logins(checked)
 }
 
-// logins signs in each host and cardinal whose login is not full. unknown is a host that could not
-// read its login, which is no evidence of a lapse, so it is only shown.
-func (w *wizard) logins(checked []checkedHost, cs *saved.Saved) {
+// logins signs in each host whose login is not full. unknown is a host that could not read its
+// login, which is no evidence of a lapse, so it is only shown.
+func (w *wizard) logins(checked []checkedHost) {
 	w.d.ui.Group("Logins")
 	for _, c := range checked {
 		if w.stopped {
 			return
 		}
-		if m := machineOf(c.h); m != "" && w.failed[saved.HostPart(m)] {
+		if m := machineOf(c.h); m != "" && w.failed[safe.HostPart(m)] {
 			continue
 		}
 		name := c.h.Name
 		w.login(name, c.st.Login, func(email string) error { return w.ops.login(w.ctx, name, email) })
-	}
-	if cs != nil && !w.stopped {
-		w.login("cardinal", &w.cardLogin, func(email string) error { return w.ops.cardLogin(w.ctx, *cs, email) })
 	}
 }
 
@@ -125,7 +116,7 @@ func (w *wizard) login(name string, state *string, do func(email string) error) 
 		w.row(rowSkipped, "login", name+": unknown, it could not read its login; not acted on")
 		return
 	}
-	email, err := w.ask("claude.ai pool account for "+name+" (login is "+saved.Sanitize(*state)+")", "empty lets the sign-in page choose")
+	email, err := w.ask("claude.ai pool account for "+name+" (login is "+safe.Sanitize(*state)+")", "empty lets the sign-in page choose")
 	if err != nil {
 		w.fail("login", err)
 		return
@@ -150,7 +141,7 @@ func (w *wizard) oldVersions(machines []string) map[string][]string {
 	w.d.ui.Group("Old versions")
 	remove := map[string][]string{}
 	for _, m := range machines {
-		k := saved.HostPart(m)
+		k := safe.HostPart(m)
 		if w.failed[k] {
 			w.row(rowPending, "old versions", k+": skipped, a host on it failed")
 			continue
@@ -194,7 +185,7 @@ func (w *wizard) oldVersions(machines []string) map[string][]string {
 func (w *wizard) showOld(machine string, u oldUser) {
 	body := strings.Join(u.facts(), ", ")
 	for _, p := range u.Procs {
-		body += "\n  " + saved.Sanitize(p)
+		body += "\n  " + safe.Sanitize(p)
 	}
 	if slices.ContainsFunc(u.Procs, polls) {
 		body += "\nIt runs claude or a flocc tick, so the old install may still be polling Linear."
@@ -207,14 +198,14 @@ func (w *wizard) showOld(machine string, u oldUser) {
 func (u oldUser) facts() []string {
 	var f []string
 	if u.UID != "" {
-		f = append(f, "uid "+saved.Sanitize(u.UID))
+		f = append(f, "uid "+safe.Sanitize(u.UID))
 	}
 	f = append(f, fmt.Sprintf("%d processes", len(u.Procs)))
 	if u.Lingering {
 		f = append(f, "lingering")
 	}
 	if u.Since != "" {
-		f = append(f, "user manager since "+saved.Sanitize(u.Since))
+		f = append(f, "user manager since "+safe.Sanitize(u.Since))
 	}
 	return f
 }
@@ -223,7 +214,7 @@ func (u oldUser) facts() []string {
 func (u oldUser) askFacts() []string {
 	f := u.facts()
 	for _, p := range u.Procs {
-		f = append(f, "running "+saved.Sanitize(p))
+		f = append(f, "running "+safe.Sanitize(p))
 	}
 	return f
 }
@@ -233,121 +224,10 @@ func polls(args string) bool {
 	return strings.Contains(args, "claude") || strings.Contains(args, steps.OldName+" run") || strings.Contains(args, "flocc run")
 }
 
-// setupFailures are the status failures setup repairs; the login is step 6's.
-func setupFailures(st steps.CardinalStatus) []string {
-	st.Login = "full"
-	return st.Failures()
-}
-
-// cardinal sets up or repairs cardinal on its one machine: the saved install's, else the first
-// host's. A setup also runs that machine's agreed removals in its root pass, and takes them out of
-// remove. It returns the install to log in, or nil.
-func (w *wizard) cardinal(machines []string, remove map[string][]string) *saved.Saved {
-	w.d.ui.Group("Cardinal")
-	st := w.d.ui.Step("cardinal")
-	cs, have, err := w.ops.cardinal()
-	if err != nil {
-		w.end(st, rowFailed, "cardinal", err.Error())
-		return nil
-	}
-	if !have {
-		if len(machines) == 0 {
-			w.end(st, rowSkipped, "cardinal", "no host is on a machine of yours")
-			return nil
-		}
-		cs = saved.Saved{Machine: machines[0], User: saved.DefaultUser, RenewHour: 4}
-	}
-	k := saved.HostPart(cs.Machine)
-	if w.failed[k] {
-		w.end(st, rowPending, "cardinal", "skipped: a host on "+k+" failed")
-		return nil
-	}
-	if have && !cs.Removed {
-		st.Detail("reading status")
-		status, err := w.ops.cardStatus(w.ctx, cs)
-		if err == nil && len(setupFailures(status)) == 0 {
-			w.end(st, rowDone, "cardinal", "status ok on "+k)
-			w.cardLogin = status.Login
-			return &cs
-		}
-		return w.setupCardinal(st, cs, true, remove)
-	}
-	st.Detail("looking at " + k)
-	ms := w.probe(cs.Machine)
-	if ms.Err != nil {
-		w.end(st, rowFailed, "cardinal", ms.Err.Error())
-		return nil
-	}
-	var q string
-	var facts []string
-	var def, adopt bool
-	var existing oldUser
-	var exists bool
-	if !have {
-		existing, exists = w.ops.findUser(w.ctx, cs.Machine, cs.User)
-	}
-	switch {
-	case have:
-		q, adopt = "Set up cardinal on "+k+" again? flocc cardinal remove took it down", true
-	case exists:
-		q, adopt = "Adopt the existing "+cs.User+" user on "+k+"? No saved file names it, so it looks like a setup by hand", true
-		facts = existing.askFacts()
-	default:
-		q, def = "Set up cardinal on "+k+"?", true
-	}
-	st.Detail("waiting for your answer")
-	yes, err := w.confirm(q, def, facts...)
-	if err != nil {
-		w.failAt(st, "cardinal", err)
-		return nil
-	}
-	if !yes {
-		w.end(st, rowSkipped, "cardinal", "not set up on "+k+"; asked again next run")
-		return nil
-	}
-	return w.setupCardinal(st, cs, adopt, remove)
-}
-
-func (w *wizard) setupCardinal(st *ui.Step, cs saved.Saved, adopt bool, remove map[string][]string) *saved.Saved {
-	k := saved.HostPart(cs.Machine)
-	st.Detail("looking at " + k)
-	ms := w.probe(cs.Machine)
-	switch {
-	case ms.Err != nil:
-		w.end(st, rowFailed, "cardinal", ms.Err.Error())
-		return nil
-	case ms.Incus != nil:
-		w.end(st, rowFailed, "cardinal", ms.Incus.Error())
-		return nil
-	}
-	rm := remove[k]
-	delete(remove, k)
-	st.Detail("setting up")
-	err := w.ops.cardSetup(w.ctx, cs, cardinal.SetupOptions{Adopt: adopt, Remove: rm})
-	w.removed(cs.Machine, rm, err)
-	if err != nil {
-		w.failAt(st, "cardinal", fmt.Errorf("setup: %w", err))
-		return nil
-	}
-	st.Detail("reading status")
-	status, err := w.ops.cardStatus(w.ctx, cs)
-	switch {
-	case err != nil:
-		w.end(st, rowFailed, "cardinal", "after setup: "+err.Error())
-		return nil
-	case len(setupFailures(status)) > 0:
-		w.end(st, rowPending, "cardinal", strings.Join(setupFailures(status), "\n"))
-	default:
-		w.end(st, rowDone, "cardinal", "set up on "+k)
-	}
-	w.cardLogin = status.Login
-	return &cs
-}
-
-// removeRest runs the removals no cardinal setup took, one purge-only root pass per machine.
+// removeRest runs the agreed removals, one purge-only root pass per machine.
 func (w *wizard) removeRest(machines []string, remove map[string][]string) {
 	for _, m := range machines {
-		if users := remove[saved.HostPart(m)]; len(users) > 0 {
+		if users := remove[safe.HostPart(m)]; len(users) > 0 {
 			w.removed(m, users, w.ops.removeOld(w.ctx, m, users))
 		}
 	}
@@ -358,7 +238,7 @@ func (w *wizard) removed(m string, users []string, err error) {
 	if len(users) == 0 {
 		return
 	}
-	k := saved.HostPart(m)
+	k := safe.HostPart(m)
 	st := w.d.ui.Step("old versions")
 	st.Detail("checking that " + strings.Join(users, ", ") + " is gone")
 	still, scanErr := w.ops.oldUsers(w.ctx, m)
@@ -403,7 +283,7 @@ func (w *wizard) checkHosts(list []hosts.Host) []checkedHost {
 		if st, good := w.checkHost(h); good {
 			ok = append(ok, checkedHost{h, st})
 		} else if m := machineOf(h); m != "" {
-			w.failed[saved.HostPart(m)] = true
+			w.failed[safe.HostPart(m)] = true
 		}
 	}
 	return ok
@@ -417,7 +297,7 @@ func (w *wizard) checkHost(h hosts.Host) (hostState, bool) {
 	st := w.ops.readHost(w.ctx, h)
 	if st.Err != "" {
 		detail := "could not read it: " + st.Err
-		if h.SSH != "" && w.ops.offline(w.ctx, saved.HostPart(h.SSH)) {
+		if h.SSH != "" && w.ops.offline(w.ctx, safe.HostPart(h.SSH)) {
 			detail += "\nits tailnet node is offline; if the host is gone, remove the node at https://login.tailscale.com/admin/machines and rm " + hostFile(w.d, h.Name)
 		}
 		w.end(row, rowFailed, h.Name, detail)
@@ -571,7 +451,7 @@ func (w *wizard) fillKeys(slots []keys.Slot, check bool) bool {
 
 // probe reads a machine once per run.
 func (w *wizard) probe(machine string) machineState {
-	k := saved.HostPart(machine)
+	k := safe.HostPart(machine)
 	if s, ok := w.probed[k]; ok {
 		return s
 	}
@@ -734,7 +614,7 @@ func machinesOf(list []hosts.Host) []string {
 	var out []string
 	for _, h := range list {
 		m := machineOf(h)
-		if m != "" && !slices.ContainsFunc(out, func(o string) bool { return saved.HostPart(o) == saved.HostPart(m) }) {
+		if m != "" && !slices.ContainsFunc(out, func(o string) bool { return safe.HostPart(o) == safe.HostPart(m) }) {
 			out = append(out, m)
 		}
 	}

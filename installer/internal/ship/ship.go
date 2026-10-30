@@ -32,9 +32,11 @@ func ArchFor(unameM string) (string, error) {
 }
 
 const (
-	resetStage = "sudo rm -rf /tmp/flocc-setup && mkdir -p /tmp/flocc-setup"
+	// mkdir without -p fails when a flocc-agent process won the race to create the directory
+	// between the rm and the mkdir.
+	resetStage = "sudo rm -rf /tmp/flocc-setup && mkdir -m 700 /tmp/flocc-setup"
 	// Without a terminal sudo must fail rather than wait for a password.
-	resetStageNoPrompt = "sudo -n rm -rf /tmp/flocc-setup && mkdir -p /tmp/flocc-setup"
+	resetStageNoPrompt = "sudo -n rm -rf /tmp/flocc-setup && mkdir -m 700 /tmp/flocc-setup"
 )
 
 // Options are what Ship needs besides the stage and the answers.

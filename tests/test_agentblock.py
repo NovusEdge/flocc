@@ -15,7 +15,6 @@ FULL = """Fix the invoice rounding.
 model: opus
 effort: high
 wall_clock: 2h
-paths: [src/billing/**, tests/billing/**]
 depends_on: [NF-120]
 mcp: [sentry]
 ```
@@ -32,7 +31,6 @@ def test_full_block():
         model="opus",
         effort="high",
         wall_clock_s=7200,
-        paths=("src/billing/**", "tests/billing/**"),
         depends_on=("NF-120",),
         mcp=("sentry",),
     )
@@ -54,11 +52,6 @@ def test_crlf_descriptions_parse():
 def test_bad_blocks(line, msg):
     with pytest.raises(BlockError, match=msg):
         parse_settings(f"```agent\n{line}\n```\n")
-
-
-def test_a_huge_allow_number_is_a_block_error():
-    with pytest.raises(BlockError, match="launches"):
-        parse_settings(f"```agent\nallow: launches {'9' * 5000}\n```\n")
 
 
 def test_unclosed_block_is_an_error():
@@ -93,9 +86,11 @@ def test_json_round_trip():
     assert settings_from_json(settings_to_json(s)) == s
 
 
-def test_allow_key_is_kept_raw_and_validated():
-    s = parse_settings("```agent\nallow: launches 4, agent code-mapper\n```")
-    assert s.allow == "launches 4, agent code-mapper"
-    assert settings_from_json(settings_to_json(s)).allow == s.allow
-    with pytest.raises(BlockError, match="allow"):
-        parse_settings("```agent\nallow: launches lots\n```")
+def test_allow_is_now_an_unknown_key():
+    with pytest.raises(BlockError, match="unknown keys"):
+        parse_settings("```agent\nallow: launches 4\n```")
+
+
+def test_paths_is_now_an_unknown_key():
+    with pytest.raises(BlockError, match="unknown keys"):
+        parse_settings("```agent\npaths: src/**\n```")

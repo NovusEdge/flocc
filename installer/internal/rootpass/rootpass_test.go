@@ -96,7 +96,7 @@ func TestRunNamesTheReportErrorAndTheLog(t *testing.T) {
 	f := host.NewFake().
 		On(SSH(opts, false, "laptop", "mktemp -d /tmp/flocc-create.XXXXXX").String(), 0, dir+"\n").
 		On("scp -q -o ControlMaster=auto /bin/x/flocc-setup laptop:"+dir+"/", 0, "").
-		OnInteractiveOut(line, steps.CardinalReport{Error: "Firewalld: boom"}.Line()+"\n").
+		OnInteractiveOut(line, steps.RootReport{Error: "Firewalld: boom"}.Line()+"\n").
 		OnInteractive(line, errors.New("exit status 1"))
 	reports, err := Run(context.Background(), f, pass("/tmp/flocc-create"))
 	if len(reports) != 1 || err == nil || !strings.Contains(err.Error(), "Firewalld: boom") || !strings.Contains(err.Error(), dir+"/setup.log") {

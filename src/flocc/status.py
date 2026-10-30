@@ -8,10 +8,9 @@ import subprocess
 import time
 from pathlib import Path
 
-from flocc import ledger, usage
+from flocc import agentfs, events, ledger, usage
 from flocc.config import Config
-from flocc.gate import BUDGETS, launches_used, run_id
-from flocc.grants import for_phase
+from flocc.sequence import ARCHETYPE
 from flocc.sessions import session_name
 from flocc.tokens import claude_login
 
@@ -21,6 +20,16 @@ _EXIT = re.compile(r"^--- exit (.*)$")
 _LOG_TAIL = 256 * 1024
 # The desktop gives each host 20s for the whole report; a hung claude must not make it unreachable.
 _LOGIN_TIMEOUT = 5
+
+
+def age_text(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 172800:
+        return f"{seconds / 3600:.0f}h"
+    return f"{seconds / 86400:.0f}d"
 
 
 def last_tick(log: Path) -> dict | None:
@@ -81,22 +90,6 @@ def systemd_tick(run=subprocess.run) -> dict | None:
         return None
     running = props.get("ActiveState") in ("active", "activating")
     return {"at": at, "exit": None if running else props.get("ExecMainStatus")}
-
-
-def _a2a_state(run) -> str | None:
-    env = {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
-    try:
-        out = run(
-            ["systemctl", "--user", "is-active", "flocc-a2a.service"],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout.strip() or None
 
 
 def _read_ledger(path: Path) -> tuple[list[ledger.Claim], dict[str, str], str | None]:
@@ -178,32 +171,79 @@ def issue_lines(
     return hits[-n:] if n > 0 else []
 
 
-def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
-    state_dir = cfg.state_root / claim.issue_key
-    status = usage.read_status(state_dir)
-    updated = _mtime(state_dir / "status.json")
-    run = run_id(claim.phase, claim.started_at)
-    budget = BUDGETS.get(claim.phase)
-    granted = for_phase(state_dir / "grants.json", claim.phase).launches
-    limit = granted if granted is not None else (budget.launches if budget else 0)
+def _read_queue(
+    path: Path, now: float
+) -> tuple[list[ledger.Claim], dict[str, tuple[str, float]], tuple]:
+    """Finished claims, holds and (unacked, oldest unacked time, needing attention). Each table is
+    read on its own: a ledger the new code has not migrated lacks holds, events or printed_at, and
+    that must not hide the finished runs. _read_ledger reports an unreadable ledger."""
+    nothing: tuple = (0, None, 0)
+    if not path.exists():
+        return [], {}, nothing
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return [], {}, nothing
+    con.row_factory = sqlite3.Row
+
+    def read(fn, default):
+        try:
+            return fn()
+        except sqlite3.Error:
+            return default
+
+    try:
+        finished = read(lambda: ledger.finished_claims(con), [])
+        holds = read(lambda: ledger.issue_holds(con), {})
+        counts = read(
+            lambda: tuple(
+                con.execute(
+                    "SELECT COUNT(*), MIN(at),"
+                    " COUNT(CASE WHEN printed_at IS NOT NULL AND at <= ? THEN 1 END)"
+                    " FROM events WHERE acked_at IS NULL",
+                    (now - events.ATTENTION_S,),
+                ).fetchone()
+            ),
+            nothing,
+        )
+    finally:
+        con.close()
+    return finished, holds, counts
+
+
+def _finished_row(cfg: Config, claim: ledger.Claim, now: float) -> dict:
+    url_file = cfg.state_root / claim.issue_key / "pr-url"
+    url = url_file.read_text().strip() if url_file.is_file() else ""
     return {
         "issue": claim.issue_key,
         "state": claim.state,
         "phase": claim.phase,
+        "archetype": ARCHETYPE.get(claim.phase, claim.phase),
+        "fix_attempts": claim.fix_attempts,
+        "started_age_s": max(0.0, now - claim.started_at),
+        "pr_url": url if url != "unknown" else "",
+    }
+
+
+def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
+    agent = cfg.agent_state_root / claim.issue_key
+    status = usage.read_status(agent)
+    try:
+        updated = agentfs.mtime(agent, "status.json")
+    except OSError:
+        updated = None
+    return {
+        "issue": claim.issue_key,
+        "state": claim.state,
+        "phase": claim.phase,
+        "archetype": ARCHETYPE.get(claim.phase, claim.phase),
+        "fix_attempts": claim.fix_attempts,
+        "sequence": claim.sequence,
         "started_age_s": max(0.0, now - claim.started_at),
         "updated_age_s": None if updated is None else max(0.0, now - updated),
         "tmux_alive": sessions.alive(session_name(claim.issue_key, claim.phase)),
         "context_pct": usage.context_pct(status) if status else None,
-        "launches": launches_used(state_dir, run),
-        "launch_limit": limit,
     }
-
-
-def _mtime(path: Path) -> float | None:
-    try:
-        return path.stat().st_mtime
-    except OSError:
-        return None
 
 
 def _disk(path: Path) -> dict | None:
@@ -233,7 +273,7 @@ def collect(
     now: float | None = None,
     mode: str | None = None,
     run=subprocess.run,
-    claude: str | None = None,
+    claude: list[str] | None = None,
 ) -> dict:
     """Reads host state without taking the tick lock or touching Linear and GitHub."""
     now = time.time() if now is None else now
@@ -241,9 +281,10 @@ def collect(
     tick = systemd_tick(run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
     if tick is not None and tick["at"] is not None:
         tick["age_s"] = max(0.0, now - tick["at"])
-    latest = usage.latest_usage(cfg.state_root, now)
+    latest = usage.latest_usage(cfg.agent_state_root, now)
     claims, expiry, ledger_error = _read_ledger(cfg.ledger_path)
     rows = [_claim_row(cfg, c, sessions, now) for c in claims]
+    finished, holds, (unacked, oldest, attention) = _read_queue(cfg.ledger_path, now)
     activity_error = None
     if rows:
         try:
@@ -259,6 +300,17 @@ def collect(
         "now": now,
         "last_tick": tick,
         "session_cap": cfg.session_cap,
+        "check_fix_rounds": cfg.check_fix_rounds,
+        "finished": [_finished_row(cfg, c, now) for c in finished],
+        "holds": [
+            {"issue": k, "reason": reason, "age_s": max(0.0, now - at)}
+            for k, (reason, at) in holds.items()
+        ],
+        "events": {
+            "unacked": unacked,
+            "oldest_age_s": None if oldest is None else max(0.0, now - oldest),
+            "attention": attention,
+        },
         "claims": rows,
         "ledger_error": ledger_error,
         # The desktop's login takes this lock with flock while it runs.
@@ -273,7 +325,6 @@ def collect(
             "age_s": max(0.0, now - latest.observed_at),
         },
         "disk": _disk(cfg.state_root),
-        "a2a": _a2a_state(run) if mode == "systemd" else None,
         # null: not asked. "unknown": asked, and claude gave no answer, which is not a logout.
         "claude_login": None
         if claude is None

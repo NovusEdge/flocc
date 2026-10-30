@@ -44,7 +44,7 @@ func (l *fakeLock) lock(string) (func(), error) {
 // loginFake answers auth status in the given order (the last repeats) and the Run step.
 func loginFake(auth ...host.Result) *host.Fake {
 	return systemdRun(host.NewFake(), 0, "ok    tmux: server on socket flocc\n").
-		OnSeq(claudeBin+" auth status", auth...).
+		OnSeq(agentClaudeBin+" auth status", auth...).
 		On(floccBin+" status --json", 0, statusJSON())
 }
 
@@ -56,7 +56,7 @@ func noteConsent(f *host.Fake) func(context.Context, host.Cmd) error {
 	}
 }
 
-const consentCall = "consent: " + claudeBin + " remote-control in /home/flocc/worktrees"
+const consentCall = "consent: " + agentClaudeBin + " remote-control in /home/flocc-agent/worktrees"
 
 func TestLoginWithAFullLoginOnlyAnswersTheConsent(t *testing.T) {
 	f := loginFake(authFull)
@@ -84,7 +84,7 @@ func TestLoginSignsInThenAnswersTheConsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	login := slices.Index(f.Calls, "interactive: "+claudeBin+" auth login --claudeai --email o@example.test")
+	login := slices.Index(f.Calls, "interactive: "+agentClaudeBin+" auth login --claudeai --email o@example.test")
 	consent := slices.Index(f.Calls, consentCall)
 	if login < 0 || consent < login || !f.Ran("systemctl --user enable --now flocc.timer") {
 		t.Fatalf("calls: %v", f.Calls)
@@ -102,65 +102,6 @@ func TestLoginStopsWhenTheSignInDidNotTake(t *testing.T) {
 		if strings.HasPrefix(c, "consent:") {
 			t.Fatalf("ran the consent without a login: %v", f.Calls)
 		}
-	}
-}
-
-func TestLoginTrustsTheWorktreesBeforeTheConsent(t *testing.T) {
-	f := loginFake(authFull)
-	e := testEnv(t, f)
-	var trusted bool
-	consent := func(context.Context, host.Cmd) error {
-		b, _ := os.ReadFile(e.HomePath(".claude.json"))
-		trusted = strings.Contains(string(b), `"/home/flocc/worktrees": {`) && strings.Contains(string(b), `"hasTrustDialogAccepted": true`)
-		return nil
-	}
-	if err := Login(context.Background(), e, LoginOptions{Lock: (&fakeLock{}).lock, Consent: consent}); err != nil {
-		t.Fatal(err)
-	}
-	if !trusted {
-		t.Fatal("~/worktrees was not trusted when the consent ran")
-	}
-}
-
-func TestTrustWorktreesKeepsTheRestOfClaudeJSON(t *testing.T) {
-	e := testEnv(t, host.NewFake())
-	path := e.HomePath(".claude.json")
-	os.MkdirAll(filepath.Dir(path), 0o755)
-	// The big number would lose digits in a float64 round trip.
-	in := `{"oauthAccount":{"emailAddress":"o@example.test"},"numStartups":12345678901234567890,` +
-		`"projects":{"/home/flocc/src/r":{"hasTrustDialogAccepted":true,"allowedTools":[]}}}`
-	os.WriteFile(path, []byte(in), 0o600)
-	if err := trustWorktrees(e); err != nil {
-		t.Fatal(err)
-	}
-	b, _ := os.ReadFile(path)
-	for _, want := range []string{`"emailAddress": "o@example.test"`, "12345678901234567890", `"allowedTools": []`, `"/home/flocc/worktrees": {`} {
-		if !strings.Contains(string(b), want) {
-			t.Errorf("missing %s in\n%s", want, b)
-		}
-	}
-	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
-		t.Errorf("mode %o", st.Mode().Perm())
-	}
-}
-
-func TestTrustWorktreesCreatesTheFileAndLeavesATrustedOneAlone(t *testing.T) {
-	e := testEnv(t, host.NewFake())
-	path := e.HomePath(".claude.json")
-	os.MkdirAll(filepath.Dir(path), 0o755)
-	if err := trustWorktrees(e); err != nil {
-		t.Fatal(err)
-	}
-	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("%v %v", st, err)
-	}
-	same := `{"projects":{"/home/flocc/worktrees":{"hasTrustDialogAccepted":true}}}`
-	os.WriteFile(path, []byte(same), 0o600)
-	if err := trustWorktrees(e); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(path); string(b) != same {
-		t.Fatalf("rewrote a file that already held the trust:\n%s", b)
 	}
 }
 
@@ -264,7 +205,7 @@ func TestLoginStopsWaitingWhenTheContextIsCancelled(t *testing.T) {
 
 func TestFreshHostShipLeavesTheLoginPendingAndLoginStartsTheTimer(t *testing.T) {
 	f := systemdRun(host.NewFake(), 1, "ok    tmux: server on socket flocc\n"+loginFailLine).
-		On(claudeBin+" auth status", 1, `{"loggedIn":false}`).
+		On(agentClaudeBin+" auth status", 1, `{"loggedIn":false}`).
 		On(floccBin+" --version", 0, "flocc 0.4.0\n").
 		On(floccBin+" status --json", 0, statusJSON())
 	e := testEnv(t, f)
@@ -274,10 +215,10 @@ func TestFreshHostShipLeavesTheLoginPendingAndLoginStartsTheTimer(t *testing.T) 
 	}
 	s := Summarize(context.Background(), e)
 	if s.Failing() || s.Login != "none" || !s.LoginPending || s.Timer ||
-		!f.Ran("systemctl --user enable --now flocc-tmux.service") || f.Ran("systemctl --user enable --now flocc.timer") {
+		f.Ran("systemctl --user enable --now flocc.timer") {
 		t.Fatalf("summary %+v calls %v", s, f.Calls)
 	}
-	f.On(claudeBin+" auth status", 0, authFull.Stdout).On(doctorCmd, 0, "ok    tmux: server on socket flocc\n")
+	f.On(agentClaudeBin+" auth status", 0, authFull.Stdout).On(doctorCmd, 0, "ok    tmux: server on socket flocc\n")
 	e.Pending = nil
 	if err := Login(context.Background(), e, LoginOptions{Lock: (&fakeLock{}).lock, Consent: noteConsent(f)}); err != nil {
 		t.Fatal(err)

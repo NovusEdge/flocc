@@ -1,0 +1,2 @@
+# Written by flocc setup. flocc reaches flocc-agent only through this wrapper (d176).
+flocc ALL=(flocc-agent) NOPASSWD: /usr/local/libexec/flocc-agent-run

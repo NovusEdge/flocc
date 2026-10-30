@@ -10,6 +10,17 @@ import (
 
 const ServiceUser = "flocc"
 
+// The two-user layout; src/flocc/config.py's fixed paths match these.
+const (
+	AgentUser = "flocc-agent"
+	WorkGroup = "flocc-work"
+	AgentHome = "/home/" + AgentUser
+	AgentRun  = "/usr/local/libexec/flocc-agent-run"
+	OptDir    = "/opt/flocc"
+	// Claude Code reads it for every user and lets no user setting override it.
+	ManagedSettingsFile = "/etc/claude-code/managed-settings.json"
+)
+
 var privileged = []string{"sudo", "wheel", "admin"}
 
 type User struct{}

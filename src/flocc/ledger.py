@@ -1,9 +1,11 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, fields
-from pathlib import Path, PurePosixPath
+from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
 
+# Version 0. A ledger moves forward through _MIGRATIONS only; PRAGMA user_version counts the
+# entries applied. Never edit an entry once it has shipped: append a new one.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS claims (
   issue_key TEXT PRIMARY KEY,
@@ -49,7 +51,32 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
-_JSON_FIELDS = ("paths", "depends_on")
+_MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    (
+        """CREATE TABLE events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  issue_key TEXT,
+  repo TEXT,
+  detail TEXT NOT NULL DEFAULT '',
+  at REAL NOT NULL,
+  printed_at REAL,
+  acked_at REAL
+)""",
+        """CREATE TABLE holds (
+  issue_key TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  at REAL NOT NULL
+)""",
+    ),
+    ("ALTER TABLE claims DROP COLUMN escalation_offset",),
+    ("ALTER TABLE claims DROP COLUMN paths",),
+    (
+        """ALTER TABLE claims ADD COLUMN sequence TEXT NOT NULL DEFAULT '["executor", "reviewer"]'""",
+    ),
+    ("ALTER TABLE events ADD COLUMN prints INTEGER NOT NULL DEFAULT 0",),
+)
+_JSON_FIELDS = ("depends_on", "sequence")
 LIVE_STATES = ("running", "blocked")
 
 
@@ -62,7 +89,6 @@ class Claim:
     branch: str
     phase: str
     state: str
-    paths: list[str]
     depends_on: list[str]
     settings_json: str
     started_at: float
@@ -72,18 +98,10 @@ class Claim:
     base_sha: str | None = None
     tester_sha: str | None = None
     last_comment_at: str | None = None
-    escalation_offset: int = 0
+    sequence: list[str] = field(default_factory=lambda: ["executor", "reviewer"])
 
 
-def connect(path: Path | str) -> sqlite3.Connection:
-    # Autocommit plus explicit BEGIN IMMEDIATE: the tick and the pre-commit hook write from
-    # separate processes, and a deferred transaction can deadlock upgrading to a write lock.
-    con = sqlite3.connect(path, timeout=10, isolation_level=None)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA busy_timeout=10000")
-    con.executescript(_SCHEMA)
-    return con
+_CLAIM_FIELDS = frozenset(f.name for f in fields(Claim))
 
 
 @contextmanager
@@ -97,10 +115,43 @@ def transaction(con: sqlite3.Connection):
     con.execute("COMMIT")
 
 
+def connect(path: Path | str) -> sqlite3.Connection:
+    # Autocommit plus explicit BEGIN IMMEDIATE: the tick, flocc release, flocc canary and a
+    # session's pre-commit hook (which may migrate) write from separate processes, and a deferred
+    # transaction can deadlock upgrading to a write lock.
+    con = sqlite3.connect(path, timeout=10, isolation_level=None)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=10000")
+    con.executescript(_SCHEMA)
+    _migrate(con)
+    return con
+
+
+def _version(con: sqlite3.Connection) -> int:
+    return con.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    if _version(con) >= len(_MIGRATIONS):
+        return
+    # Read again under the write lock: the tick and a session's hook can open an old ledger at
+    # the same moment, and the second must not apply a migration the first just applied.
+    with transaction(con):
+        start = _version(con)
+        for n, statements in enumerate(_MIGRATIONS[start:], start + 1):
+            for sql in statements:
+                con.execute(sql)
+            con.execute(f"PRAGMA user_version = {n}")
+
+
 def _from_row(row: sqlite3.Row) -> Claim:
-    data = dict(row)
+    # status reads the ledger read-only, so before the first tick after an upgrade it still sees
+    # columns a migration has yet to drop.
+    data = {k: v for k, v in dict(row).items() if k in _CLAIM_FIELDS}
     for key in _JSON_FIELDS:
-        data[key] = json.loads(data[key])
+        if key in data:
+            data[key] = json.loads(data[key])
     return Claim(**data)
 
 
@@ -151,75 +202,12 @@ def update_claim(con: sqlite3.Connection, key: str, **values) -> None:
         con.execute(f"UPDATE claims SET {sets} WHERE issue_key = :_key", {**data, "_key": key})
 
 
-def in_repo(claims: list[Claim], repo: str) -> list[Claim]:
-    """Paths are relative to a repo root, so claims in another repo never clash with them."""
-    return [c for c in claims if c.repo == repo]
-
-
-def is_shared(name: str, shared: tuple[str, ...]) -> bool:
-    path = PurePosixPath(name)
-    return any(name == g or path.full_match(g) for g in shared)
-
-
-def unshared(globs: list[str], shared: tuple[str, ...]) -> list[str]:
-    return [g for g in globs if not is_shared(g, shared)]
-
-
-def add_paths(con: sqlite3.Connection, key: str, globs: list[str]) -> dict[str, str]:
-    """Adds globs to the claim unless another live claim overlaps; returns the clashes."""
-    # Read, check and write share one transaction so two agents claiming at once cannot both win.
-    with transaction(con):
-        mine = get_claim(con, key)
-        if mine is None:
-            raise KeyError(key)
-        clash = conflicting_claims(globs, in_repo(live_claims(con), mine.repo), exclude=key)
-        if not clash:
-            paths = mine.paths + [g for g in globs if g not in mine.paths]
-            con.execute("UPDATE claims SET paths = ? WHERE issue_key = ?", (json.dumps(paths), key))
-    return clash
-
-
 def delete_claim(con: sqlite3.Connection, key: str) -> None:
     with transaction(con):
         con.execute("DELETE FROM claims WHERE issue_key = ?", (key,))
 
 
-def _literal_prefix(glob: str) -> str:
-    cut = [i for i in (glob.find(c) for c in "*?[") if i >= 0]
-    return glob[: min(cut)] if cut else glob
-
-
-def globs_overlap(a: str, b: str) -> bool:
-    # Conservative: compares the literal text before the first wildcard, so it can report an
-    # overlap that real matching would not (a.py vs a.pyc) but never misses one.
-    pa, pb = _literal_prefix(a), _literal_prefix(b)
-    return pa.startswith(pb) or pb.startswith(pa)
-
-
-def conflicting_claims(paths, claims, exclude: str | None = None) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for glob in paths:
-        for claim in claims:
-            if claim.issue_key != exclude and any(globs_overlap(glob, g) for g in claim.paths):
-                out[glob] = claim.issue_key
-                break
-    return out
-
-
-def file_conflicts(files, claims, exclude: str | None) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for name in files:
-        path = PurePosixPath(name)
-        # A directory match claims everything under it, so `src/b*` covers src/billing/tax.py as
-        # globs_overlap already assumes at admission.
-        candidates = (path, *path.parents[:-1])
-        for claim in claims:
-            if claim.issue_key != exclude and any(
-                p.full_match(g) for g in claim.paths for p in candidates
-            ):
-                out[name] = claim.issue_key
-                break
-    return out
+DEDUPE_S = 24 * 3600
 
 
 def alert_seen(con: sqlite3.Connection, cause: str, within_s: float, now: float) -> bool:
@@ -328,6 +316,27 @@ def held_keys(con) -> frozenset[str]:
     """Issues whose finished work waits on a broken base branch (see supervisor.BASE_HELD)."""
     rows = con.execute("SELECT key FROM meta WHERE key LIKE 'base_held:%' AND value != ''")
     return frozenset(r["key"].split(":", 1)[1] for r in rows)
+
+
+# cardinal's holds: the service starts nothing for a held issue until flocc release lifts it.
+def add_hold(con, key: str, reason: str, now: float) -> None:
+    with transaction(con):
+        con.execute(
+            "INSERT INTO holds (issue_key, reason, at) VALUES (?, ?, ?)"
+            " ON CONFLICT(issue_key) DO UPDATE SET reason = excluded.reason, at = excluded.at",
+            (key, reason, now),
+        )
+
+
+def remove_hold(con, key: str) -> bool:
+    with transaction(con):
+        cur = con.execute("DELETE FROM holds WHERE issue_key = ?", (key,))
+    return cur.rowcount > 0
+
+
+def issue_holds(con) -> dict[str, tuple[str, float]]:
+    rows = con.execute("SELECT issue_key, reason, at FROM holds ORDER BY at")
+    return {r["issue_key"]: (r["reason"], r["at"]) for r in rows}
 
 
 def meta_set(con, key: str, value: str) -> None:

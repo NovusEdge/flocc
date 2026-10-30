@@ -7,7 +7,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/NovusEdge/flocc/installer/internal/cardinal/saved"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
 )
@@ -16,7 +15,7 @@ func TestHostIssueKeyNeverReachesTheTerminalRaw(t *testing.T) {
 	const evil = "NF-9\x1b[2J"
 	m, _ := newModel(t)
 	f := canned()
-	f.results[1].Status = report(1, claim(evil, "test", "running", 18, 1, 60))
+	f.results[1].Status = report(1, claim(evil, "test", "running", 18, 60))
 	m.Update(f)
 	key(m, "r")
 	if strings.Contains(m.View().Content, "\x1b[2J") {
@@ -30,34 +29,6 @@ func TestHostIssueKeyNeverReachesTheTerminalRaw(t *testing.T) {
 	m.Update(execDone{what: "ship " + evil, err: errors.New("x")})
 	if strings.Contains(m.View().Content, "\x1b[2J") {
 		t.Errorf("the toast drew the raw name:\n%q", m.View().Content)
-	}
-}
-
-func TestCardinalAttachesTheSelectedInstall(t *testing.T) {
-	m, ran := newModel(t)
-	f := canned()
-	f.cards = []ship.CardinalRow{
-		{Saved: saved.Saved{Machine: "a", User: "alice"}, Err: "x"},
-		{Saved: saved.Saved{Machine: "b", User: "bob"}, Err: "x"},
-	}
-	m.Update(f)
-	m.screen = cardinalScreen
-	key(m, "down")
-	if !strings.Contains(text(m), "❯") {
-		t.Errorf("no selection drawn:\n%s", text(m))
-	}
-	key(m, "c")
-	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "cardinal attach --user bob" {
-		t.Errorf("ran %v", *ran)
-	}
-}
-
-func TestCardinalAttachWithoutInstallsDoesNothing(t *testing.T) {
-	m, ran := newModel(t)
-	m.Update(canned())
-	m.screen = cardinalScreen
-	if cmd := key(m, "c"); cmd != nil || len(*ran) != 0 {
-		t.Errorf("c ran %v", *ran)
 	}
 }
 
@@ -174,7 +145,7 @@ func TestLogsForAnIssueWithNoLinesNamesIt(t *testing.T) {
 
 func TestCountsArePluralised(t *testing.T) {
 	m, _ := newModel(t)
-	rep := report(1, claim("NF-402", "test", "running", 18, 1, 60))
+	rep := report(1, claim("NF-402", "test", "running", 18, 60))
 	rep.SessionCap = 1
 	m.Update(fetched{results: []Result{{Host: ship.FleetHost{Name: "flocc-2"}, Status: rep}}, at: t0})
 	if got := text(m); !strings.Contains(got, "flocc 1 host · 1 issue") {

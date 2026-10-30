@@ -2,19 +2,16 @@ import json
 import shutil
 import subprocess
 import time
-from dataclasses import replace
 
 import pytest
 
 from flocc.agentblock import IssueSettings
 from flocc.config import load
-from flocc.grants import Grants
 from flocc.sessions import (
-    A2A_TOOLS,
     Sessions,
+    agent_env,
     allowed_plugins,
     claude_argv,
-    clean_env,
     installed_plugins,
     session_name,
     trust_folders,
@@ -25,17 +22,14 @@ CFG = load(EXAMPLE)
 STATE = {"FLOCC_STATE": "/s/NF-1"}
 
 
-def a2a_server(exe):
-    return {"type": "stdio", "command": exe, "args": ["mcp-a2a"], "env": STATE}
-
-
-def test_clean_env_keeps_only_the_allowlist(monkeypatch):
-    for key in ("HOME", "USER", "PATH"):
-        monkeypatch.setenv(key, "/x")
-    for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CONFIG_DIR"):
-        monkeypatch.setenv(key, "x")
-    env = clean_env({"FLOCC_STATE": "/s"})
-    assert env.keys() == {"HOME", "USER", "PATH", "TERM", "LANG", "FLOCC_STATE"}
+def test_the_pane_gets_flocc_agent_s_environment_and_nothing_else(monkeypatch):
+    monkeypatch.setenv("SUDO_UID", "1000")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
+    env = agent_env(CFG, {"FLOCC_PHASE": "impl"})
+    assert env["HOME"] == "/home/flocc-agent" and env["USER"] == "flocc-agent"
+    assert env["PATH"].startswith("/opt/flocc/bin:/home/flocc-agent/.local/bin:")
+    assert env["FLOCC_PHASE"] == "impl"
+    assert not {"SUDO_UID", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"} & set(env)
 
 
 def test_argv_wraps_claude_in_a_clean_env():
@@ -51,14 +45,9 @@ def test_argv_wraps_claude_in_a_clean_env():
     )
     assert argv[:4] == ["/usr/bin/env", "-i", "HOME=/h", "X=1"]
     i = argv.index("/opt/claude")
-    assert argv[i - 1] == str(CFG.agent_gh_token_file) and argv[i + 1] == "do the thing"
+    assert argv[i - 1] == str(CFG.agent_token_file) and argv[i + 1] == "do the thing"
     assert argv[-2] == "--mcp-config"
-    assert json.loads(argv[-1]) == {
-        "mcpServers": {
-            "sentry": CFG.mcp_servers["sentry"],
-            "flocc-a2a": a2a_server("/opt/flocc"),
-        }
-    }
+    assert json.loads(argv[-1]) == {"mcpServers": {"sentry": CFG.mcp_servers["sentry"]}}
     assert argv[argv.index("--remote-control") + 1] == "NF-1"
     assert argv[argv.index("--model") + 1] == "opus"
     settings = json.loads(argv[argv.index("--settings") + 1])
@@ -97,25 +86,6 @@ def test_trust_marks_onboarding_done_when_every_folder_is_trusted(tmp_path):
     assert json.loads(cj.read_text())["hasCompletedOnboarding"] is True
 
 
-def test_trust_dismisses_the_auto_mode_setup_dialog_and_keeps_its_counts(tmp_path):
-    cj = tmp_path / ".claude.json"
-    cj.write_text(
-        json.dumps(
-            {
-                "hasCompletedOnboarding": True,
-                "projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}},
-                "autoModeEnvSetup": {"denials": 5, "dismissedAt": 1792673965473},
-            }
-        )
-    )
-    trust_folders(cj, ["/wt/NF-1"])
-    assert json.loads(cj.read_text())["autoModeEnvSetup"] == {
-        "denials": 5,
-        "dismissedAt": 1792673965473,
-        "dismissed": True,
-    }
-
-
 def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
     cj = tmp_path / ".claude.json"
     cj.write_text(
@@ -123,7 +93,6 @@ def test_trust_leaves_an_already_trusted_file_untouched(tmp_path):
             {
                 "hasCompletedOnboarding": True,
                 "projects": {"/wt/NF-1": {"hasTrustDialogAccepted": True}},
-                "autoModeEnvSetup": {"dismissed": True},
             }
         )
     )
@@ -181,17 +150,6 @@ def test_settings_deny_general_purpose_and_nested_claude_but_allow_questions():
     assert s["disableWorkflows"] is True
 
 
-def test_grants_lift_the_matching_launch_flags():
-    s = settings_of(argv_with(grants=Grants(agents=("general-purpose",), workflows=("w",))))
-    assert "Agent(general-purpose)" not in s["permissions"]["deny"]
-    assert s["disableWorkflows"] is False
-
-
-def test_unlisted_plugins_are_disabled():
-    s = settings_of(argv_with(disabled_plugins=("glowup@glowup",)))
-    assert s["enabledPlugins"] == {"glowup@glowup": False}
-
-
 def test_remote_control_can_be_left_off():
     assert "--remote-control" in argv_with()
     argv = argv_with(remote_control=False)
@@ -209,30 +167,18 @@ def test_installed_and_allowed_plugin_files(tmp_path):
     assert allowed_plugins(tmp_path / "none.txt") is None
 
 
-def test_the_hosts_rules_and_environment_reach_the_session():
-    cfg = replace(
-        CFG,
-        permission_allow=("Bash(uv sync --frozen)",),
-        permission_environment=("Nothing on this VM is production.",),
-    )
-    s = settings_of(
-        claude_argv(cfg, "NF-1", IssueSettings(), "p", env=STATE, claude_exe="c", exe="x")
-    )
-    assert s["permissions"]["allow"] == ["Bash(uv sync --frozen)", *A2A_TOOLS]
-    assert "Bash(claude:*)" in s["permissions"]["deny"]
-    assert s["autoMode"] == {"environment": ["$defaults", "Nothing on this VM is production."]}
+def test_sessions_run_in_bypass_mode_without_the_warning_dialog():
+    argv = claude_argv(CFG, "NF-1", IssueSettings(), "p", env=STATE, claude_exe="c", exe="x")
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings["skipDangerousModePermissionPrompt"] is True
+    assert set(settings["permissions"]) == {"deny"} and "autoMode" not in settings
 
 
-def test_no_rules_leave_auto_mode_alone_and_allow_only_the_a2a_tools():
-    s = settings_of(argv_with())
-    assert "autoMode" not in s and s["permissions"]["allow"] == list(A2A_TOOLS)
-
-
-def test_sessions_get_the_a2a_server_and_its_tools():
-    argv = argv_with()
-    assert json.loads(argv[-1])["mcpServers"]["flocc-a2a"] == a2a_server("x")
-    allow = settings_of(argv)["permissions"]["allow"]
-    assert all(name in allow for name in A2A_TOOLS)
+def test_trust_no_longer_writes_the_auto_mode_dialog_key(tmp_path):
+    path = tmp_path / ".claude.json"
+    trust_folders(path, [tmp_path / "wt"])
+    assert "autoModeEnvSetup" not in json.loads(path.read_text())
 
 
 def test_capture_asks_tmux_for_plain_text():

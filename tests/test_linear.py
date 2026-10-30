@@ -92,76 +92,6 @@ def test_unstart_moves_to_an_unstarted_state():
     assert post.calls[1][1] == {"id": "u2", "stateId": "todo"}
 
 
-def test_add_label_skips_other_teams_labels():
-    post = FakePost(
-        {
-            "issueLabels": {
-                "nodes": [
-                    {"id": "theirs", "team": {"id": "t9"}},
-                    {"id": "ours", "team": {"id": "t1"}},
-                ]
-            },
-            "issue": {"labels": {"nodes": []}},
-        },
-        {"issueAddLabel": {"success": True}},
-    )
-    Linear(post).add_label(page2_issue(), "needs-decision")
-    assert post.calls[1][1]["label"] == "ours"
-
-
-def lookup(parent=None, current=()):
-    return {
-        "issueLabels": {"nodes": [{"id": "nd", "team": {"id": "t1"}, "parent": parent}]},
-        "issue": {"labels": {"nodes": list(current)}},
-    }
-
-
-READINESS = {"id": "g-ready", "groupType": "singleSelect"}
-CURRENT = [
-    {"id": "claude", "parent": None},
-    {"id": "ready", "parent": {"id": "g-ready"}},
-    {"id": "bug", "parent": {"id": "g-type"}},
-    {"id": "repo", "parent": {"id": "g-code"}},
-]
-
-
-@pytest.mark.parametrize("parent", [READINESS, {"id": "g-ready", "groupType": None}])
-def test_add_label_swaps_siblings_in_an_exclusive_group(parent):
-    post = FakePost(lookup(parent, CURRENT), {"issueUpdate": {"success": True}})
-    Linear(post).add_label(page2_issue(), "needs-decision")
-    assert len(post.calls) == 2
-    assert post.calls[0][1]["id"] == "u2"
-    assert "issueUpdate" in post.calls[1][0]
-    assert post.calls[1][1] == {"id": "u2", "add": ["nd"], "remove": ["ready"]}
-
-
-def test_add_label_keeps_siblings_in_a_multi_select_group():
-    current = [{"id": "ready", "parent": {"id": "g"}}]
-    post = FakePost(lookup({"id": "g", "groupType": "multiSelect"}, current), {"issueAddLabel": {}})
-    Linear(post).add_label(page2_issue(), "needs-decision")
-    assert len(post.calls) == 2
-    assert "issueAddLabel" in post.calls[1][0]
-
-
-def test_add_top_level_label_only_adds():
-    post = FakePost(lookup(None, CURRENT), {"issueAddLabel": {"success": True}})
-    Linear(post).add_label(page2_issue(), "needs-decision")
-    assert [c[1] for c in post.calls[1:]] == [{"id": "u2", "label": "nd"}]
-
-
-def test_add_label_already_on_the_issue_but_not_in_the_snapshot_is_a_noop():
-    current = [{"id": "nd", "parent": {"id": "g-ready"}}, *CURRENT]
-    post = FakePost(lookup(READINESS, current))
-    Linear(post).add_label(page2_issue(), "needs-decision")
-    assert len(post.calls) == 1
-
-
-def test_add_label_already_present_is_a_noop():
-    post = FakePost()
-    Linear(post).add_label(page2_issue(), "claude")
-    assert post.calls == []
-
-
 def test_comments_mark_the_owners():
     post = FakePost(
         {
@@ -257,12 +187,6 @@ def test_missing_labels_on_an_unknown_team_raises():
     post = FakePost({"teams": {"nodes": []}, "issueLabels": {"nodes": []}})
     with pytest.raises(LinearError, match="team NF"):
         Linear(post).missing_labels("NF", ["claude"])
-
-
-def test_add_label_missing_label_raises():
-    post = FakePost({"issueLabels": {"nodes": []}})
-    with pytest.raises(LinearError, match="needs-decision"):
-        Linear(post).add_label(page2_issue(), "needs-decision")
 
 
 def test_http_transport_raises_on_graphql_errors(monkeypatch):

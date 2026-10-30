@@ -78,6 +78,8 @@ type Env struct {
 	Tailnet KeyMinter
 	// Checkout is the flocc checkout flocc-setup is built from.
 	Checkout func() (string, error)
+	// Cardinal is set for flocc host cardinal; Spec is then the cardinal VM.
+	Cardinal CardinalSpec
 
 	step      *ui.Step // the step RunSteps is applying, for the waits inside it
 	sudo      bool     // sudo -n works on the machine

@@ -18,7 +18,7 @@ import (
 var update = flag.Bool("update", false, "rewrite golden files")
 
 func goldenAnswers() *answers.Answers {
-	return &answers.Answers{TeamKey: "NF", DigestIssue: "NF-186", NtfyTopic: "flocc-test",
+	return &answers.Answers{TeamKey: "NF", DigestIssue: "NF-186",
 		Repos: []answers.Repo{{Name: "nimblefox-template", URL: "https://github.com/nimble-fox-ai/nimblefox-template",
 			BaseBranch: "main", Check: "mise exec -- just check", Draft: false}}}
 }
@@ -144,24 +144,4 @@ func (g gitOK) Run(ctx context.Context, c host.Cmd) (host.Result, error) {
 		return host.Result{}, nil
 	}
 	return g.Fake.Run(ctx, c)
-}
-
-// The desktop's flocc keys confirmed the topic; a ship from it must not push again.
-func TestConfigApplyWithAnswersOnStdinSendsNoTestPush(t *testing.T) {
-	f := host.NewFake()
-	e := testEnv(t, f)
-	e.Run = gitOK{f}
-	e.SkipInteractive = true
-	e.Answers.TeamKey, e.Answers.DigestIssue, e.Answers.NtfyTopic = "NF", "NF-1", "flocc-t"
-	e.Answers.Repos = []answers.Repo{{Name: "r", URL: "https://github.com/o/r", BaseBranch: "main", Check: "just check"}}
-	e.UI = &ui.Scripted{A: e.Answers, Out: io.Discard}
-	os.MkdirAll(e.HomePath("src/r/.git"), 0o755)
-	if err := (Config{}).Apply(context.Background(), e); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range f.Calls {
-		if strings.HasPrefix(c, "curl") {
-			t.Fatalf("test push sent: %s", c)
-		}
-	}
 }

@@ -1,11 +1,9 @@
 package answers
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io/fs"
-	"math/big"
 	"os"
 	"path"
 	"path/filepath"
@@ -102,22 +100,7 @@ type Secrets struct {
 	AgentToken   string `toml:"agent_token"`
 	PublishToken string `toml:"publish_token"`
 	// A one-off tagged key the desktop minted, for a host that joins the tailnet in this run.
-	TailscaleAuthKey string   `toml:"tailscale_auth_key,omitempty"`
-	A2A              *A2AFile `toml:"a2a,omitempty"`
-}
-
-// A2AFile is ~/.config/flocc/a2a.toml, which flocc's A2A server, MCP server and tick read: on a host
-// its own token and every token it accepts, on the desktop the owner's token.
-type A2AFile struct {
-	Name   string             `toml:"name"`
-	Token  string             `toml:"token"`
-	Accept map[string]string  `toml:"accept,omitempty"`
-	Hosts  map[string]A2APeer `toml:"hosts"`
-}
-
-type A2APeer struct {
-	URL   string   `toml:"url"`
-	Repos []string `toml:"repos"`
+	TailscaleAuthKey string `toml:"tailscale_auth_key,omitempty"`
 }
 
 // Values is every secret that is set, for redacting logs and output.
@@ -131,43 +114,27 @@ func (s *Secrets) Values() []string {
 			v = append(v, x)
 		}
 	}
-	if s.A2A != nil {
-		v = append(v, s.A2A.Token)
-		for tok := range s.A2A.Accept {
-			v = append(v, tok)
-		}
-	}
 	return v
-}
-
-// Permissions is the host's [permissions] table. flocc reads it from permissions.toml beside
-// config.toml; the keys match its loader.
-type Permissions struct {
-	Allow          []string `toml:"allow,omitempty"`
-	Environment    []string `toml:"environment,omitempty"`
-	JudgeModel     string   `toml:"judge_model,omitempty"`
-	JudgeMaxPerRun int      `toml:"judge_max_per_run,omitempty"`
 }
 
 type Answers struct {
 	Hostname    string `toml:"hostname,omitempty"`
 	TeamKey     string `toml:"team_key,omitempty"`
 	DigestIssue string `toml:"digest_issue,omitempty"`
-	NtfyTopic   string `toml:"ntfy_topic,omitempty"`
 	Repos       []Repo `toml:"repos,omitempty"`
 	// URLs of discovered repos the user unticked, so a rerun does not tick them again
 	// while repos created since still arrive ticked. A GitHub rename or transfer changes the
 	// URL, so the repo comes back ticked.
 	ExcludedRepos []string `toml:"excluded_repos,omitempty"`
 	// Other hosts handle the repos left unmapped here; renders skip_unmapped.
-	SharedTeam  bool         `toml:"shared_team,omitempty"`
-	Permissions *Permissions `toml:"permissions,omitempty"`
+	SharedTeam bool `toml:"shared_team,omitempty"`
 	// Playwright is the version whose chromium system libraries and fonts the Browsers step
 	// installs; empty installs none.
 	Playwright string `toml:"playwright,omitempty"`
-	// Tools are mise tools and versions the Tools step sets globally for the service user.
+	// Tools are mise tools and versions the Tools step sets globally for flocc-agent.
 	Tools map[string]string `toml:"tools,omitempty"`
-	// Docker installs Docker for the service user's checks (testcontainers) on apt hosts.
+	// Docker gives flocc-agent rootless Podman for checks that start containers (testcontainers),
+	// on apt hosts. The key keeps its old name so existing host files still load.
 	Docker bool `toml:"docker,omitempty"`
 	// Read only from an --answers file, for runs without a terminal; Save drops it.
 	Secrets *Secrets `toml:"secrets,omitempty"`
@@ -200,10 +167,15 @@ func Parse(b []byte) (*Answers, error) {
 	return nil, errors.New("answers: a value does not fit its field; check the types against the example in docs/book/setup/README.md")
 }
 
-func (a *Answers) Save(path string) error {
+// Public encodes the document without [secrets], for readers that use none.
+func (a *Answers) Public() ([]byte, error) {
 	c := *a
 	c.Secrets = nil
-	b, err := toml.Marshal(c)
+	return toml.Marshal(c)
+}
+
+func (a *Answers) Save(path string) error {
+	b, err := a.Public()
 	if err != nil {
 		return err
 	}
@@ -216,61 +188,13 @@ func (a *Answers) Save(path string) error {
 	return os.Chmod(path, 0o600)
 }
 
-var ntfyTopic = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
-var ntfyURLPrefix = regexp.MustCompile(`(?i)^(https?://)?ntfy\.sh/`)
-
-// NormalizeTopic trims whitespace and a pasted ntfy.sh URL prefix (any scheme case, one
-// trailing slash), then checks ntfy's topic rule (docs.ntfy.sh/publish): up to 64
-// characters of [-_A-Za-z0-9]. Empty input stays empty so callers can fall back to a
-// generated topic; a URL with no topic is rejected.
-func NormalizeTopic(s string) (string, error) {
-	t := strings.TrimSpace(s)
-	if t == "" {
-		return "", nil
-	}
-	if loc := ntfyURLPrefix.FindStringIndex(t); loc != nil {
-		t = strings.TrimSuffix(t[loc[1]:], "/")
-	}
-	if ntfyTopic.MatchString(t) {
-		return t, nil
-	}
-	return "", errors.New("ntfy topic: use 1-64 letters, digits, '-' or '_'; paste the topic only, not the URL")
-}
-
-func RandomTopic() string {
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, 24)
-	for i := range b {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
-		b[i] = chars[n.Int64()]
-	}
-	return "flocc-" + string(b)
-}
-
-// OverlaySaved overlays a saved answers file. A bad saved topic is dropped and returned as
-// dropped, so the form asks for it again instead of locking the owner out of fixing it.
-func (a *Answers) OverlaySaved(saved *Answers) (dropped error) {
-	if _, err := NormalizeTopic(saved.NtfyTopic); err != nil {
-		saved.NtfyTopic, dropped = "", err
-	}
-	// Cannot fail: the topic is the only error Overlay returns, and it is valid or empty here.
-	_ = a.Overlay(saved)
-	return dropped
-}
-
-// Overlay applies o's set fields. A bad ntfy topic fails before anything changes, so an
-// --answers file or a saved answers file cannot smuggle one past the form.
+// Overlay applies o's set fields.
 func (a *Answers) Overlay(o *Answers) error {
-	topic, err := NormalizeTopic(o.NtfyTopic)
-	if err != nil {
-		return err
-	}
 	for _, f := range []struct {
 		dst *string
 		src string
 	}{
-		{&a.Hostname, o.Hostname}, {&a.TeamKey, o.TeamKey}, {&a.DigestIssue, o.DigestIssue}, {&a.NtfyTopic, topic},
+		{&a.Hostname, o.Hostname}, {&a.TeamKey, o.TeamKey}, {&a.DigestIssue, o.DigestIssue},
 	} {
 		if f.src != "" {
 			*f.dst = f.src
@@ -284,9 +208,6 @@ func (a *Answers) Overlay(o *Answers) error {
 	}
 	if o.SharedTeam {
 		a.SharedTeam = true
-	}
-	if o.Permissions != nil {
-		a.Permissions = o.Permissions
 	}
 	if o.Playwright != "" {
 		a.Playwright = o.Playwright

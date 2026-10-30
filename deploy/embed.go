@@ -1,19 +1,20 @@
-// Package deploy embeds the unit files and config template so the installer ships the
-// copies in this commit and no others.
+// Package deploy embeds the unit files, the agent wrapper, its sudoers rule, Claude Code's
+// managed settings, the config template and cardinal's files, so the installer ships the copies
+// in this commit and no others.
 package deploy
 
 import "embed"
 
-//go:embed flocc.service flocc.timer flocc-tmux.service flocc-a2a.service config.example.toml
+//go:embed flocc.service flocc.timer flocc-tmux.service config.example.toml flocc-agent-run flocc-agent.sudoers managed-settings.json
 var Files embed.FS
 
-var Units = []string{"flocc.service", "flocc.timer", "flocc-tmux.service"}
-
-// A2AUnit is installed by the host's A2A step, not with Units: it runs only once ship has written
-// a2a.toml.
-const A2AUnit = "flocc-a2a.service"
-
-//go:embed cardinal
+// Cardinal is deploy/cardinal for flocc host cardinal; all: keeps the plugin's .claude-plugin.
+//
+//go:embed all:cardinal
 var Cardinal embed.FS
 
-var CardinalUnits = []string{"cardinal.service", "cardinal-renew.service", "cardinal-renew.timer"}
+// Units are the service user's; AgentUnits are flocc-agent's.
+var (
+	Units      = []string{"flocc.service", "flocc.timer"}
+	AgentUnits = []string{"flocc-tmux.service"}
+)

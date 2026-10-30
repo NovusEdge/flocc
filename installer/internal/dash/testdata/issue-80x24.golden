@@ -3,7 +3,7 @@
   ╭─ NF-240 · Fix the poller tick ──────────────────────── o open in Linear ─╮
   │ phase    test ✓ → impl ✓ → review ✓ → fix ✗                              │
   │ state    blocked 24h                                                     │
-  │ session  none · context 7% · launches 0/2                                │
+  │ session  none · context 7%                                               │
   │ host     flocc-nimble · started 3d ago · updated 24h ago                 │
   ╰──────────────────────────────────────────────────────────────────────────╯
   ╭─ session ──────────────────────────────────────────────── L full screen ─╮

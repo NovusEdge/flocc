@@ -3,10 +3,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from flocc import ledger
-from flocc.a2atick import pr_url
 from flocc.admission import admit
 from flocc.agentblock import settings_from_json
 from flocc.poller import main_hold, still_wanted
+from flocc.publisher import pr_url
 from flocc.supervisor import REBASE_TRIED, block_unrebased, start_rebase
 from flocc.usage import latest_usage
 from flocc.worktree import origin_base
@@ -19,18 +19,21 @@ def step(rt) -> None:
     if rt.pr_view is None:
         return
     bases: dict[str, str | None] = {}
+    holds = ledger.issue_holds(rt.con)
     for claim in ledger.finished_claims(rt.con):
         url = pr_url(rt, claim)
         if claim.state != "done" or url is None or not Path(claim.worktree).exists():
             continue
         key = claim.issue_key
+        if key in holds:
+            continue
         try:
             view = rt.pr_view(claim, url)
             if view.get("state") != "OPEN" or view.get("mergeable") != "CONFLICTING":
                 continue
             # Someone pushed to the PR after this host's branch: merging into the stale copy
             # would only fail at the push.
-            if view.get("headRefOid") != rt.git_head(claim.worktree):
+            if view.get("headRefOid") != rt.git_head(claim):
                 continue
             if not still_wanted(rt, key):
                 continue
@@ -55,7 +58,7 @@ def step(rt) -> None:
             claim.repo,
             settings,
             ledger.live_claims(rt.con),
-            latest_usage(rt.cfg.state_root, rt.now()),
+            latest_usage(rt.cfg.agent_state_root, rt.now()),
             {},
             rt.cfg,
             rt.now(),

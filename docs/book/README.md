@@ -10,7 +10,6 @@ It is built for one owner running a few hosts, not for a team sharing one servic
 |---|---|---|
 | `flocc` (Go) | Your desktop | Sets hosts up, stores your keys, ships the service to a host, shows the fleet |
 | `flocc` (Python service) | Each host | Polls Linear every 3 minutes, runs Claude sessions in tmux, publishes PRs |
-| cardinal | One machine, optional | An always-on Claude session that watches the fleet and tells you what needs you |
 
 A host is any machine or VM you can reach over SSH, usually on a Tailscale tailnet. Sessions run as an unprivileged `flocc` user.
 
