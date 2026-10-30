@@ -286,13 +286,22 @@ def managed_check(path: Path = MANAGED_SETTINGS) -> Result:
         data = json.loads(path.read_text())
         deny = set(data["permissions"]["deny"])
         commands = [h["command"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]]
+        asks = [h["command"] for e in data["hooks"]["PermissionRequest"] for h in e["hooks"]]
     except (OSError, ValueError, KeyError, TypeError) as exc:
         detail = f"{path} unreadable or incomplete ({exc}); {remedy}"
         return Result("fail", "managed settings", detail)
-    if not _DIALOG_TOOLS <= deny or not any(c.endswith("flocc guard") for c in commands):
-        detail = f"{path} lacks the guard or the dialog denies; {remedy}"
+    if (
+        not _DIALOG_TOOLS <= deny
+        or not any(c.endswith("flocc guard") for c in commands)
+        or not any(c.endswith("flocc permission-deny") for c in asks)
+    ):
+        detail = f"{path} lacks the guard, the permission-deny hook or the dialog denies; {remedy}"
         return Result("fail", "managed settings", detail)
-    return Result("ok", "managed settings", "the guard and the dialog denies are root's")
+    return Result(
+        "ok",
+        "managed settings",
+        "the guard, the permission-deny hook and the dialog denies are root's",
+    )
 
 
 def collect_results(cfg: Config, config_path: Path, agent=None) -> list[Result]:

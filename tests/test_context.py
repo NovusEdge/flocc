@@ -3,7 +3,7 @@ from dataclasses import replace
 
 from flocc import ledger
 from flocc.cli import main
-from flocc.context import phase_prompt, state_dir, write_context
+from flocc.context import agent_dir, phase_prompt, state_dir, write_context
 from flocc.linear import Issue
 from tests.test_ledger import make
 
@@ -22,6 +22,14 @@ def test_context_lists_issue_and_commands(tmp_cfg):
         "flocc context",
     ):
         assert needle in text
+
+
+def test_context_names_the_agents_state_dir_not_the_services(tmp_cfg, tmp_path):
+    tmp_cfg = replace(tmp_cfg, agent_state_root=tmp_path / "agent-state")
+    write_context(tmp_cfg, ISSUE, make("NF-1"))
+    text = (state_dir(tmp_cfg, "NF-1") / "context.md").read_text()
+    assert f"state directory is {agent_dir(tmp_cfg, 'NF-1')}." in text
+    assert str(state_dir(tmp_cfg, "NF-1")) not in text
 
 
 def test_context_cli_prints_context_and_the_last_summary(tmp_cfg, monkeypatch, capsys):

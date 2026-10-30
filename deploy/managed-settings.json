@@ -8,6 +8,12 @@
         "matcher": "^(AskUserQuestion|EnterPlanMode|ExitPlanMode|Bash|Edit|Write|NotebookEdit|mcp__.*)$",
         "hooks": [{ "type": "command", "command": "/opt/flocc/bin/flocc guard" }]
       }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "/opt/flocc/bin/flocc permission-deny" }]
+      }
     ]
   }
 }

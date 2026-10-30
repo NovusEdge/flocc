@@ -6,6 +6,11 @@ KEEP_MOVING = (
     "Nobody answers this session. Take the spec's default and carry on, or write what needs the"
     ' owner under a line that starts with "Needs the owner" in your summary and run flocc done.'
 )
+NO_APPROVER = (
+    "Nobody is at this session to approve this call, so it was denied. Do it another way (for"
+    " example the Read tool instead of cat, head or tail). If it truly needs the owner, list it"
+    ' under a line that starts with "Needs the owner" in your summary and carry on.'
+)
 _DIALOGS = frozenset({"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"})
 _EDITS = frozenset({"Edit", "Write", "NotebookEdit"})
 _LINEAR = re.compile(r"^mcp__.*linear", re.IGNORECASE)

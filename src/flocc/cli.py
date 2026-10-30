@@ -116,6 +116,19 @@ def cmd_guard(args) -> int:
     return 0
 
 
+def cmd_permission_deny(args) -> int:
+    from flocc.guard import NO_APPROVER
+
+    # A plugin hook can answer "ask" even under bypassPermissions, and the dialog then waits
+    # forever. Deny whatever reaches it, whether or not the input parses.
+    if not os.environ.get("FLOCC_PHASE"):
+        return 0
+    decision = {"behavior": "deny", "message": NO_APPROVER}
+    out = {"hookEventName": "PermissionRequest", "decision": decision}
+    print(json.dumps({"hookSpecificOutput": out}))
+    return 0
+
+
 def cmd_tests_amended(args) -> int:
     from flocc.publisher import AMENDED
     from flocc.worktree import changed_files, git
@@ -727,6 +740,7 @@ COMMANDS = {
     "statusline": cmd_statusline,
     "hook": cmd_hook,
     "guard": cmd_guard,
+    "permission-deny": cmd_permission_deny,
     "tests-amended": cmd_tests_amended,
     "context": cmd_context,
     "session-start": cmd_session_start,
@@ -774,6 +788,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("--no-trailer", action="store_true", help="skip the commit trailer")
     hook.add_argument("message_file", nargs="?", help="commit message file (commit-msg)")
     add("guard", "Hook (PreToolUse): deny dialogs, pushes and GitHub writes")
+    add("permission-deny", "Hook (PermissionRequest): deny every permission dialog")
     amended = add("tests-amended", "Declare tester files you changed because a test was wrong")
     amended.add_argument("paths", nargs="+", help="repo-relative paths of the amended tester files")
     amended.add_argument("--reason", required=True, help="why the test was wrong")

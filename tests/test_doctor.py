@@ -181,6 +181,11 @@ def test_managed_settings_must_carry_the_guard_and_the_dialog_denies(tmp_path):
     shipped = Path(__file__).parent.parent / "deploy" / "managed-settings.json"
     path.write_text(shipped.read_text())
     assert managed_check(path).status == "ok"
+    data = json.loads(shipped.read_text())
+    assert data["hooks"]["PermissionRequest"][0]["hooks"][0]["command"].endswith("permission-deny")
+    del data["hooks"]["PermissionRequest"]
+    path.write_text(json.dumps(data))
+    assert managed_check(path).status == "fail"
 
 
 def test_an_unanswered_wrapper_fails_the_agent_check(tmp_cfg, tmp_path):

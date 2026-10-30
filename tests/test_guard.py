@@ -4,7 +4,7 @@ import json
 import pytest
 
 from flocc.cli import main
-from flocc.guard import KEEP_MOVING, decide
+from flocc.guard import KEEP_MOVING, NO_APPROVER, decide
 
 
 def bash(command):
@@ -94,6 +94,20 @@ def test_guard_prints_the_deny_decision(tmp_path, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
     assert out["hookEventName"] == "PreToolUse" and out["permissionDecision"] == "deny"
     assert KEEP_MOVING in out["permissionDecisionReason"]
+
+
+def test_permission_deny_denies_a_sample_and_garbage(monkeypatch, capsys):
+    monkeypatch.setenv("FLOCC_PHASE", "impl")
+    sample = {"tool_name": "Bash", "tool_input": {"command": "cat x"}}
+    for raw in (json.dumps(sample), "not json", ""):
+        monkeypatch.setattr("sys.stdin", io.StringIO(raw))
+        assert main(["permission-deny"]) == 0
+        out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        assert out["hookEventName"] == "PermissionRequest"
+        assert out["decision"] == {"behavior": "deny", "message": NO_APPROVER}
+    monkeypatch.delenv("FLOCC_PHASE")
+    assert main(["permission-deny"]) == 0
+    assert capsys.readouterr().out == ""
 
 
 def test_guard_prints_nothing_for_an_allowed_call_or_bad_input(tmp_path, monkeypatch, capsys):

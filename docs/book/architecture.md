@@ -44,7 +44,7 @@ Agents write code and commit in their worktree. They never push, open PRs or cha
 
 The guard hook is a convenience that tells an agent early why a call is refused. The user boundary is the security line.
 
-Claude Code's root-owned managed settings, `/etc/claude-code/managed-settings.json`, hold the guard hook and deny rules for `AskUserQuestion`, `EnterPlanMode` and `ExitPlanMode`. A user or project setting cannot override managed settings, so an agent cannot turn them off, which it could do to a hook shipped in the plugin.
+Claude Code's root-owned managed settings, `/etc/claude-code/managed-settings.json`, hold the guard hook and deny rules for `AskUserQuestion`, `EnterPlanMode` and `ExitPlanMode`. A user or project setting cannot override managed settings, so an agent cannot turn them off, which it could do to a hook shipped in the plugin. A `PermissionRequest` hook there, `flocc permission-deny`, denies every permission dialog with a message to do it another way or list it under "Needs the owner", because a plugin's `PreToolUse` hook can answer "ask" even under `bypassPermissions` and nobody is there to answer.
 
 Checks that start containers (testcontainers) use rootless Podman as `flocc-agent`, with `DOCKER_HOST` pointing at its `podman.socket` and Ryuk off. Neither user is in the `docker` group, because that group is root-equivalent and would undo the boundary; doctor fails if `flocc-agent` is in it. An existing Docker daemon stays installed and untouched.
 
