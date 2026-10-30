@@ -37,13 +37,20 @@ flocc host run -H my-host -- tmux -L flocc ls
 
 | Command | Does |
 |---|---|
-| `status [--json]` | Claims, last tick, usage, disk, Claude login (full, token-only, none or unknown) and GitHub token expiries |
+| `status [--json]` | Running and finished runs (step, state, fix rounds, age, context, session, PR), cardinal's holds, events waiting for cardinal and those needing attention, last tick, usage, disk, Claude login and GitHub token expiries |
 | `doctor [--json]` | Check config and host setup |
 | `logs [-n N] [-f]` | Print the service log: the journal on systemd hosts, `run.log` otherwise |
 | `logs --issue <key> [-n N]` | Only the service-log lines that name the issue, with a time on systemd hosts. It does not follow, so `-f` is refused |
 | `peek <key> [-n N]` | Print the last N lines (default 40) of the issue's live session. Exits 3 when it has none |
 | `attach <session>` | Attach read-only to an agent's tmux session, such as `ENG-12` or `ENG-12-review` |
-| `release <key> [--keep-worktree] [--accept-tests]` | Clear a claim and kill its session. The issue goes back to Todo. `--accept-tests` approves the tester's files as they stand on the branch and keeps the worktree |
+| `release <key> [--keep-worktree] [--accept-tests] [--hold-only]` | Clear a claim and kill its session, and lift a hold on the issue. The issue goes back to Todo. `--accept-tests` approves the tester's files as they stand on the branch and keeps the worktree. With no claim, it only lifts the hold. `--hold-only`, cardinal's release, lifts a hold and nothing else, and is refused for a blocked, timed-out or done run |
+| `hold <key> [--reason TEXT]` | Start nothing for the issue until `release` lifts the hold. A run in progress goes on |
+| `fix <key> --note TEXT` | Start one fixer with the note on a blocked or timed-out run, while fix rounds remain. Once per run |
+| `run-summary <key>` | The run's step, its last summary, why it stopped, a check excerpt and log lines, at most 6000 characters |
+| `digest-data [--done N]` | What the daily digest covers. `--done N` clears the digest lines through N once the digest is sent |
+| `cleanup` | Remove worktrees, state and scratchpads that no claim owns. A worktree with uncommitted changes, commits not on GitHub, or a change in the last 7 days stays and is listed |
+| `events [--follow] [--hello]` | Print unacknowledged events as JSON lines of at most 50. `--follow` keeps printing: a batch closes 2 minutes after its first event, and an unacknowledged event is printed again every 30 minutes, at most 3 times per connection, and on every new connection |
+| `ack <id>...` | Acknowledge events. Acking twice is harmless |
 | `tick` | Run one service tick by hand. It takes the same lock as the timer's ticks |
 | `run` | Run ticks in a loop |
 | `done`, `tests-amended`, `commit`, `context` | Used by agent sessions, not by you. Every archetype ends its run with `flocc done`, which carries its summary |

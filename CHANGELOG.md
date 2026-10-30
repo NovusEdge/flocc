@@ -55,6 +55,16 @@ so on its Linear issue.
 - Four skills, executor, fixer, tester and reviewer, replace implementer, tester and reviewer.
   Every archetype ends with `flocc done`, which replaces `flocc review-done`. A summary with a
   "Needs the owner" heading ends the run blocked, except in a review fix round.
+- The service writes events for cardinal: `ended` (a PR is ready, or a run blocked or timed out),
+  `cap`, `base-broken`, `bad-sequence`, `service-error` and `daily`. `flocc events --follow`
+  prints them in batches and `flocc ack` acknowledges them. New host commands for cardinal:
+  `run-summary`, `fix`, `hold`, `cleanup` and `digest-data`. `release` lifts a hold, and
+  `release --hold-only` lifts only a hold. `flocc status` prints one table of running and
+  finished runs.
+- The service no longer posts a daily digest to `digest_issue`; cardinal writes the digest.
+  `digest_issue` is optional and unread, and doctor no longer checks it.
+- A timed-out run comments on its issue. A failing tick reaches cardinal at once, and Linear
+  after three failed ticks.
 - Sessions, worktrees, the repo's `./setup` and check, and the Claude login belong to a second
   user, `flocc-agent`, which cannot read the service's keys, ledger or config, nor write
   `/opt/flocc`. The service reaches it only through `sudo` and
