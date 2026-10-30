@@ -1,10 +1,8 @@
 package steps
 
 import (
-	"bytes"
 	"context"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/NovusEdge/flocc/deploy"
@@ -44,12 +42,8 @@ func (AgentTmux) Check(ctx context.Context, e *Env) (bool, string, error) {
 		}
 		return false, "no tmux server", nil
 	}
-	for _, u := range deploy.AgentUnits {
-		want, _ := deploy.Files.ReadFile(u)
-		got, err := os.ReadFile(e.HomePath(filepath.Join(".config/systemd/user", u)))
-		if err != nil || !bytes.Equal(got, want) {
-			return false, u + " not installed or out of date", nil
-		}
+	if u := staleUnit(e, deploy.AgentUnits); u != "" {
+		return false, u + " not installed or out of date", nil
 	}
 	if r, err := e.Run.Run(ctx, e.userctl("is-active", "--quiet", "flocc-tmux.service")); err != nil || r.Code != 0 {
 		return false, "flocc-tmux.service not running", nil
@@ -63,15 +57,8 @@ func (AgentTmux) Apply(ctx context.Context, e *Env) error {
 		_, err := e.Must(ctx, "sh", "-c", "umask 027 && exec tmux -L flocc new-session -d -s flocc-keep 'sleep infinity'")
 		return err
 	}
-	dir := e.HomePath(".config/systemd/user")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if _, err := writeUnits(e, deploy.AgentUnits); err != nil {
 		return err
-	}
-	for _, u := range deploy.AgentUnits {
-		b, _ := deploy.Files.ReadFile(u)
-		if err := os.WriteFile(filepath.Join(dir, u), b, 0o644); err != nil {
-			return err
-		}
 	}
 	for _, c := range [][]string{{"daemon-reload"}, {"enable", "--now", "flocc-tmux.service"}} {
 		if _, err := e.MustCmd(ctx, e.userctl(c...)); err != nil {

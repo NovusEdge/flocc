@@ -97,6 +97,7 @@ func removeOld(ctx context.Context, d *deps, mux []string, machine string, users
 	if err := ship.Connect(ctx, d.run, ship.Dest{SSH: machine, Opts: mux}, machine, d.tty); err != nil {
 		return err
 	}
+	// jscpd:ignore-start
 	m, err := host.Must(ctx, owner(d, mux, machine), host.Cmd{Name: "uname", Args: []string{"-m"}})
 	if err != nil {
 		return err
@@ -113,6 +114,7 @@ func removeOld(ctx context.Context, d *deps, mux []string, machine string, users
 	if err != nil {
 		return err
 	}
+	// jscpd:ignore-end
 	defer os.RemoveAll(bin)
 	d.ui.Note("Root pass", "removing "+strings.Join(users, ", ")+"\nsudo asks for your password on "+machine+" once")
 	calls := make([][]string, len(users))

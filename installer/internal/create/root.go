@@ -53,6 +53,9 @@ func (Root) Apply(ctx context.Context, e *Env) error {
 	if !e.TTY && !e.sudo {
 		return fmt.Errorf("sudo on %s asks for a password; run create in a terminal", m)
 	}
+	// jscpd:ignore-start
+	// Same build recipe as cli.removeOld, but the two reach the machine, the checkout and their
+	// error text differently; a shared helper would take all of them as parameters.
 	uname, err := e.must(ctx, cmd("uname", "-m"))
 	if err != nil {
 		return err
@@ -69,6 +72,7 @@ func (Root) Apply(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
+	// jscpd:ignore-end
 	defer os.RemoveAll(bin)
 	reports, err := rootpass.Run(ctx, e.Local, rootpass.Pass{Machine: m, Opts: ControlOpts(), Prefix: "/tmp/flocc-create",
 		Files: []string{filepath.Join(bin, "flocc-setup")}, Calls: [][]string{{"--phase", "create-root"}},
