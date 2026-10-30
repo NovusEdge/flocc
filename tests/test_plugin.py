@@ -78,5 +78,16 @@ def test_the_idle_clearing_hook_removes_only_the_marker(tmp_path):
     subprocess.run(command, shell=True, env={"PATH": env["PATH"]}, check=True)
 
 
+def test_the_four_archetype_skills_end_the_same_way():
+    skills = {p.parent.name: p.read_text() for p in (PLUGIN / "skills").glob("*/SKILL.md")}
+    assert set(skills) == {"executor", "fixer", "tester", "reviewer"}
+    for name, text in skills.items():
+        assert frontmatter(PLUGIN / "skills" / name / "SKILL.md")["name"] == name
+        assert "AskUserQuestion" not in text and "auto mode" not in text
+        assert "Needs the owner" in text and "flocc done" in text
+        assert "scratchpad" in text
+        assert "## Last steps" in text
+
+
 def test_fix_prompt_points_at_the_fix_section():
     assert "fixer skill" in phase_prompt("fix", "NF-1", "check output")

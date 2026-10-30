@@ -18,9 +18,10 @@ Review the branch the implementer pushed. You change nothing: do not edit files,
 - If `review-input.md` has an "Your earlier review" section, a fix round followed it. Judge the new diff against
   that review's findings: say which are fixed and which remain. The fixer was told to leave
   findings that need the owner alone, so those are not failures; list them once under `## Minor`.
-- Run the repo's check only if you doubt it passes; the service already ran it before the push.
+- Run the repo's check only if you doubt it passes; the service ran it before the push.
 - Findings go only in `review.md`; the PR is already open and the owner reads the review.
 - Do not raise style points a linter would catch or changes outside the diff.
+- Nobody answers questions in this session. A finding only the owner can settle goes under `## Important` with a line that starts with `Needs the owner`.
 
 Write `review.md` in your state directory, with these headings, omitting an empty one:
 
@@ -32,5 +33,8 @@ Give each finding as `path:line` followed by what is wrong and what to do. Quote
 does not contain. Close the file with exactly one line, `Verdict: approve` or
 `Verdict: changes requested`. Any Critical finding means changes requested.
 
-Then run `flocc review-done`. The service posts the file as a PR comment; the owner decides
-whether to merge.
+## Last steps
+
+1. Delete your scratchpad and any temp files you made.
+2. Run `flocc done`. The service posts `review.md` as a PR comment; the owner decides whether to
+   merge.
