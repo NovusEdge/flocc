@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+from dataclasses import replace
 
 import pytest
 
@@ -22,7 +23,8 @@ def cfg(tmp_path):
         .replace('"~/.local/state/flocc/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
         .replace("~/.local/state/flocc", str(tmp_path / "state"))
     )
-    return load(path)
+    loaded = load(path)
+    return replace(loaded, agent_state_root=loaded.state_root)
 
 
 def test_fresh_host_has_no_ledger_log_or_usage(cfg):

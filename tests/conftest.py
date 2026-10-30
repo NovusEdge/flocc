@@ -28,6 +28,8 @@ def tmp_cfg(tmp_path):
         load(EXAMPLE),
         state_root=tmp_path / "state",
         worktree_root=tmp_path / "wt",
+        agent_home=tmp_path,
+        agent_state_root=tmp_path / "state",
         ledger_path=tmp_path / "l.sqlite",
         agent_gh_token_file=token,
         claude_json=tmp_path / ".claude.json",

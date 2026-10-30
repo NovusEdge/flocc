@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from flocc.config import load, trailer_enabled
@@ -27,6 +29,18 @@ def test_example_loads_with_defaults():
     assert cfg.mcp_servers["sentry"]["type"] == "http"
     assert cfg.agent_plugins_file is None
     assert cfg.installed_plugins_file.name == "installed_plugins.json"
+
+
+def test_layout_keys_in_an_old_config_are_ignored_with_a_warning(tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    old = 'worktree_root = "~/worktrees"\nplugin_dir = "~/flocc/plugin"\n'
+    path.write_text(old + EXAMPLE.read_text())
+    cfg = load(path)
+    assert cfg.worktree_root == Path("/home/flocc-agent/worktrees")
+    assert cfg.plugin_dir == Path("/opt/flocc/plugin")
+    assert cfg.agent_token_file == Path("/home/flocc-agent/.config/flocc/gh-agent.token")
+    err = capsys.readouterr().err
+    assert "worktree_root is fixed by the two-user layout" in err and "plugin_dir" in err
 
 
 def test_effort_for_maps_phase_to_config():

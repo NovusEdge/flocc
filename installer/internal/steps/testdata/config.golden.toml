@@ -3,13 +3,11 @@ check_timeout_s = 1800
 digest_issue = 'NF-186'
 ledger_path = '~/.local/state/flocc/ledger.sqlite'
 linear_key_file = '~/.config/flocc/linear.key'
-plugin_dir = '~/flocc/plugin'
 publish_gh_token_file = '~/.config/flocc/gh-publish.token'
 setup_timeout_s = 900
 state_root = '~/.local/state/flocc'
 team_key = 'NF'
 trigger_label = 'claude'
-worktree_root = '~/worktrees'
 
 [repos]
 [repos.nimblefox-template]

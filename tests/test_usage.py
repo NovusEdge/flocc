@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from flocc import usage
+from flocc import agentfs, usage
 from flocc.cli import main
 
 FIX = Path(__file__).parent / "fixtures" / "status.json"
@@ -80,14 +80,14 @@ def test_unreadable_status_is_skipped(tmp_path):
 def test_status_deleted_mid_scan_is_skipped(tmp_path, monkeypatch):
     usage.write_status(tmp_path / "NF-1", status(20, 30))
     gone = tmp_path / "NF-1" / "status.json"
-    real_read = Path.read_text
+    real_mtime = agentfs.mtime
 
-    def read_text(self, *a, **kw):
-        if self == gone:
-            self.unlink()
-        return real_read(self, *a, **kw)
+    def mtime(directory, name):
+        found = real_mtime(directory, name)
+        gone.unlink(missing_ok=True)
+        return found
 
-    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(agentfs, "mtime", mtime)
     assert usage.latest_usage(tmp_path, now=300) is None
 
 

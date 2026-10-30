@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from flocc import agentfs
 from flocc.config import TRAILER, RepoConfig
 from flocc.context import state_dir
 from flocc.ledger import Claim
@@ -77,8 +78,8 @@ def failure_excerpt(out: str, limit: int = _TAIL) -> str:
 
 def read_amended(state: Path) -> dict[str, dict]:
     try:
-        data = json.loads((state / AMENDED).read_text())
-    except (OSError, ValueError):
+        data = json.loads(agentfs.read_text(state, AMENDED) or "{}")
+    except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
 

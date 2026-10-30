@@ -55,7 +55,7 @@ def step(rt) -> None:
             claim.repo,
             settings,
             ledger.live_claims(rt.con),
-            latest_usage(rt.cfg.state_root, rt.now()),
+            latest_usage(rt.cfg.agent_state_root, rt.now()),
             {},
             rt.cfg,
             rt.now(),

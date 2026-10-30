@@ -8,7 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from flocc import ledger, usage
+from flocc import agentfs, ledger, usage
 from flocc.config import Config
 from flocc.sessions import session_name
 from flocc.tokens import claude_login
@@ -161,9 +161,12 @@ def issue_lines(
 
 
 def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
-    state_dir = cfg.state_root / claim.issue_key
-    status = usage.read_status(state_dir)
-    updated = _mtime(state_dir / "status.json")
+    agent = cfg.agent_state_root / claim.issue_key
+    status = usage.read_status(agent)
+    try:
+        updated = agentfs.mtime(agent, "status.json")
+    except OSError:
+        updated = None
     return {
         "issue": claim.issue_key,
         "state": claim.state,
@@ -173,13 +176,6 @@ def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
         "tmux_alive": sessions.alive(session_name(claim.issue_key, claim.phase)),
         "context_pct": usage.context_pct(status) if status else None,
     }
-
-
-def _mtime(path: Path) -> float | None:
-    try:
-        return path.stat().st_mtime
-    except OSError:
-        return None
 
 
 def _disk(path: Path) -> dict | None:
@@ -217,7 +213,7 @@ def collect(
     tick = systemd_tick(run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
     if tick is not None and tick["at"] is not None:
         tick["age_s"] = max(0.0, now - tick["at"])
-    latest = usage.latest_usage(cfg.state_root, now)
+    latest = usage.latest_usage(cfg.agent_state_root, now)
     claims, expiry, ledger_error = _read_ledger(cfg.ledger_path)
     rows = [_claim_row(cfg, c, sessions, now) for c in claims]
     activity_error = None

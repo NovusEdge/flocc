@@ -7,10 +7,17 @@ from pathlib import Path
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 _RETIRED = ("ntfy_url", "context_restart_pct", "idle_escalate_s", "stall_escalate_s")
-_PATH_KEYS = (
-    "state_root",
+_LAYOUT = (
     "worktree_root",
     "plugin_dir",
+    "agent_home",
+    "agent_state_root",
+    "agent_flocc",
+    "agent_run",
+)
+AGENT_RUN = ("sudo", "-n", "-H", "-u", "flocc-agent", "/usr/local/libexec/flocc-agent-run")
+_PATH_KEYS = (
+    "state_root",
     "ledger_path",
     "linear_key_file",
     "agent_gh_token_file",
@@ -42,8 +49,6 @@ class Config:
     trigger_label: str
     repos: dict[str, RepoConfig]
     state_root: Path
-    worktree_root: Path
-    plugin_dir: Path
     ledger_path: Path
     linear_key_file: Path
     agent_gh_token_file: Path
@@ -77,6 +82,14 @@ class Config:
     # Linear user or bot/app ids whose comments on a running issue are forwarded into the live
     # session like the owner's own, letting another agent steer. Empty forwards only the owner's.
     steer_authors: tuple[str, ...] = ()
+    # The two-user layout: the same on every host, created by flocc setup and not configurable.
+    agent_user: str = "flocc-agent"
+    agent_home: Path = Path("/home/flocc-agent")
+    worktree_root: Path = Path("/home/flocc-agent/worktrees")
+    agent_state_root: Path = Path("/home/flocc-agent/state")
+    plugin_dir: Path = Path("/opt/flocc/plugin")
+    agent_flocc: Path = Path("/opt/flocc/bin/flocc")
+    agent_run: tuple[str, ...] = AGENT_RUN
     # Where Claude Code keeps folder trust; the launcher pre-trusts each worktree in it.
     claude_json: Path = field(default_factory=lambda: Path.home() / ".claude.json")
     # The plugins agent sessions get; None means deploy/agent-plugins.txt in the service repo.
@@ -84,6 +97,15 @@ class Config:
     installed_plugins_file: Path = field(
         default_factory=lambda: Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     )
+
+    @property
+    def agent_token_file(self) -> Path:
+        """flocc-agent's copy of the read-only token, written by flocc-agent-run."""
+        return self.agent_home / ".config" / "flocc" / "gh-agent.token"
+
+    @property
+    def agent_claude(self) -> Path:
+        return self.agent_home / ".local" / "bin" / "claude"
 
     def effort_for(self, phase: str) -> str:
         if phase == "test":
@@ -133,6 +155,9 @@ def load(path: Path) -> Config:
     for key in _RETIRED:
         if raw.pop(key, None) is not None:
             print(f"{path}: {key} is no longer used; delete it", file=sys.stderr)
+    for key in _LAYOUT:
+        if raw.pop(key, None) is not None:
+            print(f"{path}: {key} is fixed by the two-user layout; delete it", file=sys.stderr)
     for key in _PATH_KEYS:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()

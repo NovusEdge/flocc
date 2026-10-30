@@ -6,6 +6,7 @@ import pytest
 
 from flocc import canary, ledger
 from flocc.agentblock import IssueSettings, settings_to_json
+from flocc.agentfs import AgentFileError
 from flocc.context import state_dir
 from flocc.ledger import Claim
 from flocc.linear import LinearError
@@ -65,6 +66,28 @@ def usage_status(ctx=10.0):
         "rate_limits": {"five_hour": window, "seven_day": window},
         "context_window": {"used_percentage": ctx},
     }
+
+
+def test_review_md_that_is_a_link_is_never_posted(rt, tmp_path):
+    add(rt, phase="review")
+    rt.sessions.alive_names.add("NF-1-review")
+    secret = tmp_path / "linear.key"
+    secret.write_text("lin_api_secret")
+    (state_dir(rt.cfg, "NF-1") / "review.md").symlink_to(secret)
+    done(rt, "review")
+    with pytest.raises(AgentFileError):
+        supervise(rt, current(rt))
+    assert rt.pr_comments == []
+
+
+def test_session_files_are_read_from_the_agent_state_root(rt, tmp_path):
+    rt.cfg = replace(rt.cfg, agent_state_root=tmp_path / "agent-state")
+    add(rt)
+    rt.sessions.alive_names.add("NF-1-test")
+    (tmp_path / "agent-state" / "NF-1").mkdir(parents=True)
+    (tmp_path / "agent-state" / "NF-1" / "done.json").write_text('{"summary": "tests"}')
+    supervise(rt, current(rt))
+    assert current(rt).phase == "impl"
 
 
 def test_tester_done_starts_implementer(rt):

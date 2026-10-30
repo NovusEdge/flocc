@@ -3,6 +3,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from flocc import agentfs
+
 _CONTEXT_PATH = ("context_window", "used_percentage")
 
 
@@ -22,9 +24,10 @@ def write_status(state_dir: Path, payload: dict) -> None:
 
 def read_status(state_dir: Path) -> dict | None:
     try:
-        return json.loads((state_dir / "status.json").read_text())
-    except (FileNotFoundError, ValueError):
+        data = json.loads(agentfs.read_text(state_dir, "status.json") or "null")
+    except (OSError, ValueError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def window_pct(window: object, now: float) -> float | None:
@@ -52,12 +55,14 @@ def limit_pcts(status: dict, now: float) -> tuple[float | None, float | None]:
 
 def latest_usage(state_root: Path, now: float) -> Usage | None:
     best: tuple[float, dict] | None = None
-    for path in state_root.glob("*/status.json"):
+    for key in agentfs.entries(state_root):
         # Each launch deletes the previous session's status file, so it can vanish mid-scan.
         try:
-            mtime = path.stat().st_mtime
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
+            mtime = agentfs.mtime(state_root / key, "status.json")
+            data = read_status(state_root / key)
+        except OSError:
+            continue
+        if mtime is None or data is None:
             continue
         if "rate_limits" in data and (best is None or mtime > best[0]):
             best = (mtime, data)

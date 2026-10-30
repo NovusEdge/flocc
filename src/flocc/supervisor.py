@@ -7,9 +7,9 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
-from flocc import canary, ledger
+from flocc import agentfs, canary, ledger
 from flocc.agentblock import settings_from_json
-from flocc.context import phase_prompt, state_dir
+from flocc.context import agent_dir, phase_prompt, state_dir
 from flocc.idle import BACKGROUND, clear_idle
 from flocc.ledger import Claim
 from flocc.linear import LinearError
@@ -44,6 +44,7 @@ REBASE = "rebase"
 REBASE_TRIED = "rebase_tried"
 CHECK_OUTPUT = "check-output.log"
 OWNER_ITEMS = "owner-items.md"
+POSTED_REVIEW = "review-posted.md"
 LAST_SUMMARY = "last-summary.md"
 _RESTART = (
     "Your previous session for this step ended before flocc done. The branch holds what it"
@@ -66,7 +67,7 @@ class LaunchError(RuntimeError):
 
 
 def _record_usage(rt, key: str, phase: str, event: str) -> None:
-    u = latest_usage(rt.cfg.state_root, rt.now())
+    u = latest_usage(rt.cfg.agent_state_root, rt.now())
     if u is not None:
         ledger.add_usage(rt.con, key, phase, event, u.five_hour_pct, u.weekly_pct, rt.now())
 
@@ -200,7 +201,7 @@ def _pr_url(rt, claim: Claim) -> str:
 
 
 def _over_usage_limit(rt) -> bool:
-    usage = latest_usage(rt.cfg.state_root, rt.now())
+    usage = latest_usage(rt.cfg.agent_state_root, rt.now())
     return usage is not None and (
         usage.five_hour_pct >= rt.cfg.five_hour_max_pct or usage.weekly_pct >= rt.cfg.weekly_max_pct
     )
@@ -220,16 +221,16 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
         (d / "pr-url").write_text(url)
         (d / "pr.diff").write_text(rt.review_diff(claim) + "\n")
         earlier = ""
-        if ledger.meta_get(rt.con, f"review_fix:{key}") and (d / "review.md").exists():
+        posted = d / POSTED_REVIEW
+        if ledger.meta_get(rt.con, f"review_fix:{key}") and posted.exists():
             earlier = (
                 "\n## Your earlier review\n\nA fix round followed it. Judge the diff against these"
-                f" findings.\n\n{(d / 'review.md').read_text().strip()}\n"
+                f" findings.\n\n{posted.read_text().strip()}\n"
             )
-        (d / "review.md").unlink(missing_ok=True)
         (d / "review-input.md").write_text(
             f"# Review {key}: {title}\n\nPR: {url}\n\nThe diff is in {d / 'pr.diff'}.\n\n"
             f"## Issue description, including the acceptance criteria\n\n{description}\n"
-            f"{amended_section(read_amended(d))}\n{earlier}"
+            f"{amended_section(read_amended(agent_dir(rt.cfg, key)))}\n{earlier}"
         )
         launch(rt, claim, "review")
     except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
@@ -243,11 +244,11 @@ def _start_review(rt, claim: Claim, title: str, description: str, url: str) -> N
 
 def _finish_review(rt, claim: Claim) -> None:
     key = claim.issue_key
-    review = state_dir(rt.cfg, key) / "review.md"
-    text = review.read_text() if review.exists() else ""
+    text = agentfs.read_text(agent_dir(rt.cfg, key), "review.md") or ""
     if not text.strip():
         _review_skipped(rt, claim, "the session finished without review.md")
         return
+    (state_dir(rt.cfg, key) / POSTED_REVIEW).write_text(text)
     url = _pr_url(rt, claim)
     fixed = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
     counter = f"review_post_failures:{key}"
@@ -677,15 +678,16 @@ def _base_moved_note(rt, claim: Claim, detail: str) -> str:
     )
 
 
-def _idle_message(d: Path) -> str | None:
+def _idle_message(agent: Path) -> str | None:
     """The last words of a session that stopped twice without flocc done; None when it did not."""
-    try:
-        raw = json.loads((d / "idle").read_text())
-    except FileNotFoundError:
+    raw = agentfs.read_text(agent, "idle")
+    if raw is None:
         return None
-    except (OSError, ValueError):
+    try:
+        data = json.loads(raw)
+    except ValueError:
         return ""
-    return str(raw.get("message", "")) if isinstance(raw, dict) else ""
+    return str(data.get("message", "")) if isinstance(data, dict) else ""
 
 
 def _stopped(rt, claim: Claim, name: str, message: str) -> None:
@@ -717,18 +719,19 @@ def supervise(rt, claim: Claim) -> None:
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
     name = session_name(key, claim.phase)
-    done = d / "done.json"
-    if done.exists():
+    agent = agent_dir(rt.cfg, key)
+    raw_done = agentfs.read_text(agent, "done.json")
+    if raw_done is not None:
         try:
-            summary = json.loads(done.read_text()).get("summary", "")
-        except ValueError:  # still being written; the next tick reads it whole
+            summary = str(json.loads(raw_done).get("summary", ""))
+        except (ValueError, AttributeError):  # still being written; the next tick reads it whole
             return
         rt.sessions.kill(name)
         if claim.phase != "review":
             (d / LAST_SUMMARY).write_text(summary)
         _finish_phase(rt, claim, summary)
         return
-    if (message := _idle_message(d)) is not None:
+    if (message := _idle_message(agent)) is not None:
         _stopped(rt, claim, name, message)
         return
     if not rt.sessions.alive(name):

@@ -25,6 +25,11 @@ def state_dir(cfg: Config, key: str) -> Path:
     return cfg.state_root / key
 
 
+def agent_dir(cfg: Config, key: str) -> Path:
+    """Where the session for key keeps its files: flocc-agent's, read through flocc.agentfs."""
+    return cfg.agent_state_root / key
+
+
 def write_context(cfg: Config, issue: Issue, claim: Claim) -> None:
     d = state_dir(cfg, issue.key)
     d.mkdir(parents=True, exist_ok=True)
