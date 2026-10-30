@@ -118,6 +118,17 @@ class Agent:
         }
         return self.call("remove", payload=payload, timeout=300)
 
+    def sweep(self, keep: list[str], now: float, max_age_s: float, scratch_age_s: float) -> dict:
+        payload = {
+            "keep": keep,
+            "worktree_root": str(self.cfg.worktree_root),
+            "state_root": str(self.cfg.agent_state_root),
+            "now": now,
+            "max_age_s": max_age_s,
+            "scratch_age_s": scratch_age_s,
+        }
+        return self.call("sweep", payload=payload, timeout=900)
+
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
         payload = {
             "mode": "worktree",

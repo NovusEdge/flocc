@@ -403,6 +403,29 @@ def cmd_digest_data(args) -> int:
     return 0
 
 
+def cmd_cleanup(args) -> int:
+    from flocc.agent import Agent
+    from flocc.cleanup import cleanup
+    from flocc.tick import tick_lock
+
+    cfg, _ = _config(args)
+    with tick_lock(cfg.tick_lock) as held:
+        if not held:
+            print("cleanup: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        try:
+            out = cleanup(cfg, ledger.connect(cfg.ledger_path), Agent(cfg), time.time())
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"cleanup: {exc}", file=sys.stderr)
+            return 1
+    print(f"removed {len(out['removed'])}")
+    for path in out["removed"][:20]:
+        print(f"  {path}")
+    for k in out["kept"]:
+        print(f"kept {k['path']}: {k['why']}")
+    return 0
+
+
 def _lift_hold(cfg, key: str) -> int:
     # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
     # the timed-out restart, or a move to Todo made while it was held, would start it again.
@@ -692,6 +715,7 @@ COMMANDS = {
     "fix": cmd_fix,
     "run-summary": cmd_run_summary,
     "digest-data": cmd_digest_data,
+    "cleanup": cmd_cleanup,
 }
 
 
@@ -755,6 +779,7 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     dd = add("digest-data", "Print what the daily digest covers; --done N clears it once sent")
     dd.add_argument("--done", type=int, default=None, metavar="N", help="clear lines through N")
+    add("cleanup", "Remove worktrees, state and scratchpads no claim owns")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )

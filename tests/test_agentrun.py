@@ -286,3 +286,131 @@ def test_the_client_sets_the_agent_home(tmp_cfg):
     Agent(tmp_cfg, runner=runner).call("send", payload={"name": "NF-1", "text": "hi"})
     assert seen["env"]["HOME"] == str(tmp_cfg.agent_home)
     assert json.loads(seen["input"]) == {"name": "NF-1", "text": "hi"}
+
+
+def _sweep(cfg, keep, now, scratch_age_s=86400.0):
+    return agentrun.sweep(
+        {
+            "keep": keep,
+            "worktree_root": str(cfg.worktree_root),
+            "state_root": str(cfg.agent_state_root),
+            "now": now,
+            "max_age_s": 7 * 86400.0,
+            "scratch_age_s": scratch_age_s,
+        }
+    )
+
+
+def _age(path, now, days):
+    os.utime(path, (now - days * 86400, now - days * 86400))
+
+
+NOW = 2_000_000_000.0
+
+
+@pytest.fixture
+def pads(tmp_path, monkeypatch):
+    # NOW is years ahead, so every real scratchpad would be old, and a real podman socket would
+    # get its containers stopped: every sweep test points both away.
+    root = tmp_path / "pads"
+    root.mkdir()
+    monkeypatch.setattr("flocc.agentrun._scratch_root", lambda: root)
+    monkeypatch.setattr("flocc.agentrun.container_env", dict)
+    return root
+
+
+def test_sweep_removes_an_old_clean_pushed_orphan(tmp_cfg, origin, tmp_path, monkeypatch, pads):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    monkeypatch.setenv("HOME", str(cfg.agent_home))
+    path, _, _ = Agent(cfg).prepare("backend", "NF-7")
+    _age(path, NOW, 8)
+    out = _sweep(cfg, [], NOW)
+    assert str(path) in out["removed"] and not path.exists()
+
+
+def test_sweep_never_touches_a_kept_key(tmp_cfg, origin, tmp_path, monkeypatch, pads):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    monkeypatch.setenv("HOME", str(cfg.agent_home))
+    path, _, _ = Agent(cfg).prepare("backend", "NF-7")
+    state = cfg.agent_state_root / "NF-7"
+    _age(path, NOW, 30)
+    _age(state, NOW, 30)
+    assert _sweep(cfg, ["NF-7"], NOW) == {"removed": [], "kept": []}
+    assert path.exists() and state.exists()
+
+
+def test_sweep_keeps_an_orphan_with_unpushed_commits(tmp_cfg, origin, tmp_path, monkeypatch, pads):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    monkeypatch.setenv("HOME", str(cfg.agent_home))
+    path, _, _ = Agent(cfg).prepare("backend", "NF-7")
+    for k, v in (("user.name", "t"), ("user.email", "t@t")):
+        git("config", k, v, cwd=path)
+    (path / "b.txt").write_text("b\n")
+    git("add", "b.txt", cwd=path)
+    git("commit", "-qm", "only here", "--no-verify", cwd=path)
+    _age(path, NOW, 8)
+    out = _sweep(cfg, [], NOW)
+    assert out["kept"] == [{"path": str(path), "why": "commits not on GitHub"}] and path.exists()
+
+
+def test_sweep_keeps_a_dirty_or_recent_orphan(tmp_cfg, origin, tmp_path, monkeypatch, pads):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    monkeypatch.setenv("HOME", str(cfg.agent_home))
+    dirty, _, _ = Agent(cfg).prepare("backend", "NF-7")
+    recent, _, _ = Agent(cfg).prepare("backend", "NF-8")
+    (dirty / "work.py").write_text("x\n")
+    _age(dirty, NOW, 8)
+    _age(recent, NOW, 1)
+    whys = {k["path"]: k["why"] for k in _sweep(cfg, [], NOW)["kept"]}
+    assert whys == {str(dirty): "uncommitted changes", str(recent): "changed in the last 7 days"}
+
+
+def test_a_recent_commit_counts_as_a_change(tmp_cfg, origin, tmp_path, monkeypatch, pads):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    monkeypatch.setenv("HOME", str(cfg.agent_home))
+    path, _, _ = Agent(cfg).prepare("backend", "NF-7")
+    now = os.path.getmtime(path) + 8 * 86400
+    _age(path, now, 8)
+    commit_time = git("log", "-1", "--format=%ct", cwd=path)
+    assert agentrun._last_change(path) >= float(commit_time)
+
+
+def test_sweep_removes_old_orphan_state_and_unlisted_old_scratchpads(
+    tmp_cfg, tmp_path, monkeypatch, pads
+):
+    home = tmp_path / "agent"
+    cfg = replace(
+        tmp_cfg, agent_home=home, worktree_root=home / "worktrees", agent_state_root=home / "state"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    old_state = cfg.agent_state_root / "NF-3"
+    old_state.mkdir(parents=True)
+    _age(old_state, NOW, 8)
+    orphan, listed = pads / "p" / "s1" / "scratchpad", pads / "p" / "s2" / "scratchpad"
+    orphan.mkdir(parents=True)
+    listed.mkdir(parents=True)
+    kept_state = cfg.agent_state_root / "NF-9"
+    kept_state.mkdir(parents=True)
+    (kept_state / "scratchpads").write_text(f"{listed}\n")
+    for pad in (orphan, listed):
+        _age(pad, NOW, 2)
+    out = _sweep(cfg, ["NF-9"], NOW)
+    assert str(old_state) in out["removed"] and str(orphan) in out["removed"]
+    assert not old_state.exists() and not orphan.exists() and listed.exists()
+
+
+def test_sweep_stops_running_containers_only_with_no_session_up(monkeypatch, tmp_path):
+    ran = []
+    monkeypatch.setattr("flocc.agentrun.container_env", lambda: {"DOCKER_HOST": "unix:///s"})
+    monkeypatch.setattr("flocc.agentrun.shutil.which", lambda name: "/usr/bin/podman")
+    monkeypatch.setattr("flocc.agentrun.subprocess.run", lambda argv, **kw: ran.append(argv))
+    monkeypatch.setattr("flocc.agentrun._sessions_up", lambda: True)
+    agentrun._leftover_containers()
+    assert ran == [["podman", "container", "prune", "-f"]]
+    ran.clear()
+    monkeypatch.setattr("flocc.agentrun._sessions_up", lambda: False)
+    agentrun._leftover_containers()
+    assert ran == [
+        ["podman", "stop", "--all", "--time", "10"],
+        ["podman", "container", "prune", "-f"],
+    ]

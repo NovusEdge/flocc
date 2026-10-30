@@ -37,6 +37,7 @@ SUBCOMMANDS = (
     "remove",
     "send",
     "start",
+    "sweep",
 )
 _NAME = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+(?:-test|-review)?$")
 _FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -284,11 +285,15 @@ def check(req: dict) -> dict:
     raise BadRequest(f"unknown check mode {mode!r}")
 
 
+def _scratch_root() -> Path:
+    return Path(f"/tmp/claude-{os.getuid()}")
+
+
 def scratch_path(line: str) -> Path | None:
     """A Claude Code scratchpad of this user's from a session's listing, or None."""
     if not line.strip():
         return None
-    root = Path(f"/tmp/claude-{os.getuid()}")
+    root = _scratch_root()
     path = Path(line.strip())
     try:
         rel = path.resolve().relative_to(root.resolve())
@@ -415,6 +420,130 @@ def remove(req: dict) -> dict:
     return {"removed": True, "dirty": False}
 
 
+def _sessions_up() -> bool:
+    out = subprocess.run(
+        ["tmux", "-N", "-L", SOCKET, "list-sessions", "-F", "#{session_name}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return out.returncode == 0 and any(_NAME.match(n) for n in out.stdout.split())
+
+
+def _leftover_containers() -> None:
+    # Ryuk is off, so a check killed mid-run leaves its containers running. cleanup holds the tick
+    # lock, so no publish check runs; with no session up, no session's check runs either.
+    if container_env() and shutil.which("podman") and not _sessions_up():
+        subprocess.run(
+            ["podman", "stop", "--all", "--time", "10"],
+            capture_output=True,
+            check=False,
+            timeout=300,
+        )
+    _prune_containers()
+
+
+def _orphans(root: Path, keep: set[str]) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return [
+        p
+        for p in sorted(root.iterdir())
+        if _KEY.match(p.name) and p.name not in keep and p.is_dir() and not p.is_symlink()
+    ]
+
+
+def _older(path: Path, age_s: float, now: float) -> bool:
+    return now - path.lstat().st_mtime >= age_s
+
+
+def _git_out(wt: Path, *args: str) -> str:
+    out = subprocess.run(
+        ["git", *args], cwd=wt, capture_output=True, text=True, check=False, timeout=60
+    )
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _last_change(wt: Path) -> float:
+    """The newest of the last commit, the index and the top directory: an edit deep in the tree
+    leaves the top directory's mtime alone, and an uncommitted one is caught as dirty anyway."""
+    times = [wt.lstat().st_mtime]
+    if commit := _git_out(wt, "log", "-1", "--format=%ct"):
+        times.append(float(commit))
+    if index := _git_out(wt, "rev-parse", "--git-path", "index"):
+        path = Path(index) if Path(index).is_absolute() else wt / index
+        if path.exists():
+            times.append(path.stat().st_mtime)
+    return max(times)
+
+
+def _unpushed(wt: Path) -> bool:
+    # Pushes go from the service's clone, so this clone's remote refs lag until it fetches.
+    try:
+        subprocess.run(
+            ["git", "fetch", "-q", "origin"], cwd=wt, capture_output=True, check=False, timeout=120
+        )
+        out = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD", "--not", "--remotes"],
+            cwd=wt,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return True
+    return out.returncode != 0 or out.stdout.strip() != "0"
+
+
+def _keep_reason(wt: Path, age_s: float, now: float) -> str:
+    try:
+        if now - _last_change(wt) < age_s:
+            return "changed in the last 7 days"
+        if has_uncommitted_changes(wt):
+            return "uncommitted changes"
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return "not a git worktree"
+    return "commits not on GitHub" if _unpushed(wt) else ""
+
+
+def sweep(req: dict) -> dict:
+    """Removes what no claim owns: old clean worktrees whose commits are all on a remote, old
+    state directories, and old scratchpads no kept claim lists."""
+    keep = {_key(k) for k in req.get("keep") or []}
+    root, states = under_home(req["worktree_root"]), under_home(req["state_root"])
+    now, age_s = float(req["now"]), float(req["max_age_s"])
+    scratch_age_s = float(req["scratch_age_s"])
+    removed: list[str] = []
+    kept: list[dict] = []
+    if root.is_dir():
+        _clean_stale(root)
+    for wt in _orphans(root, keep):
+        if why := _keep_reason(wt, age_s, now):
+            kept.append({"path": str(wt), "why": why})
+            continue
+        remove({"key": wt.name, "worktree_root": str(root), "state_root": str(states)})
+        removed.append(str(wt))
+    for st in _orphans(states, keep):
+        if _older(st, age_s, now) and not (root / st.name).exists():
+            remove({"key": st.name, "worktree_root": str(root), "state_root": str(states)})
+            removed.append(str(st))
+    listed: set[str] = set()
+    for k in keep:
+        listing = states / k / "scratchpads"
+        if listing.is_file() and not listing.is_symlink():
+            listed |= {line.strip() for line in listing.read_text().splitlines()}
+    pads = _scratch_root()
+    for pad in sorted(pads.glob("*/*/*")) if pads.is_dir() else []:
+        if str(pad) in listed or scratch_path(str(pad)) != pad or not pad.is_dir():
+            continue
+        if _older(pad, scratch_age_s, now):
+            shutil.rmtree(pad, ignore_errors=True)
+            removed.append(str(pad))
+    _leftover_containers()
+    return {"removed": removed, "kept": kept}
+
+
 HANDLERS: dict[str, Callable[[dict], dict]] = {
     "start": start,
     "send": send,
@@ -423,6 +552,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "check": check,
     "remove": remove,
     "probe": probe,
+    "sweep": sweep,
 }
 
 

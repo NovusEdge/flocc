@@ -57,6 +57,7 @@ class FakeAgent:
     cfg: Any
     prepare_fn: Any = None
     removed: list = field(default_factory=list)
+    swept: list = field(default_factory=list)
     probe_result: dict = field(
         default_factory=lambda: {"read": {}, "write": {}, "tmux": True, "groups": []}
     )
@@ -74,6 +75,10 @@ class FakeAgent:
     def remove(self, key, keep_dirty=False):
         self.removed.append((key, keep_dirty))
         return {"removed": True, "dirty": False}
+
+    def sweep(self, keep, now, max_age_s, scratch_age_s):
+        self.swept.append((keep, now, max_age_s, scratch_age_s))
+        return {"removed": [], "kept": []}
 
     def probe(self, read, write):
         return self.probe_result
