@@ -332,17 +332,30 @@ func (ExecutorSSH) Apply(ctx context.Context, e *Env) error {
 	return err
 }
 
+// cardinalMAC is the hardware address Incus generated for cardinal's bridge NIC and keeps in the
+// instance config. The firewall matches it, not an IPv4 address, because cardinal also has IPv6
+// addresses on the bridge that an ip saddr rule never sees.
+func (e *Env) cardinalMAC(ctx context.Context) (string, bool) {
+	in, ok := e.instanceOf(ctx, CardinalName)
+	nic := nicOf(in)
+	if !ok || nic == "" {
+		return "", false
+	}
+	mac := in.Config["volatile."+nic+".hwaddr"]
+	return mac, mac != ""
+}
+
 // fwRules lets the cardinal VM reach the executor's sshd and nothing else on it. The first two
 // lines make the file replace the table whether or not it exists.
-func fwRules(cardinalIP string) string {
+func fwRules(cardinalMAC, cardinalIP string) string {
 	return "# Written by flocc host cardinal: the cardinal VM reaches this VM's sshd and nothing else.\n" +
 		"table inet flocc_cardinal\n" +
 		"delete table inet flocc_cardinal\n" +
 		"table inet flocc_cardinal {\n" +
 		"  chain input {\n" +
 		"    type filter hook input priority 0; policy accept;\n" +
-		"    ip saddr " + cardinalIP + " tcp dport 22 accept\n" +
-		"    ip saddr " + cardinalIP + " drop\n" +
+		"    ether saddr " + cardinalMAC + " ip saddr " + cardinalIP + " tcp dport 22 accept\n" +
+		"    ether saddr " + cardinalMAC + " drop\n" +
 		"  }\n" +
 		"}\n"
 }
@@ -361,7 +374,11 @@ func (ExecutorFirewall) Check(ctx context.Context, e *Env) (bool, string, error)
 	if !ok {
 		return false, "cardinal's bridge address not pinned", nil
 	}
-	if got, _ := e.read(ctx, x, fwFile); got != fwRules(cip) {
+	mac, ok := e.cardinalMAC(ctx)
+	if !ok {
+		return false, "cardinal's NIC has no hardware address yet", nil
+	}
+	if got, _ := e.read(ctx, x, fwFile); got != fwRules(mac, cip) {
 		return false, "no firewall for cardinal", nil
 	}
 	if got, _ := e.read(ctx, x, fwUnit); got != fwUnitBody {
@@ -379,12 +396,16 @@ func (ExecutorFirewall) Apply(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
+	mac, ok := e.cardinalMAC(ctx)
+	if !ok {
+		return fmt.Errorf("%s's NIC has no hardware address", CardinalName)
+	}
 	if !e.ok(ctx, e.inVM(x, "sh", "-c", "command -v nft")) {
 		if err := e.aptIn(ctx, x, "nftables"); err != nil {
 			return err
 		}
 	}
-	for _, f := range []vmFile{{fwFile, 0o644, "root", []byte(fwRules(cip))}, {fwUnit, 0o644, "root", []byte(fwUnitBody)}} {
+	for _, f := range []vmFile{{fwFile, 0o644, "root", []byte(fwRules(mac, cip))}, {fwUnit, 0o644, "root", []byte(fwUnitBody)}} {
 		if err := e.put(ctx, x, f); err != nil {
 			return err
 		}

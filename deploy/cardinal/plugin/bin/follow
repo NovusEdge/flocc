@@ -10,14 +10,25 @@ rounds=${FOLLOW_ROUNDS:-0}
 fails=0
 down=0
 hello=0
+flag="${TMPDIR:-/tmp}/flocc-follow-up.$$"
+trap 'rm -f "$flag"' EXIT
 n=0
 while [ "$rounds" -eq 0 ] || [ "$n" -lt "$rounds" ]; do
   n=$((n + 1))
   start=$(date +%s)
-  # One hello per down period: a flapping link must not wake cardinal on every reconnect.
+  # --hello until one connection has printed the up line, then no more this down period: a
+  # flapping link must not wake cardinal on every reconnect, and a failed attempt must not use
+  # up the hello.
   if [ "$down" -eq 1 ] && [ "$hello" -eq 0 ]; then
-    hello=1
-    ssh -F "$config" executor events --follow --hello
+    rm -f "$flag"
+    ssh -F "$config" executor events --follow --hello |
+      while IFS= read -r line; do
+        printf '%s\n' "$line"
+        case $line in *'"link": "up"'*) : >"$flag" ;; esac
+      done
+    if [ -e "$flag" ]; then
+      hello=1
+    fi
   else
     ssh -F "$config" executor events --follow
   fi

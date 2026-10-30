@@ -48,6 +48,10 @@ Claude Code's root-owned managed settings, `/etc/claude-code/managed-settings.js
 
 Checks that start containers (testcontainers) use rootless Podman as `flocc-agent`, with `DOCKER_HOST` pointing at its `podman.socket` and Ryuk off. Neither user is in the `docker` group, because that group is root-equivalent and would undo the boundary; doctor fails if `flocc-agent` is in it. An existing Docker daemon stays installed and untouched.
 
+## The cardinal VM
+
+Cardinal is an optional Claude Code session in its own Incus VM, beside the executor VM, so that a session that talks to you holds none of the executor's secrets. It reaches the executor only over the Incus bridge, by SSH with a key whose `authorized_keys` line forces one command, `flocc-cardinal-gate`, and allows connections only from cardinal's pinned address. The gate runs a fixed list of subcommands and refuses everything else, so cardinal can read status and events, acknowledge them and lift holds, and cannot rerun work or open a shell. The executor writes an event to its ledger when a run ends, hits a cap, finds its base broken or hits a service error, and once a day for the digest. A monitor in cardinal's plugin holds `flocc events --follow` open; each batch of events, collected over two minutes, wakes the session, which acts on them and then calls `ack`. An event not acknowledged is printed again after 30 minutes, at most three times. If the link fails five times in a row the monitor tells the session so, and again when it returns. A firewall on the executor matches cardinal by the MAC address of its bridge NIC, so IPv4 and IPv6 are covered alike: it accepts TCP port 22 from cardinal's pinned address and drops everything else from that MAC.
+
 ## One issue, start to finish
 
 1. **Pick.** The poller reads the issues assigned to the Linear key's owner that carry the trigger label and are in an unstarted state. It maps each to a repository by label or project, and skips an issue without acceptance criteria.

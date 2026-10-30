@@ -101,6 +101,7 @@ const (
 	cardinalInstance   = "incus query /1.0/instances/flocc-cardinal"
 	cardinalStateQuery = "incus query /1.0/instances/flocc-cardinal/state"
 	profileNIC         = `{"status":"Running","config":{},"devices":{},"expanded_devices":{"eth0":{"type":"nic","network":"incusbr0"}}}`
+	cardinalNIC        = `{"status":"Running","config":{"volatile.eth0.hwaddr":"10:66:6a:00:00:07"},"devices":{},"expanded_devices":{"eth0":{"type":"nic","network":"incusbr0"}}}`
 	cardinalWithIP     = `{"status":"Running","network":{"enp5s0":{"addresses":[{"family":"inet","address":"10.10.0.7","scope":"global"}]}}}`
 )
 
@@ -110,7 +111,7 @@ func linkFake() *host.Fake {
 		On(stateQuery, 0, vmWithIP).
 		On(executorInstance, 0, profileNIC).
 		On(cardinalStateQuery, 0, cardinalWithIP).
-		On(cardinalInstance, 0, profileNIC)
+		On(cardinalInstance, 0, cardinalNIC)
 }
 
 func TestPinOverridesAProfileNicAndSetsAnOwnOne(t *testing.T) {
@@ -186,8 +187,11 @@ func TestExecutorFirewallLetsCardinalReachOnlySshd(t *testing.T) {
 	}
 	i := slices.IndexFunc(f.Calls, func(c string) bool { return strings.Contains(c, fwFile) })
 	rules := f.Stdins[f.Calls[i]]
-	if !strings.Contains(rules, "ip saddr 10.10.0.7 tcp dport 22 accept\n    ip saddr 10.10.0.7 drop\n") {
+	if !strings.Contains(rules, "ether saddr 10:66:6a:00:00:07 ip saddr 10.10.0.7 tcp dport 22 accept\n    ether saddr 10:66:6a:00:00:07 drop\n") {
 		t.Fatalf("%s", rules)
+	}
+	if strings.Contains(rules, "\n    ip saddr") {
+		t.Fatalf("a rule matches by IPv4 alone:\n%s", rules)
 	}
 	for _, want := range []string{"incus exec flocc-a -- systemctl enable flocc-cardinal-fw.service", "incus exec flocc-a -- systemctl restart flocc-cardinal-fw.service"} {
 		if !f.Ran(want) {

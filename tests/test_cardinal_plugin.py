@@ -67,8 +67,13 @@ def test_unreachable_prints_link_down_once_and_keeps_trying(tmp_path):
     env = fake_link(tmp_path, [0] * 12)
     assert run_follow(env, 12) == [DOWN]
     sent = calls(tmp_path)
-    assert len(sent) == 12 and [c.endswith("--hello") for c in sent].count(True) == 1
-    assert sent[5].endswith("executor events --follow --hello")
+    assert [c.endswith("--hello") for c in sent] == [False] * 5 + [True] * 7
+
+
+def test_a_failed_hello_is_retried_until_one_connects(tmp_path):
+    env = fake_link(tmp_path, [0] * 7 + [100])
+    assert run_follow(env, 8) == [DOWN, UP]
+    assert [c.endswith("--hello") for c in calls(tmp_path)] == [False] * 5 + [True] * 3
 
 
 def test_a_flapping_link_wakes_cardinal_twice_per_down_period(tmp_path):
