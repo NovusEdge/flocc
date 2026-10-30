@@ -39,6 +39,12 @@ func claudeVersion(ctx context.Context, e *Env) (bool, string) {
 	return host.AtLeast(v, minClaude), v
 }
 
+// agentClaude runs flocc-agent's claude through the wrapper: the login and the Remote Control
+// consent are flocc-agent's, whose sessions use them.
+func agentClaude(args ...string) host.Cmd {
+	return host.Cmd{Name: "sudo", Args: append([]string{"-n", "-H", "-u", AgentUser, AgentRun, "claude"}, args...)}
+}
+
 // claudeLogin is "full" for a claude.ai login, "token-only (<method>)" for any other, or "none".
 // Only a full login can open Remote Control sessions.
 func claudeLogin(ctx context.Context, e *Env) string {
@@ -46,7 +52,12 @@ func claudeLogin(ctx context.Context, e *Env) string {
 		LoggedIn   bool   `json:"loggedIn"`
 		AuthMethod string `json:"authMethod"`
 	}
-	if json.Unmarshal([]byte(e.Output(ctx, e.claude(), "auth", "status")), &s) != nil || !s.LoggedIn {
+	r, err := e.Run.Run(ctx, agentClaude("auth", "status"))
+	out := ""
+	if err == nil && r.Code == 0 {
+		out = r.Stdout
+	}
+	if json.Unmarshal([]byte(out), &s) != nil || !s.LoggedIn {
 		return "none"
 	}
 	if s.AuthMethod == "claude.ai" {

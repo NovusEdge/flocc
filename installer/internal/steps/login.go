@@ -2,11 +2,9 @@ package steps
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,7 +52,7 @@ func Login(ctx context.Context, e *Env, o LoginOptions) error {
 		if o.Email != "" {
 			args = append(args, "--email", o.Email)
 		}
-		if err := e.Run.Interactive(ctx, host.Cmd{Name: e.claude(), Args: args}); err != nil {
+		if err := e.Run.Interactive(ctx, agentClaude(args...)); err != nil {
 			return err
 		}
 	}
@@ -63,10 +61,9 @@ func Login(ctx context.Context, e *Env, o LoginOptions) error {
 	if err := requireFullLogin(ctx, e); err != nil {
 		return err
 	}
-	if err := trustWorktrees(e); err != nil {
-		return err
-	}
-	if err := o.Consent(ctx, host.Cmd{Name: e.claude(), Args: []string{"remote-control"}, Dir: e.Real(worktreesRel)}); err != nil {
+	consent := agentClaude("remote-control")
+	consent.Dir = AgentHome + "/" + worktreesRel
+	if err := o.Consent(ctx, consent); err != nil {
 		return err
 	}
 	if err := requireFullLogin(ctx, e); err != nil {
@@ -84,69 +81,6 @@ func requireFullLogin(ctx context.Context, e *Env) error {
 		return fmt.Errorf("claude auth status reports %s after the login, not a claude.ai login", l)
 	}
 	return nil
-}
-
-// trustWorktrees marks ~/worktrees trusted the way sessions.trust_folders does for a session's own
-// paths. Sessions trust only their worktree and repo, so on a fresh host remote-control would sit
-// at the folder-trust dialog in ~/worktrees. The caller holds the tick lock with no session
-// running, so nothing rewrites ~/.claude.json from memory meanwhile.
-func trustWorktrees(e *Env) error {
-	dir := e.Real(worktreesRel)
-	return editClaudeJSON(e.HomePath(".claude.json"), func(file map[string]json.RawMessage) (bool, error) {
-		return trustFolder(file, dir)
-	})
-}
-
-// trustFolder marks dir trusted in ~/.claude.json's top-level map and reports whether it changed.
-func trustFolder(file map[string]json.RawMessage, dir string) (bool, error) {
-	projects := map[string]map[string]json.RawMessage{}
-	if raw, ok := file["projects"]; ok {
-		if err := json.Unmarshal(raw, &projects); err != nil {
-			return false, fmt.Errorf("projects: %w", err)
-		}
-	}
-	if string(projects[dir]["hasTrustDialogAccepted"]) == "true" {
-		return false, nil
-	}
-	if projects[dir] == nil {
-		projects[dir] = map[string]json.RawMessage{}
-	}
-	projects[dir]["hasTrustDialogAccepted"] = json.RawMessage("true")
-	var err error
-	file["projects"], err = json.Marshal(projects)
-	return true, err
-}
-
-// editClaudeJSON applies edit to ~/.claude.json and writes it back only when edit changed it.
-// Values stay raw JSON: the file also holds the account's state, which a float64 round trip could
-// alter.
-func editClaudeJSON(path string, edit func(map[string]json.RawMessage) (bool, error)) error {
-	file := map[string]json.RawMessage{}
-	switch b, err := os.ReadFile(path); {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
-		return err
-	default:
-		if err := json.Unmarshal(b, &file); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-	}
-	if file == nil { // the file held a literal null
-		file = map[string]json.RawMessage{}
-	}
-	changed, err := edit(file)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	if !changed {
-		return nil
-	}
-	out, err := json.MarshalIndent(file, "", "  ")
-	if err != nil {
-		return err
-	}
-	// 600: the file holds the account's OAuth state.
-	return writeAtomic(path, out, 0o600)
 }
 
 // checkStatus refuses a status the lock and the session list cannot be trusted from.
@@ -336,7 +270,7 @@ func answerConsent(ctx context.Context, c host.Cmd, out io.Writer, w consentWait
 		case <-timeout:
 			stop()
 			return fmt.Errorf("claude remote-control printed no connected line in %s; it may be waiting at a prompt of its own. Last output:\n%s\nRun it by hand as %s to see what it waits for",
-				w.connect, watch.tail(), ServiceUser)
+				w.connect, watch.tail(), AgentUser)
 		case <-ctx.Done():
 			stop()
 			return ctx.Err()

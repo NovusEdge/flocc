@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/NovusEdge/flocc/deploy"
 	"github.com/NovusEdge/flocc/installer/internal/host"
@@ -83,8 +82,8 @@ func (Run) Check(ctx context.Context, e *Env) (bool, string, error) {
 			return false, u + " not installed or out of date", nil
 		}
 	}
-	if r, err := e.Run.Run(ctx, e.userctl("is-active", "--quiet", "flocc-tmux.service")); err != nil || r.Code != 0 {
-		return false, "tmux service not running", nil
+	if _, err := os.Stat(e.HomePath(".config/systemd/user/flocc-tmux.service")); err == nil {
+		return false, "old flocc-tmux.service still installed", nil
 	}
 	if !timerOn(ctx, e) {
 		return false, "timer not enabled", nil
@@ -104,17 +103,19 @@ func (Run) Apply(ctx context.Context, e *Env) error {
 				return err
 			}
 		}
-		for _, c := range []host.Cmd{e.userctl("daemon-reload"), e.userctl("enable", "--now", "flocc-tmux.service")} {
-			if _, err := e.MustCmd(ctx, c); err != nil {
+		// 0.12 ran the session server as this user; it is flocc-agent's now.
+		old := filepath.Join(dir, "flocc-tmux.service")
+		if _, err := os.Stat(old); err == nil {
+			e.Run.Run(ctx, e.userctl("disable", "--now", "flocc-tmux.service"))
+			if err := os.Remove(old); err != nil {
 				return err
 			}
 		}
-		// enable --now returns before the tmux server exists; doctor's tmux check needs it.
-		for i := 0; i < 10 && !e.Ok(ctx, "tmux", "-N", "-L", "flocc", "list-sessions"); i++ {
-			e.Sleep(500 * time.Millisecond)
+		if _, err := e.MustCmd(ctx, e.userctl("daemon-reload")); err != nil {
+			return err
 		}
 	} else if e.loopPane(ctx) == "" {
-		// Idle until doctor passes; doctor's tmux check needs a server, and ticks never start one.
+		// Idle until doctor passes; the loop pane lives on this user's own tmux server.
 		if _, err := e.Must(ctx, "tmux", "-L", "flocc", "new-session", "-d", "-s", "flocc-loop", "sleep infinity"); err != nil {
 			return err
 		}

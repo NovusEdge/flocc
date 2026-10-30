@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/NovusEdge/flocc/deploy"
 	"github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
@@ -50,18 +53,40 @@ func TestForgetHoldsToleratesAFailingCommand(t *testing.T) {
 	}
 }
 
-func TestRunWithTheLoginPendingStartsTmuxButNotTheTimer(t *testing.T) {
+func TestRunWithTheLoginPendingLeavesTheTimerAndTheSessionServerAlone(t *testing.T) {
 	f := systemdRun(host.NewFake(), 1, "ok    tmux: server on socket flocc\n"+loginFailLine)
 	e := testEnv(t, f)
 	e.Pending = []string{"Claude login"}
 	if err := (Run{}).Apply(context.Background(), e); !errors.Is(err, ErrPending) {
 		t.Fatalf("err=%v", err)
 	}
-	if !f.Ran("systemctl --user enable --now flocc-tmux.service") || f.Ran("systemctl --user enable --now flocc.timer") {
+	if f.Ran("systemctl --user enable --now flocc-tmux.service") || f.Ran("systemctl --user enable --now flocc.timer") {
 		t.Fatalf("calls: %v", f.Calls)
 	}
 	if e.lastDoctor == nil || len(e.lastDoctor.fails) != 1 {
 		t.Fatalf("doctor result not kept: %+v", e.lastDoctor)
+	}
+}
+
+func TestRunRemovesTheOldTmuxUnitOfAOneUserHost(t *testing.T) {
+	f := systemdRun(host.NewFake(), 1, loginFailLine).On("systemctl --user disable --now flocc-tmux.service", 0, "")
+	e := testEnv(t, f)
+	e.Pending = []string{"Claude login"}
+	old := e.HomePath(".config/systemd/user/flocc-tmux.service")
+	os.MkdirAll(filepath.Dir(old), 0o755)
+	os.WriteFile(old, []byte("[Unit]\n"), 0o644)
+	for _, u := range deploy.Units {
+		b, _ := deploy.Files.ReadFile(u)
+		os.WriteFile(filepath.Join(filepath.Dir(old), u), b, 0o644)
+	}
+	if done, detail, _ := (Run{}).Check(context.Background(), e); done || detail != "old flocc-tmux.service still installed" {
+		t.Fatalf("%v %q", done, detail)
+	}
+	if err := (Run{}).Apply(context.Background(), e); !errors.Is(err, ErrPending) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Stat(old); err == nil || !f.Ran("systemctl --user disable --now flocc-tmux.service") {
+		t.Fatalf("old unit kept: %v", f.Calls)
 	}
 }
 

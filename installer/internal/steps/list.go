@@ -11,5 +11,5 @@ func AgentSteps() []Step {
 }
 
 func ServiceSteps() []Step {
-	return []Step{Repo{}, Identity{}, Claude{}, ClaudeLogin{}, Secrets{}, Tools{}, Config{}, Run{}}
+	return []Step{Repo{}, ClaudeLogin{}, Secrets{}, Config{}, OldWorktrees{}, Run{}}
 }
