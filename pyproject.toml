@@ -7,6 +7,7 @@ dependencies = []
 [project.scripts]
 flocc = "flocc.cli:main"
 flocc-agent = "flocc.agentrun:main"
+flocc-cardinal-gate = "flocc.cardinalgate:main"
 
 [build-system]
 requires = ["uv_build>=0.9.9,<0.13"]
