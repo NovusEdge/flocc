@@ -137,6 +137,26 @@ def test_prepare_and_check_clear_what_a_killed_setup_left(tmp_path):
     assert (tmp_path / ".uv-cache").exists()
 
 
+@pytest.mark.parametrize(
+    "args",
+    [["auth", "logout"], ["-p", "hi"], ["auth", "login", "--console"], ["plugin", "install", "x"]],
+)
+def test_claude_runs_only_the_listed_invocations(args, capsys):
+    assert agentrun.main(["claude", *args]) == 2
+    assert "not allowed" in capsys.readouterr().err
+
+
+def test_probe_reports_what_flocc_agent_can_reach(tmp_path, monkeypatch):
+    readable = tmp_path / "r"
+    readable.write_text("x")
+    request = {"read": [str(readable), str(tmp_path / "missing")], "write": [str(tmp_path)]}
+    monkeypatch.setattr("flocc.agentrun._tmux_up", lambda: False)
+    out = agentrun.probe(request)
+    assert out["read"] == {str(readable): True, str(tmp_path / "missing"): False}
+    assert out["write"] == {str(tmp_path): True} and out["tmux"] is False
+    assert isinstance(out["groups"], list)
+
+
 def test_container_env_points_at_the_podman_socket(tmp_path, monkeypatch):
     sock = tmp_path / "podman" / "podman.sock"
     sock.parent.mkdir()

@@ -7,9 +7,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from flocc.agent import Agent
 from flocc.config import Config
 from flocc.linear import Linear, LinearError, http_transport
-from flocc.sessions import SOCKET
 from flocc.tokens import (
     LOGIN_REMEDY,
     WARN_DAYS,
@@ -97,10 +97,10 @@ def token_checks(
     return results
 
 
-def claude_checks(exe: str | None, run=subprocess.run) -> list[Result]:
-    if exe is None:
-        return [Result("fail", "claude", "not on PATH; install it as this user")]
-    out = run([exe, "--version"], capture_output=True, text=True, check=False).stdout
+def claude_checks(claude: list[str] | None, run=subprocess.run) -> list[Result]:
+    if claude is None:
+        return [Result("fail", "claude", "flocc-agent-run is not set up")]
+    out = run([*claude, "--version"], capture_output=True, text=True, check=False).stdout
     m = re.match(r"(\d+)\.(\d+)\.(\d+)", out.strip())
     version = tuple(int(g) for g in m.groups()) if m else None
     if version is None or version < MIN_CLAUDE:
@@ -108,27 +108,13 @@ def claude_checks(exe: str | None, run=subprocess.run) -> list[Result]:
         results = [Result("fail", "claude", f"version {out.strip() or '?'}; needs {need}")]
     else:
         results = [Result("ok", "claude", out.strip())]
-    login = claude_login(exe, run)
+    login = claude_login(claude, run)
     if login == "full":
         results.append(Result("ok", "claude login", "claude.ai subscription"))
     else:
         detail = login or "claude auth status gave no answer"
         results.append(Result("fail", "claude login", f"{detail}; {LOGIN_REMEDY}"))
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        results.append(
-            Result("fail", "api key", "ANTHROPIC_API_KEY is set; sessions must not bill the API")
-        )
-    else:
-        results.append(Result("ok", "api key", "ANTHROPIC_API_KEY unset"))
     return results
-
-
-def tmux_check(socket: str = SOCKET, run=subprocess.run) -> Result:
-    # -N: asking must not start a server, which would die with this process's cgroup.
-    out = run(["tmux", "-N", "-L", socket, "list-sessions"], capture_output=True, check=False)
-    if out.returncode == 0:
-        return Result("ok", "tmux", f"server on socket {socket}")
-    return Result("fail", "tmux", "no server; systemctl --user start flocc-tmux.service")
 
 
 def linear_checks(cfg: Config, linear) -> list[Result]:
@@ -194,7 +180,7 @@ def repo_checks(cfg: Config, run=subprocess.run) -> tuple[list[Result], str | No
 
 def path_checks(cfg: Config) -> list[Result]:
     results = []
-    for tool in ("git", "gh", "tmux", "flocc"):
+    for tool in ("git", "gh", "flocc"):
         found = shutil.which(tool)
         results.append(Result("ok" if found else "fail", tool, found or "not on PATH"))
     manifest = cfg.plugin_dir / ".claude-plugin" / "plugin.json"
@@ -238,7 +224,77 @@ def report(results: list[Result]) -> int:
     return 1 if fails else 0
 
 
-def collect_results(cfg: Config) -> list[Result]:
+def agent_checks(cfg: Config, config_path: Path, agent) -> list[Result]:
+    secrets = [
+        cfg.linear_key_file,
+        cfg.publish_gh_token_file,
+        cfg.agent_gh_token_file,
+        cfg.ledger_path,
+        config_path,
+    ]
+    try:
+        seen = agent.probe([str(p) for p in secrets], [str(cfg.plugin_dir)])
+    except (subprocess.SubprocessError, OSError) as exc:
+        detail = (
+            f"flocc-agent-run did not answer ({exc}); flocc setup installs it and its sudoers rule"
+        )
+        return [Result("fail", "agent", detail)]
+    results = [Result("ok", "agent", "flocc-agent-run answers through sudo")]
+    reached = [p for p, ok in {**seen["read"], **seen["write"]}.items() if ok]
+    if reached:
+        detail = (
+            f"flocc-agent can reach {', '.join(reached)}; keep /home/flocc mode 700 and"
+            f" {cfg.plugin_dir} flocc's"
+        )
+        results.append(Result("fail", "agent boundary", detail))
+    else:
+        detail = "flocc-agent cannot read the secrets or the ledger, nor write the plugin directory"
+        results.append(Result("ok", "agent boundary", detail))
+    if "docker" in seen.get("groups", []):
+        detail = (
+            "flocc-agent is in the docker group, which is root-equivalent; checks use its Podman"
+            " socket instead: gpasswd -d flocc-agent docker"
+        )
+        results.append(Result("fail", "agent docker", detail))
+    else:
+        results.append(Result("ok", "agent docker", "flocc-agent is not in the docker group"))
+    if seen.get("containers"):
+        results.append(Result("ok", "containers", "checks reach flocc-agent's Podman socket"))
+    else:
+        detail = (
+            "no Podman socket for flocc-agent; checks that start containers fail"
+            " (docker = true in the host file sets it up)"
+        )
+        results.append(Result("ok", "containers", detail))
+    if seen.get("tmux"):
+        results.append(Result("ok", "tmux", "flocc-agent's session server is up"))
+    else:
+        detail = "flocc-agent has no session server; flocc ship -H <this host> starts it"
+        results.append(Result("fail", "tmux", detail))
+    return results
+
+
+MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
+_DIALOG_TOOLS = {"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"}
+
+
+def managed_check(path: Path = MANAGED_SETTINGS) -> Result:
+    remedy = "flocc ship -H <this host> writes it in the root phase"
+    try:
+        data = json.loads(path.read_text())
+        deny = set(data["permissions"]["deny"])
+        commands = [h["command"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        detail = f"{path} unreadable or incomplete ({exc}); {remedy}"
+        return Result("fail", "managed settings", detail)
+    if not _DIALOG_TOOLS <= deny or not any(c.endswith("flocc guard") for c in commands):
+        detail = f"{path} lacks the guard or the dialog denies; {remedy}"
+        return Result("fail", "managed settings", detail)
+    return Result("ok", "managed settings", "the guard and the dialog denies are root's")
+
+
+def collect_results(cfg: Config, config_path: Path, agent=None) -> list[Result]:
+    agent = agent or Agent(cfg)
     results = path_checks(cfg) + scope_check(cfg)
     results.append(disk_check(cfg))
     key = secret_file("linear key", cfg.linear_key_file)
@@ -251,17 +307,18 @@ def collect_results(cfg: Config) -> list[Result]:
     now = time.time()
     results += token_checks("agent", cfg.agent_gh_token_file, slug, False, now)
     results += token_checks("publish", cfg.publish_gh_token_file, slug, True, now)
-    results += claude_checks(shutil.which("claude"))
-    results.append(tmux_check())
+    results += claude_checks(agent.claude_argv())
+    results += agent_checks(cfg, config_path, agent)
+    results.append(managed_check())
     return results
 
 
-def run_doctor(cfg: Config) -> int:
-    return report(collect_results(cfg))
+def run_doctor(cfg: Config, config_path: Path) -> int:
+    return report(collect_results(cfg, config_path))
 
 
 def doctor_json(cfg: Config, config_path: Path) -> int:
-    results = collect_results(cfg)
+    results = collect_results(cfg, config_path)
     # A warning does not fail the doctor run, so it stays ok=true for readers that predate "warn".
     checks = [{"name": "config", "ok": True, "detail": str(config_path)}] + [
         {

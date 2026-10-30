@@ -205,7 +205,7 @@ def collect(
     now: float | None = None,
     mode: str | None = None,
     run=subprocess.run,
-    claude: str | None = None,
+    claude: list[str] | None = None,
 ) -> dict:
     """Reads host state without taking the tick lock or touching Linear and GitHub."""
     now = time.time() if now is None else now

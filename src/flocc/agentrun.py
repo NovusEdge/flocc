@@ -1,12 +1,14 @@
 """flocc-agent: what flocc-agent-run runs as flocc-agent. A subcommand that takes a request reads
 it as one JSON object on stdin and prints its answer as one JSON object on stdout."""
 
+import grp
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -28,8 +30,10 @@ SUBCOMMANDS = (
     "attach",
     "capture",
     "check",
+    "claude",
     "kill",
     "prepare",
+    "probe",
     "remove",
     "send",
     "start",
@@ -297,6 +301,71 @@ def scratch_path(line: str) -> Path | None:
     return path if len(rel.parts) >= 3 else None
 
 
+# The only claude invocations the service needs from flocc-agent's install.
+CLAUDE_ALLOWED = (("--version",), ("auth", "status"), ("auth", "login"), ("remote-control",))
+_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$")
+
+
+def claude(args: list[str]) -> int:
+    allowed = next((p for p in CLAUDE_ALLOWED if tuple(args[: len(p)]) == p), None)
+    rest = args[len(allowed) :] if allowed else args
+    if allowed == ("auth", "login"):
+        ok = rest in ([], ["--claudeai"]) or (
+            len(rest) == 3
+            and rest[0] == "--claudeai"
+            and rest[1] == "--email"
+            and bool(_EMAIL.match(rest[2]))
+        )
+    else:
+        ok = allowed is not None and not rest
+    if not ok:
+        raise BadRequest(f"claude {' '.join(args)} is not allowed")
+    if allowed == ("remote-control",):
+        # The consent runs in flocc-agent's worktrees; an untrusted folder would sit at the dialog.
+        trust_folders(_home() / ".claude.json", [Path.cwd()])
+    exe = _home() / ".local" / "bin" / "claude"
+    os.execv(exe, [str(exe), *args])
+
+
+def _tmux_up() -> bool:
+    try:
+        probe = ["tmux", "-N", "-L", SOCKET, "list-sessions"]
+        return subprocess.run(probe, capture_output=True, check=False).returncode == 0
+    except OSError:
+        return False
+
+
+def probe(req: dict) -> dict:
+    def readable(path: str) -> bool:
+        try:
+            with open(path, "rb") as f:
+                f.read(1)
+            return True
+        except OSError:
+            return False
+
+    def writable(path: str) -> bool:
+        try:
+            with tempfile.NamedTemporaryFile(dir=path):
+                return True
+        except OSError:
+            return False
+
+    def group(gid: int) -> str:
+        try:
+            return grp.getgrgid(gid).gr_name
+        except KeyError:
+            return str(gid)
+
+    return {
+        "read": {str(p): readable(str(p)) for p in req.get("read") or []},
+        "write": {str(p): writable(str(p)) for p in req.get("write") or []},
+        "tmux": _tmux_up(),
+        "groups": sorted({group(g) for g in os.getgroups()}),
+        "containers": bool(container_env()),
+    }
+
+
 def _prune_containers() -> None:
     # Only stopped ones: a running container may belong to another issue's check. Ryuk is off,
     # so a check killed mid-run leaves its containers behind until this runs.
@@ -353,6 +422,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "prepare": prepare,
     "check": check,
     "remove": remove,
+    "probe": probe,
 }
 
 
@@ -379,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if sub == "attach":
             return attach(session_name(args[0]))
+        if sub == "claude":
+            return claude(args)
         out = HANDLERS[sub](_request())
     except (BadRequest, KeyError, IndexError, TypeError, ValueError) as exc:
         print(f"flocc-agent {sub}: bad request: {exc}", file=sys.stderr)

@@ -118,11 +118,15 @@ def check_tokens(rt, expiry=token_expiry) -> None:
         ledger.meta_set(rt.con, "token_check_date", today)
 
 
-def claude_login(exe: str, run=subprocess.run, timeout: float = 30) -> str | None:
+def claude_login(claude: list[str], run=subprocess.run, timeout: float = 30) -> str | None:
     """full, token-only (<method>) or none; None when claude auth status gave no answer."""
     try:
         out = run(
-            [exe, "auth", "status"], capture_output=True, text=True, check=False, timeout=timeout
+            [*claude, "auth", "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
         )
         auth = json.loads(out.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -140,7 +144,7 @@ def claude_login(exe: str, run=subprocess.run, timeout: float = 30) -> str | Non
 def check_claude_login(rt, run=subprocess.run) -> None:
     # Every new session fails without the login and running Remote Control sessions cannot
     # recover, so the first tick that sees it lapse reports once; the flag rearms when it is back.
-    login = claude_login(rt.claude_exe, run)
+    login = claude_login(rt.agent.claude_argv(), run)
     if login is None:
         return
     lapsed = ledger.meta_get(rt.con, "claude_login_lapsed") == "1"

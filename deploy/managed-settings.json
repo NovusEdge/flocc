@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(AskUserQuestion|EnterPlanMode|ExitPlanMode|Bash|Edit|Write|NotebookEdit|mcp__.*)$",
+        "hooks": [{ "type": "command", "command": "/opt/flocc/bin/flocc guard" }]
+      }
+    ]
+  }
+}

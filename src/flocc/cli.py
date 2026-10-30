@@ -3,7 +3,6 @@ import fcntl
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -406,15 +405,16 @@ def cmd_doctor(args) -> int:
     if args.json:
         return doctor_json(cfg, path)
     print(f"ok    config: {path}")
-    return run_doctor(cfg)
+    return run_doctor(cfg, path)
 
 
 def cmd_status(args) -> int:
-    from flocc.sessions import Sessions
+    from flocc.agent import Agent
     from flocc.status import collect
 
     cfg, _ = _config(args)
-    report = collect(cfg, Sessions(), claude=shutil.which("claude"))
+    agent = Agent(cfg)
+    report = collect(cfg, agent.sessions(), claude=agent.claude_argv())
     if args.json:
         print(json.dumps(report))
         return 0
@@ -452,13 +452,14 @@ def cmd_status(args) -> int:
 
 
 def _live_session(args):
-    from flocc.sessions import Sessions, session_name
+    from flocc.agent import Agent
+    from flocc.sessions import session_name
     from flocc.status import _read_ledger
 
     cfg, _ = _config(args)
     claims, _, _ = _read_ledger(cfg.ledger_path)
     claim = next((c for c in claims if c.issue_key == args.key), None)
-    sessions = Sessions()
+    sessions = Agent(cfg).sessions()
     name = session_name(claim.issue_key, claim.phase) if claim else None
     if name and sessions.alive(name):
         return sessions, name
@@ -508,26 +509,11 @@ def cmd_logs(args) -> int:
 
 
 def cmd_attach(args) -> int:
-    from flocc.sessions import SOCKET
+    from flocc.agentrun import ATTACH_HINT
 
-    # Typing into an attached pane goes nowhere, so the way out is shown in tmux's status line,
-    # where the attached screen does not cover it.
-    hint = "read-only · Ctrl-b d detaches, the session keeps running"
-    print(f"Attaching {args.session} {hint}", file=sys.stderr)
-    argv = [
-        "tmux",
-        "-L",
-        SOCKET,
-        "attach",
-        "-r",
-        "-t",
-        args.session,
-        ";",
-        "display-message",
-        "-d",
-        "15000",
-        hint,
-    ]
+    cfg, _ = _config(args)
+    print(f"Attaching {args.session} {ATTACH_HINT}", file=sys.stderr)
+    argv = [*cfg.agent_run, "attach", args.session]
     os.execvp(argv[0], argv)
 
 

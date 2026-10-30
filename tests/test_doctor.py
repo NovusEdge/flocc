@@ -3,14 +3,16 @@ import json
 import subprocess
 import urllib.error
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from flocc import doctor
 from flocc.config import load
-from flocc.doctor import Result
+from flocc.doctor import Result, agent_checks, managed_check
 from flocc.linear import Issue, LinearError
 from flocc.tokens import TokenRejected, can_write_contents
+from tests.fakes import FakeAgent
 from tests.paths import EXAMPLE
 
 DAY = 86400
@@ -90,34 +92,87 @@ def test_disk_check(tmp_cfg):
     assert low.status == "fail" and "min_free_disk_gb" in low.detail
 
 
-def test_claude_checks(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+def test_claude_checks():
     status = json.dumps({"loggedIn": True, "authMethod": "claude.ai"})
     good = fake_run({"--version": ("2.1.295 (Claude Code)\n", 0), "auth status": (status, 0)})
-    results = doctor.claude_checks("/opt/claude", good)
-    assert [r.status for r in results] == ["ok", "ok", "ok"]
+    results = doctor.claude_checks(["/opt/claude"], good)
+    assert [r.status for r in results] == ["ok", "ok"]
     old = fake_run({"--version": ("2.1.200 (Claude Code)\n", 0), "auth status": (status, 0)})
-    assert doctor.claude_checks("/opt/claude", old)[0].status == "fail"
+    assert doctor.claude_checks(["/opt/claude"], old)[0].status == "fail"
     out = json.dumps({"loggedIn": False})
     logged_out = fake_run({"--version": ("2.1.295 (Claude Code)\n", 0), "auth status": (out, 1)})
-    assert doctor.claude_checks("/opt/claude", logged_out)[1].status == "fail"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
-    assert doctor.claude_checks("/opt/claude", good)[2].status == "fail"
+    assert doctor.claude_checks(["/opt/claude"], logged_out)[1].status == "fail"
     assert doctor.claude_checks(None, good)[0].status == "fail"
 
 
-def test_claude_login_fail_names_the_kind_and_the_desktop_command(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+def test_claude_login_fail_names_the_kind_and_the_desktop_command():
     token = json.dumps({"loggedIn": True, "authMethod": "oauth_token"})
     run = fake_run({"--version": ("2.1.295 (Claude Code)\n", 0), "auth status": (token, 0)})
-    login = doctor.claude_checks("/opt/claude", run)[1]
+    login = doctor.claude_checks(["/opt/claude"], run)[1]
     assert login.status == "fail"
     assert login.detail.startswith("token-only (oauth_token); on the desktop, run flocc login -H")
 
 
-def test_tmux_check(tmux_server):
-    assert doctor.tmux_check(tmux_server).status == "ok"
-    assert doctor.tmux_check("flocc-test-no-such-server").status == "fail"
+def test_the_boundary_check_fails_when_flocc_agent_can_read_a_secret(tmp_cfg, tmp_path):
+    agent = FakeAgent(tmp_cfg)
+    key = str(tmp_cfg.linear_key_file)
+    agent.probe_result = {"read": {key: True}, "write": {}, "tmux": True, "groups": []}
+    results = agent_checks(tmp_cfg, tmp_path / "c.toml", agent)
+    (boundary,) = [r for r in results if r.name == "agent boundary"]
+    assert boundary.status == "fail" and key in boundary.detail
+
+
+def test_the_docker_group_fails_the_boundary(tmp_cfg, tmp_path):
+    agent = FakeAgent(tmp_cfg)
+    agent.probe_result = {
+        "read": {"/x": False},
+        "write": {"/opt/flocc/plugin": False},
+        "tmux": False,
+        "groups": ["flocc-agent", "docker"],
+        "containers": False,
+    }
+    by_name = {r.name: r for r in agent_checks(tmp_cfg, tmp_path / "c.toml", agent)}
+    assert by_name["agent boundary"].status == "ok"
+    docker = by_name["agent docker"]
+    assert docker.status == "fail" and "root-equivalent" in docker.detail
+    assert by_name["containers"].status == "ok"
+    assert "no Podman socket" in by_name["containers"].detail
+    assert by_name["tmux"].status == "fail"
+
+
+def test_a_clean_agent_passes_every_line(tmp_cfg, tmp_path):
+    agent = FakeAgent(tmp_cfg)
+    agent.probe_result = {
+        "read": {},
+        "write": {},
+        "tmux": True,
+        "groups": ["flocc-agent"],
+        "containers": True,
+    }
+    by_name = {r.name: r for r in agent_checks(tmp_cfg, tmp_path / "c.toml", agent)}
+    assert by_name["agent docker"].status == "ok"
+    assert "Podman socket" in by_name["containers"].detail
+
+
+def test_managed_settings_must_carry_the_guard_and_the_dialog_denies(tmp_path):
+    path = tmp_path / "managed-settings.json"
+    assert managed_check(path).status == "fail"
+    path.write_text("{}")
+    assert managed_check(path).status == "fail"
+    shipped = Path(__file__).parent.parent / "deploy" / "managed-settings.json"
+    path.write_text(shipped.read_text())
+    assert managed_check(path).status == "ok"
+
+
+def test_an_unanswered_wrapper_fails_the_agent_check(tmp_cfg, tmp_path):
+    agent = FakeAgent(tmp_cfg)
+
+    def silent(read, write):
+        raise subprocess.SubprocessError("sudo: a password is required")
+
+    agent.probe = silent
+    (result,) = agent_checks(tmp_cfg, tmp_path / "c.toml", agent)
+    assert result.status == "fail" and "sudoers" in result.detail
 
 
 class DoctorLinear:
@@ -192,7 +247,7 @@ def test_doctor_json_prints_the_checks_and_keeps_the_exit_code(tmp_path, capsys,
         Result("warn", "disk", "placeholder"),
         Result("fail", "tmux", "no server"),
     ]
-    monkeypatch.setattr("flocc.doctor.collect_results", lambda cfg: results)
+    monkeypatch.setattr("flocc.doctor.collect_results", lambda cfg, path: results)
     assert main(["--config", str(EXAMPLE), "doctor", "--json"]) == 1
     out = json.loads(capsys.readouterr().out)
     assert out["v"] == 1
@@ -208,7 +263,9 @@ def test_doctor_json_prints_the_checks_and_keeps_the_exit_code(tmp_path, capsys,
 def test_plain_doctor_output_is_unchanged(tmp_path, capsys, monkeypatch):
     from flocc.cli import main
 
-    monkeypatch.setattr("flocc.doctor.collect_results", lambda cfg: [Result("warn", "disk", "x")])
+    monkeypatch.setattr(
+        "flocc.doctor.collect_results", lambda cfg, path: [Result("warn", "disk", "x")]
+    )
     assert main(["--config", str(EXAMPLE), "doctor"]) == 0
     assert capsys.readouterr().out == (
         f"ok    config: {EXAMPLE}\nwarn  disk: x\n1 checks, 0 failed\n"

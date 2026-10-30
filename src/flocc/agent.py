@@ -103,6 +103,12 @@ class Agent:
             raise _prepare_error(data)
         return Path(data["path"]), str(data["branch"]), str(data["base"])
 
+    def claude_argv(self) -> list[str]:
+        return [*self.cfg.agent_run, "claude"]
+
+    def probe(self, read: list[str], write: list[str]) -> dict:
+        return self.call("probe", payload={"read": read, "write": write})
+
     def remove(self, key: str, keep_dirty: bool = False) -> dict:
         payload = {
             "key": key,

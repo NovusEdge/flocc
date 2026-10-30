@@ -174,7 +174,7 @@ def test_status_reports_the_claude_login_and_token_expiries(cfg):
             argv, 0, '{"loggedIn": true, "authMethod": "claude.ai"}', ""
         )
 
-    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=run, claude="/opt/claude")
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=run, claude=["/opt/claude"])
     assert report["token_expiry"] == {"agent": "1900000000", "publish": "never"}
     assert report["claude_login"] == "full"
     assert collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claude_login"] is None
@@ -184,7 +184,7 @@ def test_a_login_the_host_cannot_read_is_unknown_not_none(cfg):
     def run(argv, **kw):
         return subprocess.CompletedProcess(argv, 1, '{"error": "rate limited"}', "")
 
-    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=run, claude="/opt/claude")
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=run, claude=["/opt/claude"])
     assert report["claude_login"] == "unknown"
 
 
@@ -195,7 +195,9 @@ def test_a_hung_claude_probe_is_cut_short_and_reads_unknown(cfg):
         timeouts.append(kw["timeout"])
         raise subprocess.TimeoutExpired(argv, kw["timeout"])
 
-    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", run=hangs, claude="/opt/claude")
+    report = collect(
+        cfg, FakeSessions(), now=1000.0, mode="loop", run=hangs, claude=["/opt/claude"]
+    )
     assert timeouts == [5] and report["claude_login"] == "unknown"
 
 
@@ -215,13 +217,14 @@ def test_human_status_prints_the_login_and_expiries(cfg, tmp_path, monkeypatch, 
 
 def test_status_json_writes_nothing(cfg, tmp_path, capsys, monkeypatch):
     # The real claude CLI would be run otherwise.
-    monkeypatch.setattr("shutil.which", lambda name: "/opt/claude")
-    monkeypatch.setattr("flocc.status.claude_login", lambda exe, run, timeout: f"full via {exe}")
+    monkeypatch.setattr(
+        "flocc.status.claude_login", lambda claude, run, timeout: f"full via {' '.join(claude)}"
+    )
     path = tmp_path / "c.toml"
     assert main(["--config", str(path), "status", "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["claims"] == [] and report["mode"] in ("systemd", "loop")
-    assert report["claude_login"] == "full via /opt/claude"
+    assert report["claude_login"] == f"full via {' '.join(cfg.agent_run)} claude"
     assert not cfg.ledger_path.exists() and not cfg.state_root.exists()
 
 

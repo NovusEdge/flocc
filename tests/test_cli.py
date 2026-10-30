@@ -401,12 +401,11 @@ def test_logs_issue_does_not_follow(host_cfg, capsys):
     assert capsys.readouterr().err == "--issue does not follow; drop -f\n"
 
 
-def test_attach_is_read_only_on_the_service_socket_and_says_how_to_leave(host_cfg, capsys):
+def test_attach_goes_through_the_wrapper_and_says_how_to_leave(host_cfg, capsys):
     with pytest.raises(Exec) as exc:
         main(["--config", str(host_cfg), "attach", "NF-12-review"])
     argv = exc.value.args[0]
-    assert argv[:7] == ["tmux", "-L", "flocc", "attach", "-r", "-t", "NF-12-review"]
-    assert argv[7:10] == [";", "display-message", "-d"] and "Ctrl-b d" in argv[-1]
+    assert argv == [*load(host_cfg).agent_run, "attach", "NF-12-review"]
     assert "Ctrl-b d detaches" in capsys.readouterr().err
 
 
@@ -421,7 +420,7 @@ def _peek_host(host_cfg, monkeypatch, pane, alive=True, claim=True):
     fake = FakeSessions(
         alive_names={"NF-240-review"} if alive else set(), panes={"NF-240-review": pane}
     )
-    monkeypatch.setattr("flocc.sessions.Sessions", lambda: fake)
+    monkeypatch.setattr("flocc.agent.Agent.sessions", lambda self: fake)
     return fake
 
 
