@@ -795,6 +795,22 @@ def test_tick_pages_once_non_linear_failures_repeat(rt, tmp_path, monkeypatch):
     assert ledger.meta_get(rt.con, "tick_failures") == "0"
 
 
+def test_supervisor_error_event_names_the_exception(rt, tmp_path, monkeypatch):
+    ledger.insert_claim(rt.con, make("NF-1"))
+
+    def supervise(rt, claim):
+        raise RuntimeError("first   line " + "x" * 300 + "\nsecond line")
+
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("flocc.tick.supervise", supervise)
+    monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
+    tick(rt.cfg, tmp_path / "c.toml")
+    [esc] = rt.notifier.sent
+    assert esc.event == "service-error" and esc.issue_key == "NF-1"
+    assert "(RuntimeError: first line x" in esc.summary and "\n" not in esc.summary
+    assert "second" not in esc.summary and len(esc.summary) < 300
+
+
 def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkeypatch):
     for key in ("NF-1", "NF-2"):
         ledger.insert_claim(rt.con, make(key))

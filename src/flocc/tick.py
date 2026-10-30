@@ -152,6 +152,13 @@ def _page_tick_failure(con, notifier, exc: Exception) -> None:
     )
 
 
+def _cause(exc: Exception) -> str:
+    """The exception's type and first message line, on one line, for an event a reader triages
+    without the journal."""
+    first = (str(exc).strip().splitlines() or [""])[0]
+    return " ".join(f"{type(exc).__name__}: {first}".split())[:200]
+
+
 def tick(cfg: Config, config_path: Path) -> int:
     try:
         rt = build_runtime(cfg, config_path)
@@ -169,14 +176,15 @@ def tick(cfg: Config, config_path: Path) -> int:
                 supervise(rt, claim)
             except LinearError as exc:
                 failed[claim.issue_key] = exc
-            except Exception:  # noqa: BLE001 - one issue's failure must not stop the others
+            except Exception as exc:  # noqa: BLE001 - one issue's failure must not stop the others
                 traceback.print_exc()
                 cause = f"{claim.issue_key}:supervisor-error"
                 if not ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
                     rt.notifier.send(
                         Notice(
                             cause,
-                            "The supervisor failed on this issue; see journalctl -u flocc.",
+                            f"The supervisor failed on this issue ({_cause(exc)}); see journalctl -u"
+                            " flocc.",
                             "Read the log",
                             issue_key=claim.issue_key,
                             event="service-error",
