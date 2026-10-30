@@ -14,8 +14,8 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
-// Root runs the Firewalld and Docker steps (package steps) as root on the machine, in one sudo:
-// their checks read firewalld and iptables, which only root can.
+// Root runs the Firewalld, Docker and TailnetBlock steps (package steps) as root on the machine,
+// in one sudo: their checks read firewalld, iptables and nft, which only root can.
 type Root struct{}
 
 func (Root) Name() string { return "Root pass" }
@@ -27,12 +27,12 @@ func (Root) Check(ctx context.Context, e *Env) (bool, string, error) {
 	probe := &sshProbe{Runner: e.M}
 	idle, detail := steps.CreateRootIdle(ctx, &steps.Env{Run: probe})
 	if probe.failed {
-		return false, "", fmt.Errorf("cannot reach %s over ssh to check firewalld and Docker; run create again", e.Spec.Machine)
+		return false, "", fmt.Errorf("cannot reach %s over ssh to check firewalld, Docker and the tailnet block; run create again", e.Spec.Machine)
 	}
 	if idle {
 		return true, detail, nil
 	}
-	return false, "firewalld or Docker runs on " + e.Spec.Machine + "; checking them needs root", nil
+	return false, "firewalld or Docker runs on " + e.Spec.Machine + ", or its tailnet block is not installed; that needs root", nil
 }
 
 // sshProbe records a command ssh itself failed (exit 255), which CreateRootIdle would read as "not
@@ -92,6 +92,6 @@ func (Root) Apply(ctx context.Context, e *Env) error {
 			return fmt.Errorf("%s on %s: %s", safe.Sanitize(s.Name), m, safe.Sanitize(s.Detail))
 		}
 	}
-	e.rootDone = "firewalld and Docker checked as root on " + m
+	e.rootDone = "firewalld, Docker and the tailnet block checked as root on " + m
 	return nil
 }

@@ -8,7 +8,7 @@ import (
 // IncusBridge is the Incus bridge create puts VMs on; create.Bridge is it.
 const IncusBridge = "incusbr0"
 
-func CreateRootSteps() []Step { return []Step{Firewalld{}, Docker{}} }
+func CreateRootSteps() []Step { return []Step{Firewalld{}, Docker{}, TailnetBlock{}} }
 
 func firewalldRunning(ctx context.Context, e *Env) bool {
 	return e.Ok(ctx, "systemctl", "is-active", "--quiet", "firewalld.service")
@@ -26,11 +26,16 @@ const (
 	noDocker    = "Docker not running"
 )
 
-// CreateRootIdle reports whether neither create root step has work, which needs no root: the
-// desktop runs it over ssh to skip the sudo.
+// CreateRootIdle reports whether no create root step has work, which needs no root: the desktop
+// runs it over ssh to skip the sudo. The tailnet block counts as done by its unit alone, since
+// reading the nft table needs root; the root pass checks the table itself.
 func CreateRootIdle(ctx context.Context, e *Env) (bool, string) {
 	if _, docker := dockerPresent(ctx, e); firewalldRunning(ctx, e) || docker {
 		return false, ""
 	}
-	return true, strings.Join([]string{noFirewalld, noDocker}, "; ")
+	if !e.Ok(ctx, "systemctl", "is-enabled", "--quiet", tailnetUnitName) ||
+		!e.Ok(ctx, "systemctl", "is-active", "--quiet", tailnetUnitName) {
+		return false, ""
+	}
+	return true, strings.Join([]string{noFirewalld, noDocker, "tailnet block installed"}, "; ")
 }

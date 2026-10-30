@@ -11,7 +11,7 @@ flocc host create [--cpus 4] [--memory 8] [--disk 40] <machine> <name>
 ## Requirements
 
 - On the machine, your account needs `incus-admin` membership or passwordless sudo for Incus.
-- When firewalld or Docker runs there, create builds `flocc-setup`, stages it and runs the firewall and Docker steps as root in one `ssh -t ... sudo`. Sudo asks for your password once per run, and not at all with passwordless sudo. A password needs a terminal. A run stopped after sudo accepts the password leaves `/tmp/flocc-create.XXXXXX/setup.log` on the machine; one stopped at the password prompt leaves only the staged binary in `/tmp/flocc-create.XXXXXX`.
+- Until the tailnet block (below) is installed, and while firewalld or Docker runs, create builds `flocc-setup`, stages it and runs the firewall, Docker and tailnet steps as root in one `ssh -t ... sudo`. Sudo asks for your password once per run, and not at all with passwordless sudo. A password needs a terminal. A run stopped after sudo accepts the password leaves `/tmp/flocc-create.XXXXXX/setup.log` on the machine; one stopped at the password prompt leaves only the staged binary in `/tmp/flocc-create.XXXXXX`.
 - The desktop must be on the tailnet.
 - Run create inside the flocc checkout, since its ship step ships that commit. Create checks this before it touches the machine.
 
@@ -21,9 +21,9 @@ Create checks each step before changing anything, so running the same command ag
 
 1. Checks that Incus has the managed bridge `incusbr0`, a root pool with room for the disk, and the memory free. Otherwise it stops with the commands to run. It never sets Incus up itself. The commands carry `sudo` when your account reaches Incus through sudo rather than `incus-admin`.
 2. Scopes firewalld, when it runs. See [What create changes on the machine](#what-create-changes-on-the-machine).
-3. Lets the VM through Docker's forward drop, when Docker runs, or is enabled or socket-activated while stopped.
+3. Lets the VM through Docker's forward drop, when Docker runs, or is enabled or socket-activated while stopped. Also blocks VMs on `incusbr0` from forwarding out of the machine's `tailscale0`.
 
-   Steps 2 and 3 run together in one root pass, shown as the row "Root pass" with a Firewalld row and a Docker row drawn from its report once sudo finishes. A machine with neither firewalld nor Docker skips the pass and its password.
+   Steps 2 and 3 run together in one root pass, shown as the row "Root pass" with a Firewalld, a Docker and a "tailnet block" row drawn from its report once sudo finishes. A machine with neither firewalld nor Docker skips the pass and its password once the tailnet block is installed.
 4. Checks that no tailnet node already has `<name>`, launches `images:debian/13` as a VM with `boot.autostart=true`, and waits for an IPv4 address and outbound HTTPS.
 5. Joins the VM to the tailnet with Tailscale SSH, tagged `tag:flocc-host`. See [Tailnet](../tailnet.md).
 6. Waits until the desktop's tailnet lists the node. It runs `flocc host add <name> --ssh root@<name>` unless `hosts/<name>.toml` exists, then `flocc ship -H <name>` and `flocc login -H <name>`.
@@ -53,6 +53,7 @@ The machine may be shared with other work, so create adds rules scoped to `incus
 | policy `flocc-incus-out` | firewalld | Forwards `flocc-incus` to the zone of the default route's interface. |
 | policy `flocc-no-docker` | firewalld, when Docker made its `docker` zone | Rejects `flocc-incus` to `docker`, ahead of Docker's `docker-forwarding` policy, which accepts forwarding from every zone into Docker's bridges and published ports. |
 | `flocc-docker-user.service` | `/etc/systemd/system/` | A oneshot with `After=` and `PartOf=docker.service` that adds three rules to `DOCKER-USER` after every Docker start (ip6tables too, where Docker made that chain). See below. |
+| `flocc-no-tailnet.service` | `/etc/systemd/system/`, rules in `/etc/flocc/no-tailnet.nft` | A oneshot that loads the nftables table `inet flocc-no-tailnet`: a forward hook at priority -10 that drops traffic from `incusbr0` to `tailscale0`, IPv4 and IPv6. Without it a VM reaches the machine's tailnet as the machine. It needs the `nft` binary, runs whether or not firewalld or Docker does, and loads even when `tailscale0` does not exist. |
 
 The three `DOCKER-USER` rules, in order, are `-i incusbr0 -j DOCKER-FORWARD`, `-i incusbr0 -j ACCEPT` and `-o incusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`. The jump hands the VM's traffic to Docker's own forwarding chain first, so the VM reaches published container ports on every Docker network and no others. The rest returns to the `ACCEPT`.
 

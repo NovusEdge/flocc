@@ -452,8 +452,13 @@ func TestUplinkZoneNeedsADefaultRoute(t *testing.T) {
 }
 
 func TestCreateRootIdleOnlyWithoutFirewalldAndDocker(t *testing.T) {
-	idle := host.NewFake() // a key with no response exits 127, so every systemctl query fails
-	if ok, detail := CreateRootIdle(context.Background(), testEnv(t, idle)); !ok ||
+	// A key with no response exits 127, so every other systemctl query fails.
+	blocked := func() *host.Fake {
+		return host.NewFake().
+			On("systemctl is-enabled --quiet "+tailnetUnitName, 0, "").
+			On("systemctl is-active --quiet "+tailnetUnitName, 0, "")
+	}
+	if ok, detail := CreateRootIdle(context.Background(), testEnv(t, blocked())); !ok ||
 		!strings.Contains(detail, "firewalld not running") || !strings.Contains(detail, "Docker not running") {
 		t.Fatalf("idle = %v %q", ok, detail)
 	}
@@ -463,7 +468,7 @@ func TestCreateRootIdleOnlyWithoutFirewalldAndDocker(t *testing.T) {
 		"systemctl is-enabled --quiet docker.service",
 		"systemctl is-active --quiet docker.socket",
 	} {
-		if ok, _ := CreateRootIdle(context.Background(), testEnv(t, host.NewFake().On(unit, 0, ""))); ok {
+		if ok, _ := CreateRootIdle(context.Background(), testEnv(t, blocked().On(unit, 0, ""))); ok {
 			t.Fatalf("idle with %s", unit)
 		}
 	}

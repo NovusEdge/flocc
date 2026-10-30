@@ -44,8 +44,10 @@ func rowFor(u *fakeUI, name string) (ui.Event, bool) {
 	return ui.Event{}, false
 }
 
-func TestRootSkipsThePassWithoutFirewalldOrDocker(t *testing.T) {
-	m := host.NewFake()
+func TestRootSkipsThePassWithoutFirewalldOrDockerOnceTheTailnetBlockIsIn(t *testing.T) {
+	m := host.NewFake().
+		On("systemctl is-enabled --quiet flocc-no-tailnet.service", 0, "").
+		On("systemctl is-active --quiet flocc-no-tailnet.service", 0, "")
 	e, _ := testEnv(m)
 	local := host.NewFake()
 	e.Local = local
@@ -56,6 +58,13 @@ func TestRootSkipsThePassWithoutFirewalldOrDocker(t *testing.T) {
 		if strings.Contains(c, "mktemp") || strings.Contains(c, "scp") || strings.Contains(c, " -t ") {
 			t.Fatalf("ran %q", c)
 		}
+	}
+}
+
+func TestRootRunsThePassWhenOnlyTheTailnetBlockIsMissing(t *testing.T) {
+	e, _ := testEnv(host.NewFake())
+	if ok, _, err := (Root{}).Check(context.Background(), e); ok || err != nil {
+		t.Fatalf("%v %v", ok, err)
 	}
 }
 
@@ -93,7 +102,7 @@ func TestRootRunsOnePassAndDrawsItsSteps(t *testing.T) {
 			t.Errorf("row %s: %+v %v", name, row, ok)
 		}
 	}
-	if row, ok := rowFor(u, "Root pass"); !ok || row.State != ui.Done || row.Detail != "firewalld and Docker checked as root on laptop" {
+	if row, ok := rowFor(u, "Root pass"); !ok || row.State != ui.Done || row.Detail != "firewalld, Docker and the tailnet block checked as root on laptop" {
 		t.Errorf("Root pass row: %+v %v", row, ok)
 	}
 	if len(local.Interactives) != 1 {
