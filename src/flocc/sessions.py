@@ -7,8 +7,8 @@ from flocc.agentblock import IssueSettings
 from flocc.config import Config
 
 SOCKET = "flocc"
-# --no-verify skips the pre-commit review guard and the commit-msg trailer. Flag order varies, so
-# the wildcard forms cover the flag anywhere after `git commit`; -n also arrives bundled (-nm).
+# --no-verify skips the commit-msg trailer and the repo's own hooks. Flag order varies, so the
+# wildcard forms cover the flag anywhere after `git commit`; -n also arrives bundled (-nm).
 _DENY = [
     "Bash(git commit --no-verify:*)",
     "Bash(git commit -n:*)",

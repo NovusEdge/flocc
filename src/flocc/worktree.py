@@ -11,7 +11,7 @@ from flocc.config import TRAILER, RepoConfig
 
 _LISTED = 20
 _DRAIN_S = 5
-_OWN_HOOKS = ("pre-commit", "commit-msg")
+_OWN_HOOKS = ("commit-msg",)
 
 
 # A SubprocessError so the poller's prepare-failure handling covers it.
@@ -269,9 +269,7 @@ def has_uncommitted_changes(path: Path) -> bool:
     return bool(_status(path))
 
 
-def install_hook(
-    worktree: Path, hooks_dir: Path, exe: str, config_path: Path, trailer: bool = True
-) -> None:
+def install_hook(worktree: Path, hooks_dir: Path, exe: str, trailer: bool = True) -> None:
     # The repo's own hooks dir, read with this worktree's core.hooksPath unset so the generated
     # hook can chain to it. A kept worktree still points at the previous install, and chaining to
     # that would make the hook exec itself forever. Exit 5 (not set) and the error before
@@ -297,13 +295,6 @@ def install_hook(
             stub = hooks_dir / src.name
             stub.write_text(f'#!/bin/sh\nexec {shlex.quote(str(src))} "$@"\n')
             stub.chmod(0o755)
-    hook = hooks_dir / "pre-commit"
-    hook.write_text(
-        "#!/bin/sh\nset -e\n"
-        f'FLOCC_CONFIG="{config_path}" "{exe}" hook pre-commit\n'
-        f'if [ -x "{original}/pre-commit" ]; then exec "{original}/pre-commit" "$@"; fi\n'
-    )
-    hook.chmod(0o755)
     msg_hook = hooks_dir / "commit-msg"
     msg_hook.write_text(
         "#!/bin/sh\nset -e\n"

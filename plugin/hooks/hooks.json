@@ -17,6 +17,10 @@
     "PreToolUse": [
       {
         "hooks": [ { "type": "command", "command": "[ -z \"$FLOCC_STATE\" ] || rm -f \"$FLOCC_STATE/idle\"" } ]
+      },
+      {
+        "matcher": "^(AskUserQuestion|EnterPlanMode|ExitPlanMode|Bash|Edit|Write|NotebookEdit|mcp__.*)$",
+        "hooks": [ { "type": "command", "command": "flocc guard" } ]
       }
     ],
     "Stop": [

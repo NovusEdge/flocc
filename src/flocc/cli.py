@@ -84,15 +84,32 @@ def _commit_msg(message_file: str, trailer_on: bool) -> int:
 
 
 def cmd_hook(args) -> int:
-    from flocc.worktree import git
-
     if args.name == "commit-msg":
         return _commit_msg(args.message_file, not args.no_trailer)
-    top = Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd()))
-    mine = ledger.claim_for_worktree(_ledger(args), str(top))
-    if mine is not None and mine.phase == "review":
-        print("flocc: the review session is read-only; do not commit", file=sys.stderr)
-        return 1
+    # Worktrees prepared by 0.12 still call pre-commit; it no longer checks anything.
+    return 0
+
+
+def cmd_guard(args) -> int:
+    from flocc.guard import decide
+
+    # Exit 0 always: a guard that fails must not stop the session, and it is not the boundary.
+    try:
+        reason = decide(
+            _hook_input(strict=True),
+            os.environ.get("FLOCC_PHASE", ""),
+            os.environ.get("FLOCC_STATE", ""),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"flocc guard could not judge the call: {exc}", file=sys.stderr)
+        return 0
+    if reason:
+        decision = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+        print(json.dumps({"hookSpecificOutput": decision}))
     return 0
 
 
@@ -574,6 +591,7 @@ COMMANDS = {
     "stop": cmd_stop,
     "statusline": cmd_statusline,
     "hook": cmd_hook,
+    "guard": cmd_guard,
     "tests-amended": cmd_tests_amended,
     "context": cmd_context,
     "idle": cmd_idle,
@@ -617,6 +635,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("name", choices=["pre-commit", "commit-msg"], help="which hook is running")
     hook.add_argument("--no-trailer", action="store_true", help="skip the commit trailer")
     hook.add_argument("message_file", nargs="?", help="commit message file (commit-msg)")
+    add("guard", "Hook (PreToolUse): deny dialogs, pushes and GitHub writes")
     amended = add("tests-amended", "Declare tester files you changed because a test was wrong")
     amended.add_argument("paths", nargs="+", help="repo-relative paths of the amended tester files")
     amended.add_argument("--reason", required=True, help="why the test was wrong")

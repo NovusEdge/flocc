@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -53,7 +54,13 @@ def test_hooks():
     assert [h["command"] for h in hooks["Stop"][0]["hooks"]] == ["flocc stop"]
     # The idle marker means "the last event was a Stop", so any later activity removes it.
     clear = '[ -z "$FLOCC_STATE" ] || rm -f "$FLOCC_STATE/idle"'
-    assert [h["command"] for e in hooks["PreToolUse"] for h in e["hooks"]] == [clear]
+    (clearing, guarding) = hooks["PreToolUse"]
+    assert "matcher" not in clearing and [h["command"] for h in clearing["hooks"]] == [clear]
+    assert [h["command"] for h in guarding["hooks"]] == ["flocc guard"]
+    for tool in ("AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "Bash", "Edit", "Write"):
+        assert re.search(guarding["matcher"], tool)
+    assert re.search(guarding["matcher"], "mcp__linear__save_issue")
+    assert not re.search(guarding["matcher"], "Read")
     assert [h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]] == [clear]
     starts = [h["command"] for e in hooks["SessionStart"] for h in e["hooks"]]
     assert starts == ["flocc session-start"]

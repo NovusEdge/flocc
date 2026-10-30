@@ -1,4 +1,3 @@
-
 import pytest
 
 from flocc.config import load, trailer_enabled

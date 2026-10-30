@@ -95,16 +95,7 @@ def test_subcommands_have_help(capsys):
     assert main(["status", "--help"]) == 0
 
 
-def test_commit_in_a_review_worktree_is_rejected(origin, tmp_path, monkeypatch, capsys):
-    con_path = tmp_path / "hook.sqlite"
-    claim = make("NF-1", worktree=str(origin.resolve()))
-    claim.phase = "review"
-    ledger.insert_claim(ledger.connect(con_path), claim)
-    monkeypatch.setenv("FLOCC_LEDGER", str(con_path))
-    monkeypatch.chdir(origin)
-    assert main(["hook", "pre-commit"]) == 1
-    assert "read-only" in capsys.readouterr().err
-    ledger.update_claim(ledger.connect(con_path), "NF-1", phase="impl")
+def test_pre_commit_from_an_old_worktree_is_a_no_op():
     assert main(["hook", "pre-commit"]) == 0
 
 
@@ -118,15 +109,6 @@ def claims_env(tmp_path, monkeypatch):
     monkeypatch.setenv("FLOCC_LEDGER", str(tmp_path / "hook.sqlite"))
     monkeypatch.setenv("FLOCC_CONFIG", str(config))
     return ledger.connect(tmp_path / "hook.sqlite")
-
-
-def test_commit_hook_allows_any_file_outside_the_review(claims_env, origin, monkeypatch):
-    ledger.insert_claim(claims_env, make("NF-1", worktree=str(origin.resolve())))
-    ledger.insert_claim(claims_env, make("NF-2", worktree="/wt/NF-2"))
-    monkeypatch.chdir(origin)
-    (origin / "server.py").write_text("x\n")
-    subprocess.run(["git", "add", "server.py"], cwd=origin, check=True)
-    assert main(["hook", "pre-commit"]) == 0
 
 
 def test_review_done_rejects_a_missing_or_empty_review(tmp_path, monkeypatch, capsys):

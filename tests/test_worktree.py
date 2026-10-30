@@ -5,7 +5,6 @@ import time
 
 import pytest
 
-from flocc import ledger
 from flocc.cli import main
 from flocc.config import TRAILER, RepoConfig
 from flocc.worktree import (
@@ -22,8 +21,6 @@ from flocc.worktree import (
     run_bounded,
     setup_at_base,
 )
-from tests.paths import EXAMPLE
-from tests.test_ledger import make
 
 
 def test_prepare_worktree(origin, tmp_path):
@@ -379,45 +376,6 @@ def test_many_files_left_by_setup_are_listed_capped(origin, tmp_path):
     assert message.count("?? f") == 20 and "80 more" in message
 
 
-def test_hook_blocks_a_commit_from_the_review_session(origin, tmp_path):
-    _check_hook_blocks(origin, tmp_path, tmp_path / "wt")
-
-
-def test_hook_blocks_when_worktree_root_is_a_symlink(origin, tmp_path):
-    real = tmp_path / "real"
-    real.mkdir()
-    link = tmp_path / "link"
-    link.symlink_to(real)
-    _check_hook_blocks(origin, tmp_path, link / "wt")
-
-
-def _check_hook_blocks(origin, tmp_path, root):
-    path, _, base = prepare_worktree(RepoConfig(origin), root, "NF-3")
-    db = tmp_path / "l.sqlite"
-    con = ledger.connect(db)
-    review = make("NF-3", worktree=str(path))
-    review.phase = "review"
-    ledger.insert_claim(con, review)
-    cfg = tmp_path / "c.toml"
-    cfg.write_text(
-        EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/flocc/ledger.sqlite"', f'ledger_path = "{db}"'
-        )
-    )
-    exe = shutil.which("flocc")
-    assert exe
-    install_hook(path, tmp_path / "hooks", exe, cfg)
-    (path / "ok.txt").write_text("fine\n")
-    git("add", "ok.txt", cwd=path)
-    blocked = subprocess.run(
-        ["git", "commit", "-qm", "x"], cwd=path, capture_output=True, text=True, check=False
-    )
-    assert blocked.returncode != 0 and "read-only" in blocked.stderr
-    ledger.update_claim(con, "NF-3", phase="impl")
-    git("commit", "-qm", "ok", cwd=path)
-    assert changed_files(path, base, "HEAD") == {"ok.txt"}
-
-
 def test_changed_files_reports_both_sides_of_a_rename(origin, tmp_path):
     path, _, base = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
     git("mv", "a.txt", "old.txt", cwd=path)
@@ -430,17 +388,10 @@ def test_reinstalled_hook_still_chains_to_the_repo_hook_once(origin, tmp_path):
     repo_hook = origin / ".git" / "hooks" / "pre-commit"
     repo_hook.write_text(f"#!/bin/sh\necho ran >> {tmp_path / 'repo-hook.log'}\n")
     repo_hook.chmod(0o755)
-    cfg = tmp_path / "c.toml"
-    cfg.write_text(
-        EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/flocc/ledger.sqlite"',
-            f'ledger_path = "{tmp_path / "l.sqlite"}"',
-        )
-    )
     exe = shutil.which("flocc")
     assert exe
     for _ in range(2):  # a rerun with --keep-worktree installs into the same worktree again
-        install_hook(path, tmp_path / "hooks", exe, cfg)
+        install_hook(path, tmp_path / "hooks", exe)
     (path / "ok.txt").write_text("fine\n")
     git("add", "ok.txt", cwd=path)
     subprocess.run(
@@ -451,16 +402,9 @@ def test_reinstalled_hook_still_chains_to_the_repo_hook_once(origin, tmp_path):
 
 def _commit_with_hooks(origin, tmp_path, trailer=True):
     path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
-    cfg = tmp_path / "c.toml"
-    cfg.write_text(
-        EXAMPLE.read_text().replace(
-            'ledger_path = "~/.local/state/flocc/ledger.sqlite"',
-            f'ledger_path = "{tmp_path / "l.sqlite"}"',
-        )
-    )
     exe = shutil.which("flocc")
     assert exe
-    install_hook(path, tmp_path / "hooks", exe, cfg, trailer=trailer)
+    install_hook(path, tmp_path / "hooks", exe, trailer=trailer)
     return path
 
 

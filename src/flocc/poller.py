@@ -371,7 +371,6 @@ def _start(rt, issue: Issue, repo: str, settings) -> None:
         path,
         d / "hooks",
         rt.exe,
-        rt.config_path,
         trailer=trailer_enabled(cfg, cfg.repos[repo]),
     )
     # The previous claim's tester notes would be read as this claim's. Kept for the owner.
