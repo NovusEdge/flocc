@@ -37,13 +37,14 @@ def fetch_agent_branch(repo_path: Path, worktree: Path, branch: str, key: str) -
     ref = agent_ref(key)
     # upload-pack is built to serve an untrusted repository (git-upload-pack(1), SECURITY), and
     # without safe.directory git refuses flocc-agent's repo as dubious ownership. flocc runs no
-    # other git command inside a repo flocc-agent owns.
+    # other git command inside a repo flocc-agent owns. A local fetch drops -c from upload-pack's
+    # environment, so the setting has to ride on the upload-pack command itself.
     git(
-        "-c",
-        "safe.directory=*",
         "fetch",
         "-q",
         "--no-tags",
+        "--upload-pack",
+        "git -c safe.directory=* upload-pack",
         str(worktree),
         f"+refs/heads/{branch}:{ref}",
         cwd=repo_path,
