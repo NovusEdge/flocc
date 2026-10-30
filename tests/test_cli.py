@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -20,6 +21,82 @@ from flocc.tick import tick_lock
 from tests.fakes import FakeAgent, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
+
+
+def _cfg_file(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text(
+        EXAMPLE.read_text()
+        .replace('"~/.local/state/flocc/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
+        .replace("~/.local/state/flocc", str(tmp_path / "state"))
+    )
+    return path
+
+
+def test_hold_says_a_running_claim_goes_on(tmp_path, capsys):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.insert_claim(con, make("NF-1"))
+    assert main(["--config", str(path), "hold", "NF-1", "--reason=owner asked"]) == 0
+    assert "its run in progress goes on" in capsys.readouterr().out
+    assert ledger.issue_holds(con)["NF-1"][0] == "owner asked"
+
+
+def test_release_of_a_held_issue_without_a_claim_lifts_the_hold(tmp_path, capsys):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.add_hold(con, "NF-3", "wait", 1.0)
+    assert main(["--config", str(path), "release", "NF-3"]) == 0
+    assert "released the hold on NF-3" in capsys.readouterr().out
+    assert ledger.issue_holds(con) == {}
+
+
+@pytest.mark.parametrize("state", [None, "running"])
+def test_hold_only_lifts_the_hold_and_leaves_the_claim(tmp_path, capsys, state):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    if state:
+        ledger.insert_claim(con, make("NF-1", state=state))
+    ledger.add_hold(con, "NF-1", "wait", 1.0)
+    assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 0
+    assert "released the hold on NF-1" in capsys.readouterr().out
+    assert ledger.issue_holds(con) == {}
+    if state:
+        assert ledger.get_claim(con, "NF-1").state == state  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("state", ["done", "blocked", "timed_out"])
+def test_hold_only_refuses_stopped_or_finished_work(tmp_path, capsys, state):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.insert_claim(con, make("NF-1", state=state))
+    ledger.add_hold(con, "NF-1", "wait", 1.0)
+    assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 1
+    assert "only the owner reruns it" in capsys.readouterr().err
+    assert "NF-1" in ledger.issue_holds(con)
+    assert ledger.get_claim(con, "NF-1").state == state  # type: ignore[union-attr]
+
+
+def test_hold_only_without_a_hold_is_refused(tmp_path, capsys):
+    path = _cfg_file(tmp_path)
+    assert main(["--config", str(path), "release", "--hold-only", "NF-1"]) == 1
+    assert "has no hold" in capsys.readouterr().err
+
+
+def test_a_failed_accept_tests_keeps_the_hold(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    ledger.insert_claim(con, make("NF-1", state="blocked"))
+    ledger.add_hold(con, "NF-1", "wait", 1.0)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, p: types.SimpleNamespace(con=con))
+    assert main(["--config", str(path), "release", "--accept-tests", "NF-1"]) == 1
+    assert "NF-1" in ledger.issue_holds(con)
+
+
+def test_a_malformed_key_is_refused_by_the_parser(tmp_path):
+    path = _cfg_file(tmp_path)
+    assert main(["--config", str(path), "hold", "nf-1"]) == 2
+    assert main(["--config", str(path), "hold", "NF-1\n"]) == 2
 
 
 def test_unknown_subcommand_exits_nonzero(capsys):

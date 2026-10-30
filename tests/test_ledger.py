@@ -183,6 +183,15 @@ def test_the_escalation_offset_column_is_gone(tmp_path):
     assert ledger.get_claim(con, "NF-9") is not None
 
 
+def test_holds_upsert_list_and_remove(con):
+    ledger.add_hold(con, "NF-1", "waiting on the API", 1.0)
+    ledger.add_hold(con, "NF-1", "still waiting", 2.0)
+    assert ledger.issue_holds(con) == {"NF-1": ("still waiting", 2.0)}
+    assert ledger.remove_hold(con, "NF-1") is True
+    assert ledger.remove_hold(con, "NF-1") is False
+    assert ledger.issue_holds(con) == {}
+
+
 def test_the_paths_column_is_gone(tmp_path):
     path = tmp_path / "old.sqlite"
     _v0_ledger(path)

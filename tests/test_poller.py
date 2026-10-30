@@ -585,6 +585,14 @@ def test_linear_is_a_service_error_after_three_failed_ticks(rt):
     assert page.event == "service-error" and "3 ticks" in page.summary
 
 
+def test_a_held_issue_is_not_started(rt, capsys):
+    ledger.add_hold(rt.con, "NF-9", "waiting on NF-2", 1.0)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None and rt.sessions.started == []
+    assert "held by cardinal: waiting on NF-2" in capsys.readouterr().err
+
+
 def test_tick_lock_is_exclusive(tmp_path):
     with tick_lock(tmp_path / "t.lock") as first, tick_lock(tmp_path / "t.lock") as second:
         assert first and not second
@@ -876,6 +884,13 @@ def test_a_timeout_with_new_commits_restarts_once(rt, monkeypatch):
     ledger.update_claim(rt.con, "NF-5", base_sha="sha-base", started_at=1000.0, phase="impl")
     restart_timed_out(rt)
     assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == ["NF-5"]
+
+
+def test_a_held_timed_out_run_is_not_restarted(rt, monkeypatch):
+    timed_out(rt, monkeypatch, [1500, 500])
+    ledger.add_hold(rt.con, "NF-5", "owner said wait", 1.0)
+    restart_timed_out(rt)
+    assert ledger.get_claim(rt.con, "NF-5") is not None and rt.linear.unstarted == []
 
 
 @pytest.mark.parametrize(

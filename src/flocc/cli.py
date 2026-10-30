@@ -17,6 +17,16 @@ def _state_dir() -> Path:
     return Path(os.environ["FLOCC_STATE"])
 
 
+_KEY = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
+
+
+def _issue_key(raw: str) -> str:
+    # fullmatch: a $ anchor would let a trailing newline through.
+    if not _KEY.fullmatch(raw):
+        raise argparse.ArgumentTypeError(f"{raw!r} is not an issue key such as NF-12")
+    return raw
+
+
 def cmd_statusline(args) -> int:
     payload = json.load(sys.stdin)
     state = _state_dir()
@@ -308,15 +318,21 @@ def cmd_release(args) -> int:
     from flocc.tick import build_runtime, tick_lock
 
     cfg, path = _config(args)
+    if args.hold_only:
+        return _lift_hold(cfg, args.key)
     with tick_lock(cfg.tick_lock) as held:
         if not held:
             print("release: a tick is running; try again in a moment", file=sys.stderr)
             return 1
-        rt = build_runtime(cfg, path)
-        claim = ledger.get_claim(rt.con, args.key)
+        con = ledger.connect(cfg.ledger_path)
+        claim = ledger.get_claim(con, args.key)
         if claim is None:
+            if ledger.remove_hold(con, args.key):
+                print(f"released the hold on {args.key}")
+                return 0
             print(f"release: no claim for {args.key}", file=sys.stderr)
             return 1
+        rt = build_runtime(cfg, path)
         keep = args.keep_worktree or args.accept_tests
         if args.accept_tests:
             # The rerun resumes at the implementer only with the remembered tester commit, and
@@ -325,10 +341,42 @@ def cmd_release(args) -> int:
                 print(f"release: {args.key} has no tester commit to accept", file=sys.stderr)
                 return 1
             ledger.accept_tests(rt.con, args.key, rt.git_head(claim))
+        ledger.remove_hold(rt.con, args.key)
         release_claim(rt, claim, keep_worktree=keep)
     wt = "kept" if keep else "removed"
     accepted = ", tester files accepted as they stand" if args.accept_tests else ""
     print(f"released {args.key}, branch {claim.branch} kept, worktree {wt}{accepted}")
+    return 0
+
+
+def _lift_hold(cfg, key: str) -> int:
+    # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
+    # the timed-out restart, or a move to Todo made while it was held, would start it again.
+    con = ledger.connect(cfg.ledger_path)
+    claim = ledger.get_claim(con, key)
+    if claim is not None and claim.state != "running":
+        state = claim.state.replace("_", " ")
+        print(f"release: {key}'s run is {state}; only the owner reruns it", file=sys.stderr)
+        return 1
+    if not ledger.remove_hold(con, key):
+        print(f"release: {key} has no hold", file=sys.stderr)
+        return 1
+    print(f"released the hold on {key}")
+    return 0
+
+
+def cmd_hold(args) -> int:
+    cfg, _ = _config(args)
+    con = ledger.connect(cfg.ledger_path)
+    ledger.add_hold(con, args.key, args.reason.strip() or "held by cardinal", time.time())
+    claim = ledger.get_claim(con, args.key)
+    if claim is not None and claim.state == "running":
+        print(
+            f"held {args.key}; its run in progress goes on, and nothing starts it again until"
+            f" flocc release {args.key}"
+        )
+    else:
+        print(f"held {args.key}; nothing starts it until flocc release {args.key}")
     return 0
 
 
@@ -594,6 +642,7 @@ COMMANDS = {
     "attach": cmd_attach,
     "events": cmd_events,
     "ack": cmd_ack,
+    "hold": cmd_hold,
 }
 
 
@@ -635,13 +684,21 @@ def build_parser() -> argparse.ArgumentParser:
     add("tick", "Run one service tick")
     add("run", "Run ticks in a loop")
     rel = add("release", "Clear a claim and kill its session")
-    rel.add_argument("key", help="issue key, e.g. NF-12")
+    rel.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     rel.add_argument("--keep-worktree", action="store_true", help="leave the worktree on disk")
     rel.add_argument(
         "--accept-tests",
         action="store_true",
         help="approve the tester's files as they stand on the branch (keeps the worktree)",
     )
+    rel.add_argument(
+        "--hold-only",
+        action="store_true",
+        help="only lift a hold; refused for a blocked, timed-out or done run (cardinal's release)",
+    )
+    hold = add("hold", "Start nothing for an issue until flocc release lifts the hold")
+    hold.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    hold.add_argument("--reason", default="", help="why, for flocc status")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )

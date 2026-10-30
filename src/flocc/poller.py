@@ -97,8 +97,11 @@ def still_wanted(rt, key: str) -> bool:
 
 def restart_timed_out(rt) -> None:
     """Sends a run that hit the wall clock after committing back to Todo, once per issue."""
+    holds = ledger.issue_holds(rt.con)
     for claim in ledger.finished_claims(rt.con):
         key = claim.issue_key
+        if key in holds:
+            continue
         once = f"timeout_restart:{key}"
         wt = Path(claim.worktree)
         # A tester's commits were never remembered, so a rerun from "test" would find none.
@@ -175,7 +178,11 @@ def main_hold(rt, repo: str, bases: dict[str, str | None]) -> str | None:
 def poll(rt) -> None:
     cfg = rt.cfg
     bases: dict[str, str | None] = {}
+    holds = ledger.issue_holds(rt.con)
     for issue in rt.linear.ready_issues(cfg.team_key, cfg.trigger_label):
+        if issue.key in holds:
+            print(f"{issue.key}: held by cardinal: {holds[issue.key][0]}", file=sys.stderr)
+            continue
         claim = ledger.get_claim(rt.con, issue.key)
         rerun = claim is not None
         if claim is not None:

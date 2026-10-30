@@ -318,6 +318,27 @@ def held_keys(con) -> frozenset[str]:
     return frozenset(r["key"].split(":", 1)[1] for r in rows)
 
 
+# cardinal's holds: the service starts nothing for a held issue until flocc release lifts it.
+def add_hold(con, key: str, reason: str, now: float) -> None:
+    with transaction(con):
+        con.execute(
+            "INSERT INTO holds (issue_key, reason, at) VALUES (?, ?, ?)"
+            " ON CONFLICT(issue_key) DO UPDATE SET reason = excluded.reason, at = excluded.at",
+            (key, reason, now),
+        )
+
+
+def remove_hold(con, key: str) -> bool:
+    with transaction(con):
+        cur = con.execute("DELETE FROM holds WHERE issue_key = ?", (key,))
+    return cur.rowcount > 0
+
+
+def issue_holds(con) -> dict[str, tuple[str, float]]:
+    rows = con.execute("SELECT issue_key, reason, at FROM holds ORDER BY at")
+    return {r["issue_key"]: (r["reason"], r["at"]) for r in rows}
+
+
 def meta_set(con, key: str, value: str) -> None:
     with transaction(con):
         con.execute(

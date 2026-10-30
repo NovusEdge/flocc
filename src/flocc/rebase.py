@@ -19,11 +19,14 @@ def step(rt) -> None:
     if rt.pr_view is None:
         return
     bases: dict[str, str | None] = {}
+    holds = ledger.issue_holds(rt.con)
     for claim in ledger.finished_claims(rt.con):
         url = pr_url(rt, claim)
         if claim.state != "done" or url is None or not Path(claim.worktree).exists():
             continue
         key = claim.issue_key
+        if key in holds:
+            continue
         try:
             view = rt.pr_view(claim, url)
             if view.get("state") != "OPEN" or view.get("mergeable") != "CONFLICTING":
