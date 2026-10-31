@@ -15,6 +15,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from flocc.config import RepoConfig
 from flocc.publisher import check_at_base, check_worktree
@@ -766,7 +767,7 @@ def usage(req: dict) -> dict:
     """What flocc-agent's /tmp entries, processes and containers hold, by issue where one owns
     them: a pytest run's .lock pid, or a process's cwd, under worktree_root/KEY."""
     root = under_home(req["worktree_root"]).resolve()
-    entries = []
+    entries: list[dict[str, Any]] = []
     for p in _tmp_entries():
         pid = _lock_pid(p) if p.parent == _pytest_root() else None
         issue = _cwd_issue(pid, root) if pid else None
