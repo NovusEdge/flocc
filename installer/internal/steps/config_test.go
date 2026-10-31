@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/answers"
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
+	"github.com/pelletier/go-toml/v2"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -25,7 +28,7 @@ func goldenAnswers() *answers.Answers {
 
 func TestRenderConfigMatchesGolden(t *testing.T) {
 	example, _ := deploy.Files.ReadFile("config.example.toml")
-	got, err := RenderConfig(example, goldenAnswers())
+	got, err := RenderConfig(example, nil, goldenAnswers())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +49,7 @@ func TestRenderConfigMatchesGolden(t *testing.T) {
 
 func TestRenderConfigSetsSkipUnmappedOnlyForASharedTeam(t *testing.T) {
 	example, _ := deploy.Files.ReadFile("config.example.toml")
-	plain, err := RenderConfig(example, goldenAnswers())
+	plain, err := RenderConfig(example, nil, goldenAnswers())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +59,7 @@ func TestRenderConfigSetsSkipUnmappedOnlyForASharedTeam(t *testing.T) {
 	// Auto-excluded empty repos and repos the owner just does not want land here too.
 	a := goldenAnswers()
 	a.ExcludedRepos = []string{"https://github.com/nimble-fox-ai/empty"}
-	excluded, err := RenderConfig(example, a)
+	excluded, err := RenderConfig(example, nil, a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +67,7 @@ func TestRenderConfigSetsSkipUnmappedOnlyForASharedTeam(t *testing.T) {
 		t.Errorf("excluding a repo alone turned skip_unmapped on:\n%s", excluded)
 	}
 	a.SharedTeam = true
-	got, err := RenderConfig(example, a)
+	got, err := RenderConfig(example, nil, a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +78,87 @@ func TestRenderConfigSetsSkipUnmappedOnlyForASharedTeam(t *testing.T) {
 	want, _ := os.ReadFile(golden)
 	if string(got) != string(want) {
 		t.Fatalf("render differs from %s; run go test ./installer/internal/steps -update\n%s", golden, got)
+	}
+}
+
+func TestRenderConfigKeepsKeysTheWizardDoesNotAsk(t *testing.T) {
+	example, _ := deploy.Files.ReadFile("config.example.toml")
+	existing := []byte(`team_key = "OLD"
+setup_timeout_s = 1800
+shared_uv_cache = true
+skip_unmapped = true
+ntfy_url = "https://ntfy.sh/x"
+worktree_root = "/srv/wt"
+
+[repos.nimblefox-template]
+path = "~/src/nimblefox-template"
+base_branch = "dev"
+commit_trailer = false
+shared_paths = [".env"]
+
+[repos.dropped]
+path = "~/src/dropped"
+
+[mcp_servers.sentry]
+type = "http"
+url = "https://mcp.sentry.dev/mcp"
+`)
+	got, err := RenderConfig(example, existing, goldenAnswers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := toml.Unmarshal(got, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["team_key"] != "NF" || m["setup_timeout_s"] != int64(1800) || m["shared_uv_cache"] != true {
+		t.Errorf("top-level keys: team_key %v, setup_timeout_s %v, shared_uv_cache %v", m["team_key"], m["setup_timeout_s"], m["shared_uv_cache"])
+	}
+	if _, ok := m["mcp_servers"].(map[string]any)["sentry"]; !ok {
+		t.Errorf("the host's mcp_servers were dropped:\n%s", got)
+	}
+	repos := m["repos"].(map[string]any)
+	if _, ok := repos["dropped"]; ok {
+		t.Errorf("a repo the answers no longer map was kept:\n%s", got)
+	}
+	repo := repos["nimblefox-template"].(map[string]any)
+	if repo["base_branch"] != "main" || repo["commit_trailer"] != false {
+		t.Errorf("repo: base_branch %v, commit_trailer %v", repo["base_branch"], repo["commit_trailer"])
+	}
+	for _, k := range []string{"skip_unmapped", "ntfy_url", "worktree_root"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("%s kept:\n%s", k, got)
+		}
+	}
+	if _, ok := repo["shared_paths"]; ok {
+		t.Errorf("repos.nimblefox-template.shared_paths kept:\n%s", got)
+	}
+}
+
+func TestDroppedKeysMatchConfigPy(t *testing.T) {
+	src, err := os.ReadFile("../../../src/flocc/config.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, name := range []string{"_RETIRED", "_LAYOUT"} {
+		tuple := regexp.MustCompile(`(?s)\n` + name + ` = \((.*?)\)\n`).FindSubmatch(src)
+		if tuple == nil {
+			t.Fatalf("%s not found in config.py", name)
+		}
+		for _, q := range regexp.MustCompile(`"([a-z_]+)"`).FindAllSubmatch(tuple[1], -1) {
+			want = append(want, string(q[1]))
+		}
+	}
+	if !slices.Equal(want, droppedKeys) {
+		t.Errorf("droppedKeys %v, config.py has %v", droppedKeys, want)
+	}
+}
+
+func TestRenderConfigRefusesAnUnreadableConfig(t *testing.T) {
+	example, _ := deploy.Files.ReadFile("config.example.toml")
+	if _, err := RenderConfig(example, []byte("team_key = "), goldenAnswers()); err == nil {
+		t.Fatal("a broken config.toml was overwritten")
 	}
 }
 
