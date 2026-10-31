@@ -7,7 +7,7 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
-from flocc import ledger, rebase
+from flocc import host, ledger, rebase
 from flocc.agent import Agent
 from flocc.config import Config, trailer_enabled
 from flocc.context import agent_dir
@@ -174,6 +174,11 @@ def tick(cfg: Config, config_path: Path) -> int:
     # the other claims, the poll and the digest are done.
     failed: dict[str, LinearError] = {}
     try:
+        # Before supervise, so nothing it would launch starts into an episode this tick opens.
+        try:
+            host.check(rt)
+        except (OSError, ValueError):
+            traceback.print_exc()
         for claim in ledger.live_claims(rt.con):
             if claim.state != "running":
                 continue

@@ -1,6 +1,9 @@
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from flocc import events, ledger
 
 GIB = 2**30
 
@@ -45,3 +48,76 @@ def read(tmp: Path = Path("/tmp"), proc: Path = Path("/proc")) -> Reading:
 
 def size_text(n: int) -> str:
     return f"{n / GIB:.1f} GiB" if n >= GIB else f"{n / 2**20:.0f} MiB"
+
+
+EPISODE = "host_episode"
+OOM_SEEN = "host_oom_kills"
+# A value sitting at its limit would otherwise open and close an episode every tick.
+CLOSE_TMP = 0.9
+CLOSE_MEM = 1.1
+
+
+def _episode(con) -> dict | None:
+    raw = ledger.meta_get(con, EPISODE)
+    try:
+        value = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def open_episode(con, now: float, detail: str) -> None:
+    ledger.meta_set(con, EPISODE, json.dumps({"at": now, "detail": detail}))
+
+
+def pressure_detail(con) -> str:
+    """The open episode's detail; "" when the host is not under pressure."""
+    episode = _episode(con)
+    if episode is None:
+        return ""
+    return str(episode.get("detail") or "host under pressure")
+
+
+def under_pressure(con) -> bool:
+    return bool(pressure_detail(con))
+
+
+def _over(r: Reading, cfg, new_ooms: int) -> list[str]:
+    parts = []
+    if r.tmp_pct > cfg.tmp_max_pct:
+        parts.append(f"/tmp {r.tmp_pct:.0f}% ({r.tmp_used / GIB:.1f}/{r.tmp_size / GIB:.1f} GiB)")
+    if r.mem_available < cfg.min_available_mem_gb * GIB:
+        parts.append(f"MemAvailable {r.mem_available / GIB:.1f} GiB")
+    if new_ooms:
+        parts.append(f"{new_ooms} OOM kill{'s' * (new_ooms != 1)}")
+    return parts
+
+
+def _recovered(r: Reading, cfg) -> bool:
+    return (
+        r.tmp_pct < CLOSE_TMP * cfg.tmp_max_pct
+        and r.mem_available > CLOSE_MEM * cfg.min_available_mem_gb * GIB
+    )
+
+
+def check(rt, reading: Reading | None = None) -> None:
+    """Opens an episode with a host-pressure event when a value crosses its limit, and closes it
+    once every value is back past its close threshold."""
+    r = reading or read()
+    con, now = rt.con, rt.now()
+    seen = ledger.meta_get(con, OOM_SEEN)
+    # The counter restarts at boot, so a drop means a reboot. A drop and the first reading only
+    # set the baseline.
+    new_ooms = r.oom_kills - int(seen) if seen and r.oom_kills >= int(seen) else 0
+    over = _over(r, rt.cfg, new_ooms)
+    episode = _episode(con)
+    # A kill during an open episode is an event of its own: the repair did not hold.
+    if over and (episode is None or new_ooms):
+        detail = "; ".join(over)
+        # Before the marks: a tick that dies in between emits again, and cardinal acks the
+        # duplicate away, where a lost event is never seen.
+        events.emit(con, "host-pressure", now, detail=detail)
+        open_episode(con, now if episode is None else float(episode.get("at", now)), detail)
+    elif episode is not None and _recovered(r, rt.cfg):
+        ledger.meta_set(con, EPISODE, "")
+    ledger.meta_set(con, OOM_SEEN, str(r.oom_kills))

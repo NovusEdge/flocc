@@ -4,9 +4,10 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
-from flocc import events, ledger
+from flocc import events, host, ledger
 from flocc.config import TRAILER, load
 from flocc.context import state_dir
+from flocc.host import Reading
 from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
 from flocc.notice import Notifier
 from flocc.poller import (
@@ -868,6 +869,35 @@ def test_tick_linear_error_on_one_claim_still_runs_the_rest(rt, tmp_path, monkey
     assert tick(rt.cfg, tmp_path / "c.toml") == 1
     assert supervised == ["NF-2"] and polled == [rt]
     assert ledger.meta_get(rt.con, "linear_failures") == "1"
+
+
+FULL_TMP = Reading(29 * 2**30 // 10, 3 * 2**30, 4 * 2**30, 0)
+
+
+def test_the_tick_opens_a_host_episode_before_it_supervises(rt, tmp_path, monkeypatch):
+    ledger.insert_claim(rt.con, make("NF-1"))
+    seen = []
+    monkeypatch.setattr("flocc.host.read", lambda: FULL_TMP)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr(
+        "flocc.tick.supervise", lambda rt, claim: seen.append(host.under_pressure(rt.con))
+    )
+    monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
+    tick(rt.cfg, tmp_path / "c.toml")
+    assert seen == [True]
+    assert [e.kind for e in events.unacked(rt.con) if e.kind == "host-pressure"] == [
+        "host-pressure"
+    ]
+
+
+def test_a_host_that_cannot_be_measured_does_not_stop_the_tick(rt, tmp_path, monkeypatch):
+    def unreadable():
+        raise OSError("no /proc/meminfo")
+
+    monkeypatch.setattr("flocc.host.read", unreadable)
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("flocc.tick.poll", lambda rt: None)
+    assert tick(rt.cfg, tmp_path / "c.toml") == 0
 
 
 def test_tick_with_a_deleted_issue_still_polls_and_pages_naming_it(rt, tmp_path, monkeypatch):
