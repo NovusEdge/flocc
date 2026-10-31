@@ -2,6 +2,7 @@ import json
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -211,3 +212,20 @@ def test_capture_of_a_dead_session_is_empty():
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no session")
 
     assert Sessions(runner=run).capture("NF-240", 5) == ""
+
+
+def test_pane_pid_is_the_pane_s_own_process(tmux_server, tmp_path):
+    s = Sessions(socket=tmux_server)
+    s.start("NF-1", tmp_path, ["sleep", "30"])
+    try:
+        pid = s.pane_pid("NF-1")
+        assert pid is not None
+        # The pane's pid is a fork of the tmux server until it execs the command.
+        for _ in range(50):
+            if Path(f"/proc/{pid}/cmdline").read_bytes().startswith(b"sleep\0"):
+                break
+            time.sleep(0.1)
+        assert Path(f"/proc/{pid}/cmdline").read_bytes().startswith(b"sleep\0")
+    finally:
+        s.kill("NF-1")
+    assert s.pane_pid("NF-1") is None

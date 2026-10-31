@@ -1,15 +1,18 @@
 """flocc-agent: what flocc-agent-run runs as flocc-agent. A subcommand that takes a request reads
 it as one JSON object on stdin and prints its answer as one JSON object on stdout."""
 
+import contextlib
 import grp
 import json
 import os
 import pwd
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -38,6 +41,7 @@ SUBCOMMANDS = (
     "remove",
     "send",
     "start",
+    "stop-tests",
     "sweep",
     "usage",
 )
@@ -379,6 +383,54 @@ def _running(pid: int) -> bool:
     except OSError:
         return False
     return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+# The Bash tool runs each command through a shell that sources Claude Code's snapshot of the
+# user's shell. MCP servers, also children of claude, never carry it.
+SNAPSHOT_MARK = "/shell-snapshots/snapshot-"
+KILL_GRACE_S = 5.0
+
+
+def _tree(root: int, procs: dict[int, tuple[int, list[str]]]) -> list[int]:
+    found, todo = [], [root]
+    while todo:
+        pid = todo.pop()
+        found.append(pid)
+        todo += [p for p, (ppid, _) in procs.items() if ppid == pid]
+    return found
+
+
+def _claude_pid(pane: int, procs: dict[int, tuple[int, list[str]]]) -> int | None:
+    # env and sh exec into claude, so this is normally the pane's own pid.
+    for pid in _tree(pane, procs):
+        argv = procs.get(pid, (0, []))[1]
+        if argv and Path(argv[0]).name == "claude":
+            return pid
+    return None
+
+
+def _bash_tools(claude: int, procs: dict[int, tuple[int, list[str]]]) -> list[int]:
+    return [
+        p
+        for p, (ppid, argv) in procs.items()
+        if ppid == claude and any(SNAPSHOT_MARK in a for a in argv)
+    ]
+
+
+def _signal(pids: list[int], sig: int) -> None:
+    for pid in pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, sig)
+
+
+def _kill_trees(roots: list[int], procs, grace_s: float) -> list[int]:
+    pids = [p for root in roots for p in _tree(root, procs)]
+    _signal(pids, signal.SIGTERM)
+    deadline = time.monotonic() + grace_s
+    while any(_running(p) for p in pids) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    _signal([p for p in pids if _running(p)], signal.SIGKILL)
+    return pids
 
 
 def _sweep_pytest(age_s: float, now: float) -> tuple[list[str], int]:
@@ -737,6 +789,26 @@ def usage(req: dict) -> dict:
     return {"largest": largest, "issues": issues, "containers": containers}
 
 
+def stop_tests(req: dict) -> dict:
+    """Ends what a session's Bash tool started and the issue's containers; claude and its MCP
+    servers keep running. A process that left the tree through setsid escapes this."""
+    name = session_name(req["name"])
+    wt = under_home(req["worktree"]).resolve()
+    procs = _procs()
+    pane = Sessions().pane_pid(name)
+    claude = _claude_pid(pane, procs) if pane else None
+    killed = _kill_trees(_bash_tools(claude, procs), procs, KILL_GRACE_S) if claude else []
+    removed = []
+    for c in _containers():
+        if _container_issue(c, wt.parent) == wt.name:
+            cid = str(c.get("Id", ""))
+            subprocess.run(
+                ["podman", "rm", "-f", cid], capture_output=True, check=False, timeout=120
+            )
+            removed.append(_container_name(c))
+    return {"claude": claude, "killed": killed, "containers": removed}
+
+
 HANDLERS: dict[str, Callable[[dict], dict]] = {
     "start": start,
     "send": send,
@@ -747,6 +819,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "probe": probe,
     "sweep": sweep,
     "usage": usage,
+    "stop-tests": stop_tests,
 }
 
 

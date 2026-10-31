@@ -3,7 +3,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -534,3 +537,74 @@ def test_usage_lists_containers_with_their_memory_and_issue(tmp_path, monkeypatc
         {"name": "nf-db-1", "memory": "120MB / 5.8GB", "issue": "NF-5"},
         {"name": "other", "memory": "not running", "issue": None},
     ]
+
+
+FAKE_CLAUDE = """
+import signal, subprocess, time
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+bash = subprocess.Popen(
+    ["/bin/sh", "-c", "sleep 300; : /home/u/.claude/shell-snapshots/snapshot-bash-1.sh"]
+)
+mcp = subprocess.Popen(["sleep", "301"])
+print(bash.pid, mcp.pid, flush=True)
+time.sleep(300)
+"""
+
+
+def _child_of(pid: int) -> int:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        kids = [p for p, (ppid, _) in agentrun._procs().items() if ppid == pid]
+        if kids:
+            return kids[0]
+        time.sleep(0.05)
+    raise AssertionError(f"{pid} started no child")
+
+
+def test_stop_tests_kills_the_bash_tool_tree_and_leaves_claude_and_mcp(tmp_path, monkeypatch):
+    claude = tmp_path / "claude"
+    claude.symlink_to(sys.executable)
+    fake = subprocess.Popen([str(claude), "-c", FAKE_CLAUDE], stdout=subprocess.PIPE, text=True)
+    mcp = 0
+    try:
+        assert fake.stdout is not None
+        bash, mcp = map(int, fake.stdout.readline().split())
+        sleeper = _child_of(bash)
+        monkeypatch.setattr("flocc.agentrun.Sessions.pane_pid", lambda self, name: fake.pid)
+        monkeypatch.setattr("flocc.agentrun.container_env", dict)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        out = agentrun.stop_tests({"name": "NF-1", "worktree": str(tmp_path / "wt" / "NF-1")})
+        assert out["claude"] == fake.pid and sorted(out["killed"]) == sorted([bash, sleeper])
+        assert not agentrun._running(bash) and not agentrun._running(sleeper)
+        assert agentrun._running(fake.pid) and agentrun._running(mcp)
+    finally:
+        fake.kill()
+        fake.wait()
+        if mcp:
+            os.kill(mcp, signal.SIGKILL)
+
+
+def test_stop_tests_removes_only_the_issue_s_containers(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    wt = tmp_path / "wt" / "NF-5"
+    wt.mkdir(parents=True)
+    monkeypatch.setattr("flocc.agentrun.Sessions.pane_pid", lambda self, name: None)
+    monkeypatch.setattr("flocc.agentrun.container_env", lambda: {"DOCKER_HOST": "unix:///s"})
+    monkeypatch.setattr("flocc.agentrun.shutil.which", lambda name: "/usr/bin/podman")
+    label = "com.docker.compose.project.working_dir"
+    ps = [
+        {"Id": "a" * 64, "Names": ["nf5-db"], "Labels": {label: str(wt.resolve())}},
+        {"Id": "b" * 64, "Names": ["nf6-db"], "Labels": {label: str(wt.resolve().parent / "NF-6")}},
+    ]
+    ran = []
+
+    def run(argv, **kw):
+        ran.append(argv)
+        listing = json.dumps(ps) if argv[:2] == ["podman", "ps"] else ""
+        return subprocess.CompletedProcess(argv, 0, listing, "")
+
+    monkeypatch.setattr("flocc.agentrun.subprocess.run", run)
+    out = agentrun.stop_tests({"name": "NF-5", "worktree": str(wt)})
+    assert out == {"claude": None, "killed": [], "containers": ["nf5-db"]}
+    assert ["podman", "rm", "-f", "a" * 64] in ran
+    assert not any("b" * 64 in arg for argv in ran for arg in argv)

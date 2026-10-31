@@ -59,6 +59,10 @@ OOM_SEEN = "host_oom_kills"
 CLOSE_TMP = 0.9
 CLOSE_MEM = 1.1
 RECOVERED = "The host has recovered; you may run the test suite again."
+STOPPED = (
+    "flocc stopped your test run because the host is under memory or /tmp pressure. Do not"
+    " rerun the suite until flocc says the host has recovered."
+)
 
 
 def _episode(con) -> dict | None:

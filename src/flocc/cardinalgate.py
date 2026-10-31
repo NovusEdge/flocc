@@ -59,6 +59,8 @@ def argv_for(command: str) -> list[str]:
             return ["host-report"]
         case "run-summary", [key]:
             return [verb, _key(key)]
+        case "stop-tests", [key]:
+            return [verb, _key(key)]
         case "fix", [key, "--note", note]:
             return [verb, _key(key), f"--note={_text(note, 'note')}"]
         case "hold", [key]:

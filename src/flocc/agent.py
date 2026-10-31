@@ -142,6 +142,10 @@ class Agent:
             "usage", payload={"worktree_root": str(self.cfg.worktree_root)}, timeout=180
         )
 
+    def stop_tests(self, name: str, worktree: str) -> dict:
+        # The kill waits up to KILL_GRACE_S; each podman rm may take up to 120 s.
+        return self.call("stop-tests", payload={"name": name, "worktree": worktree}, timeout=600)
+
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
         payload = {
             "mode": "worktree",

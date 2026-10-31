@@ -16,6 +16,7 @@ import pytest
 from flocc import canary, ledger
 from flocc.cli import build_parser, main
 from flocc.config import load
+from flocc.host import STOPPED
 from flocc.linear import LinearError
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
@@ -682,3 +683,45 @@ def test_cleanup_now_sweeps_with_the_short_ages(tmp_path, monkeypatch, capsys):
     assert main(["--config", str(path), "cleanup", "--now"]) == 0
     assert seen == {"scratch_age_s": 600, "pytest_age_s": 0.0}
     assert "removed 1, freed 3.0 GiB in /tmp" in capsys.readouterr().out
+
+
+def _running_claim(host_cfg, key="NF-5", phase="impl"):
+    from dataclasses import replace
+
+    cfg = load(host_cfg)
+    cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger.insert_claim(ledger.connect(cfg.ledger_path), replace(make(key), phase=phase))
+
+
+def test_stop_tests_stops_the_run_s_tests_and_tells_the_session(host_cfg, monkeypatch, capsys):
+    _running_claim(host_cfg)
+    calls = []
+
+    def stop(self, name, worktree):
+        calls.append((name, worktree))
+        return {"claude": 41, "killed": [42, 43], "containers": ["nf5-db"]}
+
+    fake = FakeSessions()
+    monkeypatch.setattr("flocc.agent.Agent.stop_tests", stop)
+    monkeypatch.setattr("flocc.agent.Agent.sessions", lambda self: fake)
+    assert main(["--config", str(host_cfg), "stop-tests", "NF-5"]) == 0
+    assert calls == [("NF-5", "/wt/NF-5")] and fake.sent == [("NF-5", STOPPED)]
+    assert "killed 2 processes, removed 1 containers (nf5-db)" in capsys.readouterr().out
+
+
+def test_stop_tests_without_a_live_session_tells_nobody(host_cfg, monkeypatch, capsys):
+    _running_claim(host_cfg)
+    fake = FakeSessions()
+    monkeypatch.setattr(
+        "flocc.agent.Agent.stop_tests",
+        lambda self, name, wt: {"claude": None, "killed": [], "containers": []},
+    )
+    monkeypatch.setattr("flocc.agent.Agent.sessions", lambda self: fake)
+    assert main(["--config", str(host_cfg), "stop-tests", "NF-5"]) == 0
+    assert fake.sent == [] and "no live session to tell" in capsys.readouterr().out
+
+
+def test_stop_tests_refuses_an_issue_with_no_running_run(host_cfg, capsys):
+    load(host_cfg).ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    assert main(["--config", str(host_cfg), "stop-tests", "NF-404"]) == 1
+    assert "NF-404 has no running run" in capsys.readouterr().err

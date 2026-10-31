@@ -460,6 +460,34 @@ def cmd_host_report(args) -> int:
     return 0
 
 
+def cmd_stop_tests(args) -> int:
+    from flocc.agent import Agent
+    from flocc.host import STOPPED
+    from flocc.sessions import session_name
+
+    cfg, _ = _config(args)
+    claim = ledger.get_claim(ledger.connect(cfg.ledger_path), args.key)
+    if claim is None or claim.state != "running":
+        print(f"stop-tests: {args.key} has no running run", file=sys.stderr)
+        return 1
+    agent = Agent(cfg)
+    name = session_name(claim.issue_key, claim.phase)
+    try:
+        out = agent.stop_tests(name, claim.worktree)
+        if out["claude"] is not None:
+            agent.sessions().send(name, STOPPED)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"stop-tests: {exc}", file=sys.stderr)
+        return 1
+    told = "told the session why" if out["claude"] is not None else "no live session to tell"
+    boxes = ", ".join(out["containers"]) or "none"
+    print(
+        f"stop-tests {args.key}: killed {len(out['killed'])} processes, removed"
+        f" {len(out['containers'])} containers ({boxes}); {told}"
+    )
+    return 0
+
+
 def _lift_hold(cfg, key: str) -> int:
     # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
     # the timed-out restart, or a move to Todo made while it was held, would start it again.
@@ -784,6 +812,7 @@ COMMANDS = {
     "digest-data": cmd_digest_data,
     "cleanup": cmd_cleanup,
     "host-report": cmd_host_report,
+    "stop-tests": cmd_stop_tests,
 }
 
 
@@ -856,6 +885,8 @@ def build_parser() -> argparse.ArgumentParser:
         " waits up to 60 s for a running tick",
     )
     add("host-report", "Print /tmp, memory and OOM kills, and what each issue holds")
+    st = add("stop-tests", "Kill an issue's test processes and containers and tell its session why")
+    st.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )
