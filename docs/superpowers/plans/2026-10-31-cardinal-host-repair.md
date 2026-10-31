@@ -6,7 +6,7 @@
 
 **Architecture:** A new `flocc.host` module measures `/tmp`, `MemAvailable` and the OOM counter on each tick before `supervise`, keeps one episode in `meta`, emits `host-pressure` once per break and sends each running session a recovery message when the episode closes. Admission refuses starts during an episode, and `supervise` defers a finished step (before its publish runs the check) and a dead session's relaunch without spending a fix round or a restart. Cardinal gets four gate verbs (`host`, `cleanup --now`, `stop-tests KEY`, `shell CMD`) backed by new `flocc-agent-run` subcommands, a separate `bin/agent-shell` that the managed settings make ask the owner, and a managed `only-executor` PreToolUse hook that keeps `default` mode from running anything else on cardinal's VM.
 
-**Tech Stack:** Python 3.13 stdlib (`os.statvfs`, `/proc`, `subprocess`, `signal`, sqlite3 `meta`), pytest, ruff, pyrefly; POSIX sh and `jq` on the cardinal VM; Go installer (`deploy` embed, `steps.AgentAccess`, `create.CardinalBase`); tmux, rootless podman; Claude Code managed settings and Remote Control.
+**Tech Stack:** Python 3.13 stdlib (`os.statvfs`, `/proc`, `subprocess`, `signal`, sqlite3 `meta`), pytest, ruff, pyrefly; POSIX sh and stdlib Python 3 on the cardinal VM; Go installer (`deploy` embed, `steps.AgentAccess`, `create.CardinalBase`); tmux, rootless podman; Claude Code managed settings and Remote Control.
 
 **Spec:** `docs/superpowers/specs/2026-10-31-cardinal-host-repair-design.md`
 
@@ -45,7 +45,7 @@
     }
   }
   ```
-- `only-executor` exits 2 for any Bash command whose first word is not exactly `/opt/cardinal/plugin/bin/executor` or `/opt/cardinal/plugin/bin/agent-shell`, and for any command containing `;`, `&`, `|`, `` ` ``, `$(`, a newline, `<` or `>`. `cardinal.service` drops `--permission-mode dontAsk`.
+- `only-executor` exits 2 for any Bash command whose first word is not exactly `/opt/cardinal/plugin/bin/executor` or `/opt/cardinal/plugin/bin/agent-shell`, for any command with `;`, `&`, `|`, `<`, `>`, `(`, `)` or a newline outside quotes, and for `$` or `` ` `` anywhere but inside single quotes (where bash would expand them). `cardinal.service` drops `--permission-mode dontAsk`.
 - No root verbs, no per-session cgroups, no change to nimblefox, and agent sessions keep `/tmp` as their temp directory. Cardinal does not `hold` for host pressure.
 - `flocc host` is a desktop verb (`cli.DESKTOP_VERBS`), which a host refuses. The gate's `host` verb therefore runs the new host command `flocc host-report`.
 - Waits on a live system use the Monitor tool (`ToolSearch("select:Monitor")` first), never a foreground `sleep` loop.
@@ -2209,7 +2209,6 @@ git commit -s -m "feat(host): run one logged command as flocc-agent for cardinal
 - Modify: `deploy/cardinal/cardinal.service:15` (`ExecStart`)
 - Modify: `deploy/cardinal/plugin/skills/triage/SKILL.md:12-37`
 - Modify: `deploy/cardinal/plugin/skills/digest/SKILL.md` (step 3)
-- Modify: `installer/internal/create/cardinal.go:109,130,134` (jq for the hook)
 - Modify: `installer/internal/create/cardinal_test.go:57,228,238`
 - Modify: `justfile` (`lint` recipe's shellcheck line)
 - Test: `tests/test_cardinal_plugin.py`
@@ -2218,7 +2217,7 @@ git commit -s -m "feat(host): run one logged command as flocc-agent for cardinal
 - Consumes: the gate verbs `host`, `cleanup --now`, `stop-tests KEY`, `shell CMD` (Tasks 5-8); `events.KINDS`.
 - Produces: `/opt/cardinal/plugin/bin/agent-shell CMD` (exactly one argument, sends `'shell' 'CMD'`); `/opt/cardinal/plugin/bin/only-executor` (PreToolUse hook: exit 0 passes, exit 2 blocks); `bin/executor shell ...` exits 2 before ssh.
 
-The installer installs every file under `cardinal/plugin/bin` as root-owned 0755 (`cardinal.go:516`), so the two new scripts need no installer change. The hook reads the PreToolUse JSON with `jq`, which the cardinal VM does not have yet: `CardinalBase` installs it, and its `Check` makes an existing VM install it on the next `flocc host cardinal`.
+The installer installs every file under `cardinal/plugin/bin` as root-owned 0755 (`cardinal.go:516`), so the two new scripts need no installer change. The hook is Python with only the standard library; the cardinal VM already has `/usr/bin/python3`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2360,25 +2359,37 @@ def test_the_hook_refuses_any_other_first_word(command):
     assert out.returncode == 2 and "only-executor" in out.stderr
 
 
-@pytest.mark.parametrize("op", [";", "&", "|", "`", "$(", "\n", "<", ">"])
-def test_the_hook_refuses_every_control_operator_even_quoted(op):
-    out = hook(bash_call(f"{AGENT_SHELL} 'du -sh /tmp {op} id'"))
+@pytest.mark.parametrize("op", [";", "&", "|", "`id`", "$(id)", "\n", "<", ">", "(", ")"])
+def test_the_hook_refuses_a_control_operator_outside_quotes(op):
+    out = hook(bash_call(f"{EXECUTOR} status {op} id"))
     assert out.returncode == 2 and "only-executor" in out.stderr
+
+
+@pytest.mark.parametrize("text", ["$(id)", "`id`", "$HOME", "${x}"])
+def test_the_hook_refuses_expansion_inside_double_quotes(text):
+    out = hook(bash_call(f'{EXECUTOR} fix NF-3 --note "see {text}"'))
+    assert out.returncode == 2 and "only-executor" in out.stderr
+
+
+def test_the_hook_passes_operators_inside_single_quotes():
+    note = "line one; a | b & c < d > e $(f) `g`\nline two"
+    assert hook(bash_call(f"{EXECUTOR} fix NF-3 --note {shlex.quote(note)}")).returncode == 0
+    piped = f"{AGENT_SHELL} {shlex.quote('du -sh /tmp/* | sort -h | tail -5')}"
+    assert hook(bash_call(piped)).returncode == 0
+
+
+def test_the_hook_passes_plain_text_inside_double_quotes():
+    assert hook(bash_call(f'{EXECUTOR} hold NF-3 --reason "host memory; see digest"')).returncode == 0
 
 
 def test_the_hook_fails_closed_on_input_it_cannot_read():
     assert hook("not json").returncode == 2
+    assert hook(bash_call(f"{EXECUTOR} fix NF-3 --note 'unclosed")).returncode == 2
 ```
 
 (ruff format will put each `deny` entry on its own line; keep the order.)
 
-`installer/internal/create/cardinal_test.go`: line 57 becomes
-
-```go
-		"incus exec flocc-cardinal --env DEBIAN_FRONTEND=noninteractive -- apt-get install -y -q tmux openssh-client git curl ca-certificates jq",
-```
-
-line 228 becomes
+`installer/internal/create/cardinal_test.go`: line 228 becomes
 
 ```go
 		"/etc/claude-code/managed-settings.json":          `"only-executor"`,
@@ -2400,34 +2411,67 @@ and line 238's mode check becomes
 - [ ] **Step 2: Run them and see them fail**
 
 Run: `uv run pytest tests/test_cardinal_plugin.py -q && go test ./installer/internal/create/`
-Expected: the hook and agent-shell tests fail with `FileNotFoundError`, the settings test on `defaultMode`, the unit test on `--permission-mode`, the triage tests on `` `host-pressure` ``; the Go tests on the apt line, `"only-executor"` and `bin/agent-shell`.
+Expected: the hook and agent-shell tests fail with `FileNotFoundError`, the settings test on `defaultMode`, the unit test on `--permission-mode`, the triage tests on `` `host-pressure` ``; the Go tests on `"only-executor"` and `bin/agent-shell`.
 
 - [ ] **Step 3: Implement**
 
 Create `deploy/cardinal/plugin/bin/only-executor`:
 
-```sh
-#!/bin/sh
-# Managed PreToolUse hook for every Bash call. Exit 2 blocks the call before any permission rule
-# is read, so default mode still runs nothing on this VM but the two wrappers. The text is not
-# parsed for quotes: an operator inside quotes is refused too.
-set -eu
-refuse() {
-  echo "only-executor: $1" >&2
-  exit 2
-}
-cmd=$(jq -r '.tool_input.command // ""') || refuse "the hook input could not be read"
-nl='
-'
-case "$cmd" in
-  *"$nl"* | *';'* | *'&'* | *'|'* | *'`'* | *'$('* | *'<'* | *'>'*)
-    refuse "no ; & | \` \$( < > or line break, even inside quotes" ;;
-esac
-case "${cmd%% *}" in
-  /opt/cardinal/plugin/bin/executor | /opt/cardinal/plugin/bin/agent-shell) exit 0 ;;
-esac
-refuse "only /opt/cardinal/plugin/bin/executor and /opt/cardinal/plugin/bin/agent-shell run here"
+```python
+#!/usr/bin/python3 -I
+"""Managed PreToolUse hook for every Bash call. Exit 2 blocks the call before any permission rule
+is read, so default mode still runs nothing on this VM but the two wrappers."""
+
+import json
+import shlex
+import sys
+
+WRAPPERS = {"/opt/cardinal/plugin/bin/executor", "/opt/cardinal/plugin/bin/agent-shell"}
+# Where bash acts on a character: these outside any quotes, and $ and ` outside single quotes,
+# since double quotes still expand them. Single-quoted text reaches the wrapper as written.
+UNQUOTED = set(";&|<>()\n")
+UNSINGLE = set("$`")
+
+
+def refuse(why: str) -> None:
+    print(f"only-executor: {why}", file=sys.stderr)
+    sys.exit(2)
+
+
+def check(cmd: str) -> None:
+    quote = ""
+    escaped = False
+    for ch in cmd:
+        if escaped:
+            escaped = False
+        elif quote == "'":
+            quote = "" if ch == "'" else quote
+        elif ch == "\\":
+            escaped = True
+        elif quote == '"':
+            if ch in UNSINGLE:
+                refuse("no $ or backquote inside double quotes; single-quote the text")
+            quote = "" if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch in UNQUOTED or ch in UNSINGLE:
+            refuse(f"no {ch!r} outside quotes: one wrapper call per command")
+    try:
+        words = shlex.split(cmd)
+    except ValueError as exc:
+        refuse(f"cannot split the command: {exc}")
+    if not words or cmd[:1].isspace() or words[0] not in WRAPPERS:
+        refuse("only " + " and ".join(sorted(WRAPPERS)) + " run here")
+
+
+try:
+    check(str(json.load(sys.stdin)["tool_input"]["command"]))
+except (ValueError, KeyError, TypeError):
+    refuse("the hook input could not be read")
 ```
+
+`shlex` follows POSIX quoting, as bash does for these words, so the first word it returns is the
+program bash runs. Unbalanced quotes make it raise, which refuses the call.
 
 Create `deploy/cardinal/plugin/bin/agent-shell`:
 
@@ -2483,9 +2527,9 @@ fi
 
 ```markdown
 Every Bash command is one call to `/opt/cardinal/plugin/bin/executor` or
-`/opt/cardinal/plugin/bin/agent-shell`. A hook refuses any command holding `;`, `&`, `|`, a
-backquote, `$(`, `<`, `>` or a line break, even inside quotes, so keep fix notes and hold
-reasons to one line without them.
+`/opt/cardinal/plugin/bin/agent-shell`. Put fix notes, hold reasons and agent-shell commands in
+single quotes: a hook refuses `;`, `&`, `|`, `<`, `>`, parentheses or a line break outside quotes,
+and `$` or a backquote anywhere but inside single quotes.
 ```
 
 and after the `daily` bullet (line 31) add:
@@ -2510,39 +2554,21 @@ and after the `daily` bullet (line 31) add:
 
 `deploy/cardinal/plugin/skills/digest/SKILL.md`, step 3: after `worktrees cleanup kept, with why.` add ` Every command listed under agent-shell, with its exit status, always goes in, even on a quiet day.` (keep the line wrapped at 100 columns).
 
-`installer/internal/create/cardinal.go`:
-
-```go
-var cardinalTools = []string{"tmux", "ssh", "git", "curl", "jq"}
-```
-
-line 130:
-
-```go
-	return true, cardinalUser + " with tmux, ssh, git, curl and jq, lingering", nil
-```
-
-line 134:
-
-```go
-	if err := e.aptIn(ctx, CardinalName, "tmux", "openssh-client", "git", "curl", "ca-certificates", "jq"); err != nil {
-```
-
-`justfile`, the `lint` recipe's shellcheck line becomes:
+`justfile`, the `lint` recipe's shellcheck line becomes (`only-executor` is Python, so it stays off this line):
 
 ```
-    shellcheck setup deploy/flocc-agent-run deploy/cardinal/plugin/bin/follow deploy/cardinal/plugin/bin/executor deploy/cardinal/plugin/bin/agent-shell deploy/cardinal/plugin/bin/only-executor
+    shellcheck setup deploy/flocc-agent-run deploy/cardinal/plugin/bin/follow deploy/cardinal/plugin/bin/executor deploy/cardinal/plugin/bin/agent-shell
 ```
 
 - [ ] **Step 4: Run them and see them pass**
 
-Run: `uv run pytest tests/test_cardinal_plugin.py -q && go test ./installer/internal/create/ ./deploy/ && uvx --from shellcheck-py shellcheck deploy/cardinal/plugin/bin/*`
+Run: `uv run pytest tests/test_cardinal_plugin.py -q && go test ./installer/internal/create/ ./deploy/ && uvx --from shellcheck-py shellcheck deploy/cardinal/plugin/bin/{follow,executor,agent-shell}`
 Expected: all pass, shellcheck silent.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add deploy/cardinal installer/internal/create/cardinal.go installer/internal/create/cardinal_test.go justfile tests/test_cardinal_plugin.py
+git add deploy/cardinal installer/internal/create/cardinal_test.go justfile tests/test_cardinal_plugin.py
 git commit -s -m "feat(cardinal): add agent-shell behind an owner prompt and the only-executor hook"
 ```
 
@@ -2700,10 +2726,10 @@ Expected: both finish with every step ok. Then confirm the pieces landed:
 
 ```bash
 ssh root@flocc-nimble 'grep -c "|shell|start|stop-tests|sweep|usage)" /usr/local/libexec/flocc-agent-run'
-ssh zer0-day-nimble 'incus exec flocc-cardinal -- sh -c "command -v jq; grep -c only-executor /etc/claude-code/managed-settings.json; grep -c dontAsk /home/cardinal/.config/systemd/user/cardinal.service"'
+ssh zer0-day-nimble 'incus exec flocc-cardinal -- sh -c "grep -c only-executor /etc/claude-code/managed-settings.json; grep -c dontAsk /home/cardinal/.config/systemd/user/cardinal.service"'
 ```
 
-Expected: `1`; then a jq path, `1`, `0`.
+Expected: `1`; then `1`, `0`.
 
 - [ ] **Step 2: The new verbs answer through the gate**
 
