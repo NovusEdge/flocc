@@ -1,16 +1,21 @@
 """flocc-agent: what flocc-agent-run runs as flocc-agent. A subcommand that takes a request reads
 it as one JSON object on stdin and prints its answer as one JSON object on stdout."""
 
+import contextlib
 import grp
 import json
 import os
+import pwd
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from flocc.config import RepoConfig
 from flocc.publisher import check_at_base, check_worktree
@@ -36,8 +41,11 @@ SUBCOMMANDS = (
     "probe",
     "remove",
     "send",
+    "shell",
     "start",
+    "stop-tests",
     "sweep",
+    "usage",
 )
 _NAME = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+(?:-test|-review)?$")
 _FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -77,10 +85,15 @@ def container_env() -> dict[str, str]:
     }
 
 
+def tmp_env() -> dict[str, str]:
+    return {"TMPDIR": str(_tmp_root())}
+
+
 def with_container_env(argv: list[str]) -> list[str]:
     if argv[:2] != ["/usr/bin/env", "-i"]:
         return argv
-    return [*argv[:2], *(f"{k}={v}" for k, v in container_env().items()), *argv[2:]]
+    env = {**tmp_env(), **container_env()}
+    return [*argv[:2], *(f"{k}={v}" for k, v in env.items()), *argv[2:]]
 
 
 def session_name(raw) -> str:
@@ -306,6 +319,176 @@ def scratch_path(line: str) -> Path | None:
     return path if len(rel.parts) >= 3 else None
 
 
+def _tmp_root() -> Path:
+    # TMPDIR for sessions and checks. /tmp is a small tmpfs on flocc hosts, and one nimblefox
+    # drift-test run holds 2.2 GiB of pytest copies at once. Claude Code's own scratchpads follow
+    # CLAUDE_CODE_TMPDIR instead, so they stay under _scratch_root.
+    return _home() / ".cache" / "flocc-tmp"
+
+
+def _pytest_root() -> Path:
+    return _tmp_root() / f"pytest-of-{pwd.getpwuid(os.getuid()).pw_name}"
+
+
+def _du(path: Path) -> int:
+    """Bytes allocated under path, links not followed; on a tmpfs these are the pages it holds."""
+    try:
+        total = path.lstat().st_blocks * 512
+    except OSError:
+        return 0
+    for top, dirs, files in os.walk(path):
+        for name in dirs + files:
+            try:
+                total += os.lstat(os.path.join(top, name)).st_blocks * 512
+            except OSError:
+                pass
+    return total
+
+
+def _procs() -> dict[int, tuple[int, list[str]]]:
+    found: dict[int, tuple[int, list[str]]] = {}
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            stat = (d / "stat").read_text()
+            raw = (d / "cmdline").read_bytes()
+        except OSError:
+            continue
+        # The command name, in parentheses, may itself hold spaces and parentheses.
+        ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        found[int(d.name)] = (ppid, [a.decode(errors="replace") for a in raw.split(b"\0") if a])
+    return found
+
+
+def _path_issue(path: Path, root: Path) -> str | None:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return None
+    return rel.parts[0] if rel.parts and _KEY.match(rel.parts[0]) else None
+
+
+def _cwd_issue(pid: int, root: Path) -> str | None:
+    try:
+        return _path_issue(Path(os.readlink(f"/proc/{pid}/cwd")), root)
+    except OSError:
+        return None
+
+
+def _lock_pid(d: Path) -> int | None:
+    try:
+        pid = int((d / ".lock").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+_PYTEST_DIR = re.compile(r"pytest-[0-9]+")
+
+
+def _running(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+# The Bash tool runs each command through a shell that sources Claude Code's snapshot of the
+# user's shell. MCP servers, also children of claude, never carry it.
+SNAPSHOT_MARK = "/shell-snapshots/snapshot-"
+KILL_GRACE_S = 5.0
+
+
+def _tree(root: int, procs: dict[int, tuple[int, list[str]]]) -> list[int]:
+    found, todo = [], [root]
+    while todo:
+        pid = todo.pop()
+        found.append(pid)
+        todo += [p for p, (ppid, _) in procs.items() if ppid == pid]
+    return found
+
+
+def _claude_pid(pane: int, procs: dict[int, tuple[int, list[str]]]) -> int | None:
+    # env and sh exec into claude, so this is normally the pane's own pid.
+    for pid in _tree(pane, procs):
+        argv = procs.get(pid, (0, []))[1]
+        if argv and Path(argv[0]).name == "claude":
+            return pid
+    return None
+
+
+def _bash_tools(claude: int, procs: dict[int, tuple[int, list[str]]]) -> list[int]:
+    return [
+        p
+        for p, (ppid, argv) in procs.items()
+        if ppid == claude and any(SNAPSHOT_MARK in a for a in argv)
+    ]
+
+
+def _signal(pids: list[int], sig: int) -> None:
+    for pid in pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, sig)
+
+
+def _kill_trees(roots: list[int], procs, grace_s: float) -> list[int]:
+    pids = [p for root in roots for p in _tree(root, procs)]
+    # SIGINT first: pytest turns it into KeyboardInterrupt and runs fixture teardown, which stops
+    # the testcontainers it started. SIGTERM kills it without teardown.
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        _signal([p for p in pids if _running(p)], sig)
+        deadline = time.monotonic() + grace_s
+        while any(_running(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.1)
+    _signal([p for p in pids if _running(p)], signal.SIGKILL)
+    return pids
+
+
+def _sweep_pytest(age_s: float, now: float) -> tuple[list[str], int]:
+    """pytest's numbered runs no live process holds; pytest itself prunes only on its next run."""
+    root = _pytest_root()
+    if not root.is_dir() or root.is_symlink():
+        return [], 0
+    removed: list[str] = []
+    freed = 0
+    for d in sorted(root.iterdir()):
+        # pytest-current is a link to the newest run.
+        if d.is_symlink() or not d.is_dir() or not _PYTEST_DIR.fullmatch(d.name):
+            continue
+        pid = _lock_pid(d)
+        if (pid is not None and _running(pid)) or not _older(d, age_s, now):
+            continue
+        freed += _du(d)
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append(str(d))
+    return removed, freed
+
+
+def _tmp_entries() -> list[Path]:
+    """flocc-agent's entries in /tmp, with pytest's base directory opened up into its runs."""
+    uid, pytest_root, found = os.getuid(), _pytest_root(), []
+    for p in sorted(_tmp_root().iterdir()):
+        try:
+            if p.lstat().st_uid != uid:
+                continue
+        except OSError:
+            continue
+        if p == pytest_root and p.is_dir() and not p.is_symlink():
+            found += [d for d in sorted(p.iterdir()) if not d.is_symlink()]
+        else:
+            found.append(p)
+    return found
+
+
+def _rss(pid: int) -> int:
+    try:
+        return int(Path(f"/proc/{pid}/statm").read_text().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
 # The only claude invocations the service needs from flocc-agent's install.
 CLAUDE_ALLOWED = (("--version",), ("auth", "status"), ("auth", "login"), ("remote-control",))
 _EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$")
@@ -457,6 +640,19 @@ def _older(path: Path, age_s: float, now: float) -> bool:
     return now - path.lstat().st_mtime >= age_s
 
 
+def _idle(path: Path, age_s: float, now: float) -> bool:
+    """Nothing below path changed in age_s; a directory's own mtime misses writes to its files.
+    path itself is skipped; its entries, scratchpad included, carry the times that matter."""
+    newest = 0.0
+    for top, dirs, files in os.walk(path):
+        for name in (os.path.join(top, n) for n in dirs + files):
+            try:
+                newest = max(newest, os.lstat(name).st_mtime)
+            except OSError:
+                pass
+    return now - newest >= age_s
+
+
 def _git_out(wt: Path, *args: str) -> str:
     out = subprocess.run(
         ["git", *args], cwd=wt, capture_output=True, text=True, check=False, timeout=60
@@ -509,11 +705,13 @@ def _keep_reason(wt: Path, age_s: float, now: float) -> str:
 
 def sweep(req: dict) -> dict:
     """Removes what no claim owns: old clean worktrees whose commits are all on a remote, old
-    state directories, and old scratchpads no kept claim lists."""
+    state directories, old scratchpads no kept claim lists, and finished pytest runs."""
     keep = {_key(k) for k in req.get("keep") or []}
     root, states = under_home(req["worktree_root"]), under_home(req["state_root"])
     now, age_s = float(req["now"]), float(req["max_age_s"])
     scratch_age_s = float(req["scratch_age_s"])
+    pytest_age_s = float(req["pytest_age_s"])
+    freed = 0
     removed: list[str] = []
     kept: list[dict] = []
     if root.is_dir():
@@ -533,15 +731,152 @@ def sweep(req: dict) -> dict:
         listing = states / k / "scratchpads"
         if listing.is_file() and not listing.is_symlink():
             listed |= {line.strip() for line in listing.read_text().splitlines()}
+    # A session directory also holds tasks/ (background command output), which no listing names.
+    live_sessions = {Path(line).parent for line in listed}
     pads = _scratch_root()
-    for pad in sorted(pads.glob("*/*/*")) if pads.is_dir() else []:
-        if str(pad) in listed or scratch_path(str(pad)) != pad or not pad.is_dir():
+    for pad in sorted(pads.glob("*/*/scratchpad")) if pads.is_dir() else []:
+        if str(pad) in listed or pad.parent in live_sessions:
             continue
-        if _older(pad, scratch_age_s, now):
+        if scratch_path(str(pad)) != pad or not pad.is_dir():
+            continue
+        if _idle(pad.parent, scratch_age_s, now):
+            freed += _du(pad)
             shutil.rmtree(pad, ignore_errors=True)
             removed.append(str(pad))
+    runs, run_bytes = _sweep_pytest(pytest_age_s, now)
     _leftover_containers()
-    return {"removed": removed, "kept": kept}
+    return {"removed": removed + runs, "kept": kept, "freed": freed + run_bytes}
+
+
+def _containers() -> list[dict]:
+    if not (container_env() and shutil.which("podman")):
+        return []
+    out = subprocess.run(
+        ["podman", "ps", "-a", "--format", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    try:
+        data = json.loads(out.stdout or "[]")
+    except ValueError:
+        return []
+    return [c for c in data if isinstance(c, dict)] if isinstance(data, list) else []
+
+
+def _container_issue(container: dict, root: Path) -> str | None:
+    # Compose records the project's directory in a label. A container's own working directory
+    # is a path inside it and says nothing about the host.
+    labels = container.get("Labels") or {}
+    for value in labels.values() if isinstance(labels, dict) else []:
+        if isinstance(value, str) and (key := _path_issue(Path(value), root)):
+            return key
+    return None
+
+
+def _container_memory() -> dict[str, str]:
+    out = subprocess.run(
+        ["podman", "stats", "--no-stream", "--format", "{{.ID}}\t{{.MemUsage}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    rows = (line.split("\t", 1) for line in out.stdout.splitlines() if "\t" in line)
+    return {cid.strip(): mem.strip() for cid, mem in rows if cid.strip()}
+
+
+def _container_name(c: dict) -> str:
+    return ", ".join(c.get("Names") or []) or str(c.get("Id", ""))[:12]
+
+
+def usage(req: dict) -> dict:
+    """What flocc-agent's /tmp entries, processes and containers hold, by issue where one owns
+    them: a pytest run's .lock pid, or a process's cwd, under worktree_root/KEY."""
+    root = under_home(req["worktree_root"]).resolve()
+    entries: list[dict[str, Any]] = []
+    for p in _tmp_entries():
+        pid = _lock_pid(p) if p.parent == _pytest_root() else None
+        issue = _cwd_issue(pid, root) if pid else None
+        entries.append({"path": str(p), "bytes": _du(p), "issue": issue})
+    issues: dict[str, int] = {}
+    for pid in _procs():
+        if key := _cwd_issue(pid, root):
+            issues[key] = issues.get(key, 0) + _rss(pid)
+    found = _containers()
+    memory = _container_memory() if found else {}
+
+    def mem(c: dict) -> str:
+        cid = str(c.get("Id", ""))
+        return next((m for short, m in memory.items() if cid.startswith(short)), "not running")
+
+    containers = [
+        {"name": _container_name(c), "memory": mem(c), "issue": _container_issue(c, root)}
+        for c in found
+    ]
+    largest = sorted(entries, key=lambda e: -e["bytes"])[:10]
+    return {"largest": largest, "issues": issues, "containers": containers}
+
+
+def stop_tests(req: dict) -> dict:
+    """Ends what a session's Bash tool started and the issue's containers; claude and its MCP
+    servers keep running. A process that left the tree through setsid escapes this."""
+    name = session_name(req["name"])
+    wt = under_home(req["worktree"]).resolve()
+    procs = _procs()
+    pane = Sessions().pane_pid(name)
+    claude = _claude_pid(pane, procs) if pane else None
+    killed = _kill_trees(_bash_tools(claude, procs), procs, KILL_GRACE_S) if claude else []
+    removed, unowned = [], []
+    for c in _containers():
+        issue = _container_issue(c, wt.parent)
+        if issue == wt.name:
+            cid = str(c.get("Id", ""))
+            subprocess.run(
+                ["podman", "rm", "-f", cid], capture_output=True, check=False, timeout=120
+            )
+            removed.append(_container_name(c))
+        elif issue is None and any(
+            str(k).startswith("org.testcontainers") for k in c.get("Labels") or {}
+        ):
+            # Ryuk is off, and these labels name no worktree: they may be another issue's.
+            unowned.append(_container_name(c))
+    return {"claude": claude, "killed": killed, "containers": removed, "testcontainers": unowned}
+
+
+# Under Claude Code's 2-minute tool timeout, so the command's own timeout reply arrives first.
+SHELL_TIMEOUT_S = 90
+SHELL_CHARS = 8000
+
+
+def shell(req: dict) -> dict:
+    """cardinal's agent-shell command, which the owner approved in the Claude app."""
+    command = req["command"]
+    if not isinstance(command, str) or not command.strip():
+        raise BadRequest("no command")
+    # Its own session, so the timeout kills what the command started along with it.
+    proc = subprocess.Popen(
+        ["bash", "-c", command],
+        cwd=_home(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    )
+    code: int | None
+    try:
+        out, _ = proc.communicate(timeout=SHELL_TIMEOUT_S)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
+        code = None
+    if len(out) > SHELL_CHARS:
+        out = "[...]\n" + out[-SHELL_CHARS:]
+    return {"code": code, "output": out}
 
 
 HANDLERS: dict[str, Callable[[dict], dict]] = {
@@ -553,6 +888,9 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "remove": remove,
     "probe": probe,
     "sweep": sweep,
+    "usage": usage,
+    "stop-tests": stop_tests,
+    "shell": shell,
 }
 
 
@@ -566,6 +904,8 @@ def _request() -> dict:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     os.umask(0o027)
+    _tmp_root().mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.environ.update(tmp_env())
     os.environ.update(container_env())
     if not argv or argv[0] not in SUBCOMMANDS:
         print(f"flocc-agent: unknown subcommand: {argv[0] if argv else 'none'}", file=sys.stderr)

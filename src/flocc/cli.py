@@ -418,25 +418,99 @@ def cmd_digest_data(args) -> int:
 
 def cmd_cleanup(args) -> int:
     from flocc.agent import Agent
-    from flocc.cleanup import cleanup
+    from flocc.cleanup import NOW_LOCK_WAIT_S, NOW_SCRATCH_AGE_S, cleanup
+    from flocc.host import size_text
     from flocc.tick import tick_lock
 
     cfg, _ = _config(args)
-    with tick_lock(cfg.tick_lock) as held:
+    with tick_lock(cfg.tick_lock, NOW_LOCK_WAIT_S if args.now else 0.0) as held:
         if not held:
-            print("cleanup: a tick is running; try again in a moment", file=sys.stderr)
+            if args.now:
+                why = f"busy: a tick still holds the lock after {NOW_LOCK_WAIT_S:.0f} s"
+            else:
+                why = "a tick is running; try again in a moment"
+            print(f"cleanup: {why}", file=sys.stderr)
             return 1
+        ages = {"scratch_age_s": NOW_SCRATCH_AGE_S, "pytest_age_s": 0.0} if args.now else {}
         try:
-            out = cleanup(cfg, ledger.connect(cfg.ledger_path), Agent(cfg), time.time())
+            out = cleanup(cfg, ledger.connect(cfg.ledger_path), Agent(cfg), time.time(), **ages)
         except (subprocess.SubprocessError, OSError) as exc:
             print(f"cleanup: {exc}", file=sys.stderr)
             return 1
-    print(f"removed {len(out['removed'])}")
+    print(f"removed {len(out['removed'])}, freed {size_text(out['freed'])} in /tmp")
     for path in out["removed"][:20]:
         print(f"  {path}")
     for k in out["kept"]:
         print(f"kept {k['path']}: {k['why']}")
     return 0
+
+
+def cmd_host_report(args) -> int:
+    from flocc import host
+    from flocc.agent import Agent
+
+    cfg, _ = _config(args)
+    try:
+        usage = Agent(cfg).usage()
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"host-report: {exc}", file=sys.stderr)
+        return 1
+    episode = host.pressure_detail(ledger.connect(cfg.ledger_path))
+    print(host.report_text(cfg, host.read(), usage, episode))
+    return 0
+
+
+def cmd_stop_tests(args) -> int:
+    from flocc.agent import Agent
+    from flocc.host import STOPPED
+    from flocc.sessions import session_name
+
+    cfg, _ = _config(args)
+    claim = ledger.get_claim(ledger.connect(cfg.ledger_path), args.key)
+    if claim is None or claim.state != "running":
+        print(f"stop-tests: {args.key} has no running run", file=sys.stderr)
+        return 1
+    agent = Agent(cfg)
+    name = session_name(claim.issue_key, claim.phase)
+    try:
+        out = agent.stop_tests(name, claim.worktree)
+        if out["claude"] is not None:
+            agent.sessions().send(name, STOPPED)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"stop-tests: {exc}", file=sys.stderr)
+        return 1
+    told = "told the session why" if out["claude"] is not None else "no live session to tell"
+    boxes = ", ".join(out["containers"]) or "none"
+    print(
+        f"stop-tests {args.key}: killed {len(out['killed'])} processes, removed"
+        f" {len(out['containers'])} containers ({boxes}); {told}"
+    )
+    if left := out.get("testcontainers"):
+        print(f"testcontainers still running, owner unknown: {', '.join(left)}")
+    return 0
+
+
+def cmd_shell(args) -> int:
+    from flocc import host
+    from flocc.agent import Agent
+    from flocc.agentrun import SHELL_TIMEOUT_S
+
+    cfg, _ = _config(args)
+    con = ledger.connect(cfg.ledger_path)
+    at = time.time()
+    # Recorded first, so a call that never answers still reaches the digest.
+    host.record_shell(con, at, args.shell_command, None)
+    try:
+        out = Agent(cfg).shell(args.shell_command)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"shell: {exc}", file=sys.stderr)
+        return 1
+    code = out["code"]
+    host.record_shell(con, at, args.shell_command, code)
+    if text := out["output"]:
+        print(text, end="" if text.endswith("\n") else "\n")
+    print(f"timed out after {SHELL_TIMEOUT_S} s" if code is None else f"exit {code}")
+    return 0 if code == 0 else 1
 
 
 def _lift_hold(cfg, key: str) -> int:
@@ -762,6 +836,9 @@ COMMANDS = {
     "run-summary": cmd_run_summary,
     "digest-data": cmd_digest_data,
     "cleanup": cmd_cleanup,
+    "host-report": cmd_host_report,
+    "stop-tests": cmd_stop_tests,
+    "shell": cmd_shell,
 }
 
 
@@ -826,7 +903,23 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     dd = add("digest-data", "Print what the daily digest covers; --done N clears it once sent")
     dd.add_argument("--done", type=int, default=None, metavar="N", help="clear lines through N")
-    add("cleanup", "Remove worktrees, state and scratchpads no claim owns")
+    clean = add("cleanup", "Remove worktrees, state, scratchpads and pytest runs no claim owns")
+    clean.add_argument(
+        "--now",
+        action="store_true",
+        help="for a full /tmp: scratchpads idle 10 minutes and every finished pytest run;"
+        " waits up to 60 s for a running tick",
+    )
+    add("host-report", "Print /tmp, memory and OOM kills, and what each issue holds")
+    st = add("stop-tests", "Kill an issue's test processes and containers and tell its session why")
+    st.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    sh = add(
+        "shell", "Run one command as flocc-agent for cardinal's agent-shell; logged for the digest"
+    )
+    # args.command names the subcommand, so the option needs its own dest.
+    sh.add_argument(
+        "--command", dest="shell_command", required=True, help="the command, given to bash -c"
+    )
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )

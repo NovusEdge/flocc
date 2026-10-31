@@ -15,7 +15,7 @@ lint:
     uv run ruff format --check
     uv run ruff check
     uv run pyrefly check
-    shellcheck setup deploy/flocc-agent-run deploy/cardinal/plugin/bin/follow deploy/cardinal/plugin/bin/executor
+    shellcheck setup deploy/flocc-agent-run deploy/cardinal/plugin/bin/follow deploy/cardinal/plugin/bin/executor deploy/cardinal/plugin/bin/agent-shell
     test -z "$(gofmt -l deploy installer)"
     go vet ./...
 

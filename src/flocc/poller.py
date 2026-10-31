@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from flocc import canary, events, ledger
+from flocc import canary, events, host, ledger
 from flocc.admission import admit
 from flocc.agentblock import (
     BlockError,
@@ -266,6 +266,7 @@ def poll(rt) -> None:
             rt.now(),
             free,
             ledger.held_keys(rt.con),
+            host.pressure_detail(rt.con),
         )
         if not decision.ok:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)
@@ -347,7 +348,14 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     d = state_dir(cfg, issue.key)
     # A fresh claim gets its own review fix round.
     ledger.meta_set(rt.con, f"review_fix:{issue.key}", "")
-    for kept in ("rebase", "rebase_tried", "base_held", "base_released", "cardinal_fix"):
+    for kept in (
+        "rebase",
+        "rebase_tried",
+        "base_held",
+        "base_released",
+        "cardinal_fix",
+        "host_wait",
+    ):
         ledger.meta_set(rt.con, f"{kept}:{issue.key}", "")
     for round_ in (1, 2):
         ledger.meta_set(rt.con, f"review_posted:{issue.key}:{round_}", "")

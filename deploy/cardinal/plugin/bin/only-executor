@@ -1,0 +1,51 @@
+#!/usr/bin/python3 -I
+"""Managed PreToolUse hook for every Bash call. Exit 2 blocks the call before any permission rule
+is read, so default mode still runs nothing on this VM but the two wrappers."""
+
+import json
+import shlex
+import sys
+
+WRAPPERS = {"/opt/cardinal/plugin/bin/executor", "/opt/cardinal/plugin/bin/agent-shell"}
+# Where bash acts on a character: these outside any quotes, and $ and ` outside single quotes,
+# since double quotes still expand them. Single-quoted text reaches the wrapper as written.
+# An unquoted # may start a bash comment, which hides a quote from this scan but not from bash.
+UNQUOTED = set(";&|<>()\n#")
+UNSINGLE = set("$`")
+
+
+def refuse(why: str) -> None:
+    print(f"only-executor: {why}", file=sys.stderr)
+    sys.exit(2)
+
+
+def check(cmd: str) -> None:
+    quote = ""
+    escaped = False
+    for ch in cmd:
+        if escaped:
+            escaped = False
+        elif quote == "'":
+            quote = "" if ch == "'" else quote
+        elif ch == "\\":
+            escaped = True
+        elif quote == '"':
+            if ch in UNSINGLE:
+                refuse("no $ or backquote inside double quotes; single-quote the text")
+            quote = "" if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch in UNQUOTED or ch in UNSINGLE:
+            refuse(f"no {ch!r} outside quotes: one wrapper call per command")
+    try:
+        words = shlex.split(cmd)
+    except ValueError as exc:
+        refuse(f"cannot split the command: {exc}")
+    if not words or cmd[:1].isspace() or words[0] not in WRAPPERS:
+        refuse("only " + " and ".join(sorted(WRAPPERS)) + " run here")
+
+
+try:
+    check(str(json.load(sys.stdin)["tool_input"]["command"]))
+except (ValueError, KeyError, TypeError):
+    refuse("the hook input could not be read")

@@ -1,6 +1,6 @@
 import pytest
 
-from flocc import events, ledger
+from flocc import events, host, ledger
 from flocc.context import state_dir
 from flocc.summary import DIGEST_LINES, LIST_ROWS, RUN_SUMMARY_CHARS, digest_data, run_summary
 from flocc.supervisor import BLOCKED, CHECK_OUTPUT, LAST_SUMMARY
@@ -91,3 +91,13 @@ def test_digest_data_done_clears_through_the_id(tmp_cfg, tmp_path):
     [(first, _, _), _] = ledger.pending_digest(c)
     assert main(["--config", str(path), "digest-data", "--done", str(first)]) == 0
     assert [line for _, _, line in ledger.pending_digest(c)] == ["b"]
+
+
+def test_digest_data_lists_the_day_s_agent_shell_calls(tmp_cfg, con):
+    host.record_shell(con, 50.0, "old command", 0)
+    host.record_shell(con, 86_400.0 + 50.0, "du -sh /tmp/pytest-of-flocc-agent", 0)
+    host.record_shell(con, 86_400.0 + 60.0, "sleep 999", None)
+    text, _ = digest_data(tmp_cfg, con, 86_400.0 + 100.0)
+    assert "## Commands cardinal ran with agent-shell in the last 24 hours" in text
+    assert "exit 0: du -sh /tmp/pytest-of-flocc-agent" in text
+    assert "no exit status: sleep 999" in text and "old command" not in text

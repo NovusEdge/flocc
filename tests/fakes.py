@@ -76,9 +76,9 @@ class FakeAgent:
         self.removed.append((key, keep_dirty))
         return {"removed": True, "dirty": False}
 
-    def sweep(self, keep, now, max_age_s, scratch_age_s):
-        self.swept.append((keep, now, max_age_s, scratch_age_s))
-        return {"removed": [], "kept": []}
+    def sweep(self, keep, now, max_age_s, scratch_age_s, pytest_age_s):
+        self.swept.append((keep, now, max_age_s, scratch_age_s, pytest_age_s))
+        return {"removed": [], "kept": [], "freed": 0}
 
     def probe(self, read, write):
         return self.probe_result

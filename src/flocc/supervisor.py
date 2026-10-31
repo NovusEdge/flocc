@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
-from flocc import agentfs, canary, events, ledger
+from flocc import agentfs, canary, events, host, ledger
 from flocc.agentblock import settings_from_json
 from flocc.context import agent_dir, phase_prompt, state_dir
 from flocc.idle import BACKGROUND
@@ -42,6 +42,9 @@ LAST_SUMMARY = "last-summary.md"
 TESTER = "tester.json"
 # Why the run last blocked, for flocc run-summary; the notice itself went to the issue.
 BLOCKED = "blocked.md"
+# Set when a session is found dead during a host episode: it most likely died of the episode,
+# so its relaunch afterwards costs no restart.
+HOST_WAIT = "host_wait"
 # Service files a session reads, copied into its state directory at every start.
 _HANDOFF = (
     "context.md",
@@ -761,12 +764,23 @@ def supervise(rt, claim: Claim) -> None:
             rt.sessions.kill(name)
             if claim.phase != "review":
                 (d / LAST_SUMMARY).write_text(summary)
+            # Before _finish_phase: its publish runs the repo's check, the load an episode is about.
+            if host.under_pressure(rt.con):
+                return
             _finish_phase(rt, claim, summary)
             return
     if (message := _idle_message(agent)) is not None:
         _stopped(rt, claim, name, message)
         return
     if not rt.sessions.alive(name):
+        waited = f"{HOST_WAIT}:{key}"
+        if host.under_pressure(rt.con):
+            ledger.meta_set(rt.con, waited, "1")
+            return
+        if ledger.meta_get(rt.con, waited):
+            _relaunch(rt, claim)
+            ledger.meta_set(rt.con, waited, "")
+            return
         if claim.restarts >= 1 and claim.phase == "review":
             _review_skipped(rt, claim, f"the session died twice ({name})")
             return

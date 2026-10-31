@@ -1,8 +1,17 @@
 {
   "permissions": {
-    "defaultMode": "dontAsk",
+    "defaultMode": "default",
     "allow": ["Bash(/opt/cardinal/plugin/bin/executor:*)", "Skill"],
-    "deny": ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit", "Write"],
+    "ask": ["Bash(/opt/cardinal/plugin/bin/agent-shell:*)"],
+    "deny": ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit", "Write", "NotebookEdit", "mcp__*", "Monitor"],
     "disableBypassPermissionsMode": "disable"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "/opt/cardinal/plugin/bin/only-executor" }]
+      }
+    ]
   }
 }

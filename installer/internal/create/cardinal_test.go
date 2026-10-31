@@ -225,7 +225,7 @@ func TestCardinalFilesRenderTheHourTheExecutorAndTheLink(t *testing.T) {
 		units + "cardinal.service":                        "flocc executor VM flocc-a.",
 		"/etc/flocc-cardinal/ssh_config":                  "HostName 10.10.0.5",
 		"/etc/flocc-cardinal/known_hosts":                 "10.10.0.5 ssh-ed25519 HOSTKEY\n",
-		"/etc/claude-code/managed-settings.json":          `"dontAsk"`,
+		"/etc/claude-code/managed-settings.json":          `bin/only-executor"`,
 		"/opt/cardinal/plugin/.claude-plugin/plugin.json": `"cardinal"`,
 		"/opt/cardinal/plugin/monitors/monitors.json":     `"always"`,
 		"/opt/cardinal/plugin/skills/triage/SKILL.md":     "name: triage",
@@ -235,8 +235,13 @@ func TestCardinalFilesRenderTheHourTheExecutorAndTheLink(t *testing.T) {
 			t.Errorf("%s lacks %q", path, want)
 		}
 	}
-	if by["/opt/cardinal/plugin/bin/follow"].Mode != 0o755 || by[units+"cardinal.service"].Owner != cardinalUser {
-		t.Fatal("modes or owners")
+	for _, bin := range []string{"follow", "executor", "agent-shell", "only-executor"} {
+		if by["/opt/cardinal/plugin/bin/"+bin].Mode != 0o755 {
+			t.Errorf("bin/%s is not 0755", bin)
+		}
+	}
+	if by[units+"cardinal.service"].Owner != cardinalUser {
+		t.Fatal("unit owner")
 	}
 	if filesSum(files) == filesSum(files[1:]) {
 		t.Fatal("the sum ignores a file")

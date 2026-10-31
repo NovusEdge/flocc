@@ -1,9 +1,11 @@
 import argparse
+import fcntl
 import io
 import json
 import os
 import signal
 import subprocess
+import threading
 import time
 import types
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +16,7 @@ import pytest
 from flocc import canary, ledger
 from flocc.cli import build_parser, main
 from flocc.config import load
+from flocc.host import STOPPED
 from flocc.linear import LinearError
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
@@ -633,3 +636,117 @@ def test_canary_reports_a_base_it_cannot_fetch(host_cfg, monkeypatch, capsys):
     monkeypatch.setattr("flocc.agent.Agent.setup_base", unreachable)
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     assert "no remote" in capsys.readouterr().err
+
+
+def test_host_report_prints_the_reading_and_flocc_agent_s_part(host_cfg, monkeypatch, capsys):
+    load(host_cfg).ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    usage = {"largest": [], "issues": {"NF-5": 2**30}, "containers": []}
+    monkeypatch.setattr("flocc.agent.Agent.usage", lambda self: usage)
+    assert main(["--config", str(host_cfg), "host-report"]) == 0
+    out = capsys.readouterr().out
+    assert "/tmp 0% used" in out and "- NF-5: 1.0 GiB" in out and "Episode: none open" in out
+
+
+def test_tick_lock_waits_up_to_its_limit(tmp_path):
+    path = tmp_path / "tick.lock"
+    with tick_lock(path) as first:
+        assert first
+        start = time.monotonic()
+        with tick_lock(path, 0.3) as second:
+            assert not second
+        assert time.monotonic() - start >= 0.3
+    blocker = path.open("w")
+    fcntl.flock(blocker, fcntl.LOCK_EX)
+    threading.Timer(0.2, blocker.close).start()
+    with tick_lock(path, 5.0) as third:
+        assert third
+
+
+def test_cleanup_now_reports_busy_after_its_wait(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    monkeypatch.setattr("flocc.cleanup.NOW_LOCK_WAIT_S", 0.2)
+    monkeypatch.setattr("flocc.cleanup.cleanup", lambda *a, **kw: pytest.fail("ran under a tick"))
+    with tick_lock(load(path).tick_lock):
+        assert main(["--config", str(path), "cleanup", "--now"]) == 1
+    assert "busy" in capsys.readouterr().err
+
+
+def test_cleanup_now_sweeps_with_the_short_ages(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    seen = {}
+
+    def fake(cfg, con, agent, now, **ages):
+        seen.update(ages)
+        return {"removed": ["/tmp/pytest-of-flocc-agent/pytest-3"], "kept": [], "freed": 3 * 2**30}
+
+    monkeypatch.setattr("flocc.cleanup.cleanup", fake)
+    assert main(["--config", str(path), "cleanup", "--now"]) == 0
+    assert seen == {"scratch_age_s": 600, "pytest_age_s": 0.0}
+    assert "removed 1, freed 3.0 GiB in /tmp" in capsys.readouterr().out
+
+
+def _running_claim(host_cfg, key="NF-5", phase="impl"):
+    from dataclasses import replace
+
+    cfg = load(host_cfg)
+    cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger.insert_claim(ledger.connect(cfg.ledger_path), replace(make(key), phase=phase))
+
+
+def test_stop_tests_stops_the_run_s_tests_and_tells_the_session(host_cfg, monkeypatch, capsys):
+    _running_claim(host_cfg)
+    calls = []
+
+    def stop(self, name, worktree):
+        calls.append((name, worktree))
+        return {"claude": 41, "killed": [42, 43], "containers": ["nf5-db"]}
+
+    fake = FakeSessions()
+    monkeypatch.setattr("flocc.agent.Agent.stop_tests", stop)
+    monkeypatch.setattr("flocc.agent.Agent.sessions", lambda self: fake)
+    assert main(["--config", str(host_cfg), "stop-tests", "NF-5"]) == 0
+    assert calls == [("NF-5", "/wt/NF-5")] and fake.sent == [("NF-5", STOPPED)]
+    assert "killed 2 processes, removed 1 containers (nf5-db)" in capsys.readouterr().out
+
+
+def test_stop_tests_without_a_live_session_tells_nobody(host_cfg, monkeypatch, capsys):
+    _running_claim(host_cfg)
+    fake = FakeSessions()
+    monkeypatch.setattr(
+        "flocc.agent.Agent.stop_tests",
+        lambda self, name, wt: {"claude": None, "killed": [], "containers": []},
+    )
+    monkeypatch.setattr("flocc.agent.Agent.sessions", lambda self: fake)
+    assert main(["--config", str(host_cfg), "stop-tests", "NF-5"]) == 0
+    assert fake.sent == [] and "no live session to tell" in capsys.readouterr().out
+
+
+def test_stop_tests_refuses_an_issue_with_no_running_run(host_cfg, capsys):
+    load(host_cfg).ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    assert main(["--config", str(host_cfg), "stop-tests", "NF-404"]) == 1
+    assert "NF-404 has no running run" in capsys.readouterr().err
+
+
+def test_shell_records_the_call_before_and_after_it_runs(tmp_path, monkeypatch, capsys):
+    from flocc import host
+
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    during = []
+
+    def fake_shell(self, command):
+        during.append(host.shell_calls(con, 0.0))
+        return {"code": 0, "output": "Filesystem  Size\ntmpfs 2.9G\n"}
+
+    monkeypatch.setattr("flocc.agent.Agent.shell", fake_shell)
+    assert main(["--config", str(path), "shell", "--command=df -h /tmp"]) == 0
+    assert [(c, code) for _, c, code in during[0]] == [("df -h /tmp", None)]
+    assert [(c, code) for _, c, code in host.shell_calls(con, 0.0)] == [("df -h /tmp", 0)]
+    assert capsys.readouterr().out == "Filesystem  Size\ntmpfs 2.9G\nexit 0\n"
+
+
+def test_shell_that_timed_out_exits_1_and_says_so(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    monkeypatch.setattr("flocc.agent.Agent.shell", lambda self, c: {"code": None, "output": ""})
+    assert main(["--config", str(path), "shell", "--command=sleep 999"]) == 1
+    assert capsys.readouterr().out == "timed out after 90 s\n"

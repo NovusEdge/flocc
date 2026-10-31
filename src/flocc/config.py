@@ -69,6 +69,9 @@ class Config:
     check_timeout_s: int = 1800
     setup_timeout_s: int = 900
     min_free_disk_gb: float = 2.0
+    # flocc.host opens an episode past either: starts and relaunches wait, and cardinal is told.
+    tmp_max_pct: float = 80.0
+    min_available_mem_gb: float = 1.0
     # One uv cache under worktree_root kept across setups, for hosts whose disk can hold it; the
     # default throwaway cache per setup downloads every package again each time.
     shared_uv_cache: bool = False
@@ -178,7 +181,9 @@ def load(path: Path) -> Config:
         raise ValueError(f"{path}: digest_hour {cfg.digest_hour} is not in 0-23")
     if cfg.session_cap < 1:
         raise ValueError(f"{path}: session_cap {cfg.session_cap} must be >= 1")
-    for key in ("five_hour_max_pct", "weekly_max_pct"):
+    for key in ("five_hour_max_pct", "weekly_max_pct", "tmp_max_pct"):
         if not 0 <= getattr(cfg, key) <= 100:
             raise ValueError(f"{path}: {key} {getattr(cfg, key)} is not in 0-100")
+    if cfg.min_available_mem_gb < 0:
+        raise ValueError(f"{path}: min_available_mem_gb {cfg.min_available_mem_gb} must be >= 0")
     return cfg

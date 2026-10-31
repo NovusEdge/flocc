@@ -24,6 +24,8 @@ def test_example_loads_with_defaults():
     assert cfg.check_timeout_s == 1800
     assert cfg.setup_timeout_s == 900
     assert cfg.min_free_disk_gb == 2.0
+    assert cfg.tmp_max_pct == 80.0
+    assert cfg.min_available_mem_gb == 1.0
     assert cfg.shared_uv_cache is False
     assert cfg.state_root.is_absolute()
     assert cfg.mcp_servers["sentry"]["type"] == "http"
@@ -60,7 +62,14 @@ def test_bad_effort_level_is_an_error(tmp_path):
 
 @pytest.mark.parametrize(
     "line",
-    ["digest_hour = 24", "session_cap = 0", "five_hour_max_pct = 150.0", "weekly_max_pct = -1.0"],
+    [
+        "digest_hour = 24",
+        "session_cap = 0",
+        "five_hour_max_pct = 150.0",
+        "weekly_max_pct = -1.0",
+        "tmp_max_pct = 101.0",
+        "min_available_mem_gb = -1.0",
+    ],
 )
 def test_out_of_range_number_is_an_error(tmp_path, line):
     p = tmp_path / "c.toml"

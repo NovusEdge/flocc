@@ -2,7 +2,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from flocc import ledger
+from flocc import host, ledger
 from flocc.admission import admit
 from flocc.agentblock import settings_from_json
 from flocc.context import state_dir
@@ -47,6 +47,7 @@ def admit_rerun(rt, claim: Claim):
         rt.now(),
         rt.free_disk_gb(rt.cfg.worktree_root),
         ledger.held_keys(rt.con),
+        host.pressure_detail(rt.con),
     )
 
 

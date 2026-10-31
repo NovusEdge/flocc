@@ -35,18 +35,28 @@ when a connection holds again.
 Events: `ended` (a PR is ready, or a run blocked or timed out), `cap` (the check still fails after
 every fix round), `base-broken` (once per break), `bad-sequence` (an unusable `Run:` line),
 `service-error` (a failing tick, Linear failing three ticks in a row, a token or the Claude login
-expiring or rejected) and `daily` (the digest hour). Routine starts, fixers under the cap,
-reviews and rebases emit nothing.
+expiring or rejected), `daily` (the digest hour) and `host-pressure` (`/tmp` above
+`tmp_max_pct`, memory available below `min_available_mem_gb`, or a new OOM kill; once per
+episode, and again for each new kill). Routine starts, fixers under the cap, reviews and rebases
+emit nothing.
 
 ## What it can do
 
 cardinal's key runs only `flocc-cardinal-gate` on the executor, and only from cardinal's address.
 The gate splits the request without a shell and allows `events`, `ack`, `status`, `run-summary`,
-`fix`, `hold`, `release`, `cleanup` and `digest-data`, with every issue key matching
-`^[A-Z]+-[0-9]+$`. Its `release` is `release --hold-only`: it lifts a hold and nothing else, and
-is refused for a blocked, timed-out or done run. Inside the VM, cardinal runs in `dontAsk` mode,
-in an empty directory, under root-owned managed settings that allow only its executor wrapper and
-its skills and deny the read and web tools, so it cannot read its own key or Claude login.
+`fix`, `hold`, `release`, `cleanup`, `cleanup --now`, `digest-data`, `host`, `stop-tests` and
+`shell`, with every issue key matching `^[A-Z]+-[0-9]+$`. Its `release` is
+`release --hold-only`: it lifts a hold and nothing else, and is refused for a blocked, timed-out
+or done run. Its `host` runs `flocc host-report`.
+
+Inside the VM, cardinal runs in `default` mode, in an empty directory, under root-owned managed
+settings that allow its executor wrapper and its skills, deny the read, edit, web and MCP tools,
+and ask you, in the Claude app, before every `agent-shell` call. A managed PreToolUse hook,
+`only-executor`, refuses any Bash command that is not one call to `executor` or `agent-shell`, or
+that holds a shell operator, so cardinal cannot read its own key or Claude login. `executor`
+refuses `shell`: the only way to the gate's `shell` verb is `agent-shell`, which runs one command
+as `flocc-agent` with a 120-second timeout and lists it in the next digest. While an
+`agent-shell` prompt waits for you, cardinal handles no other event.
 
 ## Daily fresh start
 

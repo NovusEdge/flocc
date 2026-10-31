@@ -3,6 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from flocc.agentrun import SHELL_TIMEOUT_S
 from flocc.config import Config, trailer_enabled
 from flocc.ledger import Claim
 from flocc.publisher import PublishResult
@@ -118,7 +119,14 @@ class Agent:
         }
         return self.call("remove", payload=payload, timeout=300)
 
-    def sweep(self, keep: list[str], now: float, max_age_s: float, scratch_age_s: float) -> dict:
+    def sweep(
+        self,
+        keep: list[str],
+        now: float,
+        max_age_s: float,
+        scratch_age_s: float,
+        pytest_age_s: float,
+    ) -> dict:
         payload = {
             "keep": keep,
             "worktree_root": str(self.cfg.worktree_root),
@@ -126,8 +134,21 @@ class Agent:
             "now": now,
             "max_age_s": max_age_s,
             "scratch_age_s": scratch_age_s,
+            "pytest_age_s": pytest_age_s,
         }
         return self.call("sweep", payload=payload, timeout=900)
+
+    def usage(self) -> dict:
+        return self.call(
+            "usage", payload={"worktree_root": str(self.cfg.worktree_root)}, timeout=180
+        )
+
+    def stop_tests(self, name: str, worktree: str) -> dict:
+        # The kill waits up to KILL_GRACE_S; each podman rm may take up to 120 s.
+        return self.call("stop-tests", payload={"name": name, "worktree": worktree}, timeout=600)
+
+    def shell(self, command: str) -> dict:
+        return self.call("shell", payload={"command": command}, timeout=SHELL_TIMEOUT_S + 30)
 
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
         payload = {

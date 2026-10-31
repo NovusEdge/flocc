@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 
 from flocc.config import load
+from flocc.host import Reading
 from flocc.worktree import git
 from tests.paths import EXAMPLE
 
@@ -17,6 +18,24 @@ def no_token_check(monkeypatch):
     # them with fakes.
     monkeypatch.setattr("flocc.tick.check_tokens", lambda rt: None)
     monkeypatch.setattr("flocc.tick.check_claude_login", lambda rt: None)
+
+
+CALM = Reading(tmp_used=0, tmp_size=2**30, mem_available=8 * 2**30, oom_kills=0)
+
+
+@pytest.fixture(autouse=True)
+def calm_host(monkeypatch):
+    # The tick reads the real /tmp and /proc otherwise, and a full /tmp on the machine running
+    # the suite would open an episode and hold every start the tests expect.
+    monkeypatch.setattr("flocc.host.read", lambda: CALM)
+
+
+@pytest.fixture(autouse=True)
+def agent_tmp_in_tmp_path(tmp_path, monkeypatch):
+    # agentrun.main creates and exports its TMPDIR, which would land in the developer's home
+    # and leak into every later test's subprocesses.
+    monkeypatch.setattr("flocc.agentrun._home", lambda: tmp_path)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
 
 
 @pytest.fixture

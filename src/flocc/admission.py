@@ -25,7 +25,10 @@ def admit(
     now: float,
     free_disk_gb: float | None = None,
     held: frozenset[str] = frozenset(),
+    host_pressure: str = "",
 ) -> Decision:
+    if host_pressure:
+        return Decision(False, f"host under pressure: {host_pressure}")
     if free_disk_gb is not None and free_disk_gb < cfg.min_free_disk_gb:
         return Decision(False, f"disk free {free_disk_gb:.1f} GB < min_free_disk_gb")
     # A claim held on a broken base runs no session.

@@ -171,3 +171,8 @@ class Sessions:
     def send(self, name: str, text: str) -> None:
         self._tmux("send-keys", "-t", f"={name}:", "-l", text)
         self._tmux("send-keys", "-t", f"={name}:", "Enter")
+
+    def pane_pid(self, name: str) -> int | None:
+        out = self._tmux("list-panes", "-t", f"={name}:", "-F", "#{pane_pid}", check=False)
+        first = out.stdout.split()[:1]
+        return int(first[0]) if out.returncode == 0 and first and first[0].isdigit() else None
