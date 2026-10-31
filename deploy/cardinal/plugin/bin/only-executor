@@ -9,7 +9,8 @@ import sys
 WRAPPERS = {"/opt/cardinal/plugin/bin/executor", "/opt/cardinal/plugin/bin/agent-shell"}
 # Where bash acts on a character: these outside any quotes, and $ and ` outside single quotes,
 # since double quotes still expand them. Single-quoted text reaches the wrapper as written.
-UNQUOTED = set(";&|<>()\n")
+# An unquoted # may start a bash comment, which hides a quote from this scan but not from bash.
+UNQUOTED = set(";&|<>()\n#")
 UNSINGLE = set("$`")
 
 

@@ -427,10 +427,13 @@ def _signal(pids: list[int], sig: int) -> None:
 
 def _kill_trees(roots: list[int], procs, grace_s: float) -> list[int]:
     pids = [p for root in roots for p in _tree(root, procs)]
-    _signal(pids, signal.SIGTERM)
-    deadline = time.monotonic() + grace_s
-    while any(_running(p) for p in pids) and time.monotonic() < deadline:
-        time.sleep(0.1)
+    # SIGINT first: pytest turns it into KeyboardInterrupt and runs fixture teardown, which stops
+    # the testcontainers it started. SIGTERM kills it without teardown.
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        _signal([p for p in pids if _running(p)], sig)
+        deadline = time.monotonic() + grace_s
+        while any(_running(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.1)
     _signal([p for p in pids if _running(p)], signal.SIGKILL)
     return pids
 
@@ -629,6 +632,19 @@ def _older(path: Path, age_s: float, now: float) -> bool:
     return now - path.lstat().st_mtime >= age_s
 
 
+def _idle(path: Path, age_s: float, now: float) -> bool:
+    """Nothing below path changed in age_s; a directory's own mtime misses writes to its files.
+    path itself is skipped; its entries, scratchpad included, carry the times that matter."""
+    newest = 0.0
+    for top, dirs, files in os.walk(path):
+        for name in (os.path.join(top, n) for n in dirs + files):
+            try:
+                newest = max(newest, os.lstat(name).st_mtime)
+            except OSError:
+                pass
+    return now - newest >= age_s
+
+
 def _git_out(wt: Path, *args: str) -> str:
     out = subprocess.run(
         ["git", *args], cwd=wt, capture_output=True, text=True, check=False, timeout=60
@@ -707,11 +723,15 @@ def sweep(req: dict) -> dict:
         listing = states / k / "scratchpads"
         if listing.is_file() and not listing.is_symlink():
             listed |= {line.strip() for line in listing.read_text().splitlines()}
+    # A session directory also holds tasks/ (background command output), which no listing names.
+    live_sessions = {Path(line).parent for line in listed}
     pads = _scratch_root()
-    for pad in sorted(pads.glob("*/*/*")) if pads.is_dir() else []:
-        if str(pad) in listed or scratch_path(str(pad)) != pad or not pad.is_dir():
+    for pad in sorted(pads.glob("*/*/scratchpad")) if pads.is_dir() else []:
+        if str(pad) in listed or pad.parent in live_sessions:
             continue
-        if _older(pad, scratch_age_s, now):
+        if scratch_path(str(pad)) != pad or not pad.is_dir():
+            continue
+        if _idle(pad.parent, scratch_age_s, now):
             freed += _du(pad)
             shutil.rmtree(pad, ignore_errors=True)
             removed.append(str(pad))
@@ -800,18 +820,25 @@ def stop_tests(req: dict) -> dict:
     pane = Sessions().pane_pid(name)
     claude = _claude_pid(pane, procs) if pane else None
     killed = _kill_trees(_bash_tools(claude, procs), procs, KILL_GRACE_S) if claude else []
-    removed = []
+    removed, unowned = [], []
     for c in _containers():
-        if _container_issue(c, wt.parent) == wt.name:
+        issue = _container_issue(c, wt.parent)
+        if issue == wt.name:
             cid = str(c.get("Id", ""))
             subprocess.run(
                 ["podman", "rm", "-f", cid], capture_output=True, check=False, timeout=120
             )
             removed.append(_container_name(c))
-    return {"claude": claude, "killed": killed, "containers": removed}
+        elif issue is None and any(
+            str(k).startswith("org.testcontainers") for k in c.get("Labels") or {}
+        ):
+            # Ryuk is off, and these labels name no worktree: they may be another issue's.
+            unowned.append(_container_name(c))
+    return {"claude": claude, "killed": killed, "containers": removed, "testcontainers": unowned}
 
 
-SHELL_TIMEOUT_S = 120
+# Under Claude Code's 2-minute tool timeout, so the command's own timeout reply arrives first.
+SHELL_TIMEOUT_S = 90
 SHELL_CHARS = 8000
 
 

@@ -3,7 +3,7 @@
     "defaultMode": "default",
     "allow": ["Bash(/opt/cardinal/plugin/bin/executor:*)", "Skill"],
     "ask": ["Bash(/opt/cardinal/plugin/bin/agent-shell:*)"],
-    "deny": ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit", "Write", "NotebookEdit", "mcp__*"],
+    "deny": ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit", "Write", "NotebookEdit", "mcp__*", "Monitor"],
     "disableBypassPermissionsMode": "disable"
   },
   "hooks": {

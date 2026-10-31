@@ -410,6 +410,28 @@ def test_sweep_now_takes_unlisted_scratchpads_idle_ten_minutes(
     assert out["removed"] == [str(idle)] and listed.exists()
 
 
+def test_sweep_now_spares_the_tasks_of_a_listed_session_and_a_busy_pad(
+    tmp_cfg, tmp_path, monkeypatch, pads
+):
+    cfg = _bare_cfg(tmp_cfg, tmp_path, monkeypatch)
+    listed = pads / "p" / "s1" / "scratchpad"
+    tasks = pads / "p" / "s1" / "tasks"
+    busy = pads / "p" / "s2" / "scratchpad"
+    for d in (listed, tasks, busy):
+        d.mkdir(parents=True)
+    (tasks / "out.output").write_text("x")
+    (busy / "f").write_text("x")
+    for d in (listed, tasks, busy, tasks / "out.output"):
+        os.utime(d, (NOW - 900, NOW - 900))
+    os.utime(busy / "f", (NOW - 5, NOW - 5))
+    kept = cfg.agent_state_root / "NF-9"
+    kept.mkdir(parents=True)
+    (kept / "scratchpads").write_text(f"{listed}\n")
+    out = _sweep(cfg, ["NF-9"], NOW, scratch_age_s=600, pytest_age_s=0)
+    assert out["removed"] == []
+    assert tasks.exists() and busy.exists()
+
+
 def test_sweep_keeps_an_orphan_with_unpushed_commits(tmp_cfg, origin, tmp_path, monkeypatch, pads):
     cfg = agent_cfg(tmp_cfg, origin, tmp_path)
     monkeypatch.setenv("HOME", str(cfg.agent_home))
@@ -613,9 +635,47 @@ def test_stop_tests_removes_only_the_issue_s_containers(tmp_path, monkeypatch):
 
     monkeypatch.setattr("flocc.agentrun.subprocess.run", run)
     out = agentrun.stop_tests({"name": "NF-5", "worktree": str(wt)})
-    assert out == {"claude": None, "killed": [], "containers": ["nf5-db"]}
+    assert out == {"claude": None, "killed": [], "containers": ["nf5-db"], "testcontainers": []}
     assert ["podman", "rm", "-f", "a" * 64] in ran
     assert not any("b" * 64 in arg for argv in ran for arg in argv)
+
+
+def test_stop_tests_reports_testcontainers_it_cannot_attribute(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    wt = tmp_path / "wt" / "NF-5"
+    wt.mkdir(parents=True)
+    monkeypatch.setattr("flocc.agentrun.Sessions.pane_pid", lambda self, name: None)
+    monkeypatch.setattr("flocc.agentrun.container_env", lambda: {"DOCKER_HOST": "unix:///s"})
+    monkeypatch.setattr("flocc.agentrun.shutil.which", lambda name: "/usr/bin/podman")
+    ps = [{"Id": "c" * 64, "Names": ["pg"], "Labels": {"org.testcontainers": "true"}}]
+    ran = []
+
+    def run(argv, **kw):
+        ran.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(ps), "")
+
+    monkeypatch.setattr("flocc.agentrun.subprocess.run", run)
+    out = agentrun.stop_tests({"name": "NF-5", "worktree": str(wt)})
+    assert out["containers"] == [] and out["testcontainers"] == ["pg"]
+    assert not any(argv[:2] == ["podman", "rm"] for argv in ran)
+
+
+def test_kill_trees_interrupts_before_terminating(tmp_path):
+    marker = tmp_path / "teardown"
+    code = (
+        "import signal, sys, time\n"
+        f"signal.signal(signal.SIGINT, lambda *a: (open({str(marker)!r}, 'w').close(), sys.exit(0)))\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout is not None and proc.stdout.readline().strip() == "ready"
+        agentrun._kill_trees([proc.pid], agentrun._procs(), 5.0)
+        proc.wait(timeout=5)
+        assert marker.exists()
+    finally:
+        proc.kill()
 
 
 def test_shell_runs_bash_in_the_agent_home_and_caps_the_output(tmp_path, monkeypatch):

@@ -749,4 +749,4 @@ def test_shell_that_timed_out_exits_1_and_says_so(tmp_path, monkeypatch, capsys)
     path = _cfg_file(tmp_path)
     monkeypatch.setattr("flocc.agent.Agent.shell", lambda self, c: {"code": None, "output": ""})
     assert main(["--config", str(path), "shell", "--command=sleep 999"]) == 1
-    assert capsys.readouterr().out == "timed out after 120 s\n"
+    assert capsys.readouterr().out == "timed out after 90 s\n"

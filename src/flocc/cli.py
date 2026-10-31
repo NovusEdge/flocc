@@ -485,6 +485,8 @@ def cmd_stop_tests(args) -> int:
         f"stop-tests {args.key}: killed {len(out['killed'])} processes, removed"
         f" {len(out['containers'])} containers ({boxes}); {told}"
     )
+    if left := out.get("testcontainers"):
+        print(f"testcontainers still running, owner unknown: {', '.join(left)}")
     return 0
 
 

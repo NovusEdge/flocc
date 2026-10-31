@@ -171,6 +171,18 @@ def test_the_digest_lists_every_agent_shell_call():
     assert "agent-shell" in (PLUGIN / "skills" / "digest" / "SKILL.md").read_text()
 
 
+def test_the_triage_skill_sets_a_long_timeout_for_the_slow_verbs():
+    text = (PLUGIN / "skills" / "triage" / "SKILL.md").read_text()
+    assert "600000 ms" in text
+    assert all(verb in text for verb in ("cleanup --now", "stop-tests", "agent-shell"))
+
+
+def test_agent_shell_times_out_before_the_two_minute_tool_timeout():
+    from flocc import agentrun
+
+    assert agentrun.SHELL_TIMEOUT_S < 120
+
+
 def test_the_dispatch_skill_never_reruns_work():
     text = (PLUGIN / "skills" / "dispatch" / "SKILL.md").read_text()
     assert "lifts a hold and nothing else" in text and "tell the owner" in text
@@ -192,6 +204,7 @@ def test_managed_settings_ask_for_agent_shell_and_hook_every_bash_call():
         "Write",
         "NotebookEdit",
         "mcp__*",
+        "Monitor",
     ]
     assert p["disableBypassPermissionsMode"] == "disable"
     command = {"type": "command", "command": "/opt/cardinal/plugin/bin/only-executor"}
@@ -281,6 +294,12 @@ def test_the_hook_refuses_any_other_first_word(command):
 @pytest.mark.parametrize("op", [";", "&", "|", "`id`", "$(id)", "\n", "<", ">", "(", ")"])
 def test_the_hook_refuses_a_control_operator_outside_quotes(op):
     out = hook(bash_call(f"{EXECUTOR} status {op} id"))
+    assert out.returncode == 2 and "only-executor" in out.stderr
+
+
+@pytest.mark.parametrize("comment", ["#'\nid #'", '#"\nid #"', "#"])
+def test_the_hook_refuses_a_comment_that_hides_a_quote_from_it(comment):
+    out = hook(bash_call(f"{EXECUTOR} status {comment}"))
     assert out.returncode == 2 and "only-executor" in out.stderr
 
 
