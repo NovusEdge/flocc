@@ -205,6 +205,14 @@ def test_the_wrapper_refuses_an_unknown_subcommand():
         assert out.returncode == 2 and "unknown subcommand" in out.stderr
 
 
+@pytest.mark.parametrize("sub", ["usage", "stop-tests", "shell"])
+def test_the_wrapper_passes_the_host_repair_subcommands_on(sub):
+    out = subprocess.run(
+        ["sh", str(WRAPPER), sub], input="{}", capture_output=True, text=True, check=False
+    )
+    assert "unknown subcommand" not in out.stderr
+
+
 def test_the_sudoers_rule_allows_only_the_wrapper():
     rules = [
         line

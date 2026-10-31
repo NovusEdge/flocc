@@ -110,6 +110,38 @@ func TestAgentAccountRefusesTheDockerGroup(t *testing.T) {
 	}
 }
 
+func TestAgentAccessReinstallsAWrapperWithAnOlderAllowlist(t *testing.T) {
+	f := host.NewFake().OnName("visudo", 0, "").OnName("install", 0, "")
+	e := testEnv(t, f)
+	ctx := context.Background()
+	if err := (AgentAccess{}).Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(e.Path(OptDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if done, detail, _ := (AgentAccess{}).Check(ctx, e); !done {
+		t.Fatalf("a fresh install reads as undone: %s", detail)
+	}
+	current, _ := deploy.Files.ReadFile("flocc-agent-run")
+	older := strings.Replace(string(current), "|send|shell|start|stop-tests|sweep|usage)", "|send|start|sweep)", 1)
+	if older == string(current) {
+		t.Fatal("the allowlist line changed; update the older copy in this test")
+	}
+	if err := os.WriteFile(e.Path(AgentRun), []byte(older), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if done, detail, _ := (AgentAccess{}).Check(ctx, e); done || detail != AgentRun+" not installed or out of date" {
+		t.Fatalf("%v %q", done, detail)
+	}
+	if err := (AgentAccess{}).Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(e.Path(AgentRun)); string(got) != string(current) {
+		t.Fatal("setup left the older allowlist in place")
+	}
+}
+
 func TestAgentAccessLeavesNoRuleWhenVisudoRejectsIt(t *testing.T) {
 	f := host.NewFake().OnName("visudo", 1, "")
 	e := testEnv(t, f)

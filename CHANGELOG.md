@@ -6,6 +6,13 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- The tick watches the host: `/tmp` above `tmp_max_pct` (80), memory available below
+  `min_available_mem_gb` (1.0 GiB) or a new OOM kill opens an episode and emits `host-pressure`.
+  While it lasts nothing starts or relaunches, without spending a fix round or a restart, and
+  each running session hears when the host recovers. cardinal repairs it with `host`,
+  `cleanup --now` and `stop-tests KEY`, and as a last resort `agent-shell`, which asks you in the
+  Claude app before each command. The daily cleanup also removes finished pytest runs. Rerun
+  `flocc host cardinal` after `flocc ship` to install cardinal's side.
 - A PR title takes its conventional type from the branch's commits when they all share one (a
   docs-only change reads `docs:`); mixed or non-conventional subjects keep the label rule.
 - The executor keeps a fact the issue's wording would silently remove, or lists the conflict under
