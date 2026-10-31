@@ -1,9 +1,11 @@
 import argparse
+import fcntl
 import io
 import json
 import os
 import signal
 import subprocess
+import threading
 import time
 import types
 from concurrent.futures import ThreadPoolExecutor
@@ -642,3 +644,41 @@ def test_host_report_prints_the_reading_and_flocc_agent_s_part(host_cfg, monkeyp
     assert main(["--config", str(host_cfg), "host-report"]) == 0
     out = capsys.readouterr().out
     assert "/tmp 0% used" in out and "- NF-5: 1.0 GiB" in out and "Episode: none open" in out
+
+
+def test_tick_lock_waits_up_to_its_limit(tmp_path):
+    path = tmp_path / "tick.lock"
+    with tick_lock(path) as first:
+        assert first
+        start = time.monotonic()
+        with tick_lock(path, 0.3) as second:
+            assert not second
+        assert time.monotonic() - start >= 0.3
+    blocker = path.open("w")
+    fcntl.flock(blocker, fcntl.LOCK_EX)
+    threading.Timer(0.2, blocker.close).start()
+    with tick_lock(path, 5.0) as third:
+        assert third
+
+
+def test_cleanup_now_reports_busy_after_its_wait(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    monkeypatch.setattr("flocc.cleanup.NOW_LOCK_WAIT_S", 0.2)
+    monkeypatch.setattr("flocc.cleanup.cleanup", lambda *a, **kw: pytest.fail("ran under a tick"))
+    with tick_lock(load(path).tick_lock):
+        assert main(["--config", str(path), "cleanup", "--now"]) == 1
+    assert "busy" in capsys.readouterr().err
+
+
+def test_cleanup_now_sweeps_with_the_short_ages(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    seen = {}
+
+    def fake(cfg, con, agent, now, **ages):
+        seen.update(ages)
+        return {"removed": ["/tmp/pytest-of-flocc-agent/pytest-3"], "kept": [], "freed": 3 * 2**30}
+
+    monkeypatch.setattr("flocc.cleanup.cleanup", fake)
+    assert main(["--config", str(path), "cleanup", "--now"]) == 0
+    assert seen == {"scratch_age_s": 600, "pytest_age_s": 0.0}
+    assert "removed 1, freed 3.0 GiB in /tmp" in capsys.readouterr().out

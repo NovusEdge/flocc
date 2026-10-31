@@ -418,20 +418,26 @@ def cmd_digest_data(args) -> int:
 
 def cmd_cleanup(args) -> int:
     from flocc.agent import Agent
-    from flocc.cleanup import cleanup
+    from flocc.cleanup import NOW_LOCK_WAIT_S, NOW_SCRATCH_AGE_S, cleanup
+    from flocc.host import size_text
     from flocc.tick import tick_lock
 
     cfg, _ = _config(args)
-    with tick_lock(cfg.tick_lock) as held:
+    with tick_lock(cfg.tick_lock, NOW_LOCK_WAIT_S if args.now else 0.0) as held:
         if not held:
-            print("cleanup: a tick is running; try again in a moment", file=sys.stderr)
+            if args.now:
+                why = f"busy: a tick still holds the lock after {NOW_LOCK_WAIT_S:.0f} s"
+            else:
+                why = "a tick is running; try again in a moment"
+            print(f"cleanup: {why}", file=sys.stderr)
             return 1
+        ages = {"scratch_age_s": NOW_SCRATCH_AGE_S, "pytest_age_s": 0.0} if args.now else {}
         try:
-            out = cleanup(cfg, ledger.connect(cfg.ledger_path), Agent(cfg), time.time())
+            out = cleanup(cfg, ledger.connect(cfg.ledger_path), Agent(cfg), time.time(), **ages)
         except (subprocess.SubprocessError, OSError) as exc:
             print(f"cleanup: {exc}", file=sys.stderr)
             return 1
-    print(f"removed {len(out['removed'])}")
+    print(f"removed {len(out['removed'])}, freed {size_text(out['freed'])} in /tmp")
     for path in out["removed"][:20]:
         print(f"  {path}")
     for k in out["kept"]:
@@ -842,7 +848,13 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     dd = add("digest-data", "Print what the daily digest covers; --done N clears it once sent")
     dd.add_argument("--done", type=int, default=None, metavar="N", help="clear lines through N")
-    add("cleanup", "Remove worktrees, state and scratchpads no claim owns")
+    clean = add("cleanup", "Remove worktrees, state, scratchpads and pytest runs no claim owns")
+    clean.add_argument(
+        "--now",
+        action="store_true",
+        help="for a full /tmp: scratchpads idle 10 minutes and every finished pytest run;"
+        " waits up to 60 s for a running tick",
+    )
     add("host-report", "Print /tmp, memory and OOM kills, and what each issue holds")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"

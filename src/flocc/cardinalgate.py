@@ -50,6 +50,8 @@ def argv_for(command: str) -> list[str]:
             return words
         case (("status" | "cleanup" | "digest-data"), []):
             return words
+        case "cleanup", ["--now"]:
+            return words
         case "digest-data", ["--done", n] if _ID.fullmatch(n):
             return words
         case "host", []:

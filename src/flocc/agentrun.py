@@ -370,6 +370,37 @@ def _lock_pid(d: Path) -> int | None:
     return pid if pid > 0 else None
 
 
+_PYTEST_DIR = re.compile(r"pytest-[0-9]+")
+
+
+def _running(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+
+
+def _sweep_pytest(age_s: float, now: float) -> tuple[list[str], int]:
+    """pytest's numbered runs no live process holds; pytest itself prunes only on its next run."""
+    root = _pytest_root()
+    if not root.is_dir() or root.is_symlink():
+        return [], 0
+    removed: list[str] = []
+    freed = 0
+    for d in sorted(root.iterdir()):
+        # pytest-current is a link to the newest run.
+        if d.is_symlink() or not d.is_dir() or not _PYTEST_DIR.fullmatch(d.name):
+            continue
+        pid = _lock_pid(d)
+        if (pid is not None and _running(pid)) or not _older(d, age_s, now):
+            continue
+        freed += _du(d)
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append(str(d))
+    return removed, freed
+
+
 def _tmp_entries() -> list[Path]:
     """flocc-agent's entries in /tmp, with pytest's base directory opened up into its runs."""
     uid, pytest_root, found = os.getuid(), _pytest_root(), []
@@ -596,11 +627,13 @@ def _keep_reason(wt: Path, age_s: float, now: float) -> str:
 
 def sweep(req: dict) -> dict:
     """Removes what no claim owns: old clean worktrees whose commits are all on a remote, old
-    state directories, and old scratchpads no kept claim lists."""
+    state directories, old scratchpads no kept claim lists, and finished pytest runs."""
     keep = {_key(k) for k in req.get("keep") or []}
     root, states = under_home(req["worktree_root"]), under_home(req["state_root"])
     now, age_s = float(req["now"]), float(req["max_age_s"])
     scratch_age_s = float(req["scratch_age_s"])
+    pytest_age_s = float(req["pytest_age_s"])
+    freed = 0
     removed: list[str] = []
     kept: list[dict] = []
     if root.is_dir():
@@ -625,10 +658,12 @@ def sweep(req: dict) -> dict:
         if str(pad) in listed or scratch_path(str(pad)) != pad or not pad.is_dir():
             continue
         if _older(pad, scratch_age_s, now):
+            freed += _du(pad)
             shutil.rmtree(pad, ignore_errors=True)
             removed.append(str(pad))
+    runs, run_bytes = _sweep_pytest(pytest_age_s, now)
     _leftover_containers()
-    return {"removed": removed, "kept": kept}
+    return {"removed": removed + runs, "kept": kept, "freed": freed + run_bytes}
 
 
 def _containers() -> list[dict]:

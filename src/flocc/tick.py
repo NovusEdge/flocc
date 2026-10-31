@@ -103,17 +103,26 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
     )
 
 
+LOCK_POLL_S = 0.5
+
+
 @contextmanager
-def tick_lock(path: Path):
+def tick_lock(path: Path, wait_s: float = 0.0):
     # Taken here rather than by flock(1) in the unit, so a tick run by hand cannot overlap the
     # timer's.
     path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + wait_s
     with path.open("w") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    yield False
+                    return
+                time.sleep(min(LOCK_POLL_S, left))
         yield True
 
 

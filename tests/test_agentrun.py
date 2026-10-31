@@ -288,7 +288,7 @@ def test_the_client_sets_the_agent_home(tmp_cfg):
     assert json.loads(seen["input"]) == {"name": "NF-1", "text": "hi"}
 
 
-def _sweep(cfg, keep, now, scratch_age_s=86400.0):
+def _sweep(cfg, keep, now, scratch_age_s=86400.0, pytest_age_s=86400.0):
     return agentrun.sweep(
         {
             "keep": keep,
@@ -297,6 +297,7 @@ def _sweep(cfg, keep, now, scratch_age_s=86400.0):
             "now": now,
             "max_age_s": 7 * 86400.0,
             "scratch_age_s": scratch_age_s,
+            "pytest_age_s": pytest_age_s,
         }
     )
 
@@ -314,6 +315,8 @@ def pads(tmp_path, monkeypatch):
     # get its containers stopped: every sweep test points both away.
     root = tmp_path / "pads"
     root.mkdir()
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr("flocc.agentrun._tmp_root", lambda: tmp_path / "tmp")
     monkeypatch.setattr("flocc.agentrun._scratch_root", lambda: root)
     monkeypatch.setattr("flocc.agentrun.container_env", dict)
     return root
@@ -335,8 +338,65 @@ def test_sweep_never_touches_a_kept_key(tmp_cfg, origin, tmp_path, monkeypatch, 
     state = cfg.agent_state_root / "NF-7"
     _age(path, NOW, 30)
     _age(state, NOW, 30)
-    assert _sweep(cfg, ["NF-7"], NOW) == {"removed": [], "kept": []}
+    assert _sweep(cfg, ["NF-7"], NOW) == {"removed": [], "kept": [], "freed": 0}
     assert path.exists() and state.exists()
+
+
+def _bare_cfg(tmp_cfg, tmp_path, monkeypatch):
+    home = tmp_path / "agent"
+    monkeypatch.setenv("HOME", str(home))
+    return replace(
+        tmp_cfg, agent_home=home, worktree_root=home / "worktrees", agent_state_root=home / "state"
+    )
+
+
+def test_sweep_removes_dead_pytest_runs_and_keeps_live_ones(tmp_cfg, tmp_path, monkeypatch, pads):
+    cfg = _bare_cfg(tmp_cfg, tmp_path, monkeypatch)
+    root = agentrun._pytest_root()
+    live, dead, fresh = root / "pytest-1", root / "pytest-2", root / "pytest-3"
+    for d in (live, dead, fresh):
+        d.mkdir(parents=True)
+        (d / "copy").write_bytes(b"x" * 100_000)
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    (live / ".lock").write_text(str(os.getpid()))
+    (dead / ".lock").write_text(str(gone.pid))
+    (root / "pytest-current").symlink_to(dead)
+    for d in (live, dead):
+        _age(d, NOW, 2)
+    _age(fresh, NOW, 0.5)
+    out = _sweep(cfg, [], NOW)
+    assert out["removed"] == [str(dead)] and not dead.exists() and out["freed"] >= 100_000
+    assert live.exists() and fresh.exists() and (root / "pytest-current").is_symlink()
+    now = _sweep(cfg, [], NOW, scratch_age_s=600, pytest_age_s=0)
+    assert now["removed"] == [str(fresh)] and live.exists()
+
+
+def test_sweep_now_leaves_a_worktree_younger_than_7_days(
+    tmp_cfg, origin, tmp_path, monkeypatch, pads
+):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    monkeypatch.setenv("HOME", str(cfg.agent_home))
+    path, _, _ = Agent(cfg).prepare("backend", "NF-7")
+    _age(path, NOW, 1)
+    out = _sweep(cfg, [], NOW, scratch_age_s=600, pytest_age_s=0)
+    assert out["kept"] == [{"path": str(path), "why": "changed in the last 7 days"}]
+    assert path.exists()
+
+
+def test_sweep_now_takes_unlisted_scratchpads_idle_ten_minutes(
+    tmp_cfg, tmp_path, monkeypatch, pads
+):
+    cfg = _bare_cfg(tmp_cfg, tmp_path, monkeypatch)
+    idle, listed = pads / "p" / "s1" / "scratchpad", pads / "p" / "s2" / "scratchpad"
+    for pad in (idle, listed):
+        pad.mkdir(parents=True)
+        os.utime(pad, (NOW - 900, NOW - 900))
+    kept = cfg.agent_state_root / "NF-9"
+    kept.mkdir(parents=True)
+    (kept / "scratchpads").write_text(f"{listed}\n")
+    out = _sweep(cfg, ["NF-9"], NOW, scratch_age_s=600, pytest_age_s=0)
+    assert out["removed"] == [str(idle)] and listed.exists()
 
 
 def test_sweep_keeps_an_orphan_with_unpushed_commits(tmp_cfg, origin, tmp_path, monkeypatch, pads):
