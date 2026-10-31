@@ -10,6 +10,10 @@ check_timeout_s = 1800
 setup_timeout_s = 900
 # New starts are held while the disk holding worktree_root has less free space than this.
 # min_free_disk_gb = 2.0
+# Starts and relaunches wait, and cardinal is told, while /tmp is fuller than this percent or
+# memory available is below this many GiB.
+# tmp_max_pct = 80.0
+# min_available_mem_gb = 1.0
 # Keep one uv cache under worktree_root across every ./setup, so later setups link packages
 # instead of downloading them. Leave off on small disks: the cache is never pruned.
 # shared_uv_cache = true
