@@ -2,6 +2,10 @@
 # cardinal's one way to the executor VM. The forced command there splits the line with shlex,
 # so every argument goes single-quoted, with its own quotes escaped.
 set -eu
+if [ "${1:-}" = shell ]; then
+  echo "executor: shell goes through agent-shell, which asks the owner first" >&2
+  exit 2
+fi
 line=""
 for arg in "$@"; do
   quoted=$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")

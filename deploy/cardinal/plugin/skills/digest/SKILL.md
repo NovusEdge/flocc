@@ -9,8 +9,9 @@ description: Use when a daily event arrives from the executor VM, or the owner a
    run once the digest is sent.
 3. Write the owner one message of at most 15 lines: PRs ready for review, with links; runs that
    stopped and what each needs from the owner; holds; service problems; events needing
-   attention; worktrees cleanup kept, with why. Leave out anything that needs nothing from the
-   owner. On a day with nothing, write one line saying so.
+   attention; worktrees cleanup kept, with why. Every command listed under agent-shell, with its
+   exit status, always goes in, even on a quiet day. Leave out anything else that needs nothing
+   from the owner. On a day with nothing, write one line saying so.
 4. Run `/opt/cardinal/plugin/bin/executor digest-data --done N` with the N from step 2. Then
    acknowledge the `daily` event and every event listed as needing attention, in one
    `/opt/cardinal/plugin/bin/executor ack ID ...` call.

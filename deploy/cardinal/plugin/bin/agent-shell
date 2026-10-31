@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs one command as flocc-agent on the executor VM. No allow rule covers this file, so each
+# call asks the owner in the Claude app. The quoting is executor's, which refuses shell itself.
+set -eu
+if [ "$#" -ne 1 ]; then
+  echo "usage: agent-shell 'COMMAND'" >&2
+  exit 2
+fi
+quoted=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+exec ssh -F "${EXECUTOR_SSH_CONFIG:-/etc/flocc-cardinal/ssh_config}" executor "'shell' '$quoted'"
