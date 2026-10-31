@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -84,11 +86,15 @@ func TestRenderConfigKeepsKeysTheWizardDoesNotAsk(t *testing.T) {
 	existing := []byte(`team_key = "OLD"
 setup_timeout_s = 1800
 shared_uv_cache = true
+skip_unmapped = true
+ntfy_url = "https://ntfy.sh/x"
+worktree_root = "/srv/wt"
 
 [repos.nimblefox-template]
 path = "~/src/nimblefox-template"
 base_branch = "dev"
 commit_trailer = false
+shared_paths = [".env"]
 
 [repos.dropped]
 path = "~/src/dropped"
@@ -118,6 +124,34 @@ url = "https://mcp.sentry.dev/mcp"
 	repo := repos["nimblefox-template"].(map[string]any)
 	if repo["base_branch"] != "main" || repo["commit_trailer"] != false {
 		t.Errorf("repo: base_branch %v, commit_trailer %v", repo["base_branch"], repo["commit_trailer"])
+	}
+	for _, k := range []string{"skip_unmapped", "ntfy_url", "worktree_root"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("%s kept:\n%s", k, got)
+		}
+	}
+	if _, ok := repo["shared_paths"]; ok {
+		t.Errorf("repos.nimblefox-template.shared_paths kept:\n%s", got)
+	}
+}
+
+func TestDroppedKeysMatchConfigPy(t *testing.T) {
+	src, err := os.ReadFile("../../../src/flocc/config.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, name := range []string{"_RETIRED", "_LAYOUT"} {
+		tuple := regexp.MustCompile(`(?s)\n` + name + ` = \((.*?)\)\n`).FindSubmatch(src)
+		if tuple == nil {
+			t.Fatalf("%s not found in config.py", name)
+		}
+		for _, q := range regexp.MustCompile(`"([a-z_]+)"`).FindAllSubmatch(tuple[1], -1) {
+			want = append(want, string(q[1]))
+		}
+	}
+	if !slices.Equal(want, droppedKeys) {
+		t.Errorf("droppedKeys %v, config.py has %v", droppedKeys, want)
 	}
 }
 

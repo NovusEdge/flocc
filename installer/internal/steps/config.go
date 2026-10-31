@@ -22,6 +22,13 @@ const credentialHelper = `!f() { test "$1" = get && printf 'username=x-access-to
 
 var (
 	repoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	// Keys src/flocc/config.py's _RETIRED and _LAYOUT name: load warns on every tick while they
+	// remain, so a rerun of setup removes them. TestDroppedKeysMatchConfigPy keeps the lists equal.
+	droppedKeys = []string{
+		"ntfy_url", "context_restart_pct", "idle_escalate_s", "stall_escalate_s",
+		"worktree_root", "plugin_dir", "agent_home", "agent_state_root", "agent_flocc", "agent_run",
+		"claude_json", "installed_plugins_file",
+	}
 )
 
 // RenderConfig writes the answers over existing, the host's current config.toml (nil on a new
@@ -39,7 +46,10 @@ func RenderConfig(example, existing []byte, a *answers.Answers) ([]byte, error) 
 		return nil, fmt.Errorf("existing config.toml: %w", err)
 	}
 	oldRepos, _ := old["repos"].(map[string]any)
-	delete(old, "repos")
+	// skip_unmapped is the wizard's answer, so an old true must not outlive a "no".
+	for _, k := range slices.Concat(droppedKeys, []string{"repos", "skip_unmapped"}) {
+		delete(old, k)
+	}
 	maps.Copy(m, old)
 	m["team_key"] = a.TeamKey
 	m["digest_issue"] = a.DigestIssue
@@ -49,6 +59,7 @@ func RenderConfig(example, existing []byte, a *answers.Answers) ([]byte, error) 
 		if repo == nil {
 			repo = map[string]any{}
 		}
+		delete(repo, "shared_paths")
 		maps.Copy(repo, map[string]any{"path": "~/src/" + r.Name, "base_branch": r.BaseBranch, "check": r.Check, "draft": r.Draft})
 		repos[r.Name] = repo
 	}
