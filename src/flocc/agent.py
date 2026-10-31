@@ -129,6 +129,11 @@ class Agent:
         }
         return self.call("sweep", payload=payload, timeout=900)
 
+    def usage(self) -> dict:
+        return self.call(
+            "usage", payload={"worktree_root": str(self.cfg.worktree_root)}, timeout=180
+        )
+
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
         payload = {
             "mode": "worktree",

@@ -24,6 +24,7 @@ ROOT = Path(__file__).parent.parent
         ("cleanup", ["cleanup"]),
         ("digest-data", ["digest-data"]),
         ("digest-data --done 41", ["digest-data", "--done", "41"]),
+        ("host", ["host-report"]),
     ],
 )
 def test_the_allowed_lines(line, argv):
@@ -60,6 +61,7 @@ def test_a_note_with_shell_text_stays_one_argument():
         "hold NF-1 --why x",
         "digest-data --done -1",
         "events 'unbalanced",
+        "host --json",
     ],
 )
 def test_anything_else_is_refused(line):
@@ -91,6 +93,15 @@ def test_main_refuses_with_exit_2(monkeypatch, capsys):
     monkeypatch.setattr("flocc.cli.main", lambda argv: pytest.fail("ran flocc"))
     assert cardinalgate.main() == 2
     assert "id is not a command cardinal may run" in capsys.readouterr().err
+
+
+def test_the_host_verb_reaches_a_host_command_not_the_desktop_one(monkeypatch, capsys):
+    from flocc import cli
+
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", "host")
+    monkeypatch.setitem(cli.COMMANDS, "host-report", lambda args: 0)
+    assert cardinalgate.main() == 0
+    assert "desktop command" not in capsys.readouterr().err
 
 
 def test_the_gate_is_a_console_script():

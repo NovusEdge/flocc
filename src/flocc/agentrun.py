@@ -4,6 +4,7 @@ it as one JSON object on stdin and prints its answer as one JSON object on stdou
 import grp
 import json
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ SUBCOMMANDS = (
     "send",
     "start",
     "sweep",
+    "usage",
 )
 _NAME = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+(?:-test|-review)?$")
 _FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -306,6 +308,91 @@ def scratch_path(line: str) -> Path | None:
     return path if len(rel.parts) >= 3 else None
 
 
+def _tmp_root() -> Path:
+    return Path("/tmp")
+
+
+def _pytest_root() -> Path:
+    return _tmp_root() / f"pytest-of-{pwd.getpwuid(os.getuid()).pw_name}"
+
+
+def _du(path: Path) -> int:
+    """Bytes allocated under path, links not followed; on a tmpfs these are the pages it holds."""
+    try:
+        total = path.lstat().st_blocks * 512
+    except OSError:
+        return 0
+    for top, dirs, files in os.walk(path):
+        for name in dirs + files:
+            try:
+                total += os.lstat(os.path.join(top, name)).st_blocks * 512
+            except OSError:
+                pass
+    return total
+
+
+def _procs() -> dict[int, tuple[int, list[str]]]:
+    found: dict[int, tuple[int, list[str]]] = {}
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            stat = (d / "stat").read_text()
+            raw = (d / "cmdline").read_bytes()
+        except OSError:
+            continue
+        # The command name, in parentheses, may itself hold spaces and parentheses.
+        ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        found[int(d.name)] = (ppid, [a.decode(errors="replace") for a in raw.split(b"\0") if a])
+    return found
+
+
+def _path_issue(path: Path, root: Path) -> str | None:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return None
+    return rel.parts[0] if rel.parts and _KEY.match(rel.parts[0]) else None
+
+
+def _cwd_issue(pid: int, root: Path) -> str | None:
+    try:
+        return _path_issue(Path(os.readlink(f"/proc/{pid}/cwd")), root)
+    except OSError:
+        return None
+
+
+def _lock_pid(d: Path) -> int | None:
+    try:
+        pid = int((d / ".lock").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _tmp_entries() -> list[Path]:
+    """flocc-agent's entries in /tmp, with pytest's base directory opened up into its runs."""
+    uid, pytest_root, found = os.getuid(), _pytest_root(), []
+    for p in sorted(_tmp_root().iterdir()):
+        try:
+            if p.lstat().st_uid != uid:
+                continue
+        except OSError:
+            continue
+        if p == pytest_root and p.is_dir() and not p.is_symlink():
+            found += [d for d in sorted(p.iterdir()) if not d.is_symlink()]
+        else:
+            found.append(p)
+    return found
+
+
+def _rss(pid: int) -> int:
+    try:
+        return int(Path(f"/proc/{pid}/statm").read_text().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
 # The only claude invocations the service needs from flocc-agent's install.
 CLAUDE_ALLOWED = (("--version",), ("auth", "status"), ("auth", "login"), ("remote-control",))
 _EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$")
@@ -544,6 +631,77 @@ def sweep(req: dict) -> dict:
     return {"removed": removed, "kept": kept}
 
 
+def _containers() -> list[dict]:
+    if not (container_env() and shutil.which("podman")):
+        return []
+    out = subprocess.run(
+        ["podman", "ps", "-a", "--format", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    try:
+        data = json.loads(out.stdout or "[]")
+    except ValueError:
+        return []
+    return [c for c in data if isinstance(c, dict)] if isinstance(data, list) else []
+
+
+def _container_issue(container: dict, root: Path) -> str | None:
+    # Compose records the project's directory in a label. A container's own working directory
+    # is a path inside it and says nothing about the host.
+    labels = container.get("Labels") or {}
+    for value in labels.values() if isinstance(labels, dict) else []:
+        if isinstance(value, str) and (key := _path_issue(Path(value), root)):
+            return key
+    return None
+
+
+def _container_memory() -> dict[str, str]:
+    out = subprocess.run(
+        ["podman", "stats", "--no-stream", "--format", "{{.ID}}\t{{.MemUsage}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    rows = (line.split("\t", 1) for line in out.stdout.splitlines() if "\t" in line)
+    return {cid.strip(): mem.strip() for cid, mem in rows if cid.strip()}
+
+
+def _container_name(c: dict) -> str:
+    return ", ".join(c.get("Names") or []) or str(c.get("Id", ""))[:12]
+
+
+def usage(req: dict) -> dict:
+    """What flocc-agent's /tmp entries, processes and containers hold, by issue where one owns
+    them: a pytest run's .lock pid, or a process's cwd, under worktree_root/KEY."""
+    root = under_home(req["worktree_root"]).resolve()
+    entries = []
+    for p in _tmp_entries():
+        pid = _lock_pid(p) if p.parent == _pytest_root() else None
+        issue = _cwd_issue(pid, root) if pid else None
+        entries.append({"path": str(p), "bytes": _du(p), "issue": issue})
+    issues: dict[str, int] = {}
+    for pid in _procs():
+        if key := _cwd_issue(pid, root):
+            issues[key] = issues.get(key, 0) + _rss(pid)
+    found = _containers()
+    memory = _container_memory() if found else {}
+
+    def mem(c: dict) -> str:
+        cid = str(c.get("Id", ""))
+        return next((m for short, m in memory.items() if cid.startswith(short)), "not running")
+
+    containers = [
+        {"name": _container_name(c), "memory": mem(c), "issue": _container_issue(c, root)}
+        for c in found
+    ]
+    largest = sorted(entries, key=lambda e: -e["bytes"])[:10]
+    return {"largest": largest, "issues": issues, "containers": containers}
+
+
 HANDLERS: dict[str, Callable[[dict], dict]] = {
     "start": start,
     "send": send,
@@ -553,6 +711,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "remove": remove,
     "probe": probe,
     "sweep": sweep,
+    "usage": usage,
 }
 
 

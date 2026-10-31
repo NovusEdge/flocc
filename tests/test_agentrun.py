@@ -414,3 +414,63 @@ def test_sweep_stops_running_containers_only_with_no_session_up(monkeypatch, tmp
         ["podman", "stop", "--all", "--time", "10"],
         ["podman", "container", "prune", "-f"],
     ]
+
+
+def _agent_home(tmp_path, monkeypatch):
+    home = tmp_path / "agent"
+    (home / "worktrees").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    monkeypatch.setattr("flocc.agentrun._tmp_root", lambda: tmp)
+    return home, tmp
+
+
+def test_usage_names_the_issue_behind_a_pytest_run_and_its_memory(tmp_path, monkeypatch):
+    home, tmp = _agent_home(tmp_path, monkeypatch)
+    monkeypatch.setattr("flocc.agentrun.container_env", dict)
+    wt = home / "worktrees" / "NF-5"
+    wt.mkdir()
+    run = agentrun._pytest_root() / "pytest-7"
+    run.mkdir(parents=True)
+    (run / "copy").write_bytes(b"x" * 300_000)
+    (tmp / "small").write_bytes(b"x" * 10)
+    proc = subprocess.Popen(["sleep", "30"], cwd=wt)
+    try:
+        (run / ".lock").write_text(str(proc.pid))
+        out = agentrun.usage({"worktree_root": str(home / "worktrees")})
+    finally:
+        proc.kill()
+        proc.wait()
+    first = out["largest"][0]
+    assert first["path"] == str(run) and first["issue"] == "NF-5" and first["bytes"] >= 300_000
+    assert {e["path"] for e in out["largest"]} == {str(run), str(tmp / "small")}
+    assert out["issues"]["NF-5"] > 0 and out["containers"] == []
+
+
+def test_usage_lists_containers_with_their_memory_and_issue(tmp_path, monkeypatch):
+    home, _ = _agent_home(tmp_path, monkeypatch)
+    root = (home / "worktrees").resolve()
+    monkeypatch.setattr("flocc.agentrun.container_env", lambda: {"DOCKER_HOST": "unix:///s"})
+    monkeypatch.setattr("flocc.agentrun.shutil.which", lambda name: "/usr/bin/podman")
+    label = "com.docker.compose.project.working_dir"
+    ps = [
+        {
+            "Id": "abc123def456" + "0" * 52,
+            "Names": ["nf-db-1"],
+            "Labels": {label: str(root / "NF-5")},
+        },
+        {"Id": "f" * 64, "Names": ["other"], "Labels": {}},
+    ]
+
+    def run(argv, **kw):
+        if argv[:2] == ["podman", "ps"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(ps), "")
+        return subprocess.CompletedProcess(argv, 0, "abc123def456\t120MB / 5.8GB\n", "")
+
+    monkeypatch.setattr("flocc.agentrun.subprocess.run", run)
+    out = agentrun.usage({"worktree_root": str(home / "worktrees")})
+    assert out["containers"] == [
+        {"name": "nf-db-1", "memory": "120MB / 5.8GB", "issue": "NF-5"},
+        {"name": "other", "memory": "not running", "issue": None},
+    ]

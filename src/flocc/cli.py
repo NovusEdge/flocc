@@ -439,6 +439,21 @@ def cmd_cleanup(args) -> int:
     return 0
 
 
+def cmd_host_report(args) -> int:
+    from flocc import host
+    from flocc.agent import Agent
+
+    cfg, _ = _config(args)
+    try:
+        usage = Agent(cfg).usage()
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"host-report: {exc}", file=sys.stderr)
+        return 1
+    episode = host.pressure_detail(ledger.connect(cfg.ledger_path))
+    print(host.report_text(cfg, host.read(), usage, episode))
+    return 0
+
+
 def _lift_hold(cfg, key: str) -> int:
     # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
     # the timed-out restart, or a move to Todo made while it was held, would start it again.
@@ -762,6 +777,7 @@ COMMANDS = {
     "run-summary": cmd_run_summary,
     "digest-data": cmd_digest_data,
     "cleanup": cmd_cleanup,
+    "host-report": cmd_host_report,
 }
 
 
@@ -827,6 +843,7 @@ def build_parser() -> argparse.ArgumentParser:
     dd = add("digest-data", "Print what the daily digest covers; --done N clears it once sent")
     dd.add_argument("--done", type=int, default=None, metavar="N", help="clear lines through N")
     add("cleanup", "Remove worktrees, state and scratchpads no claim owns")
+    add("host-report", "Print /tmp, memory and OOM kills, and what each issue holds")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )

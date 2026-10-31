@@ -140,3 +140,35 @@ def check(rt, reading: Reading | None = None) -> None:
         ledger.meta_set(con, EPISODE, "")
         _tell_recovered(rt)
     ledger.meta_set(con, OOM_SEEN, str(r.oom_kills))
+
+
+def report_text(cfg, r: Reading, usage: dict, episode: str) -> str:
+    """cardinal's host verb. tmpfs pages belong to no process, so /tmp shows only in its list."""
+
+    def owner(issue) -> str:
+        return f" ({issue})" if issue else ""
+
+    tmp = [f"- {size_text(e['bytes'])} {e['path']}{owner(e['issue'])}" for e in usage["largest"]]
+    by_size = sorted(usage["issues"].items(), key=lambda kv: -kv[1])
+    procs = [f"- {key}: {size_text(n)}" for key, n in by_size]
+    boxes = [f"- {c['name']}: {c['memory']}{owner(c['issue'])}" for c in usage["containers"]]
+    return "\n".join(
+        [
+            (
+                f"/tmp {r.tmp_pct:.0f}% used ({r.tmp_used / GIB:.1f} GiB of"
+                f" {r.tmp_size / GIB:.1f} GiB); limit {cfg.tmp_max_pct:g}%"
+            ),
+            f"MemAvailable {r.mem_available / GIB:.1f} GiB; limit {cfg.min_available_mem_gb:g} GiB",
+            f"OOM kills since boot: {r.oom_kills}",
+            f"Episode open: {episode}" if episode else "Episode: none open",
+            "",
+            "Largest in /tmp owned by flocc-agent:",
+            *(tmp or ["- none"]),
+            "",
+            "Process memory by issue (RSS):",
+            *(procs or ["- none"]),
+            "",
+            "Containers:",
+            *(boxes or ["- none"]),
+        ]
+    )

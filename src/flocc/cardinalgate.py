@@ -52,6 +52,9 @@ def argv_for(command: str) -> list[str]:
             return words
         case "digest-data", ["--done", n] if _ID.fullmatch(n):
             return words
+        case "host", []:
+            # flocc host is the desktop's command, which a host refuses.
+            return ["host-report"]
         case "run-summary", [key]:
             return [verb, _key(key)]
         case "fix", [key, "--note", note]:

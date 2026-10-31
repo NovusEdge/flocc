@@ -160,3 +160,34 @@ def test_a_send_that_fails_does_not_cost_the_other_sessions_theirs(tmp_cfg, caps
     host.check(rt, reading(10))
     assert sent == ["NF-2"] and not host.under_pressure(rt.con)
     assert "NF-1: recovery message not sent" in capsys.readouterr().err
+
+
+USAGE = {
+    "largest": [
+        {"path": "/tmp/pytest-of-flocc-agent/pytest-7", "bytes": 2 * GIB, "issue": "NF-5"},
+        {"path": "/tmp/claude-1001", "bytes": 5 * 2**20, "issue": None},
+    ],
+    "issues": {"NF-5": 3 * GIB // 2, "NF-6": GIB // 4},
+    "containers": [{"name": "nf-db-1", "memory": "120MB / 5.8GB", "issue": "NF-5"}],
+}
+
+
+def test_the_report_names_the_values_their_limits_and_the_owners(tmp_cfg):
+    r = Reading(int(SIZE * 0.93), SIZE, int(0.6 * GIB), 4)
+    text = host.report_text(tmp_cfg, r, USAGE, "/tmp 93% (2.8/3.0 GiB)")
+    for part in (
+        "/tmp 93% used (2.8 GiB of 3.0 GiB); limit 80%",
+        "MemAvailable 0.6 GiB; limit 1 GiB",
+        "OOM kills since boot: 4",
+        "Episode open: /tmp 93% (2.8/3.0 GiB)",
+        "- 2.0 GiB /tmp/pytest-of-flocc-agent/pytest-7 (NF-5)",
+        "- 5 MiB /tmp/claude-1001\n",
+        "- NF-5: 1.5 GiB\n- NF-6: 256 MiB",
+        "- nf-db-1: 120MB / 5.8GB (NF-5)",
+    ):
+        assert part in text
+
+
+def test_an_empty_report_says_none(tmp_cfg):
+    text = host.report_text(tmp_cfg, reading(), {"largest": [], "issues": {}, "containers": []}, "")
+    assert "Episode: none open" in text and text.count("- none") == 3

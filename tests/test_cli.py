@@ -633,3 +633,12 @@ def test_canary_reports_a_base_it_cannot_fetch(host_cfg, monkeypatch, capsys):
     monkeypatch.setattr("flocc.agent.Agent.setup_base", unreachable)
     assert main(["--config", str(host_cfg), "canary", repo]) == 1
     assert "no remote" in capsys.readouterr().err
+
+
+def test_host_report_prints_the_reading_and_flocc_agent_s_part(host_cfg, monkeypatch, capsys):
+    load(host_cfg).ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    usage = {"largest": [], "issues": {"NF-5": 2**30}, "containers": []}
+    monkeypatch.setattr("flocc.agent.Agent.usage", lambda self: usage)
+    assert main(["--config", str(host_cfg), "host-report"]) == 0
+    out = capsys.readouterr().out
+    assert "/tmp 0% used" in out and "- NF-5: 1.0 GiB" in out and "Episode: none open" in out
