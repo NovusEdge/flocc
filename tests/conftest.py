@@ -30,6 +30,14 @@ def calm_host(monkeypatch):
     monkeypatch.setattr("flocc.host.read", lambda: CALM)
 
 
+@pytest.fixture(autouse=True)
+def agent_tmp_in_tmp_path(tmp_path, monkeypatch):
+    # agentrun.main creates and exports its TMPDIR, which would land in the developer's home
+    # and leak into every later test's subprocesses.
+    monkeypatch.setattr("flocc.agentrun._home", lambda: tmp_path)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+
+
 @pytest.fixture
 def tmp_cfg(tmp_path):
     for name in ("state", "wt"):

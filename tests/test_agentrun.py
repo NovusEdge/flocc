@@ -172,6 +172,22 @@ def test_container_env_points_at_the_podman_socket(tmp_path, monkeypatch):
     }
 
 
+def test_sessions_and_checks_get_a_tmpdir_on_disk_under_home(tmp_path, monkeypatch):
+    monkeypatch.setattr("flocc.agentrun._home", lambda: tmp_path)
+    assert agentrun.tmp_env() == {"TMPDIR": str(tmp_path / ".cache" / "flocc-tmp")}
+    assert agentrun._pytest_root().parent == tmp_path / ".cache" / "flocc-tmp"
+
+
+def test_main_creates_the_tmpdir_private_and_exports_it(tmp_path, monkeypatch):
+    monkeypatch.setattr("flocc.agentrun._home", lambda: tmp_path)
+    monkeypatch.setattr("flocc.agentrun.container_env", dict)
+    monkeypatch.setenv("TMPDIR", "/tmp")
+    assert agentrun.main(["rm"]) == 2
+    made = tmp_path / ".cache" / "flocc-tmp"
+    assert made.is_dir() and made.stat().st_mode & 0o777 == 0o700
+    assert os.environ["TMPDIR"] == str(made)
+
+
 def test_no_socket_means_no_container_env(tmp_path, monkeypatch):
     monkeypatch.setattr("flocc.agentrun._runtime_dir", lambda: tmp_path)
     assert agentrun.container_env() == {}
@@ -179,10 +195,12 @@ def test_no_socket_means_no_container_env(tmp_path, monkeypatch):
 
 def test_the_pane_gets_the_container_env_after_env_i(monkeypatch):
     monkeypatch.setattr("flocc.agentrun.container_env", lambda: {"DOCKER_HOST": "unix:///s"})
+    monkeypatch.setattr("flocc.agentrun._tmp_root", lambda: Path("/h/.cache/flocc-tmp"))
     argv = ["/usr/bin/env", "-i", "HOME=/h", "claude", "--name", "NF-1"]
     assert agentrun.with_container_env(argv) == [
         "/usr/bin/env",
         "-i",
+        "TMPDIR=/h/.cache/flocc-tmp",
         "DOCKER_HOST=unix:///s",
         "HOME=/h",
         "claude",

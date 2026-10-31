@@ -85,10 +85,15 @@ def container_env() -> dict[str, str]:
     }
 
 
+def tmp_env() -> dict[str, str]:
+    return {"TMPDIR": str(_tmp_root())}
+
+
 def with_container_env(argv: list[str]) -> list[str]:
     if argv[:2] != ["/usr/bin/env", "-i"]:
         return argv
-    return [*argv[:2], *(f"{k}={v}" for k, v in container_env().items()), *argv[2:]]
+    env = {**tmp_env(), **container_env()}
+    return [*argv[:2], *(f"{k}={v}" for k, v in env.items()), *argv[2:]]
 
 
 def session_name(raw) -> str:
@@ -315,7 +320,10 @@ def scratch_path(line: str) -> Path | None:
 
 
 def _tmp_root() -> Path:
-    return Path("/tmp")
+    # TMPDIR for sessions and checks. /tmp is a small tmpfs on flocc hosts, and one nimblefox
+    # drift-test run holds 2.2 GiB of pytest copies at once. Claude Code's own scratchpads follow
+    # CLAUDE_CODE_TMPDIR instead, so they stay under _scratch_root.
+    return _home() / ".cache" / "flocc-tmp"
 
 
 def _pytest_root() -> Path:
@@ -896,6 +904,8 @@ def _request() -> dict:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     os.umask(0o027)
+    _tmp_root().mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.environ.update(tmp_env())
     os.environ.update(container_env())
     if not argv or argv[0] not in SUBCOMMANDS:
         print(f"flocc-agent: unknown subcommand: {argv[0] if argv else 'none'}", file=sys.stderr)
