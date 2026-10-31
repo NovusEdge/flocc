@@ -4,9 +4,11 @@ import types
 import pytest
 
 from flocc import events, host, ledger
+from flocc.agent import AgentError
 from flocc.host import GIB, Reading
 from flocc.host import read as real_read
 from tests.fakes import FakeSessions
+from tests.test_ledger import make
 
 MEMINFO = "MemTotal:        6082560 kB\nMemFree:          204800 kB\nMemAvailable:     629145 kB\n"
 VMSTAT = "nr_free_pages 51200\noom_kill 2\nnuma_hit 1\n"
@@ -119,3 +121,42 @@ def test_an_oom_only_episode_closes_on_the_first_tick_without_a_new_kill(tmp_cfg
     assert host.under_pressure(rt.con)
     host.check(rt, reading(ooms=2))
     assert not host.under_pressure(rt.con)
+
+
+def claim(rt, key, phase, state="running"):
+    c = make(key, state=state)
+    c.phase = phase
+    ledger.insert_claim(rt.con, c)
+
+
+def test_closing_the_episode_tells_each_running_session_once(tmp_cfg):
+    rt = runtime(tmp_cfg)
+    claim(rt, "NF-1", "impl")
+    claim(rt, "NF-2", "review")
+    claim(rt, "NF-3", "impl", state="blocked")
+    claim(rt, "NF-4", "fix")
+    rt.sessions.alive_names = {"NF-1", "NF-2-review", "NF-3"}
+    host.check(rt, reading(93))
+    assert rt.sessions.sent == []
+    host.check(rt, reading(10))
+    host.check(rt, reading(10))
+    assert sorted(rt.sessions.sent) == [("NF-1", host.RECOVERED), ("NF-2-review", host.RECOVERED)]
+
+
+def test_a_send_that_fails_does_not_cost_the_other_sessions_theirs(tmp_cfg, capsys):
+    rt = runtime(tmp_cfg)
+    claim(rt, "NF-1", "impl")
+    claim(rt, "NF-2", "impl")
+    rt.sessions.alive_names = {"NF-1", "NF-2"}
+    sent = []
+
+    def send(name, text):
+        if name == "NF-1":
+            raise AgentError("flocc-agent-run send exited 1: can't find session")
+        sent.append(name)
+
+    rt.sessions.send = send
+    host.check(rt, reading(93))
+    host.check(rt, reading(10))
+    assert sent == ["NF-2"] and not host.under_pressure(rt.con)
+    assert "NF-1: recovery message not sent" in capsys.readouterr().err

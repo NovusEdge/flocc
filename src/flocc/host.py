@@ -1,9 +1,12 @@
 import json
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from flocc import events, ledger
+from flocc.sessions import session_name
 
 GIB = 2**30
 
@@ -55,6 +58,7 @@ OOM_SEEN = "host_oom_kills"
 # A value sitting at its limit would otherwise open and close an episode every tick.
 CLOSE_TMP = 0.9
 CLOSE_MEM = 1.1
+RECOVERED = "The host has recovered; you may run the test suite again."
 
 
 def _episode(con) -> dict | None:
@@ -100,6 +104,19 @@ def _recovered(r: Reading, cfg) -> bool:
     )
 
 
+def _tell_recovered(rt) -> None:
+    for claim in ledger.live_claims(rt.con):
+        if claim.state != "running":
+            continue
+        name = session_name(claim.issue_key, claim.phase)
+        # A session can end between the two calls; the others still get their message.
+        try:
+            if rt.sessions.alive(name):
+                rt.sessions.send(name, RECOVERED)
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"{claim.issue_key}: recovery message not sent: {exc}", file=sys.stderr)
+
+
 def check(rt, reading: Reading | None = None) -> None:
     """Opens an episode with a host-pressure event when a value crosses its limit, and closes it
     once every value is back past its close threshold."""
@@ -119,5 +136,7 @@ def check(rt, reading: Reading | None = None) -> None:
         events.emit(con, "host-pressure", now, detail=detail)
         open_episode(con, now if episode is None else float(episode.get("at", now)), detail)
     elif episode is not None and _recovered(r, rt.cfg):
+        # Before the messages, so starts resume even if every send fails.
         ledger.meta_set(con, EPISODE, "")
+        _tell_recovered(rt)
     ledger.meta_set(con, OOM_SEEN, str(r.oom_kills))
