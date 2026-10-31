@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -22,18 +24,33 @@ var (
 	repoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
-func RenderConfig(example []byte, a *answers.Answers) ([]byte, error) {
+// RenderConfig writes the answers over existing, the host's current config.toml (nil on a new
+// host), so keys the wizard does not ask about, such as shared_uv_cache or a repo's
+// commit_trailer, survive a rerun of setup.
+func RenderConfig(example, existing []byte, a *answers.Answers) ([]byte, error) {
 	var m map[string]any
 	if err := toml.Unmarshal(example, &m); err != nil {
 		return nil, err
 	}
-	m["team_key"] = a.TeamKey
-	m["digest_issue"] = a.DigestIssue
 	// The example's [repos.backend] and [mcp_servers.sentry] are placeholders.
 	delete(m, "mcp_servers")
+	var old map[string]any
+	if err := toml.Unmarshal(existing, &old); err != nil {
+		return nil, fmt.Errorf("existing config.toml: %w", err)
+	}
+	oldRepos, _ := old["repos"].(map[string]any)
+	delete(old, "repos")
+	maps.Copy(m, old)
+	m["team_key"] = a.TeamKey
+	m["digest_issue"] = a.DigestIssue
 	repos := map[string]any{}
 	for _, r := range a.Repos {
-		repos[r.Name] = map[string]any{"path": "~/src/" + r.Name, "base_branch": r.BaseBranch, "check": r.Check, "draft": r.Draft}
+		repo, _ := oldRepos[r.Name].(map[string]any)
+		if repo == nil {
+			repo = map[string]any{}
+		}
+		maps.Copy(repo, map[string]any{"path": "~/src/" + r.Name, "base_branch": r.BaseBranch, "check": r.Check, "draft": r.Draft})
+		repos[r.Name] = repo
 	}
 	m["repos"] = repos
 	if a.SharedTeam {
@@ -167,7 +184,11 @@ func (Config) Apply(ctx context.Context, e *Env) error {
 		return err
 	}
 	example, _ := deploy.Files.ReadFile("config.example.toml")
-	rendered, err := RenderConfig(example, a)
+	existing, err := os.ReadFile(e.HomePath(".config/flocc/config.toml"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	rendered, err := RenderConfig(example, existing, a)
 	if err != nil {
 		return err
 	}
