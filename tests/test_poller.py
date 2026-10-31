@@ -945,6 +945,14 @@ def test_low_disk_holds_a_start(rt):
     assert ledger.get_claim(rt.con, "NF-9") is None and rt.linear.started == []
 
 
+def test_host_pressure_holds_a_start(rt, capsys):
+    host.open_episode(rt.con, 1.0, "MemAvailable 0.6 GiB")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None and rt.linear.started == []
+    assert "host under pressure: MemAvailable 0.6 GiB" in capsys.readouterr().err
+
+
 def finished(rt, key, state="done"):
     wt = rt.cfg.worktree_root / key
     wt.mkdir()

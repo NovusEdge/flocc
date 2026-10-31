@@ -57,3 +57,8 @@ def test_dependencies_must_be_completed():
     s = IssueSettings(depends_on=("NF-120",))
     assert not run(settings=s, deps={"NF-120": "started"}).ok
     assert run(settings=s, deps={"NF-120": "completed"}).ok
+
+
+def test_host_pressure_holds_the_start():
+    d = admit("NF-9", "backend", DEFAULT, [], OK, {}, CFG, 1100, None, host_pressure="/tmp 93%")
+    assert not d.ok and d.reason == "host under pressure: /tmp 93%"

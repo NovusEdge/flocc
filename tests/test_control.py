@@ -1,6 +1,6 @@
 import pytest
 
-from flocc import ledger
+from flocc import host, ledger
 from flocc.context import state_dir
 from flocc.control import Refused, start_fix
 from flocc.publisher import PublishResult
@@ -106,3 +106,11 @@ def test_a_launch_that_fails_leaves_the_run_as_it_was(rt, tmp_path):
     assert ledger.get_claim(rt.con, "NF-1").state == "blocked"  # type: ignore[union-attr]
     assert ledger.meta_get(rt.con, "cardinal_fix:NF-1") is None
     assert (state_dir(rt.cfg, "NF-1") / BLOCKED).exists()
+
+
+def test_fix_is_refused_while_the_host_is_under_pressure(rt, tmp_path):
+    blocked(rt, tmp_path)
+    host.open_episode(rt.con, 1.0, "/tmp 93% (2.8/3.0 GiB)")
+    with pytest.raises(Refused, match="not now: host under pressure"):
+        start_fix(rt, "NF-1", "note")
+    assert rt.sessions.started == []

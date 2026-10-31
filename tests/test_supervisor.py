@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from flocc import canary, events, ledger
+from flocc import canary, events, host, ledger
 from flocc.agentblock import IssueSettings, settings_to_json
 from flocc.agentfs import AgentFileError
 from flocc.context import agent_dir, state_dir
@@ -1308,3 +1308,66 @@ def test_block_comments_on_the_issue_without_labels(rt):
             "Action: Add detail to the acceptance criteria, then run flocc release NF-1"
         )
     ]
+
+
+def pressure(rt):
+    host.open_episode(rt.con, 50.0, "/tmp 93% (2.8/3.0 GiB)")
+
+
+def recover(rt):
+    ledger.meta_set(rt.con, host.EPISODE, "")
+
+
+@pytest.mark.parametrize(
+    ("phase", "result", "after"),
+    [
+        ("test", None, "impl"),
+        ("impl", PublishResult("opened", url="https://pr/1"), "review"),
+        ("impl", PublishResult("check_failed", "E boom"), "fix"),
+    ],
+)
+def test_a_finished_step_waits_out_host_pressure(rt, phase, result, after):
+    add(rt, phase=phase, tester_sha="sha-tests")
+    published = []
+
+    def publish(claim, title, summary, **kw):
+        published.append(claim.issue_key)
+        return result
+
+    rt.publish_fn = publish
+    done(rt, "step done")
+    pressure(rt)
+    for _ in range(2):
+        supervise(rt, current(rt))
+    c = current(rt)
+    assert (c.state, c.phase, c.fix_attempts, c.restarts) == ("running", phase, 0, 0)
+    assert rt.sessions.started == [] and published == []
+    recover(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == after and len(rt.sessions.started) == 1
+
+
+def test_a_review_asking_for_changes_waits_out_host_pressure(rt):
+    review_session(rt, CHANGES)
+    done(rt, "review")
+    pressure(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "review" and rt.pr_comments == []
+    recover(rt)
+    supervise(rt, current(rt))
+    assert (current(rt).phase, current(rt).fix_attempts) == ("fix", 0)
+
+
+def test_a_session_that_dies_during_an_episode_is_relaunched_after_it_without_a_restart(rt):
+    add(rt, phase="impl", restarts=1)
+    pressure(rt)
+    supervise(rt, current(rt))
+    c = current(rt)
+    assert (c.state, c.restarts) == ("running", 1) and rt.sessions.started == []
+    recover(rt)
+    supervise(rt, current(rt))
+    c = current(rt)
+    assert (c.state, c.restarts) == ("running", 1) and rt.sessions.started[0][0] == "NF-1"
+    rt.sessions.alive_names.clear()
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
