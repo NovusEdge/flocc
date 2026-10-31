@@ -3,6 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from flocc.agentrun import SHELL_TIMEOUT_S
 from flocc.config import Config, trailer_enabled
 from flocc.ledger import Claim
 from flocc.publisher import PublishResult
@@ -145,6 +146,9 @@ class Agent:
     def stop_tests(self, name: str, worktree: str) -> dict:
         # The kill waits up to KILL_GRACE_S; each podman rm may take up to 120 s.
         return self.call("stop-tests", payload={"name": name, "worktree": worktree}, timeout=600)
+
+    def shell(self, command: str) -> dict:
+        return self.call("shell", payload={"command": command}, timeout=SHELL_TIMEOUT_S + 30)
 
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
         payload = {

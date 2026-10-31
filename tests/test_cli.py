@@ -725,3 +725,28 @@ def test_stop_tests_refuses_an_issue_with_no_running_run(host_cfg, capsys):
     load(host_cfg).ledger_path.parent.mkdir(parents=True, exist_ok=True)
     assert main(["--config", str(host_cfg), "stop-tests", "NF-404"]) == 1
     assert "NF-404 has no running run" in capsys.readouterr().err
+
+
+def test_shell_records_the_call_before_and_after_it_runs(tmp_path, monkeypatch, capsys):
+    from flocc import host
+
+    path = _cfg_file(tmp_path)
+    con = ledger.connect(tmp_path / "l.sqlite")
+    during = []
+
+    def fake_shell(self, command):
+        during.append(host.shell_calls(con, 0.0))
+        return {"code": 0, "output": "Filesystem  Size\ntmpfs 2.9G\n"}
+
+    monkeypatch.setattr("flocc.agent.Agent.shell", fake_shell)
+    assert main(["--config", str(path), "shell", "--command=df -h /tmp"]) == 0
+    assert [(c, code) for _, c, code in during[0]] == [("df -h /tmp", None)]
+    assert [(c, code) for _, c, code in host.shell_calls(con, 0.0)] == [("df -h /tmp", 0)]
+    assert capsys.readouterr().out == "Filesystem  Size\ntmpfs 2.9G\nexit 0\n"
+
+
+def test_shell_that_timed_out_exits_1_and_says_so(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    monkeypatch.setattr("flocc.agent.Agent.shell", lambda self, c: {"code": None, "output": ""})
+    assert main(["--config", str(path), "shell", "--command=sleep 999"]) == 1
+    assert capsys.readouterr().out == "timed out after 120 s\n"

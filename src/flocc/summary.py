@@ -3,7 +3,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
-from flocc import events, ledger
+from flocc import events, host, ledger
 from flocc.config import Config
 from flocc.context import state_dir
 from flocc.publisher import failure_excerpt
@@ -80,6 +80,10 @@ def run_summary(
     return "\n\n".join(out)[:RUN_SUMMARY_CHARS]
 
 
+def _exit(code: int | None) -> str:
+    return "no exit status" if code is None else f"exit {code}"
+
+
 def digest_data(cfg: Config, con, now: float) -> tuple[str, int]:
     out = [f"# Digest data, {time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}", "", "## Runs"]
     runs = []
@@ -116,6 +120,14 @@ def digest_data(cfg: Config, con, now: float) -> tuple[str, int]:
             for e in events.attention(con, now)
         ],
         ATTENTION_ROWS,
+    )
+    out += ["", "## Commands cardinal ran with agent-shell in the last 24 hours"]
+    out += _capped(
+        [
+            f"- {time.strftime('%H:%M', time.localtime(at))}, {_exit(code)}: {command[:LINE_CHARS]}"
+            for at, command, code in host.shell_calls(con, now - 86400)
+        ],
+        LIST_ROWS,
     )
     through = shown[-1][0] if shown else 0
     out += ["", f"When the digest is sent: flocc digest-data --done {through}"]

@@ -488,6 +488,29 @@ def cmd_stop_tests(args) -> int:
     return 0
 
 
+def cmd_shell(args) -> int:
+    from flocc import host
+    from flocc.agent import Agent
+    from flocc.agentrun import SHELL_TIMEOUT_S
+
+    cfg, _ = _config(args)
+    con = ledger.connect(cfg.ledger_path)
+    at = time.time()
+    # Recorded first, so a call that never answers still reaches the digest.
+    host.record_shell(con, at, args.shell_command, None)
+    try:
+        out = Agent(cfg).shell(args.shell_command)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"shell: {exc}", file=sys.stderr)
+        return 1
+    code = out["code"]
+    host.record_shell(con, at, args.shell_command, code)
+    if text := out["output"]:
+        print(text, end="" if text.endswith("\n") else "\n")
+    print(f"timed out after {SHELL_TIMEOUT_S} s" if code is None else f"exit {code}")
+    return 0 if code == 0 else 1
+
+
 def _lift_hold(cfg, key: str) -> int:
     # cardinal's release. Rerunning stopped or finished work is the owner's: with the hold gone,
     # the timed-out restart, or a move to Todo made while it was held, would start it again.
@@ -813,6 +836,7 @@ COMMANDS = {
     "cleanup": cmd_cleanup,
     "host-report": cmd_host_report,
     "stop-tests": cmd_stop_tests,
+    "shell": cmd_shell,
 }
 
 
@@ -887,6 +911,13 @@ def build_parser() -> argparse.ArgumentParser:
     add("host-report", "Print /tmp, memory and OOM kills, and what each issue holds")
     st = add("stop-tests", "Kill an issue's test processes and containers and tell its session why")
     st.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    sh = add(
+        "shell", "Run one command as flocc-agent for cardinal's agent-shell; logged for the digest"
+    )
+    # args.command names the subcommand, so the option needs its own dest.
+    sh.add_argument(
+        "--command", dest="shell_command", required=True, help="the command, given to bash -c"
+    )
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )

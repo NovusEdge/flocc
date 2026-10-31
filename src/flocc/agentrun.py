@@ -40,6 +40,7 @@ SUBCOMMANDS = (
     "probe",
     "remove",
     "send",
+    "shell",
     "start",
     "stop-tests",
     "sweep",
@@ -809,6 +810,39 @@ def stop_tests(req: dict) -> dict:
     return {"claude": claude, "killed": killed, "containers": removed}
 
 
+SHELL_TIMEOUT_S = 120
+SHELL_CHARS = 8000
+
+
+def shell(req: dict) -> dict:
+    """cardinal's agent-shell command, which the owner approved in the Claude app."""
+    command = req["command"]
+    if not isinstance(command, str) or not command.strip():
+        raise BadRequest("no command")
+    # Its own session, so the timeout kills what the command started along with it.
+    proc = subprocess.Popen(
+        ["bash", "-c", command],
+        cwd=_home(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    )
+    code: int | None
+    try:
+        out, _ = proc.communicate(timeout=SHELL_TIMEOUT_S)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
+        code = None
+    if len(out) > SHELL_CHARS:
+        out = "[...]\n" + out[-SHELL_CHARS:]
+    return {"code": code, "output": out}
+
+
 HANDLERS: dict[str, Callable[[dict], dict]] = {
     "start": start,
     "send": send,
@@ -820,6 +854,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "sweep": sweep,
     "usage": usage,
     "stop-tests": stop_tests,
+    "shell": shell,
 }
 
 

@@ -61,6 +61,10 @@ def argv_for(command: str) -> list[str]:
             return [verb, _key(key)]
         case "stop-tests", [key]:
             return [verb, _key(key)]
+        case "shell", [command]:
+            # Only bin/agent-shell sends this verb, and cardinal's managed settings make every
+            # agent-shell call ask the owner.
+            return [verb, f"--command={_text(command, 'command')}"]
         case "fix", [key, "--note", note]:
             return [verb, _key(key), f"--note={_text(note, 'note')}"]
         case "hold", [key]:

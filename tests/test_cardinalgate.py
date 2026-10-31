@@ -27,6 +27,7 @@ ROOT = Path(__file__).parent.parent
         ("digest-data", ["digest-data"]),
         ("digest-data --done 41", ["digest-data", "--done", "41"]),
         ("host", ["host-report"]),
+        ("shell 'df -h /tmp'", ["shell", "--command=df -h /tmp"]),
     ],
 )
 def test_the_allowed_lines(line, argv):
@@ -68,6 +69,9 @@ def test_a_note_with_shell_text_stays_one_argument():
         "digest-data --done -1",
         "events 'unbalanced",
         "host --json",
+        "shell",
+        "shell ''",
+        "shell a b",
     ],
 )
 def test_anything_else_is_refused(line):
@@ -78,6 +82,11 @@ def test_anything_else_is_refused(line):
 def test_a_note_over_the_limit_is_refused():
     with pytest.raises(Refused, match="note"):
         argv_for("fix NF-1 --note " + "x" * 2001)
+
+
+def test_a_shell_command_over_the_limit_is_refused():
+    with pytest.raises(Refused, match="command"):
+        argv_for("shell " + "x" * 2001)
 
 
 def test_main_runs_flocc_with_the_checked_argv_and_the_default_config(monkeypatch):

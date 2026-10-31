@@ -215,7 +215,7 @@ def test_the_sudoers_rule_allows_only_the_wrapper():
 
 
 def test_the_module_refuses_unknown_subcommands_and_bad_names(capsys):
-    assert agentrun.main(["shell"]) == 2
+    assert agentrun.main(["rm"]) == 2
     assert agentrun.main(["kill", "NF-1; rm -rf ~"]) == 2
     assert "bad request" in capsys.readouterr().err
 
@@ -608,3 +608,25 @@ def test_stop_tests_removes_only_the_issue_s_containers(tmp_path, monkeypatch):
     assert out == {"claude": None, "killed": [], "containers": ["nf5-db"]}
     assert ["podman", "rm", "-f", "a" * 64] in ran
     assert not any("b" * 64 in arg for argv in ran for arg in argv)
+
+
+def test_shell_runs_bash_in_the_agent_home_and_caps_the_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = agentrun.shell({"command": "pwd; echo err >&2; exit 3"})
+    assert out == {"code": 3, "output": f"{tmp_path}\nerr\n"}
+    big = agentrun.shell({"command": "head -c 20000 /dev/zero | tr '\\0' x"})
+    assert big["code"] == 0 and big["output"] == "[...]\n" + "x" * agentrun.SHELL_CHARS
+
+
+def test_shell_kills_what_a_command_started_at_the_timeout(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("flocc.agentrun.SHELL_TIMEOUT_S", 0.5)
+    start = time.monotonic()
+    out = agentrun.shell({"command": "sleep 30 & sleep 30; echo never"})
+    assert out["code"] is None and "never" not in out["output"]
+    assert time.monotonic() - start < 10
+
+
+def test_shell_refuses_an_empty_command(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"command": "  "}'))
+    assert agentrun.main(["shell"]) == 2 and "bad request" in capsys.readouterr().err

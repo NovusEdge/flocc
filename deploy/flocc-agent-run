@@ -4,7 +4,7 @@
 set -eu
 umask 027
 case "${1:-}" in
-  alive|attach|capture|check|claude|kill|prepare|probe|remove|send|start|stop-tests|sweep|usage) ;;
+  alive|attach|capture|check|claude|kill|prepare|probe|remove|send|shell|start|stop-tests|sweep|usage) ;;
   *)
     echo "flocc-agent-run: unknown subcommand: ${1:-none}" >&2
     exit 2
