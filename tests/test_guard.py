@@ -117,6 +117,7 @@ def test_permission_deny_denies_a_sample_and_garbage(monkeypatch, capsys):
         "cd /w/NF-1 && flocc commit -m 'x' -- server/src .docket 2>&1 | tail -5",
         "cd /w/NF-1 && /opt/flocc/bin/flocc done --summary 'records `d4` in .docket/ledger.jsonl'",
         'flocc done --summary "kept .docket" > /dev/null',
+        "flocc done --summary 'line one\nline two in .docket' 2>&1 | tail -n 5",
     ],
 )
 def test_own_command_lets_flocc_commit_and_done_through(command):
@@ -132,6 +133,10 @@ def test_own_command_lets_flocc_commit_and_done_through(command):
         'flocc commit -m "`rm -rf .docket`" -- a',
         'flocc commit -m "$(touch .docket/ledger.jsonl)" -- a',
         "flocc commit -m x -- a | tee .docket/ledger.jsonl",
+        "flocc done --summary x\nrm -f .docket/ledger.jsonl",
+        "flocc done --summary x\r\nrm -f .docket/ledger.jsonl",
+        "flocc commit -m x -- a >&1.docket/ledger.jsonl",
+        "flocc commit -m x -- a >/dev/null.docket",
         "flocc status",
         "flocc done --summary 'unclosed",
         "cd x",
