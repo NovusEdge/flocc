@@ -52,7 +52,7 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `cleanup [--now]` | Remove worktrees, state, scratchpads and finished pytest runs under `/tmp/pytest-of-flocc-agent` that no claim owns. A worktree with uncommitted changes, commits not on GitHub, or a change in the last 7 days stays and is listed. `--now`, cardinal's repair for a full `/tmp`, takes scratchpads idle 10 minutes and pytest runs of any age that no live process holds, and waits up to 60 seconds for a running tick |
 | `host-report` | `/tmp` use, memory available and OOM kills against their limits, the open host episode, the ten largest `/tmp` entries of `flocc-agent`'s, process memory per issue and container memory |
 | `stop-tests <key>` | Kill the processes the issue's session started through its Bash tool and remove the issue's containers, then tell the session not to rerun its tests until the host recovers |
-| `shell --command CMD` | Run one command as `flocc-agent` (cardinal's `agent-shell`, which you approve). 120-second timeout, output capped at 8,000 characters, listed in the digest |
+| `shell --command CMD` | Run one command as `flocc-agent` (cardinal's `agent-shell`). 120-second timeout, output capped at 8,000 characters, listed in the digest |
 | `events [--follow] [--hello]` | Print unacknowledged events as JSON lines of at most 50. `--follow` keeps printing: a batch closes 2 minutes after its first event, and an unacknowledged event is printed again every 30 minutes, at most 3 times per connection, and on every new connection |
 | `ack <id>...` | Acknowledge events. Acking twice is harmless |
 | `tick` | Run one service tick by hand. It takes the same lock as the timer's ticks |

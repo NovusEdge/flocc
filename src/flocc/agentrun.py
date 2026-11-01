@@ -851,7 +851,7 @@ SHELL_CHARS = 8000
 
 
 def shell(req: dict) -> dict:
-    """cardinal's agent-shell command, which the owner approved in the Claude app."""
+    """cardinal's agent-shell command."""
     command = req["command"]
     if not isinstance(command, str) or not command.strip():
         raise BadRequest("no command")
