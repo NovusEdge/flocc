@@ -295,7 +295,11 @@ def check(req: dict) -> dict:
     setup_s, shared = float(req["setup_timeout_s"]), bool(req["shared_uv_cache"])
     if mode == "base-check":
         sha, failure = check_at_base(repo, root, setup_s, float(req["check_timeout_s"]), shared)
-        found = None if failure is None else {"detail": failure.detail, "log": failure.log}
+        found = (
+            None
+            if failure is None
+            else {"detail": failure.detail, "log": failure.log, "transient": failure.transient}
+        )
         return {"sha": sha, "failure": found}
     if mode == "base-setup":
         code, out, sha = setup_at_base(repo, root, setup_s, shared)

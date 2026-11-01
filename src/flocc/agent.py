@@ -191,7 +191,10 @@ class Agent:
         if failure is None:
             return str(data["sha"]), None
         return str(data["sha"]), PublishResult(
-            "check_failed", str(failure["detail"]), log=str(failure["log"])
+            "check_failed",
+            str(failure["detail"]),
+            log=str(failure["log"]),
+            transient=bool(failure.get("transient")),
         )
 
     def setup_base(self, repo_name: str) -> tuple[int | None, str, str]:

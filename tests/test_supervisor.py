@@ -1119,27 +1119,54 @@ def test_the_base_check_runs_once_per_base_commit(rt, monkeypatch):
     assert runs == ["backend", "backend"]
 
 
-def test_a_lost_check_leaves_the_in_flight_state_but_a_failed_poll_does_not(rt):
-    from flocc.agent import AgentError, CheckLost
+def test_a_failed_publish_keeps_the_in_flight_state_until_the_claim_blocks(rt, monkeypatch):
+    from flocc.agent import CheckLost
 
-    ledger.meta_set(rt.con, "check_running:NF-1", "1")
+    ends = []
+    monkeypatch.setattr("flocc.supervisor._record_usage", lambda *a: ends.append(a))
     add(rt, phase="impl", sequence=["executor"])
     done(rt)
     rt.sessions.alive_names.add("NF-1")
-
-    def poll_fails(*a, **kw):
-        raise AgentError("sudo hiccup")
-
-    rt.publish_fn = poll_fails
+    rt.publish_fn = lambda c, t, s, **kw: PublishResult("check_running")
     supervise(rt, current(rt))
-    assert ledger.checking_keys(rt.con) == {"NF-1"}
 
     def lost(*a, **kw):
         raise CheckLost("vanished twice")
 
     rt.publish_fn = lost
     supervise(rt, current(rt))
-    assert ledger.checking_keys(rt.con) == frozenset()
+    supervise(rt, current(rt))
+    assert ledger.checking_keys(rt.con) == {"NF-1"} and len(ends) == 1
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and ledger.checking_keys(rt.con) == frozenset()
+
+
+def test_a_timed_out_or_setup_base_check_is_not_cached(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    transient = PublishResult("check_failed", "timed out", log="x", transient=True)
+    runs = base_check(rt, monkeypatch, failure=transient)
+    for _ in range(2):
+        ledger.meta_set(rt.con, "publish_failures:NF-1", "0")
+        add(rt, phase="impl", tester_sha="sha-tests")
+        done(rt)
+        supervise(rt, current(rt))
+        ledger.delete_claim(rt.con, "NF-1")
+    assert runs == ["backend", "backend"]
+
+
+def test_a_cached_base_failure_lapses_after_the_canary_hold(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    runs = base_check(rt, monkeypatch, failure=failed("E1 other"))
+    clock = [100.0]
+    rt.now = lambda: clock[0]
+    for at in (100.0, 200.0, 100.0 + canary.HOLD_S + 1):
+        clock[0] = at
+        ledger.meta_set(rt.con, "publish_failures:NF-1", "0")
+        add(rt, phase="impl", tester_sha="sha-tests")
+        done(rt)
+        supervise(rt, current(rt))
+        ledger.delete_claim(rt.con, "NF-1")
+    assert runs == ["backend", "backend"]
 
 
 def test_a_check_that_passes_on_the_base_gets_its_fix_round(rt, monkeypatch):

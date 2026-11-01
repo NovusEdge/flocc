@@ -43,7 +43,12 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess:
 
 def _show(unit: str) -> dict[str, str]:
     props = "LoadState,ActiveState,SubState,Result,ExecMainStatus"
-    out = _run(["systemctl", "--user", "show", unit, "-p", props])
+    argv = ["systemctl", "--user", "show", unit, "-p", props]
+    out = _run(argv)
+    # A unit that does not exist still answers 0, with LoadState=not-found. A bus that does not
+    # answer must not read as a lost check.
+    if out.returncode != 0:
+        raise subprocess.CalledProcessError(out.returncode, argv[:3], out.stdout, out.stderr)
     return dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
 
 
@@ -83,7 +88,16 @@ def stop_job(state: Path, key: str) -> None:
     _clear(state)
 
 
-def _start(state: Path, wt: Path, key: str, command: str, timeout_s: float, lost: int) -> dict:
+def _start(
+    state: Path,
+    wt: Path,
+    key: str,
+    command: str,
+    timeout_s: float,
+    lost: int,
+    restore: dict | None = None,
+) -> dict:
+    # `restore` is put back if systemd-run refuses, so a refused rerun keeps the lost count.
     head = git("rev-parse", "HEAD", cwd=wt)
     # Only commits are pushed and guarded; a check on the working tree would pass on files the PR
     # leaves out.
@@ -102,6 +116,8 @@ def _start(state: Path, wt: Path, key: str, command: str, timeout_s: float, lost
         "--user",
         "--quiet",
         f"--unit={unit}",
+        # Otherwise systemd expands $ in the command, and `$$` or `${X}` reach it changed.
+        "--expand-environment=no",
         # The exit status stays readable after the process ends, until the poll stops the unit.
         "--property=RemainAfterExit=yes",
         # Also ends a check no poll reaches, as during a host episode.
@@ -118,6 +134,9 @@ def _start(state: Path, wt: Path, key: str, command: str, timeout_s: float, lost
     started = _run(argv)
     if started.returncode != 0:
         _clear(state)
+        if restore is not None:
+            tmp.write_text(json.dumps(restore))
+            os.replace(tmp, state / CHECK_JOB)
         raise subprocess.CalledProcessError(
             started.returncode, argv[:2], output=started.stdout, stderr=started.stderr
         )
@@ -144,8 +163,10 @@ def step(req: dict, key: str, wt: Path, state: Path) -> dict:
             return {"status": "running"}
         # A lost check is rerun once, like a session found dead; the second loss is reported.
         lost = int(job.get("lost", 0)) + 1
-        _clear(state)
-        return _start(state, wt, key, command, timeout_s, lost) if lost < 2 else {"status": "lost"}
+        if lost >= 2:
+            _clear(state)
+            return {"status": "lost"}
+        return _start(state, wt, key, command, timeout_s, lost, restore=job)
     if info.get("SubState") in _RUNNING:
         if time.time() - float(job["started"]) <= timeout_s:
             return {"status": "running"}

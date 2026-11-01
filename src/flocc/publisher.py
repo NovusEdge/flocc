@@ -52,6 +52,8 @@ class PublishResult:
     existing: bool = False  # "opened" by finding the PR that was already open
     # Status "check_running": the check still runs in the background; the next tick publishes again.
     label_error: str = ""  # why the amended-tests label was not added to the open PR
+    # A base-check result that says nothing lasting: ./setup failed or the check timed out.
+    transient: bool = False
 
 
 def pr_url(rt, claim: Claim) -> str | None:
@@ -182,7 +184,7 @@ def run_check(repo: RepoConfig, wt: Path, timeout_s: float) -> PublishResult | N
     code, out = run_bounded(shlex.split(repo.check), wt, timeout_s)
     if code is None:
         detail = f"`{repo.check}` timed out after {timeout_s}s\n\n{out[-_TAIL:]}"
-        return PublishResult("check_failed", detail.strip(), log=out)
+        return PublishResult("check_failed", detail.strip(), log=out, transient=True)
     if code != 0:
         return PublishResult("check_failed", failure_excerpt(out), log=out)
     return None
@@ -202,7 +204,10 @@ def check_at_base(
             # Not the check's failure, so its digest never matches a branch's and no hold follows.
             why = "timed out" if code is None else f"exited {code}"
             return sha, PublishResult(
-                "check_failed", f"./setup {why} on the base\n\n{out[-_TAIL:]}", log=out
+                "check_failed",
+                f"./setup {why} on the base\n\n{out[-_TAIL:]}",
+                log=out,
+                transient=True,
             )
         failure = run_check(repo, path, check_timeout_s)
         if failure is None:

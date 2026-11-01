@@ -21,6 +21,7 @@ class Systemd:
         self.runs: list[list[str]] = []
         self.stops: list[str] = []
         self.refuse = False
+        self.bus_down = False
 
     def __call__(self, argv):
         def done(out="", code=0, err=""):
@@ -41,6 +42,8 @@ class Systemd:
             return done()
         verb, name = argv[2], argv[3]
         if verb == "show":
+            if self.bus_down:
+                return done(code=1, err="Failed to connect to bus")
             props = self.units.get(name, {"LoadState": "not-found"})
             return done("".join(f"{k}={v}\n" for k, v in props.items()))
         if verb == "stop":
@@ -168,6 +171,40 @@ def test_a_vanished_unit_is_rerun_once_then_reported(systemd, wt, tmp_path):
         age(state, checkjob.START_GRACE_S + 1)
         assert step(wt, state)["status"] == expected
     assert len(systemd.runs) == 2 and not (state / "check.json").exists()
+
+
+def test_the_command_is_not_expanded_by_systemd(systemd, wt, tmp_path):
+    step(wt, tmp_path / "state", command="sh -c 'echo $$ ${X}'")
+    argv = systemd.runs[0]
+    assert "--expand-environment=no" in argv
+    assert argv[argv.index("--") + 1 :] == ["sh", "-c", "echo $$ ${X}"]
+
+
+def test_a_bus_that_does_not_answer_is_an_error_not_a_lost_check(systemd, wt, tmp_path):
+    state = tmp_path / "state"
+    step(wt, state)
+    age(state, checkjob.START_GRACE_S + 1)
+    systemd.bus_down = True
+    with pytest.raises(subprocess.CalledProcessError):
+        step(wt, state)
+    assert json.loads((state / "check.json").read_text())["lost"] == 0
+
+
+def test_a_refused_rerun_keeps_the_lost_count(systemd, wt, tmp_path):
+    state = tmp_path / "state"
+    step(wt, state)
+    systemd.units.clear()
+    age(state, checkjob.START_GRACE_S + 1)
+    systemd.refuse = True
+    with pytest.raises(subprocess.CalledProcessError):
+        step(wt, state)
+    systemd.refuse = False
+    systemd.units.clear()
+    age(state, checkjob.START_GRACE_S + 1)
+    assert step(wt, state)["status"] == "running"
+    systemd.units.clear()
+    age(state, checkjob.START_GRACE_S + 1)
+    assert step(wt, state)["status"] == "lost"
 
 
 def test_a_refused_start_raises_and_leaves_no_record(systemd, wt, tmp_path):

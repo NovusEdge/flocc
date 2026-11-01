@@ -8,7 +8,6 @@ from dataclasses import replace
 from pathlib import Path
 
 from flocc import agentfs, canary, events, host, ledger
-from flocc.agent import CheckLost
 from flocc.agentblock import settings_from_json
 from flocc.context import agent_dir, phase_prompt, state_dir
 from flocc.idle import BACKGROUND
@@ -152,6 +151,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...]
 def _block(rt, claim: Claim, cause: str, summary: str, action: str, kind: str = "ended") -> None:
     rt.sessions.kill(session_name(claim.issue_key, claim.phase))
     key = claim.issue_key
+    ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
     notice = Notice(f"{key}:{cause}", summary, action, issue_key=key, event=kind)
     d = state_dir(rt.cfg, key)
     d.mkdir(parents=True, exist_ok=True)
@@ -488,10 +488,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             else rt.publish_fn(claim, title, summary)
         )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
-        # Only a check that is over leaves the in-flight state; an agent call that failed while
-        # polling, or a push after a pass, must not record the session's end a second time.
-        if isinstance(exc, CheckLost):
-            ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
+        # The in-flight state stays through a failed poll, a lost check or a push after a pass:
+        # done.json stays too, so the retry would record the session's end a second time. A block
+        # (_block) or a result clears it.
         _publish_failed(rt, claim, exc)
         return
     if result.status == "check_running":
@@ -665,14 +664,15 @@ def _base_result(rt, repo_name: str) -> tuple[str, PublishResult | None]:
         found = cached.get("failure")
         if found is None:
             return current, None
-        return current, PublishResult("check_failed", found["detail"], log=found["log"])
+        # A failure lapses like the canary's mark, so a flaky one is tried again; a pass keeps.
+        if rt.now() - float(cached.get("at", 0)) < canary.HOLD_S:
+            return current, PublishResult("check_failed", found["detail"], log=found["log"])
     sha, failure = rt.base_check(repo_name)
-    # A ./setup failure or timeout is not the check's answer and may not repeat.
-    if failure is None or not failure.detail.startswith("./setup "):
+    if failure is None or not failure.transient:
         found = (
             None if failure is None else {"detail": failure.detail, "log": failure.log[-200_000:]}
         )
-        entry = {"sha": sha, "check": repo.check, "failure": found}
+        entry = {"sha": sha, "check": repo.check, "failure": found, "at": rt.now()}
         ledger.meta_set(rt.con, cache, json.dumps(entry))
     return sha, failure
 
