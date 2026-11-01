@@ -188,12 +188,12 @@ def test_the_dispatch_skill_never_reruns_work():
     assert "lifts a hold and nothing else" in text and "tell the owner" in text
 
 
-def test_managed_settings_ask_for_agent_shell_and_hook_every_bash_call():
+def test_managed_settings_allow_the_two_binaries_and_hook_every_bash_call():
     s = json.loads((CARDINAL / "managed-settings.json").read_text())
     p = s["permissions"]
     assert p["defaultMode"] == "default"
-    assert p["allow"] == [f"Bash({EXECUTOR}:*)", "Skill"]
-    assert p["ask"] == [f"Bash({AGENT_SHELL}:*)"]
+    assert p["allow"] == [f"Bash({EXECUTOR}:*)", f"Bash({AGENT_SHELL}:*)", "Skill"]
+    assert "ask" not in p
     assert p["deny"] == [
         "Read",
         "Glob",

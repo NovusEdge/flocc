@@ -50,13 +50,13 @@ The gate splits the request without a shell and allows `events`, `ack`, `status`
 or done run. Its `host` runs `flocc host-report`.
 
 Inside the VM, cardinal runs in `default` mode, in an empty directory, under root-owned managed
-settings that allow its executor wrapper and its skills, deny the read, edit, web and MCP tools,
-and ask you, in the Claude app, before every `agent-shell` call. A managed PreToolUse hook,
+settings that allow its executor wrapper, `agent-shell` and its skills, and deny the read, edit,
+web and MCP tools. A managed PreToolUse hook,
 `only-executor`, refuses any Bash command that is not one call to `executor` or `agent-shell`, or
 that holds a shell operator, so cardinal cannot read its own key or Claude login. `executor`
 refuses `shell`: the only way to the gate's `shell` verb is `agent-shell`, which runs one command
-as `flocc-agent` with a 120-second timeout and lists it in the next digest. While an
-`agent-shell` prompt waits for you, cardinal handles no other event.
+as `flocc-agent` with a 120-second timeout and lists it in the next digest. It does not ask you
+first: `flocc-agent` is the user every agent session already runs as in `bypassPermissions` mode.
 
 ## Daily fresh start
 
