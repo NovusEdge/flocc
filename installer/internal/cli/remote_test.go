@@ -287,6 +287,33 @@ func TestHostCommandArgumentsArriveIntact(t *testing.T) {
 	}
 }
 
+func TestConfigForwardsToTheHostWithHBeforeOrAfterTheVerb(t *testing.T) {
+	want := "config\nset\nsession_cap\n3\n"
+	for _, args := range [][]string{
+		{"-H", "a", "config", "set", "session_cap", "3"},
+		{"config", "-H", "a", "set", "session_cap", "3"},
+		{"config", "set", "session_cap", "3", "--host=a"},
+	} {
+		d, f, _, _ := hostDeps(t, "a")
+		if code := run(context.Background(), d, args); code != 0 || len(f.interactive) != 1 {
+			t.Fatalf("%v: exit %d, ran %v", args, code, f.interactive)
+		}
+		words := shWords(t, f.interactive[0].Args[len(f.interactive[0].Args)-1])
+		script := strings.TrimPrefix(words[len(words)-1], "cd && ")
+		out, err := exec.Command("sh", "-c", `flocc() { printf '%s\n' "$@"; }; `+script).Output()
+		if err != nil || string(out) != want {
+			t.Errorf("%v: %q %v", args, out, err)
+		}
+	}
+}
+
+func TestDashHAllRefusesConfig(t *testing.T) {
+	d, f, _, errb := hostDeps(t, "a")
+	if code := run(context.Background(), d, []string{"-H", "all", "config", "set", "session_cap", "3"}); code != 2 || len(f.runs)+len(f.interactive) != 0 || errb.Len() == 0 {
+		t.Fatalf("exit %d, ran %v %v", code, f.runs, f.interactive)
+	}
+}
+
 func TestSSHGetsATerminalOnlyWhenStdinIsOne(t *testing.T) {
 	for _, tty := range []bool{false, true} {
 		d, f, _, _ := hostDeps(t, "a")

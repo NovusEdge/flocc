@@ -53,6 +53,10 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `host-report` | `/tmp` use, memory available and OOM kills against their limits, the open host episode, the ten largest `/tmp` entries of `flocc-agent`'s, process memory per issue and container memory |
 | `stop-tests <key>` | Kill the processes the issue's session started through its Bash tool and remove the issue's containers, then tell the session not to rerun its tests until the host recovers |
 | `shell --command CMD` | Run one command as `flocc-agent` (cardinal's `agent-shell`). 120-second timeout, output capped at 8,000 characters, listed in the digest |
+| `config list` | The [settable keys](#settable-config-keys), each with its value and whether `config.toml` sets it or the default applies |
+| `config get <key>` | Print one settable key's effective value |
+| `config set <key> <value>` | Write a top-level key of `config.toml`, such as `config set session_cap 3`. A key that is not settable, or a value outside its range, exits 2 with one line. The edited file must also load, or the original stays and the loader's error prints. The old file is kept as `config.toml.bak`. It applies from the next tick; a running tick keeps the config it loaded |
+| `config unset <key>` | Remove the key's line so its default applies |
 | `events [--follow] [--hello]` | Print unacknowledged events as JSON lines of at most 50. `--follow` keeps printing: a batch closes 2 minutes after its first event, and an unacknowledged event is printed again every 30 minutes, at most 3 times per connection, and on every new connection |
 | `ack <id>...` | Acknowledge events. Acking twice is harmless |
 | `tick` | Run one service tick by hand. It takes the same lock as the timer's ticks |
@@ -61,6 +65,10 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `guard` | PreToolUse hook, run from the managed settings: denies `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `git push`, GitHub writes through `gh` and Linear tools, and keeps the reviewer to `review.md` |
 | `stop [--failure]` | Hook for agent sessions at the end of a turn. A turn that ends without `flocc done` is refused once; ending again marks the session idle and the run ends blocked. With `--failure`, an API error other than a usage limit marks it idle at once |
 | `--version` | Print the host's version |
+
+### Settable config keys
+
+`config set` accepts only these keys, within these ranges: `session_cap` 1 to 6; `check_timeout_s` and `setup_timeout_s` 60 to 7200; `check_fix_rounds` 0 to 3; `default_wall_clock_s` and `review_wall_clock_s` 600 to 21600; `min_available_mem_gb` 0 to 64; `min_free_disk_gb` 0 to 1000; `tmp_max_pct` 1 to 100; `digest_hour` 0 to 23; `shared_uv_cache` and `skip_unmapped`, `true` or `false`. Models, efforts, usage limits, labels, tokens and repos are not settable with it.
 
 ### The `Run:` line
 

@@ -86,6 +86,8 @@ func TestRenderConfigKeepsKeysTheWizardDoesNotAsk(t *testing.T) {
 	existing := []byte(`team_key = "OLD"
 setup_timeout_s = 1800
 shared_uv_cache = true
+session_cap = 3
+review_model = "sonnet"
 skip_unmapped = true
 ntfy_url = "https://ntfy.sh/x"
 worktree_root = "/srv/wt"
@@ -113,6 +115,9 @@ url = "https://mcp.sentry.dev/mcp"
 	}
 	if m["team_key"] != "NF" || m["setup_timeout_s"] != int64(1800) || m["shared_uv_cache"] != true {
 		t.Errorf("top-level keys: team_key %v, setup_timeout_s %v, shared_uv_cache %v", m["team_key"], m["setup_timeout_s"], m["shared_uv_cache"])
+	}
+	if m["session_cap"] != int64(3) || m["review_model"] != "sonnet" {
+		t.Errorf("flocc config set values: session_cap %v, review_model %v", m["session_cap"], m["review_model"])
 	}
 	if _, ok := m["mcp_servers"].(map[string]any)["sentry"]; !ok {
 		t.Errorf("the host's mcp_servers were dropped:\n%s", got)
