@@ -1172,3 +1172,4 @@ def test_release_removes_the_worktree_and_both_state_directories(rt):
     ledger.insert_claim(rt.con, claim)
     release_claim(rt, claim, keep_worktree=True)
     assert rt.agent.removed == [("NF-9", False)]
+    assert rt.agent.stopped_checks == ["NF-9"]

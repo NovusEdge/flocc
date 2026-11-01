@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from flocc import agentfs, canary, events, host, ledger
+from flocc.agent import CheckLost
 from flocc.agentblock import settings_from_json
 from flocc.context import agent_dir, phase_prompt, state_dir
 from flocc.idle import BACKGROUND
@@ -487,7 +488,10 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             else rt.publish_fn(claim, title, summary)
         )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
-        ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
+        # Only a check that is over leaves the in-flight state; an agent call that failed while
+        # polling, or a push after a pass, must not record the session's end a second time.
+        if isinstance(exc, CheckLost):
+            ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
         _publish_failed(rt, claim, exc)
         return
     if result.status == "check_running":
@@ -642,13 +646,44 @@ def _same_as_base(result: PublishResult, claim: Claim, failure: PublishResult) -
     return steady(mine) == steady(theirs)
 
 
+def _base_result(rt, repo_name: str) -> tuple[str, PublishResult | None]:
+    """rt.base_check, run at most once per base commit: it waits for the machine-wide suite lock,
+    and every claim that fails its first check asks for the same answer."""
+    repo = rt.cfg.repos[repo_name]
+    cache = canary.result_key(repo_name)
+    current = origin_base(repo)
+    try:
+        cached = json.loads(ledger.meta_get(rt.con, cache) or "")
+    except ValueError:
+        cached = None
+    if (
+        isinstance(cached, dict)
+        and current
+        and cached.get("sha") == current
+        and cached.get("check") == repo.check
+    ):
+        found = cached.get("failure")
+        if found is None:
+            return current, None
+        return current, PublishResult("check_failed", found["detail"], log=found["log"])
+    sha, failure = rt.base_check(repo_name)
+    # A ./setup failure or timeout is not the check's answer and may not repeat.
+    if failure is None or not failure.detail.startswith("./setup "):
+        found = (
+            None if failure is None else {"detail": failure.detail, "log": failure.log[-200_000:]}
+        )
+        entry = {"sha": sha, "check": repo.check, "failure": found}
+        ledger.meta_set(rt.con, cache, json.dumps(entry))
+    return sha, failure
+
+
 def _base_fails_too(rt, claim: Claim, result: PublishResult) -> bool:
     """Holds the claim and its repo when the base branch fails the check the same way."""
     if rt.base_check is None:
         return False
     key = claim.issue_key
     try:
-        sha, failure = rt.base_check(claim.repo)
+        sha, failure = _base_result(rt, claim.repo)
     except (subprocess.SubprocessError, OSError) as exc:
         print(f"{key}: base check did not run: {exc}", file=sys.stderr)
         return False
@@ -776,6 +811,8 @@ def supervise(rt, claim: Claim) -> None:
             if claim.phase != "review":
                 (d / LAST_SUMMARY).write_text(summary)
             # Before _finish_phase: its publish starts the repo's check, the load an episode is about.
+            # A check already running is not polled meanwhile; its unit's RuntimeMaxSec ends it at
+            # check_timeout_s, and the result is read once the episode is over.
             if host.under_pressure(rt.con):
                 return
             _finish_phase(rt, claim, summary)

@@ -10,6 +10,11 @@ def _key(repo: str) -> str:
     return f"main_broken:{repo}"
 
 
+def result_key(repo: str) -> str:
+    """Where supervisor caches the repo's check on its base branch, per base commit."""
+    return f"base_result:{repo}"
+
+
 # The commit last reported broken. A mark lapses after HOLD_S and comes back at the same commit
 # while the break lasts; only a pass (clear) or forget_all ends the break.
 def _event_key(repo: str) -> str:
@@ -37,6 +42,8 @@ def get_mark(con, repo: str) -> dict | None:
 
 
 def clear(con, repo: str) -> None:
+    # The cached base check goes too: whoever clears a mark has changed something on the host.
+    ledger.meta_set(con, result_key(repo), "")
     ledger.meta_set(con, _key(repo), "")
     ledger.meta_set(con, _event_key(repo), "")
 

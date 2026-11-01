@@ -1101,6 +1101,47 @@ def test_a_check_that_also_fails_on_the_base_starts_no_fix_round_and_holds_the_r
     assert (state_dir(rt.cfg, "NF-1") / "done.json").exists()
 
 
+def test_the_base_check_runs_once_per_base_commit(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    runs = base_check(rt, monkeypatch, failure=None)
+    for _ in range(2):
+        ledger.meta_set(rt.con, "publish_failures:NF-1", "0")
+        add(rt, phase="impl", tester_sha="sha-tests")
+        done(rt)
+        supervise(rt, current(rt))
+        ledger.delete_claim(rt.con, "NF-1")
+    assert runs == ["backend"]
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: "a-newer-commit")
+    ledger.meta_set(rt.con, "publish_failures:NF-1", "0")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert runs == ["backend", "backend"]
+
+
+def test_a_lost_check_leaves_the_in_flight_state_but_a_failed_poll_does_not(rt):
+    from flocc.agent import AgentError, CheckLost
+
+    ledger.meta_set(rt.con, "check_running:NF-1", "1")
+    add(rt, phase="impl", sequence=["executor"])
+    done(rt)
+    rt.sessions.alive_names.add("NF-1")
+
+    def poll_fails(*a, **kw):
+        raise AgentError("sudo hiccup")
+
+    rt.publish_fn = poll_fails
+    supervise(rt, current(rt))
+    assert ledger.checking_keys(rt.con) == {"NF-1"}
+
+    def lost(*a, **kw):
+        raise CheckLost("vanished twice")
+
+    rt.publish_fn = lost
+    supervise(rt, current(rt))
+    assert ledger.checking_keys(rt.con) == frozenset()
+
+
 def test_a_check_that_passes_on_the_base_gets_its_fix_round(rt, monkeypatch):
     rt.publish_fn = lambda c, t, s: failed("E1 boom")
     base_check(rt, monkeypatch, failure=None)

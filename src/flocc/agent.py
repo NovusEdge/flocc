@@ -14,6 +14,10 @@ class AgentError(subprocess.SubprocessError):
     pass
 
 
+class CheckLost(AgentError):
+    pass
+
+
 def _prepare_error(data: dict) -> subprocess.SubprocessError:
     kind, detail = data["error"], str(data.get("detail", ""))
     exc: subprocess.SubprocessError
@@ -160,11 +164,19 @@ class Agent:
             "command": repo.check,
             "timeout_s": timeout_s,
         }
-        # Returns at once; the longest call is the kill of a timed-out job's group.
+        # Returns at once; the longest call stops a timed-out unit.
         data = self.call("check", payload=payload, timeout=120)
         if data.get("status") == "lost":
-            raise AgentError(f"{claim.issue_key}: the check job vanished twice (host restarted?)")
+            raise CheckLost(f"{claim.issue_key}: the check job vanished twice (host restarted?)")
         return data
+
+    def stop_check(self, claim: Claim) -> None:
+        payload = {
+            "mode": "stop",
+            "worktree": claim.worktree,
+            "state_root": str(self.cfg.agent_state_root),
+        }
+        self.call("check", payload=payload, timeout=120)
 
     def check_base(self, repo_name: str) -> tuple[str, PublishResult | None]:
         common, timeout = self._repo(repo_name)

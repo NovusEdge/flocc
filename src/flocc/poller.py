@@ -72,6 +72,13 @@ def _bad_sequence(rt, issue: Issue, exc: SequenceError) -> None:
 
 def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: bool = True) -> None:
     rt.sessions.kill(session_name(claim.issue_key, claim.phase))
+    ledger.meta_set(rt.con, f"check_running:{claim.issue_key}", "")
+    if keep_worktree and rt.agent is not None:
+        # remove() stops it otherwise; a kept worktree is rerun, and the check must not run on.
+        try:
+            rt.agent.stop_check(claim)
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"{claim.issue_key}: check not stopped: {exc}", file=sys.stderr)
     # Each step below may already be done or impossible (a deleted issue, a worktree removed
     # by an earlier release); the claim is cleared regardless, or it blocks every tick.
     if not keep_worktree:
