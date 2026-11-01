@@ -117,13 +117,19 @@ def cmd_guard(args) -> int:
 
 
 def cmd_permission_deny(args) -> int:
-    from flocc.guard import NO_APPROVER
+    from flocc.guard import NO_APPROVER, own_command
 
     # A plugin hook can answer "ask" even under bypassPermissions, and the dialog then waits
-    # forever. Deny whatever reaches it, whether or not the input parses.
+    # forever. Deny whatever reaches it, whether or not the input parses, except flocc's own
+    # commit and done: a run that cannot commit or finish ends blocked.
     if not os.environ.get("FLOCC_PHASE"):
         return 0
-    decision = {"behavior": "deny", "message": NO_APPROVER}
+    payload = _hook_input()
+    command = (payload.get("tool_input") or {}).get("command")
+    if payload.get("tool_name") == "Bash" and isinstance(command, str) and own_command(command):
+        decision = {"behavior": "allow"}
+    else:
+        decision = {"behavior": "deny", "message": NO_APPROVER}
     out = {"hookEventName": "PermissionRequest", "decision": decision}
     print(json.dumps({"hookSpecificOutput": out}))
     return 0

@@ -36,6 +36,9 @@ def agent_env(cfg: Config, extra: dict[str, str]) -> dict[str, str]:
         "PATH": f"{path}:/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "TERM": "xterm-256color",
+        # curt's file-op guard asks by default, and an ask reaches the session as flocc's generic
+        # deny; deny posture hands the session curt's reason (use Read, not cat) instead.
+        "ANTI_SLOP_TOOL_GUARD": "deny",
         **extra,
     }
 

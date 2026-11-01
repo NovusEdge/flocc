@@ -4,7 +4,7 @@ import json
 import pytest
 
 from flocc.cli import main
-from flocc.guard import KEEP_MOVING, NO_APPROVER, decide
+from flocc.guard import KEEP_MOVING, NO_APPROVER, decide, own_command
 
 
 def bash(command):
@@ -108,6 +108,46 @@ def test_permission_deny_denies_a_sample_and_garbage(monkeypatch, capsys):
     monkeypatch.delenv("FLOCC_PHASE")
     assert main(["permission-deny"]) == 0
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "flocc commit -m 'chore(docket): d4 and d5' -- .docket/ledger.jsonl .docket/features.jsonl",
+        "cd /w/NF-1 && flocc commit -m 'x' -- server/src .docket 2>&1 | tail -5",
+        "cd /w/NF-1 && /opt/flocc/bin/flocc done --summary 'records `d4` in .docket/ledger.jsonl'",
+        'flocc done --summary "kept .docket" > /dev/null',
+    ],
+)
+def test_own_command_lets_flocc_commit_and_done_through(command):
+    assert own_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat .docket/ledger.jsonl",
+        "flocc commit -m x -- a; echo y >> .docket/ledger.jsonl",
+        "flocc commit -m x -- a > .docket/ledger.jsonl",
+        'flocc commit -m "`rm -rf .docket`" -- a',
+        'flocc commit -m "$(touch .docket/ledger.jsonl)" -- a',
+        "flocc commit -m x -- a | tee .docket/ledger.jsonl",
+        "flocc status",
+        "flocc done --summary 'unclosed",
+        "cd x",
+        "",
+    ],
+)
+def test_own_command_refuses_anything_else(command):
+    assert not own_command(command)
+
+
+def test_permission_deny_allows_flocc_commit(monkeypatch, capsys):
+    monkeypatch.setenv("FLOCC_PHASE", "impl")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(bash("flocc commit -m x -- .docket"))))
+    assert main(["permission-deny"]) == 0
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert out["decision"] == {"behavior": "allow"}
 
 
 def test_guard_prints_nothing_for_an_allowed_call_or_bad_input(tmp_path, monkeypatch, capsys):
