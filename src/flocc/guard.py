@@ -98,6 +98,56 @@ def _bash(command: str, phase: str) -> str | None:
     return None
 
 
+_OWN = frozenset({"commit", "done"})
+_PIPE_OK = frozenset({"tail", "head"})
+_SEPARATORS = frozenset({";", "&&", "||", "|", "\n"})
+# Anchored on the right: bash reads `>&1.docket/x` as a redirect to the file 1.docket/x.
+_HARMLESS_REDIRECT = re.compile(r"(?:\d*>&\d+|\d*>\s*/dev/null)(?=[ \t\n|;]|$)")
+
+
+def own_command(command: str) -> bool:
+    """Whether a Bash command is only flocc commit or flocc done, with cd before and tail after.
+
+    A plugin hook asks on these when the arguments name a guarded path (docket asks for any
+    command naming .docket/ that is not git or docket), and the ask would become a deny.
+    """
+    text = _HARMLESS_REDIRECT.sub(" ", command)
+    # An unquoted newline ends a command, so it is a separator token and not whitespace.
+    lexer = shlex.shlex(text, posix=False, punctuation_chars="();<>|&\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in _SEPARATORS:
+            segments.append([])
+            continue
+        operator = set(token) <= set("();<>|&")
+        # posix=False keeps the quotes, so a single-quoted word is the only literal one.
+        expands = not token.startswith("'") and ("`" in token or "$(" in token)
+        if operator or expands:
+            return False
+        segments[-1].append(token)
+    found = False
+    for words in segments:
+        program = os.path.basename(words[0]) if words else ""
+        if program == "flocc" and words[1:2] and words[1] in _OWN:
+            found = True
+            continue
+        cd = program == "cd" and len(words) == 2 and not found
+        tail = (
+            program in _PIPE_OK
+            and found
+            and all(w == "-n" or w.lstrip("-").isdigit() for w in words[1:])
+        )
+        if not (cd or tail):
+            return False
+    return found
+
+
 def _inside(path: str, state: str) -> bool:
     if not path or not state:
         return False
