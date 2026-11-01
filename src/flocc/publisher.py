@@ -50,6 +50,7 @@ class PublishResult:
     untrailed: tuple[str, ...] = ()  # short SHAs of branch commits without the Flocc trailer
     log: str = ""  # the check's full output, when it ran and failed
     existing: bool = False  # "opened" by finding the PR that was already open
+    # Status "check_running": the check still runs in the background; the next tick publishes again.
     label_error: str = ""  # why the amended-tests label was not added to the open PR
 
 
@@ -304,6 +305,8 @@ def publish(
     ):
         return touched
     ran = check(claim, repo, check_timeout_s)
+    if ran["status"] == "running":
+        return PublishResult("check_running")
     out = str(ran.get("output", ""))
     if ran["status"] == "dirty":
         detail = f"Uncommitted changes; commit them or remove them, then finish again:\n{out}"

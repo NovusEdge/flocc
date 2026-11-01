@@ -267,6 +267,7 @@ def poll(rt) -> None:
             free,
             ledger.held_keys(rt.con),
             host.pressure_detail(rt.con),
+            ledger.checking_keys(rt.con),
         )
         if not decision.ok:
             print(f"{issue.key}: held, {decision.reason}", file=sys.stderr)

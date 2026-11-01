@@ -1371,3 +1371,29 @@ def test_a_session_that_dies_during_an_episode_is_relaunched_after_it_without_a_
     rt.sessions.alive_names.clear()
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
+
+
+def test_a_running_check_keeps_the_claim_and_records_the_end_once(rt, monkeypatch):
+    add(rt, phase="impl", sequence=["executor"])
+    ends = []
+    monkeypatch.setattr("flocc.supervisor._record_usage", lambda *a: ends.append(a))
+    results = iter(["check_running", "check_running", "opened"])
+    rt.publish_fn = lambda c, t, s, **kw: PublishResult(next(results), url="https://pr/1")
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    assert current(rt).state == "running"
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and len(ends) == 1
+
+
+def test_a_check_that_ends_goes_through_the_usual_outcomes(rt):
+    add(rt, phase="impl", sequence=["executor"])
+    results = iter([PublishResult("check_running"), PublishResult("check_failed", "E1 boom")])
+    rt.publish_fn = lambda c, t, s, **kw: next(results)
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert current(rt).phase == "impl" and current(rt).fix_attempts == 0
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and current(rt).fix_attempts == 1

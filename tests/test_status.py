@@ -60,6 +60,15 @@ def test_claims_carry_age_tmux_and_context(cfg):
     assert report["usage"]["five_hour_pct"] == 20 and report["usage"]["age_s"] == 100.0
 
 
+def test_a_claim_with_a_background_check_is_marked_checking(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, make("NF-1"))
+    assert collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"][0]["checking"] is False
+    (cfg.agent_state_root / "NF-1").mkdir(parents=True, exist_ok=True)
+    (cfg.agent_state_root / "NF-1" / "check.json").write_text("{}")
+    assert collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"][0]["checking"] is True
+
+
 def test_reading_leaves_the_ledger_file_unchanged(cfg):
     con = ledger.connect(cfg.ledger_path)
     ledger.insert_claim(con, make("NF-1"))

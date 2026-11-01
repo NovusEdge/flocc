@@ -151,13 +151,20 @@ class Agent:
         return self.call("shell", payload={"command": command}, timeout=SHELL_TIMEOUT_S + 30)
 
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
+        """One step of the check, which runs detached: status running until it ends, then ok,
+        failed, timeout or dirty with its output and the head it ran on."""
         payload = {
-            "mode": "worktree",
+            "mode": "background",
             "worktree": claim.worktree,
+            "state_root": str(self.cfg.agent_state_root),
             "command": repo.check,
             "timeout_s": timeout_s,
         }
-        return self.call("check", payload=payload, timeout=timeout_s + 120)
+        # Returns at once; the longest call is the kill of a timed-out job's group.
+        data = self.call("check", payload=payload, timeout=120)
+        if data.get("status") == "lost":
+            raise AgentError(f"{claim.issue_key}: the check job vanished twice (host restarted?)")
+        return data
 
     def check_base(self, repo_name: str) -> tuple[str, PublishResult | None]:
         common, timeout = self._repo(repo_name)

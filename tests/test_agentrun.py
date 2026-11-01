@@ -17,6 +17,7 @@ from flocc.agent import Agent, AgentError
 from flocc.agentrun import apply_handoff, restore, with_disabled_plugins
 from flocc.publisher import check_worktree
 from flocc.worktree import agent_ref, fetch_agent_branch, git
+from tests.test_ledger import make
 
 ROOT = Path(__file__).parent.parent
 WRAPPER = ROOT / "deploy" / "flocc-agent-run"
@@ -62,6 +63,94 @@ def test_check_reports_dirty_failed_and_ok(origin):
     (origin / "stray.txt").write_text("x")
     dirty = check_worktree("true", origin, 30)
     assert dirty["status"] == "dirty" and "stray.txt" in dirty["output"]
+
+
+def background(tmp_cfg, origin, tmp_path, command):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    agent = Agent(cfg)
+    path, _, _ = agent.prepare("backend", "NF-7")
+    claim = make("NF-7", worktree=str(path))
+    repo = replace(cfg.repos["backend"], check=command)
+    return agent, claim, repo, cfg.agent_state_root / "NF-7"
+
+
+def wait_for_end(agent, claim, repo, timeout_s=30):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        ran = agent.check_worktree(claim, repo, timeout_s)
+        if ran["status"] != "running":
+            return ran
+        time.sleep(0.1)
+    raise AssertionError("the check never ended")
+
+
+def test_a_background_check_starts_without_waiting_and_reports_when_it_ends(
+    tmp_cfg, origin, tmp_path
+):
+    gate = tmp_path / "go"
+    agent, claim, repo, state = background(
+        tmp_cfg, origin, tmp_path, f"sh -c 'while [ ! -e {gate} ]; do sleep 0.05; done; echo done'"
+    )
+    began = time.monotonic()
+    assert agent.check_worktree(claim, repo, 30)["status"] == "running"
+    assert time.monotonic() - began < 5
+    assert (state / "check.json").exists()
+    assert agent.check_worktree(claim, repo, 30)["status"] == "running"
+    gate.write_text("")
+    ran = wait_for_end(agent, claim, repo)
+    assert ran["status"] == "ok" and "done" in ran["output"]
+    assert ran["head"] == git("rev-parse", "HEAD", cwd=Path(claim.worktree))
+    assert not (state / "check.json").exists()
+
+
+def test_a_background_check_reports_a_failure_with_its_output(tmp_cfg, origin, tmp_path):
+    agent, claim, repo, _ = background(tmp_cfg, origin, tmp_path, "sh -c 'echo boom; exit 3'")
+    ran = wait_for_end(agent, claim, repo)
+    assert ran["status"] == "failed" and "boom" in ran["output"]
+
+
+def test_a_background_check_on_a_dirty_worktree_does_not_start(tmp_cfg, origin, tmp_path):
+    agent, claim, repo, state = background(tmp_cfg, origin, tmp_path, "true")
+    (Path(claim.worktree) / "stray.txt").write_text("x")
+    ran = agent.check_worktree(claim, repo, 30)
+    assert ran["status"] == "dirty" and "stray.txt" in ran["output"]
+    assert not (state / "check.json").exists()
+
+
+def alive_pids(pgid):
+    return agentrun._group_pids(pgid)
+
+
+def test_a_background_check_past_its_timeout_is_killed_with_its_children(tmp_cfg, origin, tmp_path):
+    agent, claim, repo, state = background(tmp_cfg, origin, tmp_path, "sh -c 'sleep 60 & wait'")
+    assert agent.check_worktree(claim, repo, 0.5)["status"] == "running"
+    pgid = json.loads((state / "check.json").read_text())["pid"]
+    assert alive_pids(pgid)
+    time.sleep(0.7)
+    assert agent.check_worktree(claim, repo, 0.5)["status"] == "timeout"
+    assert alive_pids(pgid) == []
+
+
+def test_a_lost_background_check_is_rerun_once_then_reported(tmp_cfg, origin, tmp_path):
+    agent, claim, repo, state = background(tmp_cfg, origin, tmp_path, "sleep 60")
+    for _ in range(2):
+        assert agent.check_worktree(claim, repo, 600)["status"] == "running"
+        pid = json.loads((state / "check.json").read_text())["pid"]
+        os.killpg(pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while alive_pids(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+    with pytest.raises(AgentError, match="vanished twice"):
+        agent.check_worktree(claim, repo, 600)
+    assert not (state / "check.json").exists()
+
+
+def test_remove_ends_a_running_background_check(tmp_cfg, origin, tmp_path):
+    agent, claim, repo, state = background(tmp_cfg, origin, tmp_path, "sleep 60")
+    agent.check_worktree(claim, repo, 600)
+    pid = json.loads((state / "check.json").read_text())["pid"]
+    agent.remove("NF-7")
+    assert alive_pids(pid) == []
 
 
 def test_the_branch_is_fetched_into_the_service_clone(origin, tmp_path):

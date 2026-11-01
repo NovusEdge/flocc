@@ -32,6 +32,8 @@ from flocc.worktree import origin_base
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
 BASE_HELD = "base_held"
+# Set while the repo's check runs in the background after the session ended.
+CHECK_RUNNING = "check_running"
 BASE_RELEASED = "base_released"
 REBASE = "rebase"
 REBASE_TRIED = "rebase_tried"
@@ -96,6 +98,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...]
         raise LaunchError(f"{token} is missing or empty; agents get their GitHub token from it")
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
+    ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
     # Before the start below: the outgoing session's status file is the freshest usage reading.
     _record_usage(rt, key, phase, "start")
     name = session_name(key, phase)
@@ -423,7 +426,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     # Before the usage record, which would add a row on every tick of the wait.
     if not _base_hold_lifted(rt, claim):
         return
-    _record_usage(rt, key, claim.phase, "end")
+    # Likewise while the check runs: only the tick that found the session done records the end.
+    if not ledger.meta_get(rt.con, f"{CHECK_RUNNING}:{key}"):
+        _record_usage(rt, key, claim.phase, "end")
     if claim.phase == "review":
         _finish_review(rt, claim)
         return
@@ -482,8 +487,14 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             else rt.publish_fn(claim, title, summary)
         )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
+        ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
         _publish_failed(rt, claim, exc)
         return
+    if result.status == "check_running":
+        # done.json stays, so the next tick finds the session done again and polls the check.
+        ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "1")
+        return
+    ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
     # Failures count only in a row: the fix phase's publish, or a rerun's, starts from zero.
     ledger.meta_set(rt.con, f"publish_failures:{key}", "0")
     if result.status == "pr_closed":
@@ -764,7 +775,7 @@ def supervise(rt, claim: Claim) -> None:
             rt.sessions.kill(name)
             if claim.phase != "review":
                 (d / LAST_SUMMARY).write_text(summary)
-            # Before _finish_phase: its publish runs the repo's check, the load an episode is about.
+            # Before _finish_phase: its publish starts the repo's check, the load an episode is about.
             if host.under_pressure(rt.con):
                 return
             _finish_phase(rt, claim, summary)

@@ -672,7 +672,7 @@ def cmd_status(args) -> int:
     for c in report["claims"]:
         alive = "up" if c["tmux_alive"] else "down"
         fix = f"{c.get('fix_attempts', 0)}/{cap}"
-        step = c.get("archetype", c["phase"])
+        step = "check" if c.get("checking") else c.get("archetype", c["phase"])
         age = age_text(c["started_age_s"])
         print(
             f"  {c['issue']:<9}{step:<10}{c['state']:<11}{fix:<5}{age:<6}"

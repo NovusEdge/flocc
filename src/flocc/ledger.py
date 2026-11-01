@@ -318,6 +318,13 @@ def held_keys(con) -> frozenset[str]:
     return frozenset(r["key"].split(":", 1)[1] for r in rows)
 
 
+def checking_keys(con) -> frozenset[str]:
+    """Claims whose session ended and whose repo check runs in the background (see
+    supervisor.CHECK_RUNNING)."""
+    rows = con.execute("SELECT key FROM meta WHERE key LIKE 'check_running:%' AND value != ''")
+    return frozenset(r["key"].split(":", 1)[1] for r in rows)
+
+
 # cardinal's holds: the service starts nothing for a held issue until flocc release lifts it.
 def add_hold(con, key: str, reason: str, now: float) -> None:
     with transaction(con):

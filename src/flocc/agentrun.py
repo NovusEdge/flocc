@@ -7,6 +7,7 @@ import json
 import os
 import pwd
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -18,11 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from flocc.config import RepoConfig
-from flocc.publisher import check_at_base, check_worktree
+from flocc.publisher import check_at_base
 from flocc.sessions import SOCKET, Sessions, installed_plugins, trust_folders
 from flocc.worktree import (
     BranchDiverged,
     DirtyWorktree,
+    git,
     has_uncommitted_changes,
     head_at_base,
     install_hook,
@@ -276,12 +278,152 @@ def prepare(req: dict) -> dict:
     return {"path": str(path), "branch": branch, "base": base}
 
 
+CHECK_JOB = "check.json"
+CHECK_LOG = "check.log"
+CHECK_CODE = "check.code"
+CHECK_TAIL_BYTES = 4_000_000
+# $0 is the state directory. The code file appears only once the log is complete, and only when
+# the check ran to its end; a killed job leaves none.
+_CHECK_SCRIPT = (
+    '"$@" >"$0/'
+    + CHECK_LOG
+    + '" 2>&1; echo $? >"$0/check.tmp"; mv "$0/check.tmp" "$0/'
+    + CHECK_CODE
+    + '"'
+)
+
+
+def _starttime(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def _group_pids(pgid: int) -> list[int]:
+    found = []
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            state, _, grp_id = (d / "stat").read_text().rsplit(")", 1)[1].split()[:3]
+        except (OSError, ValueError):
+            continue
+        if int(grp_id) == pgid and state not in ("Z", "X"):
+            found.append(int(d.name))
+    return found
+
+
+def _kill_group(pgid: int) -> None:
+    """Ends everything left in the job's process group. The job leads its own group, so no other
+    session's process is in it; a daemon that called setsid (a build server) is not either."""
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        if not _group_pids(pgid):
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, sig)
+        deadline = time.monotonic() + KILL_GRACE_S
+        while _group_pids(pgid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGKILL)
+
+
+def _read_job(state: Path) -> dict | None:
+    try:
+        job = json.loads((state / CHECK_JOB).read_text())
+    except (OSError, ValueError):
+        return None
+    return job if isinstance(job, dict) and isinstance(job.get("pid"), int) else None
+
+
+def _job_tail(state: Path) -> str:
+    try:
+        with open(state / CHECK_LOG, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - CHECK_TAIL_BYTES))
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return ""
+    return text if size <= CHECK_TAIL_BYTES else "[...]\n" + text
+
+
+def _clear_job(state: Path) -> None:
+    for name in (CHECK_JOB, CHECK_LOG, CHECK_CODE, "check.tmp"):
+        (state / name).unlink(missing_ok=True)
+
+
+def _start_check(state: Path, wt: Path, command: str, lost: int) -> dict:
+    head = git("rev-parse", "HEAD", cwd=wt)
+    # Only commits are pushed and guarded; a check on the working tree would pass on files the PR
+    # leaves out.
+    if dirty := git("status", "--porcelain", cwd=wt):
+        return {"status": "dirty", "output": dirty, "head": head}
+    state.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(
+        ["sh", "-c", _CHECK_SCRIPT, str(state), *shlex.split(command)],
+        cwd=wt,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        # Its own group and session: the poller can end the whole tree, and the job outlives this
+        # request, the tick and the service.
+        start_new_session=True,
+    )
+    job = {
+        "pid": proc.pid,
+        "start_ticks": _starttime(proc.pid),
+        "started": time.time(),
+        "head": head,
+        "lost": lost,
+    }
+    tmp = state / "check.json.tmp"
+    tmp.write_text(json.dumps(job))
+    os.replace(tmp, state / CHECK_JOB)
+    return {"status": "running"}
+
+
+def _check_background(req: dict) -> dict:
+    """One step of a repo check that runs detached from the request: starts it when none is
+    recorded, otherwise reports it. Status running, ok, failed, timeout, dirty or lost (the job
+    vanished twice, as a host restart does)."""
+    wt = under_home(req["worktree"])
+    state = under_home(req["state_root"]) / _key(wt.name)
+    command, timeout_s = str(req["command"]), float(req["timeout_s"])
+    state.mkdir(parents=True, exist_ok=True)
+    job = _read_job(state)
+    if job is None:
+        _clear_job(state)
+        return _start_check(state, wt, command, 0)
+    pid = int(job["pid"])
+    code_file = state / CHECK_CODE
+    if code_file.exists():
+        # Whatever the check left in its group, a build server that stayed behind included.
+        _kill_group(pid)
+        result = {
+            "status": "ok" if code_file.read_text().strip() == "0" else "failed",
+            "output": _job_tail(state),
+            "head": job["head"],
+        }
+    elif _starttime(pid) == job.get("start_ticks") and _group_pids(pid):
+        if time.time() - float(job["started"]) <= timeout_s:
+            return {"status": "running"}
+        _kill_group(pid)
+        result = {"status": "timeout", "output": _job_tail(state), "head": job["head"]}
+    else:
+        _kill_group(pid)
+        lost = int(job.get("lost", 0)) + 1
+        _clear_job(state)
+        # A lost job is rerun once, like a session found dead; the second loss is reported.
+        return _start_check(state, wt, command, lost) if lost < 2 else {"status": "lost"}
+    _clear_job(state)
+    return result
+
+
 def check(req: dict) -> dict:
     mode = req["mode"]
-    if mode == "worktree":
-        return check_worktree(
-            str(req["command"]), under_home(req["worktree"]), float(req["timeout_s"])
-        )
+    if mode == "background":
+        return _check_background(req)
     write_token(req["token"])
     clone = _clone(req["repo"], req["url"])
     repo = RepoConfig(path=clone, base_branch=str(req["base_branch"]), check=str(req["command"]))
@@ -593,6 +735,8 @@ def remove(req: dict) -> dict:
             subprocess.run(
                 ["git", "worktree", "prune"], cwd=clone, capture_output=True, check=False
             )
+    if job := _read_job(state):
+        _kill_group(int(job["pid"]))
     listing = state / "scratchpads"
     if listing.is_file() and not listing.is_symlink():
         for line in listing.read_text().splitlines():
