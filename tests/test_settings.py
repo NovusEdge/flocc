@@ -1,9 +1,11 @@
+import dataclasses
 import tomllib
 
 import pytest
 
 from flocc import settings
 from flocc.cli import main
+from flocc.config import Config
 
 BASE = """team_key = "NF"
 trigger_label = "claude"
@@ -66,10 +68,10 @@ def test_unset_removes_the_line_and_the_default_applies(tmp_path, capsys):
         ("session_cap", "3", 3),
         ("shared_uv_cache", "true", True),
         ("skip_unmapped", "false", False),
-        ("five_hour_max_pct", "75.5", 75.5),
-        ("five_hour_max_pct", "70", 70.0),
-        ("review_model", "sonnet", "sonnet"),
-        ("review_model", 'a "q" \\ é', 'a "q" \\ é'),
+        ("tmp_max_pct", "75.5", 75.5),
+        ("tmp_max_pct", "70", 70.0),
+        ("digest_hour", "0", 0),
+        ("session_cap", "6", 6),
     ],
 )
 def test_values_round_trip_through_tomllib(tmp_path, key, text, want):
@@ -92,30 +94,37 @@ def test_list_shows_defaults_and_what_the_file_sets(tmp_path, capsys):
     out = capsys.readouterr().out.splitlines()
     assert "session_cap = 3  (set)" in out
     assert "digest_hour = 18  (default)" in out
-    assert 'review_model = "opus"  (default)' in out
+    assert not [line for line in out if line.split()[0] not in settings.SETTABLE]
+    assert len(out) == len(settings.SETTABLE)
 
 
-def test_only_scalars_that_are_not_secrets_are_settable():
-    keys = settings.settable()
-    assert {"session_cap", "shared_uv_cache", "five_hour_max_pct", "review_model"} <= set(keys)
-    for hidden in ("repos", "mcp_servers", "steer_authors", "linear_key_file", "agent_user"):
-        assert hidden not in keys
-    assert not [k for k in keys if "token" in k or "key" in k]
+def test_every_config_field_is_decided():
+    fields = {f.name for f in dataclasses.fields(Config)}
+    assert not settings.SETTABLE.keys() & settings.NOT_SETTABLE
+    assert fields == settings.SETTABLE.keys() | settings.NOT_SETTABLE
+    for key, (kind, _, _) in settings.SETTABLE.items():
+        assert next(f.type for f in dataclasses.fields(Config) if f.name == key) is kind
 
 
 @pytest.mark.parametrize(
     ("args", "message"),
     [
-        (("set", "nope", "1"), "unknown setting nope"),
-        (("set", "repos", "1"), "unknown setting repos"),
-        (("set", "linear_key_file", "x"), "unknown setting"),
-        (("get", "nope"), "unknown setting nope"),
-        (("unset", "nope"), "unknown setting nope"),
+        (("set", "nope", "1"), "nope is not settable"),
+        (("set", "repos", "1"), "repos is not settable"),
+        (("set", "trigger_label", "x"), "trigger_label is not settable"),
+        (("set", "review_model", "x"), "review_model is not settable"),
+        (("set", "five_hour_max_pct", "90"), "five_hour_max_pct is not settable"),
+        (("get", "nope"), "nope is not settable"),
+        (("unset", "trigger_label"), "trigger_label is not settable"),
         (("set", "session_cap", "many"), "session_cap takes int"),
         (("set", "session_cap", "2.5"), "session_cap takes int"),
+        (("set", "session_cap", "0"), "session_cap 0 is outside 1..6"),
+        (("set", "session_cap", "7"), "session_cap 7 is outside 1..6"),
+        (("set", "session_cap", "-1"), "session_cap -1 is outside 1..6"),
+        (("set", "check_fix_rounds", "4"), "outside 0..3"),
+        (("set", "tmp_max_pct", "0.5"), "outside 1..100"),
         (("set", "shared_uv_cache", "yes"), "shared_uv_cache takes bool"),
-        (("set", "five_hour_max_pct", "nan"), "five_hour_max_pct takes float"),
-        (("set", "review_model", "a\nb"), "control characters"),
+        (("set", "tmp_max_pct", "nan"), "tmp_max_pct takes float"),
     ],
 )
 def test_refusals_exit_2_with_one_line_and_leave_the_file(tmp_path, capsys, args, message):
@@ -129,23 +138,36 @@ def test_refusals_exit_2_with_one_line_and_leave_the_file(tmp_path, capsys, args
     assert not (tmp_path / "config.toml.bak").exists()
 
 
-def test_a_value_the_loader_rejects_leaves_the_file_and_makes_no_backup(tmp_path, capsys):
-    path = _file(tmp_path)
+def test_a_result_the_loader_rejects_leaves_the_file_and_makes_no_backup(tmp_path, capsys):
+    path = _file(tmp_path, 'tester_effort = "bogus"\n')
     before = path.read_text()
-    assert _run(path, "set", "session_cap", "0") == 2
-    err = capsys.readouterr().err
-    assert f"{path}: session_cap 0 must be >= 1" in err
+    assert _run(path, "set", "session_cap", "3") == 2
+    assert f"{path}: tester_effort 'bogus' is not one of" in capsys.readouterr().err
     assert path.read_text() == before
-    assert not (tmp_path / "config.toml.bak").exists()
     assert [p.name for p in tmp_path.iterdir()] == ["config.toml"]
 
 
-def test_unsetting_a_required_key_is_refused_by_the_loader(tmp_path, capsys):
-    path = _file(tmp_path)
-    before = path.read_text()
-    assert _run(path, "unset", "trigger_label") == 2
-    assert "trigger_label" in capsys.readouterr().err
-    assert path.read_text() == before
+def test_a_symlinked_bak_is_replaced_not_written_through(tmp_path):
+    path = _file(tmp_path, "session_cap = 2\n")
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (tmp_path / "config.toml.bak").symlink_to(victim)
+    assert _run(path, "set", "session_cap", "3") == 0
+    assert victim.read_text() == "keep"
+    bak = tmp_path / "config.toml.bak"
+    assert not bak.is_symlink()
+    assert "session_cap = 2" in bak.read_text()
+
+
+@pytest.mark.parametrize("bad", ["a\nb", "x\x7f", "\ud800"])
+def test_render_refuses_strings_toml_or_utf8_cannot_hold(bad):
+    with pytest.raises(settings.SettingError):
+        settings.render(bad)
+
+
+def test_render_quotes_strings_so_tomllib_reads_them_back():
+    text = 'a "q" \\ é'
+    assert tomllib.loads(f"k = {settings.render(text)}")["k"] == text
 
 
 def test_success_keeps_the_old_file_as_bak_and_the_mode(tmp_path):

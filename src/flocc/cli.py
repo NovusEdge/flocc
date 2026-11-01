@@ -314,7 +314,7 @@ def cmd_config(args) -> int:
         if args.action == "list":
             cfg, _ = _config(args)
             present = settings.in_file(path)
-            for key in settings.settable():
+            for key in settings.SETTABLE:
                 state = "set" if key in present else "default"
                 print(f"{key} = {settings.render(getattr(cfg, key))}  ({state})")
         elif args.action == "get":
