@@ -53,6 +53,10 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `host-report` | `/tmp` use, memory available and OOM kills against their limits, the open host episode, the ten largest `/tmp` entries of `flocc-agent`'s, process memory per issue and container memory |
 | `stop-tests <key>` | Kill the processes the issue's session started through its Bash tool and remove the issue's containers, then tell the session not to rerun its tests until the host recovers |
 | `shell --command CMD` | Run one command as `flocc-agent` (cardinal's `agent-shell`). 120-second timeout, output capped at 8,000 characters, listed in the digest |
+| `config list` | Every setting `config set` accepts, with its value and whether `config.toml` sets it or the default applies |
+| `config get <key>` | Print one setting's effective value |
+| `config set <key> <value>` | Write a top-level setting of `config.toml`, such as `config set session_cap 3`. Settable keys are the scalar settings (integers, `true`/`false`, decimals, text) except those naming a token or key and the `[repos]` tables. The new file must load, range checks included, or the original stays and the error prints. The old file is kept as `config.toml.bak`. Exits 2 on an unknown key or bad value. Hosts read the file on the next tick |
+| `config unset <key>` | Remove the key's line so its default applies |
 | `events [--follow] [--hello]` | Print unacknowledged events as JSON lines of at most 50. `--follow` keeps printing: a batch closes 2 minutes after its first event, and an unacknowledged event is printed again every 30 minutes, at most 3 times per connection, and on every new connection |
 | `ack <id>...` | Acknowledge events. Acking twice is harmless |
 | `tick` | Run one service tick by hand. It takes the same lock as the timer's ticks |

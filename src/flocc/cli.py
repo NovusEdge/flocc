@@ -306,6 +306,32 @@ def _config(args):
         raise SystemExit(1) from exc
 
 
+def cmd_config(args) -> int:
+    from flocc import settings
+
+    path = Path(args.config) if args.config else default_config_path()
+    try:
+        if args.action == "list":
+            cfg, _ = _config(args)
+            present = settings.in_file(path)
+            for key in settings.settable():
+                state = "set" if key in present else "default"
+                print(f"{key} = {settings.render(getattr(cfg, key))}  ({state})")
+        elif args.action == "get":
+            settings.check(args.key)
+            value = getattr(_config(args)[0], args.key)
+            print(str(value).lower() if isinstance(value, bool) else value)
+        elif args.action == "set":
+            settings.write(path, args.key, settings.parse(args.key, args.value))
+        else:
+            settings.check(args.key)
+            settings.write(path, args.key)
+    except settings.SettingError as exc:
+        print(f"config: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_tick(args) -> int:
     from flocc.tick import tick, tick_lock
 
@@ -839,6 +865,7 @@ COMMANDS = {
     "host-report": cmd_host_report,
     "stop-tests": cmd_stop_tests,
     "shell": cmd_shell,
+    "config": cmd_config,
 }
 
 
@@ -920,6 +947,15 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument(
         "--command", dest="shell_command", required=True, help="the command, given to bash -c"
     )
+    cfgp = add("config", "List, read, set or unset a top-level config.toml setting")
+    # args.command names the subcommand, so the verb needs its own dest.
+    verbs = cfgp.add_subparsers(dest="action", required=True)
+    verbs.add_parser("list", help="every settable key, its value and whether the file sets it")
+    verbs.add_parser("get", help="print one value").add_argument("key")
+    one = verbs.add_parser("set", help="write a value after checking the file still loads")
+    one.add_argument("key")
+    one.add_argument("value")
+    verbs.add_parser("unset", help="remove the key so its default applies").add_argument("key")
     can = add(
         "canary", "Run ./setup on a repo's base branch; clears its broken-main hold on a pass"
     )
