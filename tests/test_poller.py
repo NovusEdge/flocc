@@ -19,8 +19,9 @@ from flocc.poller import (
     repo_for,
     restart_timed_out,
 )
+from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
-from flocc.supervisor import LaunchError
+from flocc.supervisor import LaunchError, supervise
 from flocc.tick import tick, tick_lock
 from flocc.worktree import (
     BranchDiverged,
@@ -483,6 +484,22 @@ def test_poll_respects_cap(rt):
     rt.linear.ready = [issue()]
     poll(rt)
     assert ledger.get_claim(rt.con, "NF-9") is None
+
+
+def test_a_new_issue_starts_in_the_tick_that_finds_another_check_running(rt):
+    claim = make("NF-1")
+    claim.phase, claim.sequence, claim.base_sha = "impl", ["executor"], "sha0"
+    ledger.insert_claim(rt.con, claim)
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "done.json").write_text(json.dumps({"summary": "ok"}))
+    rt.publish_fn = lambda c, t, s, **kw: PublishResult("check_running")
+    rt.linear.ready = [issue(desc=PLAIN)]
+    supervise(rt, claim)
+    poll(rt)
+    nf1 = ledger.get_claim(rt.con, "NF-1")
+    assert nf1 is not None and nf1.state == "running"
+    assert ledger.get_claim(rt.con, "NF-9") is not None
 
 
 def test_forward_only_owner_comments(rt):
@@ -1155,3 +1172,4 @@ def test_release_removes_the_worktree_and_both_state_directories(rt):
     ledger.insert_claim(rt.con, claim)
     release_claim(rt, claim, keep_worktree=True)
     assert rt.agent.removed == [("NF-9", False)]
+    assert rt.agent.stopped_checks == ["NF-9"]

@@ -35,6 +35,19 @@ def test_a_claim_waiting_on_a_broken_base_does_not_use_a_session_slot():
     assert d.ok
 
 
+def test_a_running_check_counts_toward_the_cap_but_not_toward_unknown_usage():
+    one, both = [make("NF-1")], [make("NF-1"), make("NF-2")]
+    checking = frozenset({"NF-1", "NF-2"})
+
+    def go(live, usage, **kw):
+        return admit("NF-9", "backend", DEFAULT, live, usage, {}, CFG, 5000, None, **kw)
+
+    assert not go(one, OK).ok
+    assert go(one, OK, checking=checking).ok
+    capped = go(both, OK, checking=checking)
+    assert not capped.ok and "cap" in capped.reason
+
+
 def test_usage_thresholds():
     assert not run(usage=Usage(80, 10, 1000)).ok
     assert not run(usage=Usage(10, 80, 1000)).ok

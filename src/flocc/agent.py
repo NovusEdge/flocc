@@ -14,6 +14,10 @@ class AgentError(subprocess.SubprocessError):
     pass
 
 
+class CheckLost(AgentError):
+    pass
+
+
 def _prepare_error(data: dict) -> subprocess.SubprocessError:
     kind, detail = data["error"], str(data.get("detail", ""))
     exc: subprocess.SubprocessError
@@ -151,13 +155,28 @@ class Agent:
         return self.call("shell", payload={"command": command}, timeout=SHELL_TIMEOUT_S + 30)
 
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
+        """One step of the check, which runs detached: status running until it ends, then ok,
+        failed, timeout or dirty with its output and the head it ran on."""
         payload = {
-            "mode": "worktree",
+            "mode": "background",
             "worktree": claim.worktree,
+            "state_root": str(self.cfg.agent_state_root),
             "command": repo.check,
             "timeout_s": timeout_s,
         }
-        return self.call("check", payload=payload, timeout=timeout_s + 120)
+        # Returns at once; the longest call stops a timed-out unit.
+        data = self.call("check", payload=payload, timeout=120)
+        if data.get("status") == "lost":
+            raise CheckLost(f"{claim.issue_key}: the check job vanished twice (host restarted?)")
+        return data
+
+    def stop_check(self, claim: Claim) -> None:
+        payload = {
+            "mode": "stop",
+            "worktree": claim.worktree,
+            "state_root": str(self.cfg.agent_state_root),
+        }
+        self.call("check", payload=payload, timeout=120)
 
     def check_base(self, repo_name: str) -> tuple[str, PublishResult | None]:
         common, timeout = self._repo(repo_name)
@@ -172,7 +191,10 @@ class Agent:
         if failure is None:
             return str(data["sha"]), None
         return str(data["sha"]), PublishResult(
-            "check_failed", str(failure["detail"]), log=str(failure["log"])
+            "check_failed",
+            str(failure["detail"]),
+            log=str(failure["log"]),
+            transient=bool(failure.get("transient")),
         )
 
     def setup_base(self, repo_name: str) -> tuple[int | None, str, str]:

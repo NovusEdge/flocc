@@ -32,6 +32,8 @@ from flocc.worktree import origin_base
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
 BASE_HELD = "base_held"
+# Set while the repo's check runs in the background after the session ended.
+CHECK_RUNNING = "check_running"
 BASE_RELEASED = "base_released"
 REBASE = "rebase"
 REBASE_TRIED = "rebase_tried"
@@ -96,6 +98,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...]
         raise LaunchError(f"{token} is missing or empty; agents get their GitHub token from it")
     key = claim.issue_key
     d = state_dir(rt.cfg, key)
+    ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
     # Before the start below: the outgoing session's status file is the freshest usage reading.
     _record_usage(rt, key, phase, "start")
     name = session_name(key, phase)
@@ -148,6 +151,7 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...]
 def _block(rt, claim: Claim, cause: str, summary: str, action: str, kind: str = "ended") -> None:
     rt.sessions.kill(session_name(claim.issue_key, claim.phase))
     key = claim.issue_key
+    ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
     notice = Notice(f"{key}:{cause}", summary, action, issue_key=key, event=kind)
     d = state_dir(rt.cfg, key)
     d.mkdir(parents=True, exist_ok=True)
@@ -423,7 +427,9 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
     # Before the usage record, which would add a row on every tick of the wait.
     if not _base_hold_lifted(rt, claim):
         return
-    _record_usage(rt, key, claim.phase, "end")
+    # Likewise while the check runs: only the tick that found the session done records the end.
+    if not ledger.meta_get(rt.con, f"{CHECK_RUNNING}:{key}"):
+        _record_usage(rt, key, claim.phase, "end")
     if claim.phase == "review":
         _finish_review(rt, claim)
         return
@@ -482,8 +488,16 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             else rt.publish_fn(claim, title, summary)
         )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
+        # The in-flight state stays through a failed poll, a lost check or a push after a pass:
+        # done.json stays too, so the retry would record the session's end a second time. A block
+        # (_block) or a result clears it.
         _publish_failed(rt, claim, exc)
         return
+    if result.status == "check_running":
+        # done.json stays, so the next tick finds the session done again and polls the check.
+        ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "1")
+        return
+    ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
     # Failures count only in a row: the fix phase's publish, or a rerun's, starts from zero.
     ledger.meta_set(rt.con, f"publish_failures:{key}", "0")
     if result.status == "pr_closed":
@@ -631,13 +645,45 @@ def _same_as_base(result: PublishResult, claim: Claim, failure: PublishResult) -
     return steady(mine) == steady(theirs)
 
 
+def _base_result(rt, repo_name: str) -> tuple[str, PublishResult | None]:
+    """rt.base_check, run at most once per base commit: it waits for the machine-wide suite lock,
+    and every claim that fails its first check asks for the same answer."""
+    repo = rt.cfg.repos[repo_name]
+    cache = canary.result_key(repo_name)
+    current = origin_base(repo)
+    try:
+        cached = json.loads(ledger.meta_get(rt.con, cache) or "")
+    except ValueError:
+        cached = None
+    if (
+        isinstance(cached, dict)
+        and current
+        and cached.get("sha") == current
+        and cached.get("check") == repo.check
+    ):
+        found = cached.get("failure")
+        if found is None:
+            return current, None
+        # A failure lapses like the canary's mark, so a flaky one is tried again; a pass keeps.
+        if rt.now() - float(cached.get("at", 0)) < canary.HOLD_S:
+            return current, PublishResult("check_failed", found["detail"], log=found["log"])
+    sha, failure = rt.base_check(repo_name)
+    if failure is None or not failure.transient:
+        found = (
+            None if failure is None else {"detail": failure.detail, "log": failure.log[-200_000:]}
+        )
+        entry = {"sha": sha, "check": repo.check, "failure": found, "at": rt.now()}
+        ledger.meta_set(rt.con, cache, json.dumps(entry))
+    return sha, failure
+
+
 def _base_fails_too(rt, claim: Claim, result: PublishResult) -> bool:
     """Holds the claim and its repo when the base branch fails the check the same way."""
     if rt.base_check is None:
         return False
     key = claim.issue_key
     try:
-        sha, failure = rt.base_check(claim.repo)
+        sha, failure = _base_result(rt, claim.repo)
     except (subprocess.SubprocessError, OSError) as exc:
         print(f"{key}: base check did not run: {exc}", file=sys.stderr)
         return False
@@ -764,7 +810,9 @@ def supervise(rt, claim: Claim) -> None:
             rt.sessions.kill(name)
             if claim.phase != "review":
                 (d / LAST_SUMMARY).write_text(summary)
-            # Before _finish_phase: its publish runs the repo's check, the load an episode is about.
+            # Before _finish_phase: its publish starts the repo's check, the load an episode is about.
+            # A check already running is not polled meanwhile; its unit's RuntimeMaxSec ends it at
+            # check_timeout_s, and the result is read once the episode is over.
             if host.under_pressure(rt.con):
                 return
             _finish_phase(rt, claim, summary)

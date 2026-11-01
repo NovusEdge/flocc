@@ -1101,6 +1101,74 @@ def test_a_check_that_also_fails_on_the_base_starts_no_fix_round_and_holds_the_r
     assert (state_dir(rt.cfg, "NF-1") / "done.json").exists()
 
 
+def test_the_base_check_runs_once_per_base_commit(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    runs = base_check(rt, monkeypatch, failure=None)
+    for _ in range(2):
+        ledger.meta_set(rt.con, "publish_failures:NF-1", "0")
+        add(rt, phase="impl", tester_sha="sha-tests")
+        done(rt)
+        supervise(rt, current(rt))
+        ledger.delete_claim(rt.con, "NF-1")
+    assert runs == ["backend"]
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: "a-newer-commit")
+    ledger.meta_set(rt.con, "publish_failures:NF-1", "0")
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert runs == ["backend", "backend"]
+
+
+def test_a_failed_publish_keeps_the_in_flight_state_until_the_claim_blocks(rt, monkeypatch):
+    from flocc.agent import CheckLost
+
+    ends = []
+    monkeypatch.setattr("flocc.supervisor._record_usage", lambda *a: ends.append(a))
+    add(rt, phase="impl", sequence=["executor"])
+    done(rt)
+    rt.sessions.alive_names.add("NF-1")
+    rt.publish_fn = lambda c, t, s, **kw: PublishResult("check_running")
+    supervise(rt, current(rt))
+
+    def lost(*a, **kw):
+        raise CheckLost("vanished twice")
+
+    rt.publish_fn = lost
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    assert ledger.checking_keys(rt.con) == {"NF-1"} and len(ends) == 1
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and ledger.checking_keys(rt.con) == frozenset()
+
+
+def test_a_timed_out_or_setup_base_check_is_not_cached(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    transient = PublishResult("check_failed", "timed out", log="x", transient=True)
+    runs = base_check(rt, monkeypatch, failure=transient)
+    for _ in range(2):
+        ledger.meta_set(rt.con, "publish_failures:NF-1", "0")
+        add(rt, phase="impl", tester_sha="sha-tests")
+        done(rt)
+        supervise(rt, current(rt))
+        ledger.delete_claim(rt.con, "NF-1")
+    assert runs == ["backend", "backend"]
+
+
+def test_a_cached_base_failure_lapses_after_the_canary_hold(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    runs = base_check(rt, monkeypatch, failure=failed("E1 other"))
+    clock = [100.0]
+    rt.now = lambda: clock[0]
+    for at in (100.0, 200.0, 100.0 + canary.HOLD_S + 1):
+        clock[0] = at
+        ledger.meta_set(rt.con, "publish_failures:NF-1", "0")
+        add(rt, phase="impl", tester_sha="sha-tests")
+        done(rt)
+        supervise(rt, current(rt))
+        ledger.delete_claim(rt.con, "NF-1")
+    assert runs == ["backend", "backend"]
+
+
 def test_a_check_that_passes_on_the_base_gets_its_fix_round(rt, monkeypatch):
     rt.publish_fn = lambda c, t, s: failed("E1 boom")
     base_check(rt, monkeypatch, failure=None)
@@ -1371,3 +1439,29 @@ def test_a_session_that_dies_during_an_episode_is_relaunched_after_it_without_a_
     rt.sessions.alive_names.clear()
     supervise(rt, current(rt))
     assert current(rt).state == "blocked"
+
+
+def test_a_running_check_keeps_the_claim_and_records_the_end_once(rt, monkeypatch):
+    add(rt, phase="impl", sequence=["executor"])
+    ends = []
+    monkeypatch.setattr("flocc.supervisor._record_usage", lambda *a: ends.append(a))
+    results = iter(["check_running", "check_running", "opened"])
+    rt.publish_fn = lambda c, t, s, **kw: PublishResult(next(results), url="https://pr/1")
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    supervise(rt, current(rt))
+    assert current(rt).state == "running"
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and len(ends) == 1
+
+
+def test_a_check_that_ends_goes_through_the_usual_outcomes(rt):
+    add(rt, phase="impl", sequence=["executor"])
+    results = iter([PublishResult("check_running"), PublishResult("check_failed", "E1 boom")])
+    rt.publish_fn = lambda c, t, s, **kw: next(results)
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert current(rt).phase == "impl" and current(rt).fix_attempts == 0
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and current(rt).fix_attempts == 1

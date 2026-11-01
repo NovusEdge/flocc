@@ -250,6 +250,8 @@ def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
         "started_age_s": max(0.0, now - claim.started_at),
         "updated_age_s": None if updated is None else max(0.0, now - updated),
         "tmux_alive": sessions.alive(session_name(claim.issue_key, claim.phase)),
+        # The session ended and the repo's check runs in the background.
+        "checking": agentfs.exists(agent, "check.json"),
         "context_pct": usage.context_pct(status) if status else None,
     }
 

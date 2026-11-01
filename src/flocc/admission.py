@@ -26,6 +26,7 @@ def admit(
     free_disk_gb: float | None = None,
     held: frozenset[str] = frozenset(),
     host_pressure: str = "",
+    checking: frozenset[str] = frozenset(),
 ) -> Decision:
     if host_pressure:
         return Decision(False, f"host under pressure: {host_pressure}")
@@ -43,7 +44,10 @@ def admit(
         return Decision(False, f"weekly usage {usage.weekly_pct:.0f}%")
     # Usage is only readable from a live session's status line, so with nothing running the
     # first session has to start on a stale reading or none.
-    if (usage is None or now - usage.observed_at > STALE_USAGE_S) and running:
+    # A claim whose check runs in the background has no session to refresh the reading, yet it
+    # counts toward the cap above.
+    sessions = [c for c in running if c.issue_key not in checking]
+    if (usage is None or now - usage.observed_at > STALE_USAGE_S) and sessions:
         return Decision(False, "usage unknown while sessions are running")
     waiting = [d for d in settings.depends_on if dep_states.get(d) != "completed"]
     if waiting:

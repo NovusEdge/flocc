@@ -81,6 +81,16 @@ def test_the_push_goes_from_the_service_clone_with_the_check_run_elsewhere(origi
     assert git("rev-parse", "refs/flocc/NF-5", cwd=origin) == git("rev-parse", "HEAD", cwd=path)
 
 
+def test_a_check_still_running_publishes_nothing(origin, tmp_path):
+    repo, _, claim = setup_claim(origin, tmp_path)
+    gh = Gh()
+    result = publish(
+        claim, repo, "t", "s", token="t", runner=gh, check=lambda c, r, t: {"status": "running"}
+    )
+    assert result.status == "check_running" and gh.calls == []
+    assert git("ls-remote", "origin", claim.branch, cwd=origin) == ""
+
+
 def test_a_branch_that_moves_during_the_check_is_not_pushed(origin, tmp_path):
     repo, path, claim = setup_claim(origin, tmp_path)
 

@@ -17,8 +17,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from flocc import checkjob
 from flocc.config import RepoConfig
-from flocc.publisher import check_at_base, check_worktree
+from flocc.publisher import check_at_base
 from flocc.sessions import SOCKET, Sessions, installed_plugins, trust_folders
 from flocc.worktree import (
     BranchDiverged,
@@ -278,10 +279,14 @@ def prepare(req: dict) -> dict:
 
 def check(req: dict) -> dict:
     mode = req["mode"]
-    if mode == "worktree":
-        return check_worktree(
-            str(req["command"]), under_home(req["worktree"]), float(req["timeout_s"])
-        )
+    if mode in ("background", "stop"):
+        wt = under_home(req["worktree"])
+        key = _key(wt.name)
+        state = under_home(req["state_root"]) / key
+        if mode == "stop":
+            checkjob.stop_job(state, key)
+            return {}
+        return checkjob.step(req, key, wt, state)
     write_token(req["token"])
     clone = _clone(req["repo"], req["url"])
     repo = RepoConfig(path=clone, base_branch=str(req["base_branch"]), check=str(req["command"]))
@@ -290,7 +295,11 @@ def check(req: dict) -> dict:
     setup_s, shared = float(req["setup_timeout_s"]), bool(req["shared_uv_cache"])
     if mode == "base-check":
         sha, failure = check_at_base(repo, root, setup_s, float(req["check_timeout_s"]), shared)
-        found = None if failure is None else {"detail": failure.detail, "log": failure.log}
+        found = (
+            None
+            if failure is None
+            else {"detail": failure.detail, "log": failure.log, "transient": failure.transient}
+        )
         return {"sha": sha, "failure": found}
     if mode == "base-setup":
         code, out, sha = setup_at_base(repo, root, setup_s, shared)
@@ -567,6 +576,8 @@ def remove(req: dict) -> dict:
     key = _key(req["key"])
     wt = under_home(req["worktree_root"]) / key
     state = under_home(req["state_root"]) / key
+    # Before the worktree goes: the check runs in it.
+    checkjob.stop_job(state, key)
     if wt.exists():
         try:
             if req.get("keep_dirty") and has_uncommitted_changes(wt):
