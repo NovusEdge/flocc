@@ -9,6 +9,7 @@ import threading
 import time
 import types
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from flocc.linear import LinearError
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.tick import tick_lock
-from tests.fakes import FakeAgent, FakeNotifier, FakeSessions
+from tests.fakes import FakeAgent, FakeLinear, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
 
@@ -725,6 +726,106 @@ def test_stop_tests_refuses_an_issue_with_no_running_run(host_cfg, capsys):
     load(host_cfg).ledger_path.parent.mkdir(parents=True, exist_ok=True)
     assert main(["--config", str(host_cfg), "stop-tests", "NF-404"]) == 1
     assert "NF-404 has no running run" in capsys.readouterr().err
+
+
+@pytest.fixture
+def amend_env(tmp_path, monkeypatch):
+    """A running NF-1 whose repo has an amended label and a PR; returns the runtime and the
+    gh calls (argv, GH_TOKEN) the command made."""
+    path = tmp_path / "c.toml"
+    token = tmp_path / "publish.token"
+    token.write_text("ghp_publish\n")
+    path.write_text(
+        EXAMPLE.read_text()
+        .replace('"~/.local/state/flocc/ledger.sqlite"', f'"{tmp_path / "l.sqlite"}"')
+        .replace("~/.config/flocc/gh-publish.token", str(token))
+        .replace("~/.local/state/flocc", str(tmp_path / "state"))
+        .replace("[repos.backend]", '[repos.backend]\namended_label = "tests-amended"')
+    )
+    cfg = load(path)
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, replace(make("NF-1"), phase="impl"))
+    (cfg.state_root / "NF-1").mkdir(parents=True)
+    (cfg.state_root / "NF-1" / "pr-url").write_text("https://github.com/o/r/pull/7")
+    linear = FakeLinear()
+    sessions = FakeSessions()
+    rt = Runtime(
+        cfg=cfg,
+        con=con,
+        linear=linear,
+        sessions=sessions,
+        notifier=FakeNotifier(),
+        now=lambda: 5.0,
+        exe="/opt/flocc",
+        claude_exe="/opt/claude",
+        config_path=path,
+        publish_fn=lambda *a: None,
+        git_head=lambda p: "sha0",
+        review_diff=lambda c: "",
+        comment_pr=lambda c, u, b: None,
+        agent=FakeAgent(cfg),
+    )
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    gh = []
+
+    def run(argv, **kw):
+        gh.append((argv, kw["env"]["GH_TOKEN"]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return types.SimpleNamespace(path=path, rt=rt, gh=gh, linear=linear, sessions=sessions)
+
+
+def test_amend_tests_labels_the_pr_and_tells_the_running_session(amend_env, capsys):
+    e = amend_env
+    assert main(["--config", str(e.path), "amend-tests", "NF-1"]) == 0
+    url = "https://github.com/o/r/pull/7"
+    assert e.gh == [(["gh", "pr", "edit", url, "--add-label", "tests-amended"], "ghp_publish")]
+    assert [n for n, _ in e.sessions.sent] == ["NF-1"]
+    assert "tests-amended" in e.linear.comments[0] and url in e.linear.comments[0]
+    assert [line for _, key, line in ledger.pending_digest(e.rt.con) if key == "NF-1"] == [
+        f"cardinal added tests-amended to {url}"
+    ]
+    assert f"added tests-amended to {url}; told the live session" in capsys.readouterr().out
+
+
+def test_amend_tests_on_a_stopped_run_tells_no_session(amend_env, capsys):
+    e = amend_env
+    ledger.update_claim(e.rt.con, "NF-1", state="blocked")
+    assert main(["--config", str(e.path), "amend-tests", "NF-1"]) == 0
+    assert len(e.gh) == 1 and e.sessions.sent == []
+    assert "no live session to tell" in capsys.readouterr().out
+
+
+def test_amend_tests_without_a_claim_is_refused(amend_env, capsys):
+    assert main(["--config", str(amend_env.path), "amend-tests", "NF-404"]) == 1
+    assert "amend-tests: no claim for NF-404" in capsys.readouterr().err
+    assert amend_env.gh == []
+
+
+def test_amend_tests_without_a_pr_is_refused(amend_env, capsys):
+    (amend_env.rt.cfg.state_root / "NF-1" / "pr-url").unlink()
+    assert main(["--config", str(amend_env.path), "amend-tests", "NF-1"]) == 1
+    assert "amend-tests: NF-1 has no PR yet" in capsys.readouterr().err
+    assert amend_env.gh == []
+
+
+def test_amend_tests_without_a_configured_label_is_refused(amend_env, capsys):
+    path = amend_env.path
+    path.write_text(path.read_text().replace('amended_label = "tests-amended"\n', ""))
+    assert main(["--config", str(amend_env.path), "amend-tests", "NF-1"]) == 1
+    assert "backend has no amended_label" in capsys.readouterr().err
+    assert amend_env.gh == []
+
+
+def test_amend_tests_reports_a_failed_label_and_tells_nobody(amend_env, monkeypatch, capsys):
+    def fail(argv, **kw):
+        raise subprocess.CalledProcessError(1, argv, stderr="label not found")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    assert main(["--config", str(amend_env.path), "amend-tests", "NF-1"]) == 1
+    assert "the label was not added: label not found" in capsys.readouterr().err
+    assert amend_env.sessions.sent == [] and amend_env.linear.comments == []
 
 
 def test_shell_records_the_call_before_and_after_it_runs(tmp_path, monkeypatch, capsys):

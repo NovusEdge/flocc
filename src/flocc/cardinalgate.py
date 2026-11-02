@@ -59,7 +59,7 @@ def argv_for(command: str) -> list[str]:
             return ["host-report"]
         case "run-summary", [key]:
             return [verb, _key(key)]
-        case "stop-tests", [key]:
+        case (("stop-tests" | "amend-tests"), [key]):
             return [verb, _key(key)]
         case "shell", [command]:
             # Only bin/agent-shell sends this verb, and cardinal's managed settings make every
