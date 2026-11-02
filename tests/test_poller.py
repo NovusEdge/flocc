@@ -476,6 +476,20 @@ def test_a_held_rerun_keeps_the_comments_for_its_start(rt):
     assert "The owner: fix the query guard" in text
 
 
+def test_a_release_no_start_followed_for_a_week_delivers_nothing(rt):
+    ledger.insert_claim(rt.con, past_claim())
+    rt.linear.replies = {"id-NF-9": RERUN_REPLIES}
+    rt.linear.ready = [issue(desc="no criteria")]
+    poll(rt)
+    rt.now = lambda: 1000.0 + 8 * 24 * 3600
+    rt.linear.ready = [issue()]
+    poll(rt)
+    text = (state_dir(rt.cfg, "NF-9") / "context.md").read_text()
+    assert "fix the query guard" not in text
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.last_comment_at.startswith("1970-01-09")
+
+
 def test_a_second_start_does_not_repeat_the_comments(rt):
     ledger.insert_claim(rt.con, past_claim())
     rt.linear.replies = {"id-NF-9": RERUN_REPLIES}

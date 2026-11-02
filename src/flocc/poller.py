@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from flocc.worktree import (
 )
 
 COMMENT_ONCE_S = 365 * 24 * 3600
+RERUN_COMMENTS_S = 7 * 24 * 3600
 
 
 def repo_for(issue: Issue, cfg) -> str | None:
@@ -91,10 +93,11 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
             print(f"release: {claim.issue_key} not moved back to Todo: {exc}", file=sys.stderr)
     # forward_comments reads only running claims, so a comment posted after this one stopped
     # reading is the next start's to deliver, even when admission holds that start for ticks.
+    cursor = claim.last_comment_at or datetime.fromtimestamp(claim.started_at, UTC).isoformat()
     ledger.meta_set(
         rt.con,
         f"comments_since:{claim.issue_key}",
-        claim.last_comment_at or datetime.fromtimestamp(claim.started_at, UTC).isoformat(),
+        json.dumps({"cursor": cursor, "released_at": rt.now()}),
     )
     ledger.delete_claim(rt.con, claim.issue_key)
     # Alert dedupe is keyed to the old claim; a rerun that fails again for the same cause must
@@ -297,8 +300,10 @@ def poll(rt) -> None:
 def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> None:
     cfg = rt.cfg
     since_key = f"comments_since:{issue.key}"
-    # Comments written before the first claim are not replies to it.
-    since = ledger.meta_get(rt.con, since_key)
+    kept = json.loads(ledger.meta_get(rt.con, since_key) or "null")
+    # A release no start followed soon (unmapped, cancelled, reopened months later) left direction
+    # nobody means any more. Comments written before the first claim are not replies to it either.
+    since = kept and rt.now() - kept["released_at"] < RERUN_COMMENTS_S and kept["cursor"]
     cursor = since or datetime.fromtimestamp(rt.now(), UTC).isoformat()
     replies = []
     if since:
