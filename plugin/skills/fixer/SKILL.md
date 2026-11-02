@@ -18,8 +18,12 @@ Fix what the text you were started with reports, on the existing branch, and not
 - When you were started on a failed check and cannot make it pass, write what you could not fix
   under `Needs the owner`; the run then ends blocked. Leave the line out when nothing needs the
   owner.
-- Commit with `flocc commit -m '<message>' -- <paths>`, subject at most 72 characters. Run the
-  repo's check before finishing.
+- Start on the fix: the failure and the findings are already recorded, so do not run the full
+  check first to see them again.
+- Commit with `flocc commit -m '<message>' -- <paths>`, subject at most 72 characters. Before
+  finishing, rerun the tests that failed or that your fix touches, and the repo's lint and format
+  checks. Do not run the full check yourself, whatever the repo's own instructions say about
+  running it before a push: `flocc done` runs it, and flocc pushes.
 - Never push, open a PR or touch Linear. Nobody answers questions in this session.
 
 ## Last steps

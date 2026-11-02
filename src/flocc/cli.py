@@ -453,8 +453,8 @@ def cmd_amend_tests(args) -> int:
             try:
                 rt.sessions.send(
                     session_name(claim.issue_key, claim.phase),
-                    f"The owner's supervisor added the {repo.amended_label} label to the PR. Run"
-                    " the check again and finish.",
+                    f"The owner's supervisor added the {repo.amended_label} label to the PR."
+                    " Finish with flocc done; it runs the full check.",
                 )
                 told = True
             except (subprocess.SubprocessError, OSError) as exc:

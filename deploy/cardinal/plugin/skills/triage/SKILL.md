@@ -30,7 +30,7 @@ default, and a call the tool cuts off leaves the work running on the VM.
   never rerun the issue yourself.
   When the stop is the PR needing the amended-tests label (`tests-amended`), don't ask the owner:
   run `/opt/cardinal/plugin/bin/executor amend-tests KEY`. Then, if fix rounds remain, start a
-  fixer with a note that the label is on the PR and it should run the check again and finish. If
+  fixer with a note that the label is on the PR and it should finish with `flocc done`. If
   the fixer refuses, tell the owner in one line that the label is on and `flocc release KEY`
   reruns it.
 - A running session asks for the amended-tests label (it reaches you only through the owner):

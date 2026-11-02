@@ -215,7 +215,7 @@ def test_the_unit_runs_sonnet_in_the_empty_session_directory():
     unit = (CARDINAL / "cardinal.service").read_text()
     for part in (
         "-c /var/lib/flocc-cardinal/session",
-        "--model sonnet",
+        "--model claude-opus-5-5 --effort medium",
         "--remote-control cardinal",
         "--plugin-dir /opt/cardinal/plugin",
         "{{executor}}",
