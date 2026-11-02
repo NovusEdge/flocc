@@ -375,7 +375,8 @@ def start_rebase(rt, claim: Claim, base_sha: str) -> None:
         f" merge `origin/{base}` into this branch and resolve the conflicts without changing"
         " behaviour: keep what the branch does and take the base's side of anything unrelated."
         " Where a resolution changes a file the tester committed, record it with"
-        " `flocc tests-amended`. Run the check, commit the merge, then finish as usual."
+        " `flocc tests-amended`. Run the tests the conflicts touched, commit the merge, then finish"
+        " as usual; `flocc done` runs the full check."
     )
     d = state_dir(rt.cfg, key)
     start = rt.now()
@@ -740,8 +741,8 @@ def _base_moved_note(rt, claim: Claim, detail: str) -> str:
     )
     return (
         f"This failure was on {repo.base_branch} at {was}, and {moved}. Run `git fetch origin`, merge"
-        f" `origin/{repo.base_branch}` into this branch, then run the check again before changing"
-        " anything else."
+        f" `origin/{repo.base_branch}` into this branch, then rerun the tests that failed before"
+        " changing anything else. If they pass, finish: `flocc done` runs the full check."
     )
 
 

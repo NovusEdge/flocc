@@ -29,7 +29,13 @@ design: do not redesign, re-plan or ask for sign-off.
   `claude` from the shell.
 - To look up how a library or API behaves, use `flocc:source-finder` then `flocc:source-reader`,
   with today's date in the task.
-- Run the repo's check (usually `just check`) before finishing.
+- While working, run only the tests your change touches, by file or test id
+  (`pytest tests/test_x.py::test_y`, `pytest -k name`, or the runner's equivalent). Before
+  finishing, run those again with the repo's lint and format checks. Do
+  not run the full check (usually `just check`) yourself: `flocc done` runs it, and a failure
+  comes back to a fixer with its output. A full run here repeats it, and queues on the suite lock
+  behind other issues' runs until your Bash call times out. A repo instruction to run the full
+  check before pushing, or to record its counts, is met by that run: flocc pushes, not you.
 - Never push, open a PR or touch Linear; the service does that after `flocc done`.
 
 ## Last steps
