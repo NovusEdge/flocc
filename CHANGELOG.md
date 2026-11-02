@@ -6,6 +6,10 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- A rerun reads your comments: owner and steering comments posted after the previous run stopped
+  go into the restarted session's `context.md` under "Comments since the last run", whether the
+  issue went back to Todo by hand or through `flocc release`. Before, only comments posted during
+  a run reached it, so "comment, then move to Todo" restarted without the comment.
 - A branch's check no longer times out while it waits on a lock, such as nimblefox's machine-wide
   suite lock held by another worktree: time a process of the check spends blocked in
   `/proc/locks` on a lock held outside the check does not count against `check_timeout_s`. systemd allows 4 h of waiting on top,

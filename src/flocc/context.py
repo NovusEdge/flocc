@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from pathlib import Path
 
 from flocc.config import Config
@@ -30,11 +31,13 @@ def agent_dir(cfg: Config, key: str) -> Path:
     return cfg.agent_state_root / key
 
 
-def write_context(cfg: Config, issue: Issue, claim: Claim) -> None:
+def write_context(cfg: Config, issue: Issue, claim: Claim, replies: Sequence[str] = ()) -> None:
+    """replies are the steering comments posted after the previous claim stopped reading them."""
     d = state_dir(cfg, issue.key)
     d.mkdir(parents=True, exist_ok=True)
+    since = "## Comments since the last run\n\n" + "\n\n".join(replies) + "\n\n" if replies else ""
     (d / "context.md").write_text(
-        f"# {issue.key}: {issue.title}\n\n{issue.url}\n\n{issue.description}\n\n"
+        f"# {issue.key}: {issue.title}\n\n{issue.url}\n\n{issue.description}\n\n{since}"
         f"## Claim\n\nBranch `{claim.branch}`.\n\n"
         f"Your state directory is {agent_dir(cfg, issue.key)}.\n\n{_COMMANDS}"
     )

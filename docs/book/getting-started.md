@@ -101,4 +101,4 @@ The issue moves to In Progress, an executor session does the work, and the servi
 
 ## Run an issue again
 
-Move the issue back to Todo once its run has finished: blocked, timed out or PR opened. The next tick restarts it on the same branch. A move to Todo while the run is still going does nothing. From a terminal, `flocc release ENG-12` does the same. A comment on a running issue goes to the live session instead.
+Move the issue back to Todo once its run has finished: blocked, timed out or PR opened. The next tick restarts it on the same branch. A move to Todo while the run is still going does nothing. From a terminal, `flocc release ENG-12` does the same. Your comments posted since the last run stopped go into the restarted session's context, so you can write what to change before moving the issue. A comment on a running issue goes to the live session instead.
