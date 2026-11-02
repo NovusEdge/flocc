@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from flocc.worktree import (
 )
 
 COMMENT_ONCE_S = 365 * 24 * 3600
+RERUN_COMMENTS_S = 7 * 24 * 3600
 
 
 def repo_for(issue: Issue, cfg) -> str | None:
@@ -89,6 +91,14 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
             rt.linear.unstart(rt.linear.issue(claim.issue_key))
         except LinearError as exc:
             print(f"release: {claim.issue_key} not moved back to Todo: {exc}", file=sys.stderr)
+    # forward_comments reads only running claims, so a comment posted after this one stopped
+    # reading is the next start's to deliver, even when admission holds that start for ticks.
+    cursor = claim.last_comment_at or datetime.fromtimestamp(claim.started_at, UTC).isoformat()
+    ledger.meta_set(
+        rt.con,
+        f"comments_since:{claim.issue_key}",
+        json.dumps({"cursor": cursor, "released_at": rt.now()}),
+    )
     ledger.delete_claim(rt.con, claim.issue_key)
     # Alert dedupe is keyed to the old claim; a rerun that fails again for the same cause must
     # still be told.
@@ -289,6 +299,23 @@ def poll(rt) -> None:
 
 def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> None:
     cfg = rt.cfg
+    since_key = f"comments_since:{issue.key}"
+    kept = json.loads(ledger.meta_get(rt.con, since_key) or "null")
+    # A release no start followed soon (unmapped, cancelled, reopened months later) left direction
+    # nobody means any more. Comments written before the first claim are not replies to it either.
+    since = kept and rt.now() - kept["released_at"] < RERUN_COMMENTS_S and kept["cursor"]
+    cursor = since or datetime.fromtimestamp(rt.now(), UTC).isoformat()
+    replies = []
+    if since:
+        try:
+            unread = rt.linear.comments_since(issue.id, cursor)
+        except LinearError as exc:
+            print(f"{issue.key}: held, comments not read: {exc}", file=sys.stderr)
+            return
+        for comment in unread:
+            if who := _steering(rt, comment):
+                replies.append(f"{who}: {comment.body}")
+            cursor = comment.created_at
     cause = f"{issue.key}:prepare"
     # A kept worktree may hold a previous run's uncommitted work, so its failure is the issue's.
     reused = (cfg.worktree_root.resolve() / issue.key).exists()
@@ -409,11 +436,10 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         base_sha=base,
         tester_sha=tester_sha,
         sequence=list(sequence),
-        # Comments written before the claim are not replies to it.
-        last_comment_at=datetime.fromtimestamp(rt.now(), UTC).isoformat(),
+        last_comment_at=cursor,
     )
     ledger.insert_claim(rt.con, claim)
-    write_context(cfg, issue, claim)
+    write_context(cfg, issue, claim, replies)
     try:
         # A run with no tester commit has no amendments; one resuming at the executor keeps them,
         # or the guard blocks them.
@@ -430,6 +456,20 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         rt.sessions.kill(session_name(issue.key, phase))
         ledger.delete_claim(rt.con, issue.key)
         raise
+    ledger.meta_set(rt.con, since_key, "")
+
+
+def _steering(rt, comment) -> str | None:
+    """Who a steering comment is from, or None for one the session must not see."""
+    # The service's own comments carry BOT_PREFIX, and teammates comment on NF issues too.
+    # The owner's replies steer; so do an allowlisted author's (e.g. a steering agent).
+    if comment.body.startswith(BOT_PREFIX):
+        return None
+    if comment.mine:
+        return "The owner"
+    if comment.author in rt.cfg.steer_authors:
+        return "A steering agent"
+    return None
 
 
 def forward_comments(rt) -> dict[str, LinearError]:
@@ -447,15 +487,7 @@ def forward_comments(rt) -> dict[str, LinearError]:
             continue
         name = session_name(claim.issue_key, claim.phase)
         for comment in replies:
-            # The service's own comments carry BOT_PREFIX, and teammates comment on NF issues too.
-            # The owner's replies steer; so do an allowlisted author's (e.g. a steering agent).
-            if comment.mine:
-                who = "The owner"
-            elif comment.author in rt.cfg.steer_authors:
-                who = "A steering agent"
-            else:
-                who = None
-            if who and not comment.body.startswith(BOT_PREFIX):
+            if who := _steering(rt, comment):
                 # A dead session is relaunched by the next tick's supervisor, which delivers
                 # this reply and the ones after it.
                 if not rt.sessions.alive(name):

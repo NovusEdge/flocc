@@ -432,6 +432,89 @@ def test_rerun_comment_waits_for_the_start(rt):
     assert all("restarting" not in text for _, text in rt.linear.comments)
 
 
+RERUN_REPLIES = [
+    Comment("c1", "fix the query guard", "2026-10-09T10:05:00Z", mine=True),
+    Comment("c2", "a teammate's aside", "2026-10-09T10:06:00Z", mine=False),
+    Comment("c3", f"{BOT_PREFIX} released", "2026-10-09T10:07:00Z", mine=True),
+]
+
+
+def past_claim(state="done"):
+    old = make("NF-9", state=state)
+    old.last_comment_at = "2026-10-09T10:00:00Z"
+    return old
+
+
+@pytest.mark.parametrize("release", ["todo", "flocc release"])
+def test_a_rerun_starts_with_the_owners_comments_since_the_last_claim(rt, release):
+    old = past_claim()
+    ledger.insert_claim(rt.con, old)
+    if release == "flocc release":
+        release_claim(rt, old, keep_worktree=True)
+    rt.linear.replies = {"id-NF-9": RERUN_REPLIES}
+    rt.linear.ready = [issue()]
+    poll(rt)
+    text = (state_dir(rt.cfg, "NF-9") / "context.md").read_text()
+    assert "The owner: fix the query guard" in text
+    assert "aside" not in text and "released" not in text
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.last_comment_at == "2026-10-09T10:07:00Z"
+
+
+def test_a_held_rerun_keeps_the_comments_for_its_start(rt):
+    ledger.insert_claim(rt.con, past_claim("blocked"))
+    for key in ("NF-1", "NF-2"):
+        ledger.insert_claim(rt.con, make(key))
+    rt.linear.replies = {"id-NF-9": RERUN_REPLIES}
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    for key in ("NF-1", "NF-2"):
+        ledger.delete_claim(rt.con, key)
+    poll(rt)
+    text = (state_dir(rt.cfg, "NF-9") / "context.md").read_text()
+    assert "The owner: fix the query guard" in text
+
+
+def test_a_release_no_start_followed_for_a_week_delivers_nothing(rt):
+    ledger.insert_claim(rt.con, past_claim())
+    rt.linear.replies = {"id-NF-9": RERUN_REPLIES}
+    rt.linear.ready = [issue(desc="no criteria")]
+    poll(rt)
+    rt.now = lambda: 1000.0 + 8 * 24 * 3600
+    rt.linear.ready = [issue()]
+    poll(rt)
+    text = (state_dir(rt.cfg, "NF-9") / "context.md").read_text()
+    assert "fix the query guard" not in text
+    c = ledger.get_claim(rt.con, "NF-9")
+    assert c is not None and c.last_comment_at.startswith("1970-01-09")
+
+
+def test_a_second_start_does_not_repeat_the_comments(rt):
+    ledger.insert_claim(rt.con, past_claim())
+    rt.linear.replies = {"id-NF-9": RERUN_REPLIES}
+    rt.linear.ready = [issue()]
+    poll(rt)
+    ledger.delete_claim(rt.con, "NF-9")
+    poll(rt)
+    text = (state_dir(rt.cfg, "NF-9") / "context.md").read_text()
+    assert "fix the query guard" not in text
+
+
+def test_a_rerun_waits_when_its_comments_cannot_be_read(rt, capsys):
+    ledger.insert_claim(rt.con, past_claim())
+    rt.linear.deleted = ("NF-9",)
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    assert "comments not read" in capsys.readouterr().err
+    rt.linear.deleted = ()
+    rt.linear.replies = {"id-NF-9": RERUN_REPLIES}
+    poll(rt)
+    text = (state_dir(rt.cfg, "NF-9") / "context.md").read_text()
+    assert "The owner: fix the query guard" in text
+
+
 def test_start_failure_kills_the_session_and_drops_the_claim(rt):
     rt.linear.start_fails = True
     rt.linear.ready = [issue()]
