@@ -811,8 +811,9 @@ def supervise(rt, claim: Claim) -> None:
             if claim.phase != "review":
                 (d / LAST_SUMMARY).write_text(summary)
             # Before _finish_phase: its publish starts the repo's check, the load an episode is about.
-            # A check already running is not polled meanwhile; its unit's RuntimeMaxSec ends it at
-            # check_timeout_s, and the result is read once the episode is over.
+            # A check already running is not polled meanwhile, so one past check_timeout_s runs on
+            # until the episode ends (RuntimeMaxSec allows 4 h more for lock waits); the first poll
+            # after it stops the check and reads the result.
             if host.under_pressure(rt.con):
                 return
             _finish_phase(rt, claim, summary)

@@ -26,6 +26,9 @@ _RUNNING = ("start-pre", "start", "start-post", "running", "auto-restart")
 # not count against timeout_s; RuntimeMaxSec allows this much waiting on top before systemd stops
 # the unit anyway.
 WAIT_MAX_S = 4 * 3600
+# The most one gap between polls can credit: a tick is 3 minutes, and a gap of hours (a host
+# episode, flocc stopped) could hide a run between two blocked polls.
+WAIT_CREDIT_MAX_S = 300
 LOCKS = Path("/proc/locks")
 CGROUPS = Path("/sys/fs/cgroup")
 # What the check needs from flocc-agent's environment; the unit does not inherit it.
@@ -59,15 +62,24 @@ def _show(unit: str) -> dict[str, str]:
 
 
 def _waiting(info: dict[str, str]) -> bool:
-    """Whether a process of the unit is blocked on a flock or POSIX lock: /proc/locks lists each
-    blocked request as `N: -> FLOCK ... PID ...`."""
+    """Whether a process of the unit is blocked on a flock or POSIX lock held outside the unit.
+    /proc/locks lists a held lock as `N: FLOCK ... PID ...` and each request blocked on it as
+    `N: -> FLOCK ... PID ...`; a lock held inside the unit is the check's own deadlock."""
     try:
         procs = (CGROUPS / info.get("ControlGroup", "").lstrip("/") / "cgroup.procs").read_text()
         locks = LOCKS.read_text()
     except OSError:
         return False
-    blocked = {line.split()[5] for line in locks.splitlines() if line.split()[1:2] == ["->"]}
-    return not blocked.isdisjoint(procs.split())
+    ours = set(procs.split())
+    held: dict[str, set[str]] = {}
+    blocked: set[str] = set()
+    for fields in map(str.split, locks.splitlines()):
+        if fields[1:2] == ["->"]:
+            if fields[5] in ours:
+                blocked.add(fields[0])
+        elif len(fields) > 4:
+            held.setdefault(fields[0], set()).add(fields[4])
+    return any(held.get(n, set()) - ours for n in blocked)
 
 
 def _stop(unit: str) -> None:
@@ -119,6 +131,7 @@ def _start(
     command: str,
     timeout_s: float,
     lost: int,
+    requeued: bool = False,
     restore: dict | None = None,
 ) -> dict:
     # `restore` is put back if systemd-run refuses, so a refused rerun keeps the lost count.
@@ -132,7 +145,17 @@ def _start(
     _stop(unit)
     state.mkdir(parents=True, exist_ok=True)
     now = time.time()
-    _write_job(state, {"started": now, "head": head, "lost": lost, "polled": now, "waited": 0})
+    _write_job(
+        state,
+        {
+            "started": now,
+            "head": head,
+            "lost": lost,
+            "requeued": requeued,
+            "polled": now,
+            "waited": 0,
+        },
+    )
     env = _env()
     argv = [
         "systemd-run",
@@ -195,7 +218,7 @@ def step(req: dict, key: str, wt: Path, state: Path) -> dict:
         # for a while and then blocked is never credited time it spent running.
         waited = float(job.get("waited", 0))
         if waiting and job.get("waiting"):
-            waited += now - float(job.get("polled", now))
+            waited += min(now - float(job.get("polled", now)), WAIT_CREDIT_MAX_S)
         job.update(polled=now, waiting=waiting, waited=waited)
         _write_job(state, job)
         if waiting or now - float(job["started"]) - waited <= timeout_s:
@@ -203,14 +226,17 @@ def step(req: dict, key: str, wt: Path, state: Path) -> dict:
         status = "timeout"
     elif info.get("Result") == "timeout":
         # Stopped by RuntimeMaxSec while it waited: the lock's holder ran long, not this check,
-        # so it goes back to the lock once, sharing the lost check's one rerun.
-        if job.get("waiting") and int(job.get("lost", 0)) < 1:
+        # so it goes back to the lock once.
+        if job.get("waiting") and not job.get("requeued"):
             stop_job(state, key)
-            return _start(state, wt, key, command, timeout_s, 1)
+            return _start(state, wt, key, command, timeout_s, int(job.get("lost", 0)), True)
         status = "timeout"
     else:
         ok = info.get("Result") == "success" and info.get("ExecMainStatus") == "0"
         status = "ok" if ok else "failed"
     out = _tail(state)
+    if status == "timeout" and job.get("waiting"):
+        hours = WAIT_MAX_S // 3600
+        out += f"\nStopped while still waiting on a lock, after more than {hours} h of waiting.\n"
     stop_job(state, key)
     return {"status": status, "output": out, "head": job["head"]}
