@@ -22,6 +22,12 @@ STOP_GRACE_S = 10
 # systemd-run returns once the unit is queued; a poll in this window may not find it yet.
 START_GRACE_S = 15
 _RUNNING = ("start-pre", "start", "start-post", "running", "auto-restart")
+# Time blocked on a lock (a repo's machine-wide suite lock, held by another worktree's check) does
+# not count against timeout_s; RuntimeMaxSec allows this much waiting on top before systemd stops
+# the unit anyway.
+WAIT_MAX_S = 4 * 3600
+LOCKS = Path("/proc/locks")
+CGROUPS = Path("/sys/fs/cgroup")
 # What the check needs from flocc-agent's environment; the unit does not inherit it.
 _PASS = ("PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "DOCKER_HOST", "TESTCONTAINERS_RYUK_DISABLED")
 
@@ -42,7 +48,7 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess:
 
 
 def _show(unit: str) -> dict[str, str]:
-    props = "LoadState,ActiveState,SubState,Result,ExecMainStatus"
+    props = "LoadState,ActiveState,SubState,Result,ExecMainStatus,ControlGroup"
     argv = ["systemctl", "--user", "show", unit, "-p", props]
     out = _run(argv)
     # A unit that does not exist still answers 0, with LoadState=not-found. A bus that does not
@@ -50,6 +56,18 @@ def _show(unit: str) -> dict[str, str]:
     if out.returncode != 0:
         raise subprocess.CalledProcessError(out.returncode, argv[:3], out.stdout, out.stderr)
     return dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
+
+
+def _waiting(info: dict[str, str]) -> bool:
+    """Whether a process of the unit is blocked on a flock or POSIX lock: /proc/locks lists each
+    blocked request as `N: -> FLOCK ... PID ...`."""
+    try:
+        procs = (CGROUPS / info.get("ControlGroup", "").lstrip("/") / "cgroup.procs").read_text()
+        locks = LOCKS.read_text()
+    except OSError:
+        return False
+    blocked = {line.split()[5] for line in locks.splitlines() if line.split()[1:2] == ["->"]}
+    return not blocked.isdisjoint(procs.split())
 
 
 def _stop(unit: str) -> None:
@@ -75,6 +93,12 @@ def _tail(state: Path) -> str:
     except OSError:
         return ""
     return text if size <= TAIL_BYTES else "[...]\n" + text
+
+
+def _write_job(state: Path, job: dict) -> None:
+    tmp = state / "check.json.tmp"
+    tmp.write_text(json.dumps(job))
+    os.replace(tmp, state / CHECK_JOB)
 
 
 def _clear(state: Path) -> None:
@@ -107,9 +131,8 @@ def _start(
     # A unit left by a start whose record was lost would refuse the name.
     _stop(unit)
     state.mkdir(parents=True, exist_ok=True)
-    tmp = state / "check.json.tmp"
-    tmp.write_text(json.dumps({"started": time.time(), "head": head, "lost": lost}))
-    os.replace(tmp, state / CHECK_JOB)
+    now = time.time()
+    _write_job(state, {"started": now, "head": head, "lost": lost, "polled": now, "waited": 0})
     env = _env()
     argv = [
         "systemd-run",
@@ -121,7 +144,7 @@ def _start(
         # The exit status stays readable after the process ends, until the poll stops the unit.
         "--property=RemainAfterExit=yes",
         # Also ends a check no poll reaches, as during a host episode.
-        f"--property=RuntimeMaxSec={max(1, math.ceil(timeout_s))}",
+        f"--property=RuntimeMaxSec={max(1, math.ceil(timeout_s)) + WAIT_MAX_S}",
         "--property=KillSignal=SIGINT",
         f"--property=TimeoutStopSec={STOP_GRACE_S}",
         f"--property=WorkingDirectory={wt}",
@@ -135,8 +158,7 @@ def _start(
     if started.returncode != 0:
         _clear(state)
         if restore is not None:
-            tmp.write_text(json.dumps(restore))
-            os.replace(tmp, state / CHECK_JOB)
+            _write_job(state, restore)
         raise subprocess.CalledProcessError(
             started.returncode, argv[:2], output=started.stdout, stderr=started.stderr
         )
@@ -168,10 +190,23 @@ def step(req: dict, key: str, wt: Path, state: Path) -> dict:
             return {"status": "lost"}
         return _start(state, wt, key, command, timeout_s, lost, restore=job)
     if info.get("SubState") in _RUNNING:
-        if time.time() - float(job["started"]) <= timeout_s:
+        now, waiting = time.time(), _waiting(info)
+        # Only a span with the unit blocked at both polls counts as waiting, so a check that ran
+        # for a while and then blocked is never credited time it spent running.
+        waited = float(job.get("waited", 0))
+        if waiting and job.get("waiting"):
+            waited += now - float(job.get("polled", now))
+        job.update(polled=now, waiting=waiting, waited=waited)
+        _write_job(state, job)
+        if waiting or now - float(job["started"]) - waited <= timeout_s:
             return {"status": "running"}
         status = "timeout"
     elif info.get("Result") == "timeout":
+        # Stopped by RuntimeMaxSec while it waited: the lock's holder ran long, not this check,
+        # so it goes back to the lock once, sharing the lost check's one rerun.
+        if job.get("waiting") and int(job.get("lost", 0)) < 1:
+            stop_job(state, key)
+            return _start(state, wt, key, command, timeout_s, 1)
         status = "timeout"
     else:
         ok = info.get("Result") == "success" and info.get("ExecMainStatus") == "0"

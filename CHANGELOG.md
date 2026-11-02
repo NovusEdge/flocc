@@ -6,6 +6,10 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- A branch's check no longer times out while it waits on a lock, such as nimblefox's machine-wide
+  suite lock held by another worktree: time a process of the check spends blocked in
+  `/proc/locks` does not count against `check_timeout_s`. systemd allows 4 h of waiting on top,
+  and a check it stops while still waiting runs again once instead of failing.
 - The tick watches the host: `/tmp` above `tmp_max_pct` (80), memory available below
   `min_available_mem_gb` (1.0 GiB) or a new OOM kill opens an episode and emits `host-pressure`.
   While it lasts nothing starts or relaunches, without spending a fix round or a restart, and

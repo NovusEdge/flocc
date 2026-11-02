@@ -82,7 +82,8 @@ def test_a_check_starts_as_a_user_unit_and_returns_at_once(systemd, wt, tmp_path
     assert step(wt, state) == {"status": "running"}
     [argv] = systemd.runs
     assert argv[:3] == ["systemd-run", "--user", "--quiet"] and f"--unit={UNIT}" in argv
-    assert "--property=RuntimeMaxSec=600" in argv and "--collect" not in argv
+    assert f"--property=RuntimeMaxSec={600 + checkjob.WAIT_MAX_S}" in argv
+    assert "--collect" not in argv
     assert argv[argv.index("--") + 1 :] == ["just", "check"]
     job = json.loads((state / "check.json").read_text())
     assert job["head"] == git("rev-parse", "HEAD", cwd=wt)
@@ -234,4 +235,80 @@ def test_a_lost_check_reaches_the_service_as_check_lost(tmp_cfg):
 
 def test_the_timeout_is_whole_seconds_of_at_least_one(systemd, wt, tmp_path):
     step(wt, tmp_path / "state", timeout_s=0.2)
-    assert "--property=RuntimeMaxSec=1" in systemd.runs[0]
+    assert f"--property=RuntimeMaxSec={1 + checkjob.WAIT_MAX_S}" in systemd.runs[0]
+
+
+@pytest.fixture
+def lock(systemd, monkeypatch, tmp_path):
+    """Puts the unit's process 4242 in a cgroup; lock.block(True) makes it a blocked waiter in
+    /proc/locks, False a holder."""
+    cg = tmp_path / "cgroup"
+    (cg / "app.slice" / f"{UNIT}.service").mkdir(parents=True)
+    (cg / "app.slice" / f"{UNIT}.service" / "cgroup.procs").write_text("4242\n")
+    locks = tmp_path / "locks"
+    monkeypatch.setattr(checkjob, "CGROUPS", cg)
+    monkeypatch.setattr(checkjob, "LOCKS", locks)
+
+    class Lock:
+        def block(self, blocked: bool):
+            systemd.units[UNIT]["ControlGroup"] = f"/app.slice/{UNIT}.service"
+            arrow = "-> " if blocked else ""
+            locks.write_text(
+                "1: FLOCK  ADVISORY  WRITE 9999 00:30:5 0 EOF\n"
+                f"1: {arrow}FLOCK  ADVISORY  WRITE 4242 00:30:5 0 EOF\n"
+            )
+
+    return Lock()
+
+
+def rewind(state, seconds):
+    job = json.loads((state / "check.json").read_text())
+    job["started"] -= seconds
+    job["polled"] -= seconds
+    (state / "check.json").write_text(json.dumps(job))
+
+
+def test_time_blocked_on_a_lock_does_not_count_against_the_limit(systemd, lock, wt, tmp_path):
+    state = tmp_path / "state"
+    step(wt, state, timeout_s=60)
+    lock.block(True)
+    assert step(wt, state, timeout_s=60) == {"status": "running"}
+    rewind(state, 1000)
+    assert step(wt, state, timeout_s=60) == {"status": "running"}
+    lock.block(False)
+    assert step(wt, state, timeout_s=60) == {"status": "running"}
+    rewind(state, 61)
+    assert step(wt, state, timeout_s=60)["status"] == "timeout"
+
+
+def test_a_check_that_blocks_after_running_is_not_credited_its_run(systemd, lock, wt, tmp_path):
+    state = tmp_path / "state"
+    step(wt, state, timeout_s=60)
+    lock.block(False)
+    step(wt, state, timeout_s=60)
+    rewind(state, 50)
+    lock.block(True)
+    step(wt, state, timeout_s=60)
+    lock.block(False)
+    rewind(state, 11)
+    assert step(wt, state, timeout_s=60)["status"] == "timeout"
+
+
+def test_a_check_blocked_past_its_limit_is_not_stopped(systemd, lock, wt, tmp_path):
+    state = tmp_path / "state"
+    step(wt, state, timeout_s=60)
+    rewind(state, 61)
+    lock.block(True)
+    assert step(wt, state, timeout_s=60) == {"status": "running"}
+    assert systemd.stops == [UNIT]
+
+
+def test_a_unit_stopped_by_runtime_max_while_blocked_is_rerun_once(systemd, lock, wt, tmp_path):
+    state = tmp_path / "state"
+    step(wt, state)
+    for expected in ("running", "timeout"):
+        lock.block(True)
+        step(wt, state)
+        systemd.finish(result="timeout", status="0", output="waiting for a test suite\n")
+        assert step(wt, state)["status"] == expected
+    assert len(systemd.runs) == 2
