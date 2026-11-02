@@ -419,6 +419,62 @@ def cmd_fix(args) -> int:
     return 0
 
 
+def cmd_amend_tests(args) -> int:
+    from flocc.linear import LinearError
+    from flocc.publisher import add_label, pr_url
+    from flocc.sessions import session_name
+    from flocc.tick import build_runtime, tick_lock
+
+    cfg, path = _config(args)
+    with tick_lock(cfg.tick_lock) as held:
+        if not held:
+            print("amend-tests: a tick is running; try again in a moment", file=sys.stderr)
+            return 1
+        rt = build_runtime(cfg, path)
+        claim = ledger.get_claim(rt.con, args.key)
+        if claim is None:
+            print(f"amend-tests: no claim for {args.key}", file=sys.stderr)
+            return 1
+        repo = cfg.repos[claim.repo]
+        if not repo.amended_label:
+            print(f"amend-tests: {claim.repo} has no amended_label", file=sys.stderr)
+            return 1
+        url = pr_url(rt, claim)
+        if url is None:
+            print(f"amend-tests: {args.key} has no PR yet", file=sys.stderr)
+            return 1
+        token = cfg.publish_gh_token_file.read_text().strip()
+        if why := add_label(subprocess.run, repo, url, {**os.environ, "GH_TOKEN": token}):
+            print(f"amend-tests: the label was not added: {why}", file=sys.stderr)
+            return 1
+        told = False
+        if claim.state == "running":
+            # A claim can read running after its session died; the label is on either way.
+            try:
+                rt.sessions.send(
+                    session_name(claim.issue_key, claim.phase),
+                    f"The owner's supervisor added the {repo.amended_label} label to the PR. Run"
+                    " the check again and finish.",
+                )
+                told = True
+            except (subprocess.SubprocessError, OSError) as exc:
+                print(f"amend-tests: the session was not told: {exc}", file=sys.stderr)
+        try:
+            rt.linear.comment(
+                claim.issue_id, f"cardinal added the {repo.amended_label} label to {url}."
+            )
+        except LinearError as exc:
+            print(f"amend-tests: Linear comment not posted: {exc}", file=sys.stderr)
+        ledger.add_digest(
+            rt.con, args.key, f"cardinal added {repo.amended_label} to {url}", rt.now()
+        )
+    print(
+        f"amend-tests {args.key}: added {repo.amended_label} to {url}; "
+        + ("told the live session" if told else "no live session to tell")
+    )
+    return 0
+
+
 def cmd_run_summary(args) -> int:
     from flocc.status import issue_lines
     from flocc.summary import run_summary
@@ -870,6 +926,7 @@ COMMANDS = {
     "cleanup": cmd_cleanup,
     "host-report": cmd_host_report,
     "stop-tests": cmd_stop_tests,
+    "amend-tests": cmd_amend_tests,
     "shell": cmd_shell,
     "config": cmd_config,
 }
@@ -946,6 +1003,8 @@ def build_parser() -> argparse.ArgumentParser:
     add("host-report", "Print /tmp, memory and OOM kills, and what each issue holds")
     st = add("stop-tests", "Kill an issue's test processes and containers and tell its session why")
     st.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    am = add("amend-tests", "Add the repo's amended-tests label to an issue's PR for cardinal")
+    am.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     sh = add(
         "shell", "Run one command as flocc-agent for cardinal's agent-shell; logged for the digest"
     )

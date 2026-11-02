@@ -28,6 +28,13 @@ default, and a call the tool cuts off leaves the work running on the VM.
   If the fix command refuses, or the stop needs a decision, access or a spec change, tell the
   owner in at most three lines: the issue, why it stopped, the one thing they need to do. You
   never rerun the issue yourself.
+  When the stop is the PR needing the amended-tests label (`tests-amended`), don't ask the owner:
+  run `/opt/cardinal/plugin/bin/executor amend-tests KEY`. Then, if fix rounds remain, start a
+  fixer with a note that the label is on the PR and it should run the check again and finish. If
+  the fixer refuses, tell the owner in one line that the label is on and `flocc release KEY`
+  reruns it.
+- A running session asks for the amended-tests label (it reaches you only through the owner):
+  run `/opt/cardinal/plugin/bin/executor amend-tests KEY`; the verb tells the session.
 - `cap`: the check still fails after every fix round. Tell the owner what fails, from the run
   summary. Start no fixer.
 - `base-broken`: tell the owner the repo and commit whose check fails; that repo's issues wait.

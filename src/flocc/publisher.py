@@ -62,6 +62,22 @@ def pr_url(rt, claim: Claim) -> str | None:
     return url if url and url != "unknown" else None
 
 
+def add_label(runner, repo: RepoConfig, url: str, env: dict[str, str]) -> str:
+    """The reason the amended-tests label was not added, or ''."""
+    try:
+        runner(
+            ["gh", "pr", "edit", url, "--add-label", repo.amended_label],
+            cwd=repo.path,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        return (exc.stderr or str(exc)).strip()
+    return ""
+
+
 def failure_excerpt(out: str, limit: int = _TAIL) -> str:
     # A check over several components prints the failing one first and passing ones after it, so
     # the tail alone showed only passing tests (NF-340, 2026-10-20).
@@ -386,22 +402,11 @@ def publish(
     )
 
     def label(url: str) -> str:
-        """The reason the label was not added, or ''. The PR is open either way: a failure here
-        would rerun the check and block a published PR, over a missing label or a token scope."""
+        # The PR is open either way: a failure here would rerun the check and block a published
+        # PR, over a missing label or a token scope.
         if not (amended and repo.amended_label):
             return ""
-        try:
-            runner(
-                ["gh", "pr", "edit", url, "--add-label", repo.amended_label],
-                cwd=repo.path,
-                env=env,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            return (exc.stderr or str(exc)).strip()
-        return ""
+        return add_label(runner, repo, url, env)
 
     if existing.stdout.strip():
         url = existing.stdout.strip()

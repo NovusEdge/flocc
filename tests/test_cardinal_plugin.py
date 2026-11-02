@@ -157,7 +157,7 @@ def test_the_triage_skill_covers_every_event_kind_and_the_link():
     text = (PLUGIN / "skills" / "triage" / "SKILL.md").read_text()
     for kind in sorted(events.KINDS):
         assert f"`{kind}`" in text
-    assert '"link"' in text and f"{EXECUTOR} ack" in text and "release" not in text
+    assert '"link"' in text and f"{EXECUTOR} ack" in text and f"{EXECUTOR} release" not in text
 
 
 def test_the_triage_skill_repairs_host_pressure_with_the_verbs_first():
