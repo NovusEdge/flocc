@@ -51,7 +51,7 @@ token", which is wrong for this case.
 | questions | tester, executor, check fixer | Block `needs-owner`. The Linear comment lists the questions numbered. `questions.json` in the state directory keeps them for `run-summary`. |
 | questions | review fixer | `owner-items.md`, posted as today. |
 | nothing | tester, executor | No publish. The claim ends `done`; the `ended` event detail is `done, nothing to do: <why>`; the reason is commented on Linear. The issue's state is left as a finished run leaves it, so the owner closes it. |
-| no commits since the phase started, no flag | executor, check fixer | Block `no-changes`: "finished with no commits; resume with a note or close the issue". Checked before publish. |
+| no commits past the tester's commit (or the base), no flag | executor | Block `no-changes`: "finished with no commits; resume with a note or close the issue". Checked before publish. A check fixer that commits nothing already blocks as `check-failed`. |
 
 The `needs-owner` block emits a new event kind, `needs-owner`, with the issue and the question
 count, in place of an `ended` event whose detail starts `needs-owner:`.
@@ -142,8 +142,8 @@ takes an issue key, so cardinal reaches only that issue and the claim's own PR.
 | `search --query=TEXT` | Open issues in the team matching the text | Read; for duplicate checks |
 | `file KEY --title=TEXT --text=TEXT` | Backlog issue linked to KEY, label `cardinal-draft` | Never `claude`; 2 per source issue, 5 per day; `cardinal_file` mode |
 
-- **Observe mode.** Config `cardinal_file = "observe" | "on"`, default `observe`. In observe,
-  `file` creates nothing and records the draft in the digest under "Follow-ups cardinal would
+- **Observe mode.** Config `cardinal_file_on`, a bool, default `false`, since `flocc config set`
+  takes numbers and bools. While it is off, `file` creates nothing and records the draft in the digest under "Follow-ups cardinal would
   have filed".
 - **Record.** Every write verb adds a digest line, and the digest lists them in their own
   section.
