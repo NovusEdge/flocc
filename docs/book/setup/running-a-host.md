@@ -32,7 +32,8 @@ The host reads `~/.config/flocc/config.toml`. `flocc ship` writes it from the ho
 | `digest_hour` | 18 | Hour of the daily digest comment |
 | `min_free_disk_gb` | 2.0 | New starts are held below this free space |
 | `skip_unmapped` | false | Ignore issues that match none of this host's repositories |
-| `steer_authors` | none | Linear user or app ids, not names, whose comments on a running issue steer the session like yours |
+| `steer_authors` | none | Linear user or app ids, not names, whose comments on a running issue steer the session, or start a comment fix, like yours |
+| `comment_fix_max` | 3 | Fix sessions your comments may start on a done issue whose PR is open, per run; 0 turns them off |
 | `shared_uv_cache` | false | One uv cache for every setup |
 
 Each `[repos.<name>]` table maps a repository. It takes `path`, `base_branch`, `draft` and `commit_trailer`. A private repository of a GitHub Free organization cannot have draft PRs, so set `draft = false` there.
@@ -87,7 +88,7 @@ Host sessions run in `bypassPermissions`, so no permission dialog can hold one, 
 
 The service comments on the issue when a run blocks, when `./setup` fails at prepare, and when a turn ends without `flocc done`. Problems that belong to no issue, such as a failed tick, an expiring GitHub token or a lapsed Claude login, go to the digest issue and the service log. Nothing is pushed to your phone.
 
-A session does not ask you questions. Where the spec leaves a choice open it takes the default, and it passes what needs you as `--needs-owner` questions to `flocc done`. That ends the run blocked with the questions on the issue; in the review fix round it goes into the final comment instead. To steer a running session, comment on the issue; the service types the comment into the session.
+A session does not ask you questions. Where the spec leaves a choice open it takes the default, and it passes what needs you as `--needs-owner` questions to `flocc done`. That ends the run blocked with the questions on the issue; in the review fix round it goes into the final comment instead. To steer a running session, comment on the issue; the service types the comment into the session. A comment on a finished issue whose PR is still open starts a fix session on the same branch five minutes later, which pushes to the PR without a new review; see [Comment fix](../architecture.md#one-issue-start-to-finish).
 
 ## Upgrade notes
 

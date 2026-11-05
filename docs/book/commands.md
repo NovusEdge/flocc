@@ -76,7 +76,7 @@ The five verbs that take a key (`issue`, `pr`, `comment`, `pr-comment`, `file`) 
 
 ### Settable config keys
 
-`config set` accepts only these keys, within these ranges: `session_cap` 1 to 6; `check_timeout_s` and `setup_timeout_s` 60 to 7200; `check_fix_rounds` 0 to 3; `default_wall_clock_s` and `review_wall_clock_s` 600 to 21600; `min_available_mem_gb` 0 to 64; `min_free_disk_gb` 0 to 1000; `tmp_max_pct` 1 to 100; `digest_hour` 0 to 23; `shared_uv_cache`, `skip_unmapped` and `cardinal_file_on`, `true` or `false`. Models, efforts, usage limits, labels, tokens and repos are not settable with it.
+`config set` accepts only these keys, within these ranges: `session_cap` 1 to 6; `check_timeout_s` and `setup_timeout_s` 60 to 7200; `check_fix_rounds` 0 to 3; `default_wall_clock_s` and `review_wall_clock_s` 600 to 21600; `min_available_mem_gb` 0 to 64; `min_free_disk_gb` 0 to 1000; `tmp_max_pct` 1 to 100; `digest_hour` 0 to 23; `shared_uv_cache`, `skip_unmapped` and `cardinal_file_on`, `true` or `false`. Models, efforts, usage limits, `comment_fix_max`, labels, tokens and repos are not settable with it.
 
 ### The `Run:` line
 

@@ -1,10 +1,7 @@
 import sys
-from pathlib import Path
 
 from flocc import ledger
-from flocc.control import admit_rerun
-from flocc.poller import main_hold, still_wanted
-from flocc.publisher import pr_url
+from flocc.poller import finished_prs, pushed_elsewhere, rerun_held, still_wanted
 from flocc.supervisor import REBASE_TRIED, block_unrebased, start_rebase
 from flocc.worktree import origin_base
 
@@ -16,21 +13,13 @@ def step(rt) -> None:
     if rt.pr_view is None:
         return
     bases: dict[str, str | None] = {}
-    holds = ledger.issue_holds(rt.con)
-    for claim in ledger.finished_claims(rt.con):
-        url = pr_url(rt, claim)
-        if claim.state != "done" or url is None or not Path(claim.worktree).exists():
-            continue
+    for claim, url in finished_prs(rt):
         key = claim.issue_key
-        if key in holds:
-            continue
         try:
             view = rt.pr_view(claim, url)
             if view.get("state") != "OPEN" or view.get("mergeable") != "CONFLICTING":
                 continue
-            # Someone pushed to the PR after this host's branch: merging into the stale copy
-            # would only fail at the push.
-            if view.get("headRefOid") != rt.git_head(claim):
+            if pushed_elsewhere(rt, claim, view):
                 continue
             if not still_wanted(rt, key):
                 continue
@@ -45,11 +34,7 @@ def step(rt) -> None:
         if ledger.meta_get(rt.con, f"{REBASE_TRIED}:{key}") == base:
             block_unrebased(rt, claim, base)
             continue
-        if reason := main_hold(rt, claim.repo, bases):
+        if reason := rerun_held(rt, claim, bases):
             print(f"{key}: rebase held, {reason}", file=sys.stderr)
-            continue
-        decision = admit_rerun(rt, claim)
-        if not decision.ok:
-            print(f"{key}: rebase held, {decision.reason}", file=sys.stderr)
             continue
         start_rebase(rt, claim, base)

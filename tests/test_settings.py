@@ -102,6 +102,12 @@ def test_cardinal_file_on_is_a_settable_bool():
     assert settings.SETTABLE["cardinal_file_on"][0] is bool
 
 
+def test_comment_fix_max_starts_paid_sessions_so_it_is_not_settable():
+    assert "comment_fix_max" in settings.NOT_SETTABLE
+    with pytest.raises(settings.SettingError, match="not settable"):
+        settings.check("comment_fix_max")
+
+
 def test_every_config_field_is_decided():
     fields = {f.name for f in dataclasses.fields(Config)}
     assert not settings.SETTABLE.keys() & settings.NOT_SETTABLE
