@@ -28,6 +28,7 @@ from flocc.supervisor import (
     LAST_SUMMARY,
     PUBLISH_TRIES,
     QUESTIONS,
+    REBASE,
     RESUME_NOTE,
     TRANSIENT_RETRY,
     launch,
@@ -557,6 +558,10 @@ def forward_comments(rt) -> dict[str, LinearError]:
     failed = {}
     for claim in ledger.live_claims(rt.con):
         if claim.state != "running":
+            continue
+        # Direction is not a reviewer's or a merge's to act on. The cursor stays, so the
+        # comment-fix scan reads these once the claim is done.
+        if claim.phase == "review" or ledger.meta_get(rt.con, f"{REBASE}:{claim.issue_key}"):
             continue
         try:
             replies = rt.linear.comments_since(claim.issue_id, claim.last_comment_at)

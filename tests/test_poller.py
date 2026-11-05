@@ -659,6 +659,21 @@ def test_reply_to_a_dead_session_is_forwarded_after_the_restart(rt):
     assert rt.sessions.sent == [("NF-1-test", "The owner replied on Linear: use option B")]
 
 
+@pytest.mark.parametrize(("phase", "rebasing"), [("review", ""), ("fix", "1")])
+def test_comments_for_a_reviewer_or_a_rebase_wait_unread(rt, phase, rebasing):
+    c = make("NF-1")
+    c.phase = phase
+    ledger.insert_claim(rt.con, c)
+    ledger.meta_set(rt.con, "rebase:NF-1", rebasing)
+    rt.linear.replies = {
+        "id-NF-1": [Comment("c1", "use option B", "2026-10-09T10:05:00Z", mine=True)]
+    }
+    rt.sessions.alive_names.update({"NF-1", "NF-1-review"})
+    forward_comments(rt)
+    c = ledger.get_claim(rt.con, "NF-1")
+    assert rt.sessions.sent == [] and c is not None and c.last_comment_at is None
+
+
 def test_a_new_claim_starts_without_the_last_claims_state(rt):
     d = state_dir(rt.cfg, "NF-9")
     d.mkdir(parents=True)
