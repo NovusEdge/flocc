@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,10 +16,11 @@ from flocc.agentblock import (
     settings_to_json,
 )
 from flocc.context import agent_dir, state_dir, write_context
-from flocc.control import stop_cause
+from flocc.control import admit_rerun, stop_cause
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
+from flocc.publisher import pr_url
 from flocc.sequence import SequenceError, parse_sequence
 from flocc.sessions import session_name
 from flocc.supervisor import (
@@ -240,6 +242,32 @@ def main_hold(rt, repo: str, bases: dict[str, str | None]) -> str | None:
     if repo not in bases:
         bases[repo] = origin_base(cfg_repo)
     return canary.hold_reason(rt.con, repo, cfg_repo.base_branch, bases[repo], rt.now())
+
+
+def finished_prs(rt) -> Iterator[tuple[Claim, str]]:
+    """Done claims with a PR and their worktree, whose issue is not held, with the PR's URL. A
+    reaped worktree leaves its PR to the owner."""
+    holds = ledger.issue_holds(rt.con)
+    for claim in ledger.finished_claims(rt.con):
+        url = pr_url(rt, claim)
+        if claim.state != "done" or url is None or not Path(claim.worktree).exists():
+            continue
+        if claim.issue_key not in holds:
+            yield claim, url
+
+
+def rerun_held(rt, claim: Claim, bases: dict[str, str | None]) -> str | None:
+    """Why no new session may start on a finished claim now, or None."""
+    if reason := main_hold(rt, claim.repo, bases):
+        return reason
+    decision = admit_rerun(rt, claim)
+    return None if decision.ok else decision.reason
+
+
+def pushed_elsewhere(rt, claim: Claim, view: dict) -> bool:
+    """Someone pushed to the PR after this host's branch: a session on the stale copy would only
+    fail at the push."""
+    return view.get("headRefOid") != rt.git_head(claim)
 
 
 def poll(rt) -> None:
