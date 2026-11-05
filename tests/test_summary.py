@@ -108,6 +108,7 @@ def test_digest_data_lists_the_day_s_agent_shell_calls(tmp_cfg, con):
 def test_digest_data_lists_cardinal_s_resumes_and_how_they_ended(tmp_cfg, con):
     for key, state in (("NF-1", "done"), ("NF-2", "blocked")):
         ledger.insert_claim(con, make(key, state=state))
+        ledger.meta_set(con, f"cardinal_resume:{key}", "1")
     now = 8 * 86_400.0
     rows = [(now - 100, "NF-1", "needs-owner", "impl"), (now - 50, "NF-2", "idle", "impl")]
     rows.append((50.0, "NF-1", "crash", "impl"))
@@ -119,6 +120,17 @@ def test_digest_data_lists_cardinal_s_resumes_and_how_they_ended(tmp_cfg, con):
     assert "- 2 resumed, 1 ended done" in text
     assert "- NF-1 after needs-owner: done" in text and "- NF-2 after idle: blocked" in text
     assert "after crash" not in text
+
+
+def test_a_done_claim_the_owner_reran_is_not_counted_as_cardinal_s(tmp_cfg, con):
+    ledger.insert_claim(con, make("NF-1", state="done"))
+    ledger.meta_set(
+        con,
+        "resume_log:10.000000",
+        json.dumps({"at": 10.0, "key": "NF-1", "cause": "idle", "phase": "impl"}),
+    )
+    text, _ = digest_data(tmp_cfg, con, 100.0)
+    assert "- 1 resumed, 0 ended done" in text and "- NF-1 after idle: done" in text
 
 
 def test_a_resumed_claim_the_owner_reran_says_so(tmp_cfg, con):

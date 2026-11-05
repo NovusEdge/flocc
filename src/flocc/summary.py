@@ -134,7 +134,8 @@ def digest_data(cfg: Config, con, now: float) -> tuple[str, int]:
     for _, key, cause, _ in control.resumes(con, now - 7 * 86400):
         c = ledger.get_claim(con, key)
         state = c.state.replace("_", " ") if c else "no claim"
-        ended_done += state == "done"
+        # _start clears the cap for a fresh claim, so a claim the owner reran is not cardinal's.
+        ended_done += state == "done" and bool(ledger.meta_get(con, f"cardinal_resume:{key}"))
         lines.append(f"- {key} after {cause}: {state}")
     if lines:
         lines.insert(0, f"- {len(lines)} resumed, {ended_done} ended done")
