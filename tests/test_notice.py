@@ -31,6 +31,22 @@ def test_a_notice_with_an_event_writes_it_after_the_comment(tmp_path):
     assert (e.kind, e.issue_key, e.detail, e.at) == ("ended", "NF-1", "crash: Died twice.", 5.0)
 
 
+def test_a_notice_detail_replaces_the_cause_and_summary_in_the_event(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    Notifier(con, FakeLinear(), lambda: 5.0).send(
+        Notice(
+            "NF-1:needs-owner",
+            "The executor needs you:\n1. Which currency?",
+            issue_key="NF-1",
+            event="needs-owner",
+            detail="1 question",
+        ),
+        ISSUE,
+    )
+    [e] = events.unacked(con)
+    assert (e.kind, e.detail) == ("needs-owner", "1 question")
+
+
 def test_no_event_when_the_comment_fails(tmp_path):
     class Down:
         def comment(self, issue_id, text):
