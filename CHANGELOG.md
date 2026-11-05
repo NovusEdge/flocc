@@ -6,6 +6,11 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- Agents ask the owner with `flocc done --needs-owner '<question>'`, one flag per question, and
+  cardinal gets a `needs-owner` event with the count. A summary that still uses a "Needs the
+  owner" heading is refused. `flocc done --nothing-to-do '<why>'` ends a tester or executor run
+  done without a PR, and an executor that finishes with no commits now blocks as `no-changes`
+  instead of failing publish three times with "Fix the push or the gh token".
 - A rerun reads your comments: owner and steering comments posted after the previous run stopped
   go into the restarted session's `context.md` under "Comments since the last run", whether the
   issue went back to Todo by hand or through `flocc release`. Before, only comments posted during

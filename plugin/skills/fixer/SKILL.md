@@ -13,11 +13,10 @@ Fix what the text you were started with reports, on the existing branch, and not
 - Change a tester's file only when its test is wrong, and record it with
   `flocc tests-amended <path>... --reason "<why>"`. Never delete or skip a test.
 - When the fix answers a review, fix what is agent work. For a finding that needs the owner (a
-  manual run, a product decision), change nothing and list it under a line that starts with
-  `Needs the owner` in your summary.
-- When you were started on a failed check and cannot make it pass, write what you could not fix
-  under `Needs the owner`; the run then ends blocked. Leave the line out when nothing needs the
-  owner.
+  manual run, a product decision), change nothing and pass it as `--needs-owner '<item>'` to
+  `flocc done`; it goes into the final review comment.
+- When you were started on a failed check and cannot make it pass, pass what you could not fix as
+  `--needs-owner '<what and why>'`; the run then ends blocked.
 - Start on the fix: the failure and the findings are already recorded, so do not run the full
   check first to see them again.
 - Commit with `flocc commit -m '<message>' -- <paths>`, subject at most 72 characters. Before

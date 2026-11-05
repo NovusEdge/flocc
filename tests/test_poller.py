@@ -199,6 +199,15 @@ def test_rerun_ignores_files_from_the_previous_claim(rt):
     assert not (d / "done.json").exists()
 
 
+def test_a_fresh_claim_drops_the_previous_run_s_questions(rt):
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir()
+    (d / "questions.json").write_text(json.dumps(["Which currency?"]))
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert not (d / "questions.json").exists()
+
+
 def test_a_resume_at_the_implementer_keeps_the_amended_tests_record(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
@@ -487,7 +496,7 @@ def test_a_release_no_start_followed_for_a_week_delivers_nothing(rt):
     text = (state_dir(rt.cfg, "NF-9") / "context.md").read_text()
     assert "fix the query guard" not in text
     c = ledger.get_claim(rt.con, "NF-9")
-    assert c is not None and c.last_comment_at.startswith("1970-01-09")
+    assert c is not None and (c.last_comment_at or "").startswith("1970-01-09")
 
 
 def test_a_second_start_does_not_repeat_the_comments(rt):
@@ -577,6 +586,7 @@ def test_a_new_issue_starts_in_the_tick_that_finds_another_check_running(rt):
     d.mkdir(parents=True, exist_ok=True)
     (d / "done.json").write_text(json.dumps({"summary": "ok"}))
     rt.publish_fn = lambda c, t, s, **kw: PublishResult("check_running")
+    rt.git_head = lambda p: "sha-impl"
     rt.linear.ready = [issue(desc=PLAIN)]
     supervise(rt, claim)
     poll(rt)

@@ -3,13 +3,13 @@ import re
 import shlex
 
 KEEP_MOVING = (
-    "Nobody answers this session. Take the spec's default and carry on, or write what needs the"
-    ' owner under a line that starts with "Needs the owner" in your summary and run flocc done.'
+    "Nobody answers this session. Take the spec's default and carry on, or pass what needs the"
+    " owner to flocc done as --needs-owner '<question>' and run it."
 )
 NO_APPROVER = (
     "Nobody is at this session to approve this call, so it was denied. Do it another way (for"
-    " example the Read tool instead of cat, head or tail). If it truly needs the owner, list it"
-    ' under a line that starts with "Needs the owner" in your summary and carry on.'
+    " example the Read tool instead of cat, head or tail). If it truly needs the owner, pass it"
+    " as --needs-owner '<what>' when you run flocc done, and carry on."
 )
 _DIALOGS = frozenset({"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"})
 _EDITS = frozenset({"Edit", "Write", "NotebookEdit"})

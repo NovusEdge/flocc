@@ -20,7 +20,11 @@ quotes, and `$` or a backquote anywhere but inside single quotes. Give `cleanup 
 default, and a call the tool cuts off leaves the work running on the VM.
 
 - `ended`, detail starting `done`: tell the owner in one line: the issue, the PR link, and the
-  review's verdict if the summary has one.
+  review's verdict if the summary has one. When the detail says `nothing to do`, give its reason
+  instead of a PR link.
+- `needs-owner`: an agent stopped with questions only the owner can answer. Read the run summary
+  and tell the owner the issue and the numbered questions as written, nothing more. Start no
+  fixer.
 - `ended`, blocked or timed out: read the run summary. If what stopped it is agent work a note
   can direct (a check failing for a clear cause in the code, an unfinished step, a timeout with
   commits) and the summary shows fix rounds left, start one fixer:

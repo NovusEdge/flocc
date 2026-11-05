@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -44,6 +45,8 @@ LAST_SUMMARY = "last-summary.md"
 TESTER = "tester.json"
 # Why the run last blocked, for flocc run-summary; the notice itself went to the issue.
 BLOCKED = "blocked.md"
+# The questions of a needs-owner block, for cardinal's resume to put back in front of the agent.
+QUESTIONS = "questions.json"
 # Set when a session is found dead during a host episode: it most likely died of the episode,
 # so its relaunch afterwards costs no restart.
 HOST_WAIT = "host_wait"
@@ -68,11 +71,6 @@ POST_TRIES = 3
 _VERDICT = re.compile(
     r"^[\s*_#>-]*verdict[\s*_]*:?[\s*_]*(approve|changes requested)", re.IGNORECASE | re.MULTILINE
 )
-
-
-_OWNER_HEADING = re.compile(r"^[\s#*-]*needs the owner", re.IGNORECASE | re.MULTILINE)
-# What follows the heading on its own line when nothing needs the owner: "Needs the owner: none".
-_NOTHING = re.compile(r"[\s:*_.-]*(none|nothing|n/?a)[\s*_.]*", re.IGNORECASE)
 
 
 class LaunchError(RuntimeError):
@@ -148,11 +146,13 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...]
     )
 
 
-def _block(rt, claim: Claim, cause: str, summary: str, action: str, kind: str = "ended") -> None:
+def _block(
+    rt, claim: Claim, cause: str, summary: str, action: str, kind: str = "ended", detail: str = ""
+) -> None:
     rt.sessions.kill(session_name(claim.issue_key, claim.phase))
     key = claim.issue_key
     ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
-    notice = Notice(f"{key}:{cause}", summary, action, issue_key=key, event=kind)
+    notice = Notice(f"{key}:{cause}", summary, action, issue_key=key, event=kind, detail=detail)
     d = state_dir(rt.cfg, key)
     d.mkdir(parents=True, exist_ok=True)
     (d / BLOCKED).write_text(f"{cause}\n\n{notice.text()}\n")
@@ -160,10 +160,11 @@ def _block(rt, claim: Claim, cause: str, summary: str, action: str, kind: str = 
     ledger.update_claim(rt.con, key, state="blocked")
 
 
-def _end_done(rt, claim: Claim, *, emit: bool = True, **values) -> None:
+def _end_done(rt, claim: Claim, *, emit: bool = True, detail: str | None = None, **values) -> None:
     if emit:
-        url = _pr_url(rt, claim)
-        detail = f"done: PR {url}" if url != "unknown" else "done, no PR"
+        if detail is None:
+            url = _pr_url(rt, claim)
+            detail = f"done: PR {url}" if url != "unknown" else "done, no PR"
         # Before the claim update: a tick that dies between the two finishes the claim again on
         # the next tick, and a duplicate event is acked away, where a lost one is never seen.
         events.emit(
@@ -337,9 +338,8 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     extra = (
         f"The reviewer asked for changes:\n\n{review.strip()}\n\n"
         "Fix what the review asks that is agent work. For what needs the owner (a manual run, a"
-        " product decision, a question for the lead), make no change and list it in your"
-        ' `flocc done` summary under a line that starts with "Needs the owner". Then finish as'
-        " usual."
+        " product decision, a question for the lead), make no change and pass it to `flocc done`"
+        " as `--needs-owner '<item>'`, one per item. Then finish as usual."
     )
     d = state_dir(rt.cfg, key)
     start = rt.now()
@@ -423,7 +423,29 @@ def block_unrebased(rt, claim: Claim, base_sha: str) -> None:
     )
 
 
-def _finish_phase(rt, claim: Claim, summary: str) -> None:
+def _owner_list(questions: list[str]) -> str:
+    return "\n".join(f"{n}. {q}" for n, q in enumerate(questions, 1))
+
+
+def _ask_owner(rt, claim: Claim, questions: list[str]) -> None:
+    d = state_dir(rt.cfg, claim.issue_key)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / QUESTIONS).write_text(json.dumps(questions))
+    count = f"{len(questions)} question{'' if len(questions) == 1 else 's'}"
+    _block(
+        rt,
+        claim,
+        "needs-owner",
+        f"The {ARCHETYPE[claim.phase]} needs you:\n{_owner_list(questions)}"[:3000],
+        "Reply on this issue, then move it back to Todo; the rerun continues on the kept branch",
+        kind="needs-owner",
+        detail=count,
+    )
+
+
+def _finish_phase(
+    rt, claim: Claim, summary: str, questions: Sequence[str] = (), outcome: str = "work"
+) -> None:
     key = claim.issue_key
     # Before the usage record, which would add a row on every tick of the wait.
     if not _base_hold_lifted(rt, claim):
@@ -436,23 +458,14 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
         return
     review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
     rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
-    found = _OWNER_HEADING.search(summary)
-    if found:
-        rest = summary[found.end() :]
-        # A heading with a list under it is a real request; "none" or nothing at all is filler.
-        if not rest.strip() or _NOTHING.fullmatch((rest.splitlines() or [""])[0]):
-            found = None
     # A review fixer's owner items ride to the final comment instead: the PR is open and a
     # second review follows.
-    if found and not review_fix and not rebasing:
-        _block(
-            rt,
-            claim,
-            "needs-owner",
-            f"The {ARCHETYPE[claim.phase]} needs you:\n{summary[found.start() :].strip()}"[:3000],
-            "Reply on this issue, then move it back to Todo; the rerun continues on the kept"
-            " branch",
-        )
+    if questions and not review_fix and not rebasing:
+        _ask_owner(rt, claim, list(questions))
+        return
+    if outcome == "nothing" and claim.phase in ("test", "impl"):
+        _comment_or_digest(rt, claim, f"Nothing to do: {summary}")
+        _end_done(rt, claim, detail=f"done, nothing to do: {summary}")
         return
     if claim.phase == "test":
         head = rt.git_head(claim)
@@ -473,9 +486,25 @@ def _finish_phase(rt, claim: Claim, summary: str) -> None:
             rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=start
         )
         return
-    if claim.phase == "fix" and review_fix and not rebasing and found:
+    if claim.phase == "fix" and review_fix and not rebasing and questions:
         # Kept apart from later check-fix summaries, which would overwrite it.
-        (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(summary[found.start() :].lstrip())
+        items = f"Needs the owner:\n{_owner_list(list(questions))}\n"
+        (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(items)
+    # gh refuses a PR for a branch with nothing past its base, which would read as a publish
+    # failure. Skipped while a check runs: done.json stays and git_head fetches the branch.
+    if (
+        claim.phase == "impl"
+        and not ledger.meta_get(rt.con, f"{CHECK_RUNNING}:{key}")
+        and rt.git_head(claim) == (claim.tester_sha or claim.base_sha)
+    ):
+        _block(
+            rt,
+            claim,
+            "no-changes",
+            f"The {ARCHETYPE['impl']} finished with no commits.",
+            "Comment what it should do and move the issue back to Todo, or close the issue",
+        )
+        return
     issue = rt.linear.issue(key)
     title = pr_title(
         key, issue.title, issue.labels, branch_subjects(claim, rt.cfg.repos[claim.repo])
@@ -801,6 +830,13 @@ def supervise(rt, claim: Claim) -> None:
         try:
             data = json.loads(raw_done)
             summary = str(data.get("summary", ""))
+            raw = data.get("questions")
+            questions = (
+                [q.strip() for q in raw if isinstance(q, str) and q.strip()]
+                if isinstance(raw, list)
+                else []
+            )
+            outcome = str(data.get("outcome", "work"))
             # flocc cannot delete in the agent's directory, so a previous session's file can
             # outlive it; started_at is set before every launch.
             stale = float(data.get("at", claim.started_at)) < claim.started_at
@@ -817,7 +853,7 @@ def supervise(rt, claim: Claim) -> None:
             # after it stops the check and reads the result.
             if host.under_pressure(rt.con):
                 return
-            _finish_phase(rt, claim, summary)
+            _finish_phase(rt, claim, summary, questions, outcome)
             return
     if (message := _idle_message(agent)) is not None:
         _stopped(rt, claim, name, message)

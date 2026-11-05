@@ -14,6 +14,8 @@ class Notice:
     issue_key: str | None = None
     # One of events.KINDS when cardinal must hear of it; "" for a comment or digest line only.
     event: str = ""
+    # The event's detail when cause and summary are not what cardinal needs, e.g. a count.
+    detail: str = ""
 
     def text(self) -> str:
         return f"{self.summary}\nAction: {self.action}" if self.action else self.summary
@@ -41,5 +43,5 @@ class Notifier:
                 notice.event,
                 self.now(),
                 issue_key=notice.issue_key,
-                detail=f"{cause}: {notice.summary}",
+                detail=notice.detail or f"{cause}: {notice.summary}",
             )

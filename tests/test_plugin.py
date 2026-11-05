@@ -1,3 +1,4 @@
+import inspect
 import json
 import os
 import re
@@ -6,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 from flocc.context import phase_prompt
+from tests.test_ledger import make
 
 PLUGIN = Path(__file__).parent.parent / "plugin"
 SPEC = {
@@ -92,9 +94,27 @@ def test_the_four_archetype_skills_end_the_same_way():
     for name, text in skills.items():
         assert frontmatter(PLUGIN / "skills" / name / "SKILL.md")["name"] == name
         assert "AskUserQuestion" not in text and "auto mode" not in text
-        assert "Needs the owner" in text and "flocc done" in text
+        assert "flocc done" in text
+        if name != "reviewer":
+            assert "--needs-owner" in text and "line that starts with `Needs the owner`" not in text
         assert "scratchpad" in text
         assert "## Last steps" in text
+
+
+def test_no_prompt_asks_for_the_owner_heading():
+    from flocc import cli, context, control, guard, supervisor
+
+    texts = [
+        context._COMMANDS,
+        control._fix_prompt(make("NF-1", state="blocked"), "note"),
+        guard.KEEP_MOVING,
+        guard.NO_APPROVER,
+        cli.STOP_REASON,
+        inspect.getsource(supervisor._start_review_fix),
+    ]
+    for text in texts:
+        assert "--needs-owner" in text
+        assert 'a line that starts with "Needs the owner"' not in text
 
 
 def test_fix_prompt_points_at_the_fix_section():

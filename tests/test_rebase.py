@@ -25,6 +25,7 @@ def pr(rt, monkeypatch, tmp_path):  # noqa: F811
     """A finished claim whose open PR the fake gh reports as `rt.view`."""
     rt.view = dict(CONFLICTING)
     rt.pr_view = lambda claim, url: rt.view
+    rt.git_head = lambda claim: CONFLICTING["headRefOid"]
     rt.linear.state_types = lambda keys: {k: "started" for k in keys}
     rt.linear.issue = lambda key: replace(ISSUE, labels=("claude",))
     monkeypatch.setattr("flocc.rebase.origin_base", lambda repo: BASE)

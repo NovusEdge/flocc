@@ -33,7 +33,7 @@ def rt(tmp_cfg, tmp_path):
         claude_exe="/opt/claude",
         config_path=tmp_path / "c.toml",
         publish_fn=lambda claim, title, summary, **kw: PublishResult("opened", url="https://pr/1"),
-        git_head=lambda path: "sha-tests",
+        git_head=lambda path: "sha-impl",
         review_diff=lambda claim: "diff --git a/x b/x",
         comment_pr=lambda claim, url, body: pr_comments.append((url, body)),
     )
@@ -57,8 +57,10 @@ def add(rt, **kw):
     return c
 
 
-def done(rt, summary="ok"):
-    (state_dir(rt.cfg, "NF-1") / "done.json").write_text(json.dumps({"summary": summary}))
+def done(rt, summary="ok", questions=(), outcome="work"):
+    (state_dir(rt.cfg, "NF-1") / "done.json").write_text(
+        json.dumps({"summary": summary, "questions": list(questions), "outcome": outcome})
+    )
 
 
 def usage_status(ctx=10.0):
@@ -154,6 +156,7 @@ def test_a_done_file_from_before_the_phase_started_is_ignored(rt, tmp_path):
 
 def test_tester_done_starts_implementer(rt):
     add(rt)
+    rt.git_head = lambda claim: "sha-tests"
     rt.sessions.alive_names.add("NF-1-test")
     done(rt)
     supervise(rt, current(rt))
@@ -333,7 +336,7 @@ def test_changes_requested_starts_one_fix_round_on_the_review(rt):
     c = current(rt)
     assert (c.state, c.phase, c.fix_attempts, c.restarts) == ("running", "fix", 0, 0)
     name, argv = rt.sessions.started[-1]
-    assert name == "NF-1" and any("a.py:2 wrong" in a and "Needs the owner" in a for a in argv)
+    assert name == "NF-1" and any("a.py:2 wrong" in a and "--needs-owner" in a for a in argv)
     assert "fix round" in rt.linear.comments[-1]
     assert "Review: changes requested — https://pr/1" in rt.linear.comments[-1]
     assert ledger.meta_get(rt.con, "review_fix:NF-1") == "1"
@@ -346,7 +349,7 @@ def test_fix_round_ends_in_a_second_review_posted_again(rt):
     done(rt, "review")
     supervise(rt, current(rt))
     rt.sessions.alive_names.add("NF-1")
-    done(rt, "Fixed a.\n\nNeeds the owner: run AC-8 against the real server.")
+    done(rt, "Fixed a.", ["run AC-8 against the real server."])
     supervise(rt, current(rt))
     assert current(rt).phase == "review"
     d = state_dir(rt.cfg, "NF-1")
@@ -359,18 +362,18 @@ def test_fix_round_ends_in_a_second_review_posted_again(rt):
     assert current(rt).state == "done"
     last = rt.linear.comments[-1]
     assert last.startswith("Review: changes requested — https://pr/1")
-    assert "Needs the owner: run AC-8 against the real server." in last
+    assert "Needs the owner:\n1. run AC-8 against the real server." in last
 
 
-OWNER = "Fixed a.\n\nNeeds the owner: run AC-8 against the real server."
+QUESTION = ["run AC-8 against the real server."]
 
 
-def after_fix(rt, summary=OWNER):
+def after_fix(rt, questions=QUESTION, summary="Fixed a."):
     review_session(rt, CHANGES)
     done(rt, "review")
     supervise(rt, current(rt))
     rt.sessions.alive_names.add("NF-1")
-    done(rt, summary)
+    done(rt, summary, questions)
     supervise(rt, current(rt))
     return state_dir(rt.cfg, "NF-1")
 
@@ -382,7 +385,7 @@ def test_owner_items_reach_the_comment_of_an_approving_second_review(rt):
     supervise(rt, current(rt))
     last = rt.linear.comments[-1]
     assert last.startswith("Review: approve — https://pr/1")
-    assert "Needs the owner: run AC-8 against the real server." in last
+    assert "Needs the owner:\n1. run AC-8 against the real server." in last
 
 
 def test_owner_items_reach_the_comment_when_the_second_review_is_skipped(rt):
@@ -396,7 +399,7 @@ def test_owner_items_reach_the_comment_when_the_second_review_is_skipped(rt):
     rt.publish_fn = publish
     after_fix(rt)
     assert current(rt).state == "done"
-    assert "Needs the owner: run AC-8" in rt.linear.comments[-1]
+    assert "1. run AC-8 against the real server." in rt.linear.comments[-1]
 
 
 def test_owner_items_reach_the_comment_when_the_second_review_dies(rt):
@@ -405,17 +408,12 @@ def test_owner_items_reach_the_comment_when_the_second_review_dies(rt):
         rt.sessions.alive_names.clear()
         supervise(rt, current(rt))
     assert current(rt).state == "done"
-    assert "Needs the owner: run AC-8" in rt.linear.comments[-1]
+    assert "1. run AC-8 against the real server." in rt.linear.comments[-1]
 
 
-def test_a_sentence_mentioning_the_owner_is_not_an_owner_item(rt):
-    d = after_fix(rt, "Fixed a. Nothing here needs the owner today.")
+def test_a_summary_without_questions_leaves_no_owner_items(rt):
+    d = after_fix(rt, questions=[], summary="Fixed a. Nothing here needs the owner today.")
     assert not (d / "owner-items.md").exists()
-
-
-def test_a_bulleted_owner_heading_is_an_owner_item(rt):
-    d = after_fix(rt, "Fixed a.\n\n## Needs the owner\n- run AC-8")
-    assert "run AC-8" in (d / "owner-items.md").read_text()
 
 
 def test_the_fix_push_comments_once_more_without_a_digest_line(rt):
@@ -446,13 +444,13 @@ def test_a_pr_closed_during_the_fix_ends_the_claim(rt):
     done(rt, "review")
     supervise(rt, current(rt))
     rt.sessions.alive_names.add("NF-1")
-    done(rt, OWNER)
+    done(rt, "Fixed a.", QUESTION)
     supervise(rt, current(rt))
     assert seen == [{}, {"reuse_only": True}]
     assert current(rt).state == "done"
     last = rt.linear.comments[-1]
     assert "closed or merged during the review fix; nothing more was published" in last
-    assert "Needs the owner: run AC-8" in last
+    assert "1. run AC-8 against the real server." in last
     assert all(name != "NF-1-review" for name, _ in rt.sessions.started[1:])
 
 
@@ -989,40 +987,104 @@ def test_a_crash_restarts_once_with_a_note_then_blocks(rt):
     assert current(rt).state == "blocked" and rt.notifier.sent[-1].cause == "NF-1:crash"
 
 
-@pytest.mark.parametrize("phase, alive", [("impl", "NF-1"), ("test", "NF-1-test")])
-def test_needs_the_owner_ends_the_run_blocked(rt, phase, alive):
+@pytest.mark.parametrize("phase, alive", [("impl", "NF-1"), ("test", "NF-1-test"), ("fix", "NF-1")])
+def test_questions_end_the_run_blocked_and_are_kept(rt, phase, alive):
     add(rt, phase=phase)
     rt.sessions.alive_names.add(alive)
-    done(rt, "Did half.\n\nNeeds the owner: which currency is the default?")
+    done(rt, "Did half.", ["Which currency is the default?", "Which region?"])
     published = []
     rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
     supervise(rt, current(rt))
     assert current(rt).state == "blocked" and not published
     (notice,) = rt.notifier.sent
-    assert notice.cause == "NF-1:needs-owner" and "which currency" in notice.summary
+    assert notice.cause == "NF-1:needs-owner" and notice.event == "needs-owner"
+    assert notice.detail == "2 questions"
+    assert "1. Which currency is the default?\n2. Which region?" in notice.summary
+    d = state_dir(rt.cfg, "NF-1")
+    assert json.loads((d / "questions.json").read_text())[1] == "Which region?"
+
+
+def test_one_question_is_counted_singular(rt):
+    add(rt, phase="impl")
+    done(rt, "Did half.", ["Which currency?"])
+    supervise(rt, current(rt))
+    assert rt.notifier.sent[0].detail == "1 question"
 
 
 @pytest.mark.parametrize(
-    "line", ["Needs the owner: none", "- Needs the owner: n/a", "**Needs the owner:** Nothing."]
+    "raw",
+    [
+        {"summary": "Done."},
+        {"summary": "Done.", "questions": "Which currency?"},
+        {"summary": "Done.", "questions": [3, None, " "]},
+    ],
 )
-def test_a_none_line_under_needs_the_owner_does_not_block(rt, line):
+def test_a_done_file_without_usable_questions_is_plain_work(rt, raw):
     add(rt, phase="impl")
     rt.sessions.alive_names.add("NF-1")
     published = []
     rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
-    done(rt, f"Done.\n\n{line}")
+    (state_dir(rt.cfg, "NF-1") / "done.json").write_text(json.dumps(raw))
     supervise(rt, current(rt))
     assert current(rt).state != "blocked" and published
 
 
-def test_a_review_fixer_s_owner_items_do_not_block(rt):
+def test_a_review_fixer_s_questions_do_not_block(rt):
     add(rt, phase="fix")
     ledger.meta_set(rt.con, "review_fix:NF-1", "1")
     rt.sessions.alive_names.add("NF-1")
     rt.publish_fn = lambda *a, **kw: PublishResult("opened", url="https://pr/1", existing=True)
-    done(rt, "Fixed two.\n\nNeeds the owner: run the migration by hand.")
+    done(rt, "Fixed two.", ["run the migration by hand."])
     supervise(rt, current(rt))
     assert current(rt).state == "running" and current(rt).phase == "review"
+    items = (state_dir(rt.cfg, "NF-1") / "owner-items.md").read_text()
+    assert items == "Needs the owner:\n1. run the migration by hand.\n"
+
+
+@pytest.mark.parametrize("phase, alive", [("impl", "NF-1"), ("test", "NF-1-test")])
+def test_nothing_to_do_ends_done_without_a_pr(rt, phase, alive):
+    add(rt, phase=phase)
+    rt.sessions.alive_names.add(alive)
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
+    done(rt, "Already fixed by NF-9.", outcome="nothing")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and not published
+    assert rt.linear.comments == ["Nothing to do: Already fixed by NF-9."]
+    [e] = events.unacked(rt.con)
+    assert (e.kind, e.detail) == ("ended", "done, nothing to do: Already fixed by NF-9.")
+
+
+def test_an_executor_with_no_commits_blocks_as_no_changes(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    rt.git_head = lambda claim: "sha-tests"
+    rt.sessions.alive_names.add("NF-1")
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and not published
+    assert rt.notifier.sent[0].cause == "NF-1:no-changes"
+
+
+def test_an_executor_on_a_branch_with_earlier_commits_still_publishes(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    rt.git_head = lambda claim: "sha-earlier-impl"
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Nothing new; the earlier run finished it.")
+    supervise(rt, current(rt))
+    assert current(rt).state != "blocked"
+
+
+def test_a_pending_check_does_not_fetch_the_branch_again(rt):
+    add(rt, phase="impl")
+    ledger.meta_set(rt.con, "check_running:NF-1", "1")
+    heads = []
+    rt.git_head = lambda claim: heads.append(claim) or "sha-tests"
+    rt.publish_fn = lambda *a, **kw: PublishResult("check_running")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert heads == []
 
 
 def test_without_a_reviewer_the_run_ends_when_the_pr_opens(rt):

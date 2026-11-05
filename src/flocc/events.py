@@ -6,7 +6,16 @@ from itertools import batched
 from flocc import ledger
 
 KINDS = frozenset(
-    {"ended", "cap", "base-broken", "bad-sequence", "service-error", "daily", "host-pressure"}
+    {
+        "ended",
+        "cap",
+        "needs-owner",
+        "base-broken",
+        "bad-sequence",
+        "service-error",
+        "daily",
+        "host-pressure",
+    }
 )
 BATCH_S = 120
 REDELIVER_S = 30 * 60

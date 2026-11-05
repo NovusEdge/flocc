@@ -23,6 +23,13 @@ def config(tmp_path):
     return path
 
 
+def test_needs_owner_is_an_event_kind(con):
+    assert "needs-owner" in events.KINDS
+    events.emit(con, "needs-owner", 1.0, issue_key="NF-1", detail="2 questions")
+    [e] = events.unacked(con)
+    assert e.kind == "needs-owner"
+
+
 def ids(text):
     return [e["id"] for e in json.loads(text)["events"]]
 

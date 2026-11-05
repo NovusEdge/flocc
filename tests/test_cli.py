@@ -228,6 +228,62 @@ def test_done_elsewhere_needs_a_summary(tmp_path, monkeypatch, capsys):
     assert main(["review-done"]) == 2
 
 
+def test_done_records_each_question_for_the_owner(tmp_path, monkeypatch):
+    session_env(monkeypatch, tmp_path, "impl")
+    args = ["done", "--summary", "Did half.", "--needs-owner", "Which currency?"]
+    assert main([*args, "--needs-owner", "Which region?"]) == 0
+    data = json.loads((tmp_path / "done.json").read_text())
+    assert data["questions"] == ["Which currency?", "Which region?"]
+    assert data["outcome"] == "work" and data["summary"] == "Did half."
+
+
+def test_done_refuses_the_old_owner_heading_and_names_the_flag(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    assert main(["done", "--summary", "Did half.\n\n## Needs the owner\n- which currency"]) == 2
+    assert "--needs-owner" in capsys.readouterr().err
+    assert not (tmp_path / "done.json").exists()
+
+
+def test_done_refuses_an_empty_question(tmp_path, monkeypatch, capsys):
+    session_env(monkeypatch, tmp_path, "impl")
+    assert main(["done", "--summary", "Did it.", "--needs-owner", "  "]) == 2
+    assert not (tmp_path / "done.json").exists()
+
+
+@pytest.mark.parametrize("phase", ["test", "impl"])
+def test_nothing_to_do_ends_with_its_reason_as_the_summary(tmp_path, monkeypatch, phase):
+    session_env(monkeypatch, tmp_path, phase)
+    assert main(["done", "--nothing-to-do", "Already fixed by NF-9."]) == 0
+    data = json.loads((tmp_path / "done.json").read_text())
+    assert data == {**data, "summary": "Already fixed by NF-9.", "outcome": "nothing"}
+    assert data["questions"] == []
+
+
+@pytest.mark.parametrize(
+    "phase, extra",
+    [
+        ("fix", []),
+        ("review", []),
+        ("impl", ["--summary", "x"]),
+        ("impl", ["--needs-owner", "q?"]),
+        ("impl", []),
+    ],
+)
+def test_nothing_to_do_is_refused_outside_its_use(tmp_path, monkeypatch, phase, extra):
+    session_env(monkeypatch, tmp_path, phase)
+    (tmp_path / "review.md").write_text("Verdict: approve\n")
+    why = [] if phase == "impl" and not extra else ["Nothing."]
+    args = ["done", "--nothing-to-do", *(why or ["  "]), *extra]
+    assert main(args) == 2
+    assert not (tmp_path / "done.json").exists()
+
+
+def test_the_reviewer_cannot_pass_owner_questions(tmp_path, monkeypatch):
+    session_env(monkeypatch, tmp_path, "review")
+    (tmp_path / "review.md").write_text("Verdict: approve\n")
+    assert main(["done", "--needs-owner", "q?"]) == 2
+
+
 def commit_tester(tmp_path, monkeypatch):
     wt = tmp_path / "wt"
     wt.mkdir()
@@ -325,7 +381,7 @@ def test_stop_refuses_once_then_marks_the_session_idle(tmp_path, monkeypatch, ca
     assert stop(monkeypatch, {"stop_hook_active": False, "last_assistant_message": "a?"}) == 0
     refusal = json.loads(capsys.readouterr().out)
     assert refusal["decision"] == "block" and "flocc done" in refusal["reason"]
-    assert "Needs the owner" in refusal["reason"] and not (tmp_path / "idle").exists()
+    assert "--needs-owner" in refusal["reason"] and not (tmp_path / "idle").exists()
     assert stop(monkeypatch, {"stop_hook_active": True, "last_assistant_message": "x" * 700}) == 0
     assert capsys.readouterr().out == ""
     marker = json.loads((tmp_path / "idle").read_text())
