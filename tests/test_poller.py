@@ -2,10 +2,11 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 
 import pytest
 
-from flocc import events, host, ledger
+from flocc import canary, events, host, ledger
 from flocc.config import TRAILER, load
 from flocc.context import state_dir
 from flocc.host import Reading
@@ -13,6 +14,7 @@ from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
 from flocc.notice import Notifier
 from flocc.poller import (
     TRANSIENT_RETRY_S,
+    comment_fixes,
     forward_comments,
     maybe_daily,
     poll,
@@ -26,6 +28,7 @@ from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.supervisor import BLOCKED, PUBLISH_TRIES, LaunchError, supervise
 from flocc.tick import tick, tick_lock
+from flocc.usage import write_status
 from flocc.worktree import (
     BranchDiverged,
     fetch_agent_branch,
@@ -1370,3 +1373,244 @@ def test_release_removes_the_worktree_and_both_state_directories(rt):
     release_claim(rt, claim, keep_worktree=True)
     assert rt.agent.removed == [("NF-9", False)]
     assert rt.agent.stopped_checks == ["NF-9"]
+
+
+NOW = 1_800_000_000.0
+PR = "https://github.com/o/r/pull/1"
+
+
+def iso(ago: float) -> str:
+    return datetime.fromtimestamp(NOW - ago, UTC).isoformat()
+
+
+def nf1(rt):
+    c = ledger.get_claim(rt.con, "NF-1")
+    assert c is not None
+    return c
+
+
+@pytest.fixture
+def fixable(rt, tmp_path, monkeypatch):
+    """A claim done an hour ago with an open PR, and an owner comment ten minutes old."""
+    rt.now = lambda: NOW
+    rt.view = {"state": "OPEN", "headRefOid": "sha0"}
+    rt.pr_view = lambda claim, url: rt.view
+    rt.linear.state_types = lambda keys: {k: "started" for k in keys}
+    monkeypatch.setattr("flocc.poller.origin_base", lambda repo: "sha-main")
+    wt = tmp_path / "wt-fix"
+    wt.mkdir()
+    c = make("NF-1", state="done", worktree=str(wt))
+    c.phase, c.started_at, c.base_sha = "review", NOW - 3600, "sha-base"
+    c.last_comment_at = iso(7200)
+    ledger.insert_claim(rt.con, c)
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "pr-url").write_text(PR)
+    ledger.meta_set(rt.con, "comment_fix_since", str(NOW - 86_400))
+    rt.linear.replies = {
+        "id-NF-1": [Comment("c1", "rename the flag to --dry-run", iso(600), mine=True)]
+    }
+    return rt
+
+
+def left_alone(rt):
+    c = nf1(rt)
+    assert rt.sessions.started == [] and c.state == "done"
+    assert c.last_comment_at == iso(7200)
+
+
+def test_an_owner_comment_on_a_done_pr_starts_one_fix_session(fixable):
+    comment_fixes(fixable)
+    c = nf1(fixable)
+    assert (c.state, c.phase, c.fix_attempts, c.restarts, c.started_at) == (
+        "running",
+        "fix",
+        0,
+        0,
+        NOW,
+    )
+    assert c.last_comment_at == iso(600)
+    name, argv = fixable.sessions.started[-1]
+    assert name == "NF-1" and any("The owner: rename the flag to --dry-run" in a for a in argv)
+    assert ledger.meta_get(fixable.con, "comment_fix:NF-1") == "1"
+    assert ledger.meta_get(fixable.con, "comment_fixes:NF-1") == "1"
+    assert fixable.linear.comments[-1][1] == (
+        f"Started a fix session for the comment; it pushes to {PR}, with no new review."
+    )
+
+
+def test_the_fix_context_lists_the_steering_comments_oldest_first(fixable):
+    fixable.cfg = replace(fixable.cfg, steer_authors=("hermes-id",))
+    fixable.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", "rename the flag", iso(900), mine=True),
+            Comment("c2", "a teammate's aside", iso(800), author="other"),
+            Comment("c3", "and update the README", iso(700), author="hermes-id"),
+        ]
+    }
+    comment_fixes(fixable)
+    d = state_dir(fixable.cfg, "NF-1")
+    text = (d / "check-failure.md").read_text()
+    assert text.index("The owner: rename the flag") < text.index(
+        "A steering agent: and update the README"
+    )
+    assert "teammate" not in text and "--needs-owner" in text and "--nothing-to-do" in text
+    assert (d / "comment-fix").exists()
+
+
+def _fresh_comment(rt):
+    rt.linear.replies["id-NF-1"].append(Comment("c2", "one more thing", iso(120), mine=True))
+
+
+def _session_cap(rt):
+    for key in ("NF-7", "NF-8"):
+        ledger.insert_claim(rt.con, make(key))
+
+
+def _over_usage(rt):
+    over = {"used_percentage": 95.0, "resets_at": 4_000_000_000}
+    write_status(state_dir(rt.cfg, "NF-1"), {"rate_limits": {"five_hour": over, "seven_day": over}})
+
+
+def _unwanted(rt):
+    rt.linear.state_types = lambda keys: {k: "unstarted" for k in keys}
+
+
+def _main_broken(rt):
+    canary.mark(rt.con, "backend", "sha-main", NOW, "E1 boom", check="just check")
+
+
+def _pr_merged(rt):
+    rt.view = {**rt.view, "state": "MERGED"}
+
+
+@pytest.mark.parametrize(
+    "shut", [_fresh_comment, _session_cap, _over_usage, _unwanted, _main_broken, _pr_merged]
+)
+def test_a_comment_fix_waits_while_a_gate_is_shut(fixable, shut):
+    shut(fixable)
+    comment_fixes(fixable)
+    left_alone(fixable)
+
+
+def _held(rt):
+    ledger.add_hold(rt.con, "NF-1", "wait", NOW)
+
+
+def _at_cap(rt):
+    ledger.meta_set(rt.con, "comment_fixes:NF-1", "3")
+
+
+def _a_week_old(rt):
+    ledger.update_claim(rt.con, "NF-1", started_at=NOW - 8 * 86_400)
+
+
+def _turned_off(rt):
+    rt.cfg = replace(rt.cfg, comment_fix_max=0)
+
+
+@pytest.mark.parametrize("outside", [_held, _at_cap, _a_week_old, _turned_off])
+def test_a_claim_outside_the_scan_is_not_read(fixable, outside):
+    outside(fixable)
+
+    def never(issue_id, after):
+        raise AssertionError("comments read")
+
+    fixable.linear.comments_since = never
+    comment_fixes(fixable)
+    left_alone(fixable)
+
+
+def test_a_pr_someone_else_pushed_to_gets_one_comment_and_waits(fixable):
+    fixable.view = {**fixable.view, "headRefOid": "pushed-by-the-owner"}
+    comment_fixes(fixable)
+    comment_fixes(fixable)
+    left_alone(fixable)
+    [(_, text)] = fixable.linear.comments
+    assert "commits this host's copy of the branch lacks" in text and "Todo" in text
+
+
+def test_comments_that_do_not_steer_move_the_cursor_past_them(fixable):
+    fixable.linear.replies = {
+        "id-NF-1": [
+            Comment("c1", f"{BOT_PREFIX} PR for review", iso(900), mine=True),
+            Comment("c2", "a teammate's aside", iso(800), author="other"),
+        ]
+    }
+    comment_fixes(fixable)
+    c = nf1(fixable)
+    assert fixable.sessions.started == [] and c.state == "done"
+    assert c.last_comment_at == iso(800)
+
+
+def test_comments_from_before_the_first_scan_never_start_a_fix(fixable):
+    ledger.meta_set(fixable.con, "comment_fix_since", "")
+    comment_fixes(fixable)
+    assert ledger.meta_get(fixable.con, "comment_fix_since") == str(NOW)
+    assert fixable.sessions.started == [] and nf1(fixable).last_comment_at == iso(600)
+
+
+def test_a_comment_fix_that_cannot_start_leaves_the_claim_as_it_was(fixable):
+    d = state_dir(fixable.cfg, "NF-1")
+    (d / "check-failure.md").write_text("the last check round's failure")
+    (d / "owner-items.md").write_text("Needs the owner:\n1. an earlier item\n")
+    fixable.cfg.agent_gh_token_file.write_text("")
+    comment_fixes(fixable)
+    c = nf1(fixable)
+    assert (c.state, c.phase, c.started_at, c.last_comment_at) == (
+        "done",
+        "review",
+        NOW - 3600,
+        iso(7200),
+    )
+    assert not ledger.meta_get(fixable.con, "comment_fix:NF-1")
+    assert not ledger.meta_get(fixable.con, "comment_fixes:NF-1")
+    assert (d / "check-failure.md").read_text() == "the last check round's failure"
+    assert (d / "owner-items.md").exists() and not (d / "comment-fix").exists()
+    assert fixable.linear.comments == []
+    lines = [line for _, _, line in ledger.pending_digest(fixable.con)]
+    assert any("comment fix not started" in line for line in lines)
+
+
+def test_a_comment_fix_pushes_to_the_open_pr_and_ends_done_without_a_review(fixable):
+    calls = []
+
+    def publish(claim, title, summary, **kw):
+        calls.append(kw)
+        return PublishResult("opened", url=PR, existing=True)
+
+    fixable.publish_fn = publish
+    ledger.meta_set(fixable.con, "review_fix:NF-1", "1")
+    comment_fixes(fixable)
+    (state_dir(fixable.cfg, "NF-1") / "done.json").write_text(
+        json.dumps({"summary": "Renamed the flag.", "questions": [], "outcome": "work"})
+    )
+    supervise(fixable, nf1(fixable))
+    assert calls == [{"reuse_only": True}] and nf1(fixable).state == "done"
+    assert [name for name, _ in fixable.sessions.started] == ["NF-1"]
+    assert fixable.linear.comments[-1][1] == f"Comment fix pushed to {PR}."
+    assert not ledger.meta_get(fixable.con, "comment_fix:NF-1")
+    assert ledger.meta_get(fixable.con, "comment_fixes:NF-1") == "1"
+
+
+def test_a_fresh_claim_gets_its_own_comment_fixes(rt):
+    for key in ("comment_fix", "comment_fixes", "comment_fix_moved"):
+        ledger.meta_set(rt.con, f"{key}:NF-9", "1")
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "comment-fix").write_text("1\n")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    for key in ("comment_fix", "comment_fixes", "comment_fix_moved"):
+        assert not ledger.meta_get(rt.con, f"{key}:NF-9")
+    assert not (d / "comment-fix").exists()
+
+
+def test_the_scan_runs_after_poll_and_before_the_rebase_step(rt, tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr("flocc.tick.build_runtime", lambda cfg, path: rt)
+    monkeypatch.setattr("flocc.tick.poll", lambda rt: seen.append("poll"))
+    monkeypatch.setattr("flocc.tick.comment_fixes", lambda rt: seen.append("comment_fixes"))
+    monkeypatch.setattr("flocc.rebase.step", lambda rt: seen.append("rebase"))
+    tick(rt.cfg, tmp_path / "c.toml")
+    assert seen == ["poll", "comment_fixes", "rebase"]

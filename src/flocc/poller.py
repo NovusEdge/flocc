@@ -25,6 +25,8 @@ from flocc.sequence import SequenceError, parse_sequence
 from flocc.sessions import session_name
 from flocc.supervisor import (
     BLOCKED,
+    COMMENT_FIX_FILE,
+    COMMENT_FIXES,
     LAST_SUMMARY,
     PUBLISH_TRIES,
     QUESTIONS,
@@ -32,6 +34,7 @@ from flocc.supervisor import (
     RESUME_NOTE,
     TRANSIENT_RETRY,
     launch,
+    start_comment_fix,
 )
 from flocc.usage import latest_usage
 from flocc.worktree import (
@@ -48,6 +51,11 @@ from flocc.worktree import (
 COMMENT_ONCE_S = 365 * 24 * 3600
 RERUN_COMMENTS_S = 7 * 24 * 3600
 TRANSIENT_RETRY_S = 30 * 60
+# Epoch seconds of the first comment-fix scan; comments older than it never start a fix.
+COMMENT_FIX_SINCE = "comment_fix_since"
+COMMENT_FIX_MOVED = "comment_fix_moved"
+# The owner may move the issue to Todo right after commenting, which reruns it with the comment.
+COMMENT_SETTLE_S = 5 * 60
 
 
 def repo_for(issue: Issue, cfg) -> str | None:
@@ -469,6 +477,9 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         "cardinal_resume",
         "host_wait",
         TRANSIENT_RETRY,
+        "comment_fix",
+        "comment_fixes",
+        "comment_fix_moved",
     ):
         ledger.meta_set(rt.con, f"{kept}:{issue.key}", "")
     for round_ in (1, 2):
@@ -478,6 +489,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     (d / BLOCKED).unlink(missing_ok=True)
     (d / QUESTIONS).unlink(missing_ok=True)
     (d / RESUME_NOTE).unlink(missing_ok=True)
+    (d / COMMENT_FIX_FILE).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # executor: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.
@@ -580,6 +592,81 @@ def forward_comments(rt) -> dict[str, LinearError]:
                 rt.sessions.send(name, f"{who} replied on Linear: {comment.body}")
             ledger.update_claim(rt.con, claim.issue_key, last_comment_at=comment.created_at)
     return failed
+
+
+def _epoch(iso: str) -> float:
+    return datetime.fromisoformat(iso).timestamp()
+
+
+def _comment_fix_waits(rt, claim: Claim) -> None:
+    once = f"{COMMENT_FIX_MOVED}:{claim.issue_key}"
+    if ledger.meta_get(rt.con, once):
+        return
+    # Recorded first: a comment that fails must not be retried every tick.
+    ledger.meta_set(rt.con, once, "1")
+    try:
+        rt.linear.comment(
+            claim.issue_id,
+            "The PR has commits this host's copy of the branch lacks, so no fix session started"
+            " for the comment; it waits until they match. Move the issue back to Todo to rerun it"
+            " with the comment instead.",
+        )
+    except LinearError as exc:
+        print(f"{claim.issue_key}: comment-fix wait not commented: {exc}", file=sys.stderr)
+
+
+def comment_fixes(rt) -> None:
+    """Starts a fix session on a done claim's open PR for steering comments posted since. A claim
+    skipped this tick keeps its comments unread, for a later tick or a Todo rerun."""
+    cap = rt.cfg.comment_fix_max
+    if cap == 0 or rt.pr_view is None:
+        return
+    since = ledger.meta_get(rt.con, COMMENT_FIX_SINCE)
+    if not since:
+        since = str(rt.now())
+        ledger.meta_set(rt.con, COMMENT_FIX_SINCE, since)
+    bases: dict[str, str | None] = {}
+    for claim, url in finished_prs(rt):
+        key = claim.issue_key
+        if rt.now() - claim.started_at >= RERUN_COMMENTS_S:
+            continue
+        # Before the read: past the cap the comments stay unread, so a Todo rerun gets them.
+        if int(ledger.meta_get(rt.con, f"{COMMENT_FIXES}:{key}") or 0) >= cap:
+            continue
+        try:
+            unread = rt.linear.comments_since(claim.issue_id, claim.last_comment_at)
+        except LinearError as exc:
+            print(f"{key}: comments not read for a comment fix: {exc}", file=sys.stderr)
+            continue
+        steering = [
+            (who, c)
+            for c in unread
+            if _epoch(c.created_at) >= float(since) and (who := _steering(rt, c))
+        ]
+        if not steering:
+            if unread:
+                ledger.update_claim(rt.con, key, last_comment_at=unread[-1].created_at)
+            continue
+        if rt.now() - _epoch(steering[-1][1].created_at) < COMMENT_SETTLE_S:
+            continue
+        if reason := rerun_held(rt, claim, bases):
+            print(f"{key}: comment fix held, {reason}", file=sys.stderr)
+            continue
+        try:
+            if not still_wanted(rt, key):
+                continue
+            view = rt.pr_view(claim, url)
+            if view.get("state") != "OPEN":
+                continue
+            moved = pushed_elsewhere(rt, claim, view)
+        except Exception as exc:  # noqa: BLE001 - one PR's failure must not stop the others
+            print(f"{key}: PR not checked for a comment fix: {exc}", file=sys.stderr)
+            continue
+        if moved:
+            _comment_fix_waits(rt, claim)
+            continue
+        replies = [f"{who}: {c.body}" for who, c in steering]
+        start_comment_fix(rt, claim, url, replies, unread[-1].created_at)
 
 
 def _local_hour_and_date(now: float) -> tuple[int, str]:

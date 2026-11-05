@@ -14,6 +14,7 @@ from flocc.context import agent_dir
 from flocc.linear import Linear, LinearError, http_transport
 from flocc.notice import Notice, Notifier
 from flocc.poller import (
+    comment_fixes,
     forward_comments,
     maybe_daily,
     poll,
@@ -218,6 +219,12 @@ def tick(cfg: Config, config_path: Path) -> int:
         # Before poll, so the space it frees counts toward this tick's admission.
         reap_worktrees(rt)
         poll(rt)
+        # After poll, so an issue the owner moved to Todo this tick reruns with the comment
+        # instead; before the rebase step, which would start a second session on the claim.
+        try:
+            comment_fixes(rt)
+        except Exception:  # noqa: BLE001 - a comment fix that cannot start must not stop the digest
+            traceback.print_exc()
         # After poll, so an issue started this tick is not mistaken for a finished one.
         try:
             rebase.step(rt)
