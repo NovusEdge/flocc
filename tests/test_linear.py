@@ -209,13 +209,20 @@ def detail_node(**over):
             "nodes": [
                 {
                     "type": "blocks",
-                    "relatedIssue": {"identifier": "NF-2", "title": "T2", "state": {"name": "Todo"}},
+                    "relatedIssue": {
+                        "identifier": "NF-2",
+                        "title": "T2",
+                        "state": {"name": "Todo"},
+                    },
                 }
             ]
         },
         "inverseRelations": {
             "nodes": [
-                {"type": "related", "issue": {"identifier": "NF-3", "title": "T3", "state": {"name": "Done"}}}
+                {
+                    "type": "related",
+                    "issue": {"identifier": "NF-3", "title": "T3", "state": {"name": "Done"}},
+                }
             ]
         },
     }
@@ -225,7 +232,11 @@ def detail_node(**over):
 def test_issue_detail_reads_comments_oldest_first_and_both_relation_directions():
     d = Linear(FakePost({"issue": detail_node()})).issue_detail("NF-1")
     assert (d.key, d.description, d.state, d.team_id, d.labels) == (
-        "NF-1", "", "In Progress", "t1", ("claude",)
+        "NF-1",
+        "",
+        "In Progress",
+        "t1",
+        ("claude",),
     )
     assert d.comments == (
         ("2026-11-01T10:00:00Z", "Owner", "a"),
@@ -239,7 +250,13 @@ def test_issue_detail_reads_comments_oldest_first_and_both_relation_directions()
 
 def test_search_filters_the_team_s_open_issues_by_title_or_description():
     post = FakePost(
-        {"issues": {"nodes": [{"identifier": "NF-5", "title": "Flaky export", "state": {"name": "Backlog"}}]}}
+        {
+            "issues": {
+                "nodes": [
+                    {"identifier": "NF-5", "title": "Flaky export", "state": {"name": "Backlog"}}
+                ]
+            }
+        }
     )
     assert Linear(post).search("NF", "export") == [("NF-5", "Backlog", "Flaky export")]
     assert post.calls[0][1] == {"team": "NF", "text": "export"}
@@ -263,7 +280,11 @@ def test_label_ids_keeps_team_and_workspace_labels_only():
 
 def test_state_id_takes_the_first_state_of_the_type():
     post = FakePost(
-        {"team": {"states": {"nodes": [{"id": "b2", "position": 2.0}, {"id": "b1", "position": 1.0}]}}}
+        {
+            "team": {
+                "states": {"nodes": [{"id": "b2", "position": 2.0}, {"id": "b1", "position": 1.0}]}
+            }
+        }
     )
     assert Linear(post).state_id("t1", "backlog") == "b1"
     assert post.calls[0][1] == {"team": "t1", "type": "backlog"}
@@ -277,12 +298,21 @@ def test_state_id_without_such_a_state_raises():
 
 def test_create_issue_sends_the_labels_and_state_and_returns_the_new_key():
     post = FakePost(
-        {"issueCreate": {"success": True, "issue": {"id": "u9", "identifier": "NF-9", "url": "https://l/NF-9"}}}
+        {
+            "issueCreate": {
+                "success": True,
+                "issue": {"id": "u9", "identifier": "NF-9", "url": "https://l/NF-9"},
+            }
+        }
     )
     got = Linear(post).create_issue("t1", "Title", "Body", ["l1"], "b1")
     assert got == ("u9", "NF-9", "https://l/NF-9")
     assert post.calls[0][1] == {
-        "team": "t1", "title": "Title", "description": "Body", "labels": ["l1"], "state": "b1"
+        "team": "t1",
+        "title": "Title",
+        "description": "Body",
+        "labels": ["l1"],
+        "state": "b1",
     }
 
 

@@ -353,3 +353,26 @@ def meta_set(con, key: str, value: str) -> None:
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+
+def log_append(con, prefix: str, at: float, value: dict) -> None:
+    """One timestamped entry in a meta-backed log; the same at replaces the entry."""
+    meta_set(con, f"{prefix}:{at:.6f}", json.dumps({**value, "at": at}))
+
+
+def log_since(con, prefix: str, since: float) -> list[dict]:
+    head = f"{prefix}:"
+    # substr, not LIKE: an _ in a prefix would match any character.
+    rows = con.execute(
+        "SELECT value FROM meta WHERE substr(key, 1, ?) = ?", (len(head), head)
+    ).fetchall()
+    out = []
+    for row in rows:
+        try:
+            v = json.loads(row[0])
+            v["at"] = float(v["at"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        if v["at"] >= since:
+            out.append(v)
+    return sorted(out, key=lambda v: v["at"])
