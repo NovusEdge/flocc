@@ -22,6 +22,8 @@ setup_timeout_s = 900
 # For hosts that share a Linear team and map only some of its repos: leave issues matching no
 # mapped repo alone instead of commenting that no repo matches.
 # skip_unmapped = true
+# cardinal's file verb records follow-up drafts in the digest; true creates them in Backlog.
+# cardinal_file_on = false
 # Linear user or bot/app ids (not names) whose comments on a running issue are typed into the
 # live session like the owner's, so another agent can steer. Empty forwards only the owner's.
 # steer_authors = ["your-hermes-linear-id"]

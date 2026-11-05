@@ -80,6 +80,9 @@ class Config:
     # Hosts sharing a Linear team each map only some repos, so an issue for another host's repo
     # is left alone instead of getting the no-repo comment.
     skip_unmapped: bool = False
+    # cardinal's file verb creates Linear issues only when this is on; off, it records each draft
+    # for the digest so the owner can read what it would have filed.
+    cardinal_file_on: bool = False
     # Linear user or bot/app ids whose comments on a running issue are forwarded into the live
     # session like the owner's own, letting another agent steer. Empty forwards only the owner's.
     steer_authors: tuple[str, ...] = ()

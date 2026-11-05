@@ -946,6 +946,74 @@ def test_a_failed_pr_comment_is_reported_and_logs_nothing(amend_env, monkeypatch
     assert reach.writes(amend_env.rt.con, 0.0) == []
 
 
+def file_argv(e, key="NF-1"):
+    return [
+        "--config", str(e.path), "file", key,
+        "--title", "Export rounds wrong", "--text", "Seen in review.",
+    ]  # fmt: skip
+
+
+def turn_filing_on(e):
+    # The fixture's build_runtime patch returns this runtime, so the file on disk is not read.
+    e.rt.cfg = replace(e.rt.cfg, cardinal_file_on=True)
+
+
+def test_file_in_observe_mode_creates_nothing_and_records_the_draft(amend_env, capsys):
+    amend_env.linear.detail = detail()
+    assert main(file_argv(amend_env)) == 0
+    assert amend_env.linear.created == []
+    [w] = reach.writes(amend_env.rt.con, 0.0)
+    assert (w["kind"], w["mode"], w["text"]) == ("file", "observe", "Export rounds wrong")
+    assert "observe mode" in capsys.readouterr().out
+
+
+def test_file_when_on_creates_a_backlog_draft_linked_to_the_source(amend_env, capsys):
+    turn_filing_on(amend_env)
+    amend_env.linear.detail = detail()
+    assert main(file_argv(amend_env)) == 0
+    [(team, title, body, labels, state)] = amend_env.linear.created
+    assert (team, title, labels, state) == (
+        "t1",
+        "Export rounds wrong",
+        ("lab-draft",),
+        "state-backlog",
+    )
+    assert "Seen in review." in body and "NF-1" in body
+    assert amend_env.linear.related == [("u9", "u1")]
+    [w] = reach.writes(amend_env.rt.con, 0.0)
+    assert (w["mode"], w["filed"]) == ("on", "NF-9")
+    assert "filed NF-9" in capsys.readouterr().out
+
+
+def test_file_never_sends_the_trigger_label(amend_env):
+    turn_filing_on(amend_env)
+    amend_env.linear.detail = detail()
+    amend_env.linear.labels["claude"] = "lab-claude"
+    assert main(file_argv(amend_env)) == 0
+    assert all("lab-claude" not in c[3] for c in amend_env.linear.created)
+
+
+def test_file_without_the_draft_label_in_linear_is_refused(amend_env, capsys):
+    turn_filing_on(amend_env)
+    amend_env.linear.detail = detail()
+    amend_env.linear.labels.clear()
+    assert main(file_argv(amend_env)) == 1
+    assert "create the cardinal-draft label" in capsys.readouterr().err
+    assert amend_env.linear.created == [] and reach.writes(amend_env.rt.con, 0.0) == []
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_file_past_the_cap_is_refused_in_either_mode(amend_env, on, capsys):
+    if on:
+        turn_filing_on(amend_env)
+    amend_env.linear.detail = detail()
+    for at in (1.0, 2.0):
+        reach.record_write(amend_env.rt.con, at, "file", "NF-1", "t", mode="observe")
+    assert main(file_argv(amend_env)) == 1
+    assert "NF-1 already has 2" in capsys.readouterr().err
+    assert amend_env.linear.created == []
+
+
 def test_amend_tests_labels_the_pr_and_tells_the_running_session(amend_env, capsys):
     e = amend_env
     assert main(["--config", str(e.path), "amend-tests", "NF-1"]) == 0

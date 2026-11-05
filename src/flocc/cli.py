@@ -613,6 +613,47 @@ def cmd_pr_comment(args) -> int:
     return 0
 
 
+def cmd_file(args) -> int:
+    from flocc import reach
+    from flocc.linear import LinearError
+
+    if (rt := _reach_runtime(args, "file", args.key)) is None:
+        return 1
+    if why := reach.file_refusal(rt.con, args.key, rt.now()):
+        print(f"file: {why}", file=sys.stderr)
+        return 1
+    if not rt.cfg.cardinal_file_on:
+        reach.record_write(rt.con, rt.now(), "file", args.key, args.title, mode="observe")
+        print(f"file: observe mode; the draft for {args.key} is in the digest, nothing filed")
+        return 0
+    try:
+        source = rt.linear.issue_detail(args.key)
+        # Only the draft label: the trigger label would start paid work nobody asked for.
+        labels = rt.linear.label_ids(rt.cfg.team_key, [reach.DRAFT_LABEL])
+        if reach.DRAFT_LABEL not in labels:
+            print(
+                f"file: create the {reach.DRAFT_LABEL} label in Linear first; nothing filed",
+                file=sys.stderr,
+            )
+            return 1
+        body = f"{args.text}\n\nFiled by cardinal from {source.key}: {source.url}"
+        new_id, new_key, new_url = rt.linear.create_issue(
+            source.team_id,
+            args.title,
+            body,
+            [labels[reach.DRAFT_LABEL]],
+            rt.linear.state_id(source.team_id, "backlog"),
+        )
+        # The issue exists from here and counts toward the cap even when the link below fails.
+        reach.record_write(rt.con, rt.now(), "file", args.key, args.title, filed=new_key)
+        rt.linear.relate(new_id, source.id)
+    except LinearError as exc:
+        print(f"file: {exc}", file=sys.stderr)
+        return 1
+    print(f"filed {new_key} ({new_url}) from {args.key}")
+    return 0
+
+
 def cmd_run_summary(args) -> int:
     from flocc.status import issue_lines
     from flocc.summary import run_summary
@@ -1070,6 +1111,7 @@ COMMANDS = {
     "comment": cmd_comment,
     "pr": cmd_pr,
     "pr-comment": cmd_pr_comment,
+    "file": cmd_file,
     "shell": cmd_shell,
     "config": cmd_config,
 }
@@ -1173,6 +1215,12 @@ def build_parser() -> argparse.ArgumentParser:
     pc = add("pr-comment", "Comment on an issue's PR as cardinal; logged for the digest")
     pc.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     pc.add_argument("--text", required=True, help="the comment")
+    fl = add(
+        "file", "File a Backlog follow-up linked to an issue as cardinal; observe mode records it"
+    )
+    fl.add_argument("key", type=_issue_key, help="the source issue, e.g. NF-12")
+    fl.add_argument("--title", required=True, help="the new issue's title")
+    fl.add_argument("--text", required=True, help="the new issue's description")
     sh = add(
         "shell", "Run one command as flocc-agent for cardinal's agent-shell; logged for the digest"
     )
