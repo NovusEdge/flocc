@@ -199,6 +199,15 @@ def test_rerun_ignores_files_from_the_previous_claim(rt):
     assert not (d / "done.json").exists()
 
 
+def test_a_fresh_claim_drops_the_previous_run_s_questions(rt):
+    d = state_dir(rt.cfg, "NF-9")
+    d.mkdir()
+    (d / "questions.json").write_text(json.dumps(["Which currency?"]))
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert not (d / "questions.json").exists()
+
+
 def test_a_resume_at_the_implementer_keeps_the_amended_tests_record(rt, monkeypatch):
     ledger.remember_tests(rt.con, "NF-9", "sha-old-base", "sha-tests")
     monkeypatch.setattr(
