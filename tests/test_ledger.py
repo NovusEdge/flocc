@@ -171,6 +171,30 @@ def test_events_written_before_the_stop_columns_read_null(tmp_path):
     assert (e.kind, e.detail, e.cause, e.stop_type) == ("ended", "crash: x", None, None)
 
 
+def test_cardinal_fix_marks_become_resume_marks(tmp_path):
+    path = tmp_path / "old.sqlite"
+    raw = _ledger_at(path, 6)
+    raw.executemany(
+        "INSERT INTO meta (key, value) VALUES (?, ?)",
+        [
+            ("cardinal_fix:NF-1", "1"),
+            ("cardinal_fix:NF-2", ""),
+            ("cardinal_fix:NF-3", "1"),
+            ("cardinal_resume:NF-3", ""),
+            ("cardinal_resume:NF-4", "1"),
+            ("cardinal_fixed:NF-5", "x"),
+        ],
+    )
+    raw.commit()
+    raw.close()
+    con = ledger.connect(path)
+    keys = ("NF-1", "NF-2", "NF-3", "NF-4")
+    got = {k: ledger.meta_get(con, f"cardinal_resume:{k}") for k in keys}
+    assert got == {"NF-1": "1", "NF-2": None, "NF-3": "1", "NF-4": "1"}
+    left = con.execute("SELECT key FROM meta WHERE key GLOB 'cardinal_fix:*'").fetchall()
+    assert left == [] and ledger.meta_get(con, "cardinal_fixed:NF-5") == "x"
+
+
 def test_a_claim_keeps_its_sequence(con):
     c = make()
     c.sequence = ["tester", "executor"]

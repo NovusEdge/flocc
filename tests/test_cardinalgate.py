@@ -47,11 +47,10 @@ def test_the_allowed_lines(line, argv):
     assert argv_for(line) == argv
 
 
-@pytest.mark.parametrize("verb", ["resume", "fix"])
-def test_a_note_with_shell_text_stays_one_argument(verb):
+def test_a_note_with_shell_text_stays_one_argument():
     note = "fix $(rm -rf ~); it's `x`\n-- and --config=/etc/x"
     quoted = "'" + note.replace("'", "'\\''") + "'"
-    assert argv_for(f"{verb} NF-3 --note {quoted}") == ["resume", "NF-3", f"--note={note}"]
+    assert argv_for(f"resume NF-3 --note {quoted}") == ["resume", "NF-3", f"--note={note}"]
 
 
 @pytest.mark.parametrize(
@@ -78,6 +77,7 @@ def test_a_note_with_shell_text_stays_one_argument(verb):
         "run-summary NF1-2",
         "run-summary 'NF-1\n'",
         "run-summary NF-12 NF-13",
+        "fix NF-3 --note 'the old alias'",
         "ack",
         "ack 1 x",
         "ack '1\n'",

@@ -15,10 +15,8 @@ from flocc.sessions import session_name
 from flocc.supervisor import BLOCKED, FIX_CONTEXT, QUESTIONS, RESUME_NOTE, launch
 from flocc.usage import latest_usage
 
-# One cardinal resume per claim; poller._start clears both keys with the claim's other per-run
-# meta. cardinal_fix is what the fix verb set before resume replaced it.
+# One cardinal resume per claim; poller._start clears it with the claim's other per-run meta.
 CARDINAL_RESUME = "cardinal_resume"
-_CAPS = (CARDINAL_RESUME, "cardinal_fix")
 RESUME_LOG = "resume_log"
 NOTE_CHARS = 2000
 
@@ -106,7 +104,7 @@ def resume(rt, key: str, note: str) -> Claim:
         raise Refused(
             f"{key} used {claim.fix_attempts} of {cap} fix rounds; that stop is the owner's"
         )
-    if any(ledger.meta_get(rt.con, f"{k}:{key}") for k in _CAPS):
+    if ledger.meta_get(rt.con, f"{CARDINAL_RESUME}:{key}"):
         raise Refused(f"cardinal already resumed this run of {key}")
     if key in ledger.issue_holds(rt.con):
         raise Refused(f"{key} is held; the owner's flocc release {key} lifts the hold")

@@ -66,9 +66,8 @@ def argv_for(command: str) -> list[str]:
         case "shell", [command]:
             # Only bin/agent-shell sends this verb; bin/executor refuses it.
             return [verb, f"--command={_text(command, 'command')}"]
-        case (("resume" | "fix"), [key, "--note", note]):
-            # fix is the verb resume replaced; cardinal's VM and the executor deploy separately.
-            return ["resume", _key(key), f"--note={_text(note, 'note')}"]
+        case "resume", [key, "--note", note]:
+            return [verb, _key(key), f"--note={_text(note, 'note')}"]
         case (("issue" | "pr"), [key]):
             return [verb, _key(key)]
         case (("comment" | "pr-comment"), [key, "--text", text]):

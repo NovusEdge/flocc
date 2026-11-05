@@ -258,7 +258,6 @@ def test_a_fresh_claim_forgets_the_last_run_s_rebase_and_base_hold(rt):
         "rebase_tried",
         "base_held",
         "base_released",
-        "cardinal_fix",
         "cardinal_resume",
         "transient_retry",
     )

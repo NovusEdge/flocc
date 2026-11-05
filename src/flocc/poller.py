@@ -437,7 +437,6 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         "rebase_tried",
         "base_held",
         "base_released",
-        "cardinal_fix",
         "cardinal_resume",
         "host_wait",
         TRANSIENT_RETRY,
