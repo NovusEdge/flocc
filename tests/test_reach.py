@@ -41,6 +41,21 @@ def test_render_issue_marks_the_text_as_data_and_lists_everything():
         assert part in text
 
 
+def test_a_long_first_comment_still_leaves_newer_comments_visible():
+    comments = (
+        ("2026-11-01T10:00:00Z", "flocc", "x" * 20_000),
+        ("2026-11-02T10:00:00Z", "Owner", "newest"),
+    )
+    assert "Owner: newest" in reach.render_issue(detail(comments=comments))
+    view = {
+        "reviews": [{"author": {"login": "bot"}, "state": "COMMENTED", "body": "y" * 20_000}],
+        "comments": [
+            {"author": {"login": "owner"}, "body": "newest", "createdAt": "2026-11-02T09:00:00Z"}
+        ],
+    }
+    assert "owner: newest" in reach.render_pr("u", view)
+
+
 def test_render_issue_with_nothing_in_it_prints_placeholders():
     text = reach.render_issue(detail(description="", labels=(), comments=(), relations=()))
     assert "Labels: none" in text and "(empty)" in text and "- none" in text
