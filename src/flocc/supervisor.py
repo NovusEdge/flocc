@@ -50,6 +50,9 @@ QUESTIONS = "questions.json"
 # Set when a session is found dead during a host episode: it most likely died of the episode,
 # so its relaunch afterwards costs no restart.
 HOST_WAIT = "host_wait"
+# cardinal's resume note for a tester or executor; a fixer's rides in FIX_CONTEXT instead. Kept
+# so a restart of the session gets it again, dropped when the step finishes.
+RESUME_NOTE = "resume-note.md"
 # Service files a session reads, copied into its state directory at every start.
 _HANDOFF = (
     "context.md",
@@ -208,8 +211,9 @@ def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
 
 def _relaunch(rt, claim: Claim) -> None:
     # The check output reaches a fix session only through its prompt; a restart needs it again.
-    path = state_dir(rt.cfg, claim.issue_key) / FIX_CONTEXT
-    extra = path.read_text() if claim.phase == "fix" and path.exists() else ""
+    d = state_dir(rt.cfg, claim.issue_key)
+    path = d / (FIX_CONTEXT if claim.phase == "fix" else RESUME_NOTE)
+    extra = path.read_text() if path.exists() else ""
     launch(rt, claim, claim.phase, extra=f"{_RESTART}\n\n{extra}".strip())
 
 
@@ -447,6 +451,7 @@ def _finish_phase(
     rt, claim: Claim, summary: str, questions: Sequence[str] = (), outcome: str = "work"
 ) -> None:
     key = claim.issue_key
+    (state_dir(rt.cfg, key) / RESUME_NOTE).unlink(missing_ok=True)
     # Before the usage record, which would add a row on every tick of the wait.
     if not _base_hold_lifted(rt, claim):
         return
@@ -502,7 +507,8 @@ def _finish_phase(
             claim,
             "no-changes",
             f"The {ARCHETYPE['impl']} finished with no commits.",
-            "Comment what it should do and move the issue back to Todo, or close the issue",
+            "Resume it with a note, or comment what it should do and move the issue back to Todo,"
+            " or close the issue",
         )
         return
     issue = rt.linear.issue(key)

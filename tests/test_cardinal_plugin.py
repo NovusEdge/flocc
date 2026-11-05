@@ -107,7 +107,7 @@ def test_the_executor_wrapper_quotes_every_argument(tmp_path):
     ssh.write_text('#!/bin/sh\nfor last; do :; done\nprintf "%s" "$last"\n')
     ssh.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
-    args = ["fix", "NF-3", "--note", "it's $(id) `x`\nline two; -- --config=/x"]
+    args = ["resume", "NF-3", "--note", "it's $(id) `x`\nline two; -- --config=/x"]
     out = subprocess.run(
         [PLUGIN / "bin" / "executor", *args], env=env, capture_output=True, text=True, check=True
     )
@@ -183,9 +183,18 @@ def test_agent_shell_times_out_before_the_two_minute_tool_timeout():
     assert agentrun.SHELL_TIMEOUT_S < 120
 
 
-def test_the_dispatch_skill_never_reruns_work():
+def test_dispatch_restarts_work_only_through_resume():
     text = (PLUGIN / "skills" / "dispatch" / "SKILL.md").read_text()
-    assert "lifts a hold and nothing else" in text and "tell the owner" in text
+    assert "lifts a hold and nothing else" in text and f"{EXECUTOR} resume KEY" in text
+    assert "fresh" in text and "Todo" in text
+
+
+def test_triage_resumes_and_answers_with_the_resume_verb():
+    text = (PLUGIN / "skills" / "triage" / "SKILL.md").read_text()
+    assert f"{EXECUTOR} resume KEY --note" in text and f"{EXECUTOR} fix" not in text
+    assert "`needs-owner`" in text and "acceptance criteria" in text
+    for owner_stop in ("tests-touched", "branch-moved", "publish-failed", "rebase-conflict"):
+        assert owner_stop in text
 
 
 def test_managed_settings_allow_the_two_binaries_and_hook_every_bash_call():
@@ -264,7 +273,7 @@ def test_agent_shell_sends_one_quoted_shell_request(tmp_path):
     "command",
     [
         f"{EXECUTOR} status",
-        f"{EXECUTOR} fix NF-3 --note 'the import moved to flocc.events, update it'",
+        f"{EXECUTOR} resume NF-3 --note 'the import moved to flocc.events, update it'",
         f"{AGENT_SHELL} 'du -sh /tmp/pytest-of-flocc-agent'",
         EXECUTOR,
     ],
@@ -305,13 +314,13 @@ def test_the_hook_refuses_a_comment_that_hides_a_quote_from_it(comment):
 
 @pytest.mark.parametrize("text", ["$(id)", "`id`", "$HOME", "${x}"])
 def test_the_hook_refuses_expansion_inside_double_quotes(text):
-    out = hook(bash_call(f'{EXECUTOR} fix NF-3 --note "see {text}"'))
+    out = hook(bash_call(f'{EXECUTOR} resume NF-3 --note "see {text}"'))
     assert out.returncode == 2 and "only-executor" in out.stderr
 
 
 def test_the_hook_passes_operators_inside_single_quotes():
     note = "line one; a | b & c < d > e $(f) `g`\nline two"
-    assert hook(bash_call(f"{EXECUTOR} fix NF-3 --note {shlex.quote(note)}")).returncode == 0
+    assert hook(bash_call(f"{EXECUTOR} resume NF-3 --note {shlex.quote(note)}")).returncode == 0
     piped = f"{AGENT_SHELL} {shlex.quote('du -sh /tmp/* | sort -h | tail -5')}"
     assert hook(bash_call(piped)).returncode == 0
 
@@ -324,4 +333,4 @@ def test_the_hook_passes_plain_text_inside_double_quotes():
 
 def test_the_hook_fails_closed_on_input_it_cannot_read():
     assert hook("not json").returncode == 2
-    assert hook(bash_call(f"{EXECUTOR} fix NF-3 --note 'unclosed")).returncode == 2
+    assert hook(bash_call(f"{EXECUTOR} resume NF-3 --note 'unclosed")).returncode == 2

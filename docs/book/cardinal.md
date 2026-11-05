@@ -2,9 +2,10 @@
 
 cardinal is a Claude Code session on its own small Incus VM, `flocc-cardinal`, on the machine
 that holds your executor host. It sits idle, spending nothing, until the executor has something
-for it. Then it triages the run, starts one fixer when a note can fix it, holds new starts, and
-tells you, in the Claude app, only what needs you. It never reruns a blocked, timed-out or
-finished run; it tells you what the run needs. Once a day it runs the cleanup pass and writes
+for it. Then it triages the run, resumes it once with a note when the note can carry it on (an
+answer to the agent's questions, or what the next attempt does differently), holds new starts,
+and tells you, in the Claude app, only what needs you. It never starts a fresh run or touches a
+finished one. Once a day it runs the cleanup pass and writes
 the digest.
 
 ## Make it
@@ -33,7 +34,7 @@ After 5 failed connections in a row the loop prints one `link-down` line, and on
 when a connection holds again.
 
 Events: `ended` (a PR is ready, or a run blocked or timed out), `cap` (the check still fails after
-every fix round), `base-broken` (once per break), `bad-sequence` (an unusable `Run:` line),
+every fix round), `needs-owner` (an agent stopped with questions), `base-broken` (once per break), `bad-sequence` (an unusable `Run:` line),
 `service-error` (a failing tick, Linear failing three ticks in a row, a token or the Claude login
 expiring or rejected), `daily` (the digest hour) and `host-pressure` (`/tmp` above
 `tmp_max_pct`, memory available below `min_available_mem_gb`, or a new OOM kill; once per
@@ -44,7 +45,7 @@ emit nothing.
 
 cardinal's key runs only `flocc-cardinal-gate` on the executor, and only from cardinal's address.
 The gate splits the request without a shell and allows `events`, `ack`, `status`, `run-summary`,
-`fix`, `hold`, `release`, `cleanup`, `cleanup --now`, `digest-data`, `host`, `stop-tests` and
+`resume` (and `fix`, an alias of `resume` for one release), `hold`, `release`, `cleanup`, `cleanup --now`, `digest-data`, `host`, `stop-tests` and
 `shell`, with every issue key matching `^[A-Z]+-[0-9]+$`. Its `release` is
 `release --hold-only`: it lifts a hold and nothing else, and is refused for a blocked, timed-out
 or done run. Its `host` runs `flocc host-report`.

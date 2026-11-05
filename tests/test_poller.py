@@ -250,7 +250,14 @@ def test_a_fresh_claim_gets_its_own_review_fix_round(rt):
 
 
 def test_a_fresh_claim_forgets_the_last_run_s_rebase_and_base_hold(rt):
-    kept_keys = ("rebase", "rebase_tried", "base_held", "base_released")
+    kept_keys = (
+        "rebase",
+        "rebase_tried",
+        "base_held",
+        "base_released",
+        "cardinal_fix",
+        "cardinal_resume",
+    )
     for kept in kept_keys:
         ledger.meta_set(rt.con, f"{kept}:NF-9", "1")
     rt.linear.ready = [issue()]

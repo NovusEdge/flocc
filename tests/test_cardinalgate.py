@@ -35,10 +35,11 @@ def test_the_allowed_lines(line, argv):
     assert argv_for(line) == argv
 
 
-def test_a_note_with_shell_text_stays_one_argument():
+@pytest.mark.parametrize("verb", ["resume", "fix"])
+def test_a_note_with_shell_text_stays_one_argument(verb):
     note = "fix $(rm -rf ~); it's `x`\n-- and --config=/etc/x"
     quoted = "'" + note.replace("'", "'\\''") + "'"
-    assert argv_for(f"fix NF-3 --note {quoted}") == ["fix", "NF-3", f"--note={note}"]
+    assert argv_for(f"{verb} NF-3 --note {quoted}") == ["resume", "NF-3", f"--note={note}"]
 
 
 @pytest.mark.parametrize(
@@ -70,6 +71,10 @@ def test_a_note_with_shell_text_stays_one_argument():
         "ack '1\n'",
         "fix NF-1",
         "fix NF-1 --note ''",
+        "resume NF-1",
+        "resume NF-1 --note ''",
+        "resume nf-1 --note x",
+        "resume NF-1 --note x --force",
         "hold NF-1 --why x",
         "digest-data --done -1",
         "events 'unbalanced",
@@ -86,7 +91,7 @@ def test_anything_else_is_refused(line):
 
 def test_a_note_over_the_limit_is_refused():
     with pytest.raises(Refused, match="note"):
-        argv_for("fix NF-1 --note " + "x" * 2001)
+        argv_for("resume NF-1 --note " + "x" * 2001)
 
 
 def test_a_shell_command_over_the_limit_is_refused():

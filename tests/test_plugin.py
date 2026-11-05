@@ -106,7 +106,7 @@ def test_no_prompt_asks_for_the_owner_heading():
 
     texts = [
         context._COMMANDS,
-        control._fix_prompt(make("NF-1", state="blocked"), "note"),
+        control._resume_prompt(None, make("NF-1", state="blocked"), "idle", "note"),
         guard.KEEP_MOVING,
         guard.NO_APPROVER,
         cli.STOP_REASON,

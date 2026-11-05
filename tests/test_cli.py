@@ -228,6 +228,12 @@ def test_done_elsewhere_needs_a_summary(tmp_path, monkeypatch, capsys):
     assert main(["review-done"]) == 2
 
 
+def test_resume_replaces_fix():
+    from flocc.cli import COMMANDS
+
+    assert "resume" in COMMANDS and "fix" not in COMMANDS
+
+
 def test_done_records_each_question_for_the_owner(tmp_path, monkeypatch):
     session_env(monkeypatch, tmp_path, "impl")
     args = ["done", "--summary", "Did half.", "--needs-owner", "Which currency?"]

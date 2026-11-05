@@ -422,28 +422,27 @@ def cmd_release(args) -> int:
     return 0
 
 
-def cmd_fix(args) -> int:
-    from flocc.control import Refused, start_fix
+def cmd_resume(args) -> int:
+    from flocc.control import Refused, resume
+    from flocc.sequence import ARCHETYPE
     from flocc.supervisor import LaunchError
     from flocc.tick import build_runtime, tick_lock
 
     cfg, path = _config(args)
     with tick_lock(cfg.tick_lock) as held:
         if not held:
-            print("fix: a tick is running; try again in a moment", file=sys.stderr)
+            print("resume: a tick is running; try again in a moment", file=sys.stderr)
             return 1
         rt = build_runtime(cfg, path)
         try:
-            claim = start_fix(rt, args.key, args.note)
+            claim = resume(rt, args.key, args.note)
         except Refused as exc:
-            print(f"fix: {exc}", file=sys.stderr)
+            print(f"resume: {exc}", file=sys.stderr)
             return 1
         except (LaunchError, subprocess.SubprocessError, OSError) as exc:
-            print(f"fix: the fixer did not start: {exc}", file=sys.stderr)
+            print(f"resume: the session did not start: {exc}", file=sys.stderr)
             return 1
-    print(
-        f"started a fixer on {args.key}, fix round {claim.fix_attempts} of {cfg.check_fix_rounds}"
-    )
+    print(f"resumed the {ARCHETYPE[claim.phase]} on {args.key}")
     return 0
 
 
@@ -948,7 +947,7 @@ COMMANDS = {
     "events": cmd_events,
     "ack": cmd_ack,
     "hold": cmd_hold,
-    "fix": cmd_fix,
+    "resume": cmd_resume,
     "run-summary": cmd_run_summary,
     "digest-data": cmd_digest_data,
     "cleanup": cmd_cleanup,
@@ -1027,9 +1026,9 @@ def build_parser() -> argparse.ArgumentParser:
     hold = add("hold", "Start nothing for an issue until flocc release lifts the hold")
     hold.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     hold.add_argument("--reason", default="", help="why, for flocc status")
-    fix = add("fix", "Start one fixer with a note on a blocked or timed-out run, within the cap")
-    fix.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
-    fix.add_argument("--note", required=True, help="what the fixer should fix")
+    res = add("resume", "Restart a blocked or timed-out run once, with a note (cardinal's)")
+    res.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    res.add_argument("--note", required=True, help="the answer, or what the next attempt does")
     rs = add("run-summary", "Print a run's summary, why it stopped and a log tail, at a fixed size")
     rs.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     dd = add("digest-data", "Print what the daily digest covers; --done N clears it once sent")
