@@ -1658,8 +1658,8 @@ def test_nothing_to_do_after_a_check_round_still_publishes(rt):
     comment_fix(rt)
     ledger.update_claim(rt.con, "NF-1", fix_attempts=1)
     published = []
-    rt.publish_fn = lambda *a, **kw: published.append(kw) or PublishResult(
-        "opened", url="https://pr/1", existing=True
+    rt.publish_fn = lambda *a, **kw: (
+        published.append(kw) or PublishResult("opened", url="https://pr/1", existing=True)
     )
     done(rt, "Nothing.", outcome="nothing")
     supervise(rt, current(rt))
