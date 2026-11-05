@@ -75,6 +75,7 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         """ALTER TABLE claims ADD COLUMN sequence TEXT NOT NULL DEFAULT '["executor", "reviewer"]'""",
     ),
     ("ALTER TABLE events ADD COLUMN prints INTEGER NOT NULL DEFAULT 0",),
+    ("ALTER TABLE events ADD COLUMN cause TEXT", "ALTER TABLE events ADD COLUMN type TEXT"),
 )
 _JSON_FIELDS = ("depends_on", "sequence")
 LIVE_STATES = ("running", "blocked")

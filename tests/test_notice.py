@@ -66,3 +66,29 @@ def test_a_notice_without_an_event_writes_none(tmp_path):
     con = ledger.connect(tmp_path / "l.sqlite")
     Notifier(con, FakeLinear(), lambda: 5.0).send(Notice("NF-1:prepare", "Failed."), ISSUE)
     assert events.unacked(con) == []
+
+
+def test_a_stop_notice_emits_its_cause_and_type_and_keeps_the_detail(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    Notifier(con, FakeLinear(), lambda: 5.0).send(
+        Notice(
+            "NF-1:publish-failed",
+            "Publishing failed 3 times in a row",
+            issue_key="NF-1",
+            event="ended",
+            stop_type="transient",
+        ),
+        ISSUE,
+    )
+    [e] = events.unacked(con)
+    assert (e.cause, e.stop_type) == ("publish-failed", "transient")
+    assert e.detail == "publish-failed: Publishing failed 3 times in a row"
+
+
+def test_a_notice_without_a_stop_type_emits_no_cause(tmp_path):
+    con = ledger.connect(tmp_path / "l.sqlite")
+    Notifier(con, FakeLinear(), lambda: 5.0).send(
+        Notice("NF-1:supervisor-error", "boom", issue_key="NF-1", event="service-error"), ISSUE
+    )
+    [e] = events.unacked(con)
+    assert (e.cause, e.stop_type) == (None, None)

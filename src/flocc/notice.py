@@ -16,6 +16,9 @@ class Notice:
     event: str = ""
     # The event's detail when cause and summary are not what cardinal needs, e.g. a count.
     detail: str = ""
+    # The stop's causes.TYPES entry; set by supervisor._block only, which also makes the cause's
+    # last segment the event's cause.
+    stop_type: str | None = None
 
     def text(self) -> str:
         return f"{self.summary}\nAction: {self.action}" if self.action else self.summary
@@ -44,4 +47,6 @@ class Notifier:
                 self.now(),
                 issue_key=notice.issue_key,
                 detail=notice.detail or f"{cause}: {notice.summary}",
+                cause=cause if notice.stop_type else None,
+                stop_type=notice.stop_type,
             )

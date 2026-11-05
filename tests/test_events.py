@@ -192,3 +192,17 @@ def test_events_without_follow_prints_and_counts_nothing(tmp_path, capsys):
     assert main(["--config", str(path), "events"]) == 0
     assert ids(capsys.readouterr().out) == [n]
     assert events.unacked(con)[0].prints == 0
+
+
+def test_a_stop_event_carries_its_cause_and_type_next_to_the_kind(con):
+    events.emit(
+        con, "ended", 1.0, issue_key="NF-1", detail="crash: x", cause="crash", stop_type="agent"
+    )
+    events.emit(con, "daily", 2.0, detail="2026-11-06")
+    stop, daily = events.unacked(con)
+    assert (stop.cause, stop.stop_type, stop.detail) == ("crash", "agent", "crash: x")
+    assert (daily.cause, daily.stop_type) == (None, None)
+    rows = json.loads(events.line([stop, daily], 3.0))["events"]
+    assert list(rows[0])[:4] == ["id", "kind", "cause", "type"]
+    assert (rows[0]["cause"], rows[0]["type"]) == ("crash", "agent")
+    assert (rows[1]["cause"], rows[1]["type"]) == (None, None)
