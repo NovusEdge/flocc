@@ -171,6 +171,18 @@ def test_resume_is_refused_while_the_host_is_under_pressure(rt, tmp_path):
     assert rt.sessions.started == []
 
 
+@pytest.mark.parametrize("old", [None, "The check failed with:\n\nFAILED tests/test_a.py::test_x"])
+def test_a_failed_fix_launch_restores_the_fix_context(rt, tmp_path, old):
+    blocked(rt, tmp_path, cause="check-failed", phase="fix", fix_attempts=1)
+    context = state_dir(rt.cfg, "NF-1") / FIX_CONTEXT
+    if old is not None:
+        context.write_text(old)
+    rt.cfg.agent_gh_token_file.unlink()
+    with pytest.raises(LaunchError):
+        resume(rt, "NF-1", "note")
+    assert (context.read_text() if context.exists() else None) == old
+
+
 def test_each_resume_is_logged(rt, tmp_path):
     blocked(rt, tmp_path, cause="needs-owner")
     resume(rt, "NF-1", "answer")
