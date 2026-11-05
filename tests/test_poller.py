@@ -586,6 +586,7 @@ def test_a_new_issue_starts_in_the_tick_that_finds_another_check_running(rt):
     d.mkdir(parents=True, exist_ok=True)
     (d / "done.json").write_text(json.dumps({"summary": "ok"}))
     rt.publish_fn = lambda c, t, s, **kw: PublishResult("check_running")
+    rt.git_head = lambda p: "sha-impl"
     rt.linear.ready = [issue(desc=PLAIN)]
     supervise(rt, claim)
     poll(rt)

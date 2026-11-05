@@ -159,10 +159,11 @@ def _block(
     ledger.update_claim(rt.con, key, state="blocked")
 
 
-def _end_done(rt, claim: Claim, *, emit: bool = True, **values) -> None:
+def _end_done(rt, claim: Claim, *, emit: bool = True, detail: str | None = None, **values) -> None:
     if emit:
-        url = _pr_url(rt, claim)
-        detail = f"done: PR {url}" if url != "unknown" else "done, no PR"
+        if detail is None:
+            url = _pr_url(rt, claim)
+            detail = f"done: PR {url}" if url != "unknown" else "done, no PR"
         # Before the claim update: a tick that dies between the two finishes the claim again on
         # the next tick, and a duplicate event is acked away, where a lost one is never seen.
         events.emit(
@@ -462,6 +463,10 @@ def _finish_phase(
     if questions and not review_fix and not rebasing:
         _ask_owner(rt, claim, list(questions))
         return
+    if outcome == "nothing" and claim.phase in ("test", "impl"):
+        _comment_or_digest(rt, claim, f"Nothing to do: {summary}")
+        _end_done(rt, claim, detail=f"done, nothing to do: {summary}")
+        return
     if claim.phase == "test":
         head = rt.git_head(claim)
         if head == claim.base_sha:
@@ -485,6 +490,21 @@ def _finish_phase(
         # Kept apart from later check-fix summaries, which would overwrite it.
         items = f"Needs the owner:\n{_owner_list(list(questions))}\n"
         (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(items)
+    # gh refuses a PR for a branch with nothing past its base, which would read as a publish
+    # failure. Skipped while a check runs: done.json stays and git_head fetches the branch.
+    if (
+        claim.phase == "impl"
+        and not ledger.meta_get(rt.con, f"{CHECK_RUNNING}:{key}")
+        and rt.git_head(claim) == (claim.tester_sha or claim.base_sha)
+    ):
+        _block(
+            rt,
+            claim,
+            "no-changes",
+            f"The {ARCHETYPE['impl']} finished with no commits.",
+            "Comment what it should do and move the issue back to Todo, or close the issue",
+        )
+        return
     issue = rt.linear.issue(key)
     title = pr_title(
         key, issue.title, issue.labels, branch_subjects(claim, rt.cfg.repos[claim.repo])

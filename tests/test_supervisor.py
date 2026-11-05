@@ -33,7 +33,7 @@ def rt(tmp_cfg, tmp_path):
         claude_exe="/opt/claude",
         config_path=tmp_path / "c.toml",
         publish_fn=lambda claim, title, summary, **kw: PublishResult("opened", url="https://pr/1"),
-        git_head=lambda path: "sha-tests",
+        git_head=lambda path: "sha-impl",
         review_diff=lambda claim: "diff --git a/x b/x",
         comment_pr=lambda claim, url, body: pr_comments.append((url, body)),
     )
@@ -156,6 +156,7 @@ def test_a_done_file_from_before_the_phase_started_is_ignored(rt, tmp_path):
 
 def test_tester_done_starts_implementer(rt):
     add(rt)
+    rt.git_head = lambda claim: "sha-tests"
     rt.sessions.alive_names.add("NF-1-test")
     done(rt)
     supervise(rt, current(rt))
@@ -1038,6 +1039,52 @@ def test_a_review_fixer_s_questions_do_not_block(rt):
     assert current(rt).state == "running" and current(rt).phase == "review"
     items = (state_dir(rt.cfg, "NF-1") / "owner-items.md").read_text()
     assert items == "Needs the owner:\n1. run the migration by hand.\n"
+
+
+@pytest.mark.parametrize("phase, alive", [("impl", "NF-1"), ("test", "NF-1-test")])
+def test_nothing_to_do_ends_done_without_a_pr(rt, phase, alive):
+    add(rt, phase=phase)
+    rt.sessions.alive_names.add(alive)
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
+    done(rt, "Already fixed by NF-9.", outcome="nothing")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and not published
+    assert rt.linear.comments == ["Nothing to do: Already fixed by NF-9."]
+    [e] = events.unacked(rt.con)
+    assert (e.kind, e.detail) == ("ended", "done, nothing to do: Already fixed by NF-9.")
+
+
+def test_an_executor_with_no_commits_blocks_as_no_changes(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    rt.git_head = lambda claim: "sha-tests"
+    rt.sessions.alive_names.add("NF-1")
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(a) or PublishResult("opened", url="u")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked" and not published
+    assert rt.notifier.sent[0].cause == "NF-1:no-changes"
+
+
+def test_an_executor_on_a_branch_with_earlier_commits_still_publishes(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    rt.git_head = lambda claim: "sha-earlier-impl"
+    rt.sessions.alive_names.add("NF-1")
+    done(rt, "Nothing new; the earlier run finished it.")
+    supervise(rt, current(rt))
+    assert current(rt).state != "blocked"
+
+
+def test_a_pending_check_does_not_fetch_the_branch_again(rt):
+    add(rt, phase="impl")
+    ledger.meta_set(rt.con, "check_running:NF-1", "1")
+    heads = []
+    rt.git_head = lambda claim: heads.append(claim) or "sha-tests"
+    rt.publish_fn = lambda *a, **kw: PublishResult("check_running")
+    done(rt, "Implemented.")
+    supervise(rt, current(rt))
+    assert heads == []
 
 
 def test_without_a_reviewer_the_run_ends_when_the_pr_opens(rt):
