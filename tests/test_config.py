@@ -69,6 +69,8 @@ def test_bad_effort_level_is_an_error(tmp_path):
         "weekly_max_pct = -1.0",
         "tmp_max_pct = 101.0",
         "min_available_mem_gb = -1.0",
+        "comment_fix_max = 11",
+        "comment_fix_max = -1",
     ],
 )
 def test_out_of_range_number_is_an_error(tmp_path, line):
@@ -76,6 +78,10 @@ def test_out_of_range_number_is_an_error(tmp_path, line):
     p.write_text(line + "\n" + EXAMPLE.read_text())
     with pytest.raises(ValueError, match=line.split(" =")[0]):
         load(p)
+
+
+def test_comment_fix_max_defaults_to_three():
+    assert load(EXAMPLE).comment_fix_max == 3
 
 
 def test_bad_steer_authors_is_an_error(tmp_path):

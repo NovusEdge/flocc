@@ -86,6 +86,9 @@ class Config:
     # Linear user or bot/app ids whose comments on a running issue are forwarded into the live
     # session like the owner's own, letting another agent steer. Empty forwards only the owner's.
     steer_authors: tuple[str, ...] = ()
+    # Fix sessions that steering comments on a done issue's open PR may start per claim. Past it
+    # the comments wait for a Todo rerun; 0 turns the scan off.
+    comment_fix_max: int = 3
     # Written by flocc setup and no longer read: cardinal writes the digest.
     digest_issue: str = ""
     # The two-user layout: the same on every host, created by flocc setup and not configurable.
@@ -189,4 +192,6 @@ def load(path: Path) -> Config:
             raise ValueError(f"{path}: {key} {getattr(cfg, key)} is not in 0-100")
     if cfg.min_available_mem_gb < 0:
         raise ValueError(f"{path}: min_available_mem_gb {cfg.min_available_mem_gb} must be >= 0")
+    if not 0 <= cfg.comment_fix_max <= 10:
+        raise ValueError(f"{path}: comment_fix_max {cfg.comment_fix_max} is not in 0-10")
     return cfg

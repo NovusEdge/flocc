@@ -46,6 +46,7 @@ NOT_SETTABLE = frozenset(
         "mcp_servers",
         "commit_trailer",
         "steer_authors",
+        "comment_fix_max",
         "digest_issue",
         "agent_user",
         "agent_home",

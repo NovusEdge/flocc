@@ -27,6 +27,9 @@ setup_timeout_s = 900
 # Linear user or bot/app ids (not names) whose comments on a running issue are typed into the
 # live session like the owner's, so another agent can steer. Empty forwards only the owner's.
 # steer_authors = ["your-hermes-linear-id"]
+# Fix sessions your comments, or a steer_authors id's, may start on a done issue whose PR is
+# still open, per run. They push to the PR with no new review; 0 turns them off.
+# comment_fix_max = 3
 # Most concurrent sessions this host runs.
 # session_cap = 2
 # Admission stops starting issues once sessions have used this share of each usage window.
