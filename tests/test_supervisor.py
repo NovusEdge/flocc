@@ -13,7 +13,16 @@ from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.publisher import BranchMoved, PublishResult
 from flocc.runtime import Runtime
-from flocc.supervisor import BLOCKED, RESUME_NOTE, LaunchError, supervise
+from flocc.supervisor import (
+    BLOCKED,
+    FAILURE_HASH,
+    PUBLISH_TRIES,
+    RESUME_NOTE,
+    LaunchError,
+    _block,
+    _digest,
+    supervise,
+)
 from flocc.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
@@ -79,15 +88,56 @@ def test_a_block_is_an_ended_event_and_writes_why(rt):
     assert rt.notifier.sent[0].event == "ended"
     text = (state_dir(rt.cfg, "NF-1") / BLOCKED).read_text()
     assert text.startswith("no-tests\n\n") and "without committing tests" in text
+    assert rt.notifier.sent[0].stop_type == "owner"
 
 
-def test_a_used_fix_cap_is_a_cap_event(rt):
+def test_a_used_fix_cap_is_a_cap_event_typed_owner(rt):
     add(rt, phase="fix", fix_attempts=rt.cfg.check_fix_rounds)
     rt.sessions.alive_names.add("NF-1")
     rt.publish_fn = lambda claim, title, summary, **kw: PublishResult("check_failed", "E boom")
     done(rt, "fixed")
     supervise(rt, current(rt))
-    assert current(rt).state == "blocked" and rt.notifier.sent[-1].event == "cap"
+    sent = rt.notifier.sent[-1]
+    assert current(rt).state == "blocked" and sent.event == "cap"
+    assert (sent.cause, sent.stop_type) == ("NF-1:check-cap", "owner")
+    assert (state_dir(rt.cfg, "NF-1") / BLOCKED).read_text().startswith("check-cap\n")
+
+
+def test_the_same_failure_at_the_last_round_is_check_cap(rt):
+    add(rt, phase="fix", fix_attempts=rt.cfg.check_fix_rounds)
+    rt.sessions.alive_names.add("NF-1")
+    (state_dir(rt.cfg, "NF-1") / FAILURE_HASH).write_text(_digest("E1 boom"))
+    rt.publish_fn = lambda claim, title, summary, **kw: PublishResult("check_failed", "E1 boom")
+    done(rt, "fixed")
+    supervise(rt, current(rt))
+    sent = rt.notifier.sent[-1]
+    assert "the same way twice" in sent.summary
+    assert (sent.cause, sent.stop_type) == ("NF-1:check-cap", "owner")
+
+
+def test_an_unknown_stop_cause_raises_before_the_kill(rt):
+    add(rt, phase="impl")
+    rt.sessions.alive_names.add("NF-1")
+    with pytest.raises(ValueError, match="unknown stop cause"):
+        _block(rt, current(rt), "crashed", "summary", "action")
+    assert rt.sessions.killed == [] and current(rt).state == "running"
+    assert rt.notifier.sent == [] and not (state_dir(rt.cfg, "NF-1") / BLOCKED).exists()
+
+
+def test_a_publish_failure_after_the_service_s_retry_is_the_owner_s(rt):
+    def rejected(c, t, s):
+        raise subprocess.CalledProcessError(128, ["git", "push"], stderr="fatal: denied")
+
+    rt.publish_fn = rejected
+    add(rt, phase="impl", tester_sha="sha-tests")
+    ledger.meta_set(rt.con, "transient_retry:NF-1", "1")
+    ledger.meta_set(rt.con, "publish_failures:NF-1", str(PUBLISH_TRIES - 1))
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).state == "blocked"
+    [esc] = rt.notifier.sent
+    assert (esc.cause, esc.stop_type) == ("NF-1:publish-failed", "owner")
+    assert "tries once more" not in esc.action
 
 
 def test_a_finished_sequence_is_an_ended_event_with_the_pr(rt):
@@ -115,6 +165,7 @@ def test_a_timed_out_run_is_an_ended_event_and_a_comment(rt):
     assert current(rt).state == "timed_out"
     [e] = events.unacked(rt.con)
     assert e.kind == "ended" and e.detail.startswith("timed out")
+    assert (e.cause, e.stop_type) == ("timed-out", "agent")
     assert "wall-clock limit" in rt.linear.comments[-1]
 
 
@@ -651,6 +702,10 @@ def test_the_same_check_failure_twice_blocks_without_another_round(rt):
     assert summary == (
         "The check failed the same way twice; the cause is likely outside the code:\nE1 boom"
     )
+    assert (rt.notifier.sent[-1].cause, rt.notifier.sent[-1].stop_type) == (
+        "NF-1:check-failed",
+        "agent",
+    )
 
 
 @pytest.mark.parametrize(
@@ -720,6 +775,7 @@ def test_publish_that_keeps_failing_blocks(rt):
     assert current(rt).state == "blocked"
     [esc] = rt.notifier.sent
     assert esc.cause == "NF-1:publish-failed" and "Authentication failed" in esc.summary
+    assert esc.stop_type == "transient" and "tries once more in 30 minutes" in esc.action
     assert "flocc release --keep-worktree NF-1" in esc.action
 
 

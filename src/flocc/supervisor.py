@@ -10,6 +10,7 @@ from pathlib import Path
 
 from flocc import agentfs, canary, events, host, ledger
 from flocc.agentblock import settings_from_json
+from flocc.causes import OWNER, type_of
 from flocc.context import agent_dir, phase_prompt, state_dir
 from flocc.idle import BACKGROUND
 from flocc.ledger import Claim
@@ -53,6 +54,8 @@ HOST_WAIT = "host_wait"
 # cardinal's resume note for a tester or executor; a fixer's rides in FIX_CONTEXT instead. Kept
 # so a restart of the session gets it again, dropped when the step finishes.
 RESUME_NOTE = "resume-note.md"
+# Meta key: the service has already retried this claim's publish-failed block once.
+TRANSIENT_RETRY = "transient_retry"
 # Service files a session reads, copied into its state directory at every start.
 _HANDOFF = (
     "context.md",
@@ -152,10 +155,22 @@ def launch(rt, claim: Claim, phase: str, extra: str = "", reset: tuple[str, ...]
 def _block(
     rt, claim: Claim, cause: str, summary: str, action: str, kind: str = "ended", detail: str = ""
 ) -> None:
-    rt.sessions.kill(session_name(claim.issue_key, claim.phase))
     key = claim.issue_key
+    # Before the kill: an unknown cause leaves the session and the claim as they were.
+    stop_type = type_of(cause)
+    if cause == "publish-failed" and ledger.meta_get(rt.con, f"{TRANSIENT_RETRY}:{key}"):
+        stop_type = OWNER
+    rt.sessions.kill(session_name(key, claim.phase))
     ledger.meta_set(rt.con, f"{CHECK_RUNNING}:{key}", "")
-    notice = Notice(f"{key}:{cause}", summary, action, issue_key=key, event=kind, detail=detail)
+    notice = Notice(
+        f"{key}:{cause}",
+        summary,
+        action,
+        issue_key=key,
+        event=kind,
+        detail=detail,
+        stop_type=stop_type,
+    )
     d = state_dir(rt.cfg, key)
     d.mkdir(parents=True, exist_ok=True)
     (d / BLOCKED).write_text(f"{cause}\n\n{notice.text()}\n")
@@ -199,12 +214,15 @@ def _publish_failed(rt, claim: Claim, exc: Exception) -> None:
     if fails < PUBLISH_TRIES:
         ledger.meta_set(rt.con, counter, str(fails))
         return
+    action = f"Fix the push or the gh token, then run flocc release --keep-worktree {key}"
+    if not ledger.meta_get(rt.con, f"{TRANSIENT_RETRY}:{key}"):
+        action = f"The service tries once more in 30 minutes. If that fails too: {action}"
     _block(
         rt,
         claim,
         "publish-failed",
         f"Publishing failed {fails} times in a row: {exc}\n{detail[-1500:]}".strip(),
-        f"Fix the push or the gh token, then run flocc release --keep-worktree {key}",
+        action,
     )
     ledger.meta_set(rt.con, counter, "0")
 
@@ -581,7 +599,7 @@ def _finish_phase(
         _block(
             rt,
             claim,
-            "check-failed",
+            "check-cap" if claim.fix_attempts >= rt.cfg.check_fix_rounds else "check-failed",
             "The check failed the same way twice; the cause is likely outside the code:\n"
             + result.detail,
             f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
@@ -622,7 +640,7 @@ def _finish_phase(
         _block(
             rt,
             claim,
-            "check-failed",
+            "check-cap",
             f"The check still fails after {rounds}:\n{result.detail}",
             f"Fix the branch or the issue, then run flocc release --keep-worktree {key}",
             kind="cap",
@@ -817,7 +835,14 @@ def _timed_out(rt, claim: Claim, name: str) -> None:
     _record_usage(rt, key, claim.phase, "end")
     # Before the state change: a duplicate is acked away, a lost event is never seen.
     events.emit(
-        rt.con, "ended", rt.now(), issue_key=key, repo=claim.repo, detail=f"timed out: {line}"
+        rt.con,
+        "ended",
+        rt.now(),
+        issue_key=key,
+        repo=claim.repo,
+        detail=f"timed out: {line}",
+        cause="timed-out",
+        stop_type=type_of("timed-out"),
     )
     ledger.update_claim(rt.con, key, state="timed_out")
     try:

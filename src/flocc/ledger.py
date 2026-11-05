@@ -75,6 +75,15 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         """ALTER TABLE claims ADD COLUMN sequence TEXT NOT NULL DEFAULT '["executor", "reviewer"]'""",
     ),
     ("ALTER TABLE events ADD COLUMN prints INTEGER NOT NULL DEFAULT 0",),
+    ("ALTER TABLE events ADD COLUMN cause TEXT", "ALTER TABLE events ADD COLUMN type TEXT"),
+    # The fix verb's cap key, folded into resume's: an empty resume value is one _start cleared.
+    (
+        """INSERT INTO meta (key, value)
+SELECT 'cardinal_resume:' || substr(key, 14), value FROM meta
+WHERE key GLOB 'cardinal_fix:*' AND value != ''
+ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value = ''""",
+        "DELETE FROM meta WHERE key GLOB 'cardinal_fix:*'",
+    ),
 )
 _JSON_FIELDS = ("depends_on", "sequence")
 LIVE_STATES = ("running", "blocked")

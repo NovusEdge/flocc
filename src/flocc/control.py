@@ -6,6 +6,7 @@ from pathlib import Path
 from flocc import host, ledger
 from flocc.admission import admit
 from flocc.agentblock import settings_from_json
+from flocc.causes import RESUMABLE
 from flocc.context import state_dir
 from flocc.ledger import Claim
 from flocc.linear import LinearError
@@ -14,15 +15,10 @@ from flocc.sessions import session_name
 from flocc.supervisor import BLOCKED, FIX_CONTEXT, QUESTIONS, RESUME_NOTE, launch
 from flocc.usage import latest_usage
 
-# One cardinal resume per claim; poller._start clears both keys with the claim's other per-run
-# meta. cardinal_fix is what the fix verb set before resume replaced it.
+# One cardinal resume per claim; poller._start clears it with the claim's other per-run meta.
 CARDINAL_RESUME = "cardinal_resume"
-_CAPS = (CARDINAL_RESUME, "cardinal_fix")
 RESUME_LOG = "resume_log"
 NOTE_CHARS = 2000
-# The stops a note can redirect. tests-touched guards the tester's work against the executor,
-# the publish, branch and rebase stops need the host or the owner, and no-tests needs criteria.
-RESUMABLE = frozenset({"needs-owner", "check-failed", "no-changes", "idle", "crash", "timed-out"})
 
 
 class Refused(Exception):
@@ -103,12 +99,12 @@ def resume(rt, key: str, note: str) -> Claim:
             f"{key} stopped with {cause or 'no recorded cause'}; that stop is the owner's"
         )
     cap = rt.cfg.check_fix_rounds
-    # The same-failure block and the cap block share the cause; only the rounds tell them apart.
+    # Blocks at the cap write check-cap now; one written before that still says check-failed.
     if cause == "check-failed" and claim.fix_attempts >= cap:
         raise Refused(
             f"{key} used {claim.fix_attempts} of {cap} fix rounds; that stop is the owner's"
         )
-    if any(ledger.meta_get(rt.con, f"{k}:{key}") for k in _CAPS):
+    if ledger.meta_get(rt.con, f"{CARDINAL_RESUME}:{key}"):
         raise Refused(f"cardinal already resumed this run of {key}")
     if key in ledger.issue_holds(rt.con):
         raise Refused(f"{key} is held; the owner's flocc release {key} lifts the hold")

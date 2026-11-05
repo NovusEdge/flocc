@@ -15,7 +15,12 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
   kept branch and in the step that stopped, with a note. After `needs-owner` the note answers the
   agent's questions. It is refused for `tests-touched`, `branch-moved`, `publish-failed`,
   `rebase-conflict`, `no-tests` and a check at its last fix round. The daily digest counts the
-  resumes and how many ended done. `fix` still works as an alias for one release.
+  resumes and how many ended done.
+- Every stop has a cause and a type. cardinal's events carry both as `cause` and `type`
+  (`agent`, `owner`, `transient` or `repo`; null for events that are not stops), and triage
+  decides from the type. A check that still fails at the last fix round blocks as `check-cap`. A
+  `publish-failed` block is retried once by the service 30 minutes later, check included; a
+  second failure is the owner's. The gate no longer accepts `fix`; use `resume`.
 - A rerun reads your comments: owner and steering comments posted after the previous run stopped
   go into the restarted session's `context.md` under "Comments since the last run", whether the
   issue went back to Todo by hand or through `flocc release`. Before, only comments posted during

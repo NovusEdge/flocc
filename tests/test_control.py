@@ -124,11 +124,10 @@ def test_a_second_resume_on_the_same_run_is_refused(rt, tmp_path):
         resume(rt, "NF-1", "second")
 
 
-def test_a_run_the_old_fix_verb_marked_is_still_capped(rt, tmp_path):
+def test_the_old_fix_key_no_longer_caps(rt, tmp_path):
     blocked(rt, tmp_path)
     ledger.meta_set(rt.con, "cardinal_fix:NF-1", "1")
-    with pytest.raises(Refused, match="already resumed"):
-        resume(rt, "NF-1", "note")
+    assert resume(rt, "NF-1", "note").state == "running"
 
 
 @pytest.mark.parametrize(

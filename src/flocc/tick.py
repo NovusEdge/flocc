@@ -19,6 +19,7 @@ from flocc.poller import (
     poll,
     reap_worktrees,
     restart_timed_out,
+    retry_transient,
 )
 from flocc.publisher import comment_on_pr, pr_view, publish, read_amended
 from flocc.runtime import Runtime
@@ -213,6 +214,7 @@ def tick(cfg: Config, config_path: Path) -> int:
         failed |= forward_comments(rt)
         # Before poll, which then picks the released issue up in this tick.
         restart_timed_out(rt)
+        retry_transient(rt)
         # Before poll, so the space it frees counts toward this tick's admission.
         reap_worktrees(rt)
         poll(rt)

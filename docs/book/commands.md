@@ -46,7 +46,7 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `attach <session>` | Attach read-only to an agent's tmux session, such as `ENG-12` or `ENG-12-review` |
 | `release <key> [--keep-worktree] [--accept-tests] [--hold-only]` | Clear a claim and kill its session, and lift a hold on the issue. The issue goes back to Todo. `--accept-tests` approves the tester's files as they stand on the branch and keeps the worktree. With no claim, it only lifts the hold. `--hold-only`, cardinal's release, lifts a hold and nothing else, and is refused for a blocked, timed-out or done run |
 | `hold <key> [--reason TEXT]` | Start nothing for the issue until `release` lifts the hold. A run in progress goes on |
-| `resume <key> --note TEXT` | Restart a blocked or timed-out run once, on its branch, with the note: the answer to a `needs-owner` stop, or direction after `check-failed` with rounds left, `no-changes`, `idle`, `crash` or a timeout. Refused for other stops |
+| `resume <key> --note TEXT` | Restart a blocked or timed-out run once, on its branch, with the note: the answer to a `needs-owner` stop, or direction after a stop typed `agent` (`check-failed` with rounds left, `no-changes`, `idle`, `crash` or a timeout). Refused for other stops |
 | `run-summary <key>` | The run's step, its last summary, why it stopped, a check excerpt and log lines, at most 6000 characters |
 | `digest-data [--done N]` | What the daily digest covers. `--done N` clears the digest lines through N once the digest is sent |
 | `cleanup [--now]` | Remove worktrees, state, scratchpads and finished pytest runs under `/tmp/pytest-of-flocc-agent` that no claim owns. A worktree with uncommitted changes, commits not on GitHub, or a change in the last 7 days stays and is listed. `--now`, cardinal's repair for a full `/tmp`, takes scratchpads idle 10 minutes and pytest runs of any age that no live process holds, and waits up to 60 seconds for a running tick |
@@ -63,7 +63,7 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `config get <key>` | Print one settable key's effective value |
 | `config set <key> <value>` | Write a top-level key of `config.toml`, such as `config set session_cap 3`. A key that is not settable, or a value outside its range, exits 2 with one line. The edited file must also load, or the original stays and the loader's error prints. The old file is kept as `config.toml.bak`. It applies from the next tick; a running tick keeps the config it loaded |
 | `config unset <key>` | Remove the key's line so its default applies |
-| `events [--follow] [--hello]` | Print unacknowledged events as JSON lines of at most 50. `--follow` keeps printing: a batch closes 2 minutes after its first event, and an unacknowledged event is printed again every 30 minutes, at most 3 times per connection, and on every new connection |
+| `events [--follow] [--hello]` | Print unacknowledged events as JSON lines of at most 50. A stopped run's event carries its `cause` and `type`; other events carry null. `--follow` keeps printing: a batch closes 2 minutes after its first event, and an unacknowledged event is printed again every 30 minutes, at most 3 times per connection, and on every new connection |
 | `ack <id>...` | Acknowledge events. Acking twice is harmless |
 | `tick` | Run one service tick by hand. It takes the same lock as the timer's ticks |
 | `run` | Run ticks in a loop |

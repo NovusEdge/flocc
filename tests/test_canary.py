@@ -68,3 +68,11 @@ def test_no_mark_or_a_torn_one_holds_nothing(tmp_path):
     assert canary.hold_reason(c, "web", "main", "abc", 1.0) is None
     ledger.meta_set(c, "main_broken:web", "{torn")
     assert canary.get_mark(c, "web") is None
+
+
+def test_a_base_broken_event_is_typed_repo(tmp_path):
+    c = con(tmp_path)
+    canary.mark(c, "web", "abc123def456", 100.0, "boom", check="just check")
+    [e] = events.unacked(c)
+    assert (e.kind, e.cause, e.stop_type) == ("base-broken", "base-broken", "repo")
+    assert e.detail == "`just check` fails at abc123def"

@@ -221,8 +221,19 @@ def test_triage_resumes_and_answers_with_the_resume_verb():
     text = (PLUGIN / "skills" / "triage" / "SKILL.md").read_text()
     assert f"{EXECUTOR} resume KEY --note" in text and f"{EXECUTOR} fix" not in text
     assert "`needs-owner`" in text and "acceptance criteria" in text
-    for owner_stop in ("tests-touched", "branch-moved", "publish-failed", "rebase-conflict"):
-        assert owner_stop in text
+
+
+def test_triage_decides_on_the_stop_type_and_on_the_kind_when_it_is_null():
+    text = " ".join((PLUGIN / "skills" / "triage" / "SKILL.md").read_text().split())
+    assert "`cause`, `type`" in text
+    for stop_type in ("agent", "owner", "transient", "repo"):
+        assert f"`type` `{stop_type}`" in text
+    assert "`type` null: decide by `kind`" in text
+    # The type replaces the prose list of causes.
+    owner_stops = ("tests-touched", "branch-moved", "publish-failed", "rebase-conflict", "no-tests")
+    for cause in owner_stops:
+        assert cause not in text
+    assert f"{EXECUTOR} amend-tests KEY" in text and "`tests-amended`" in text
 
 
 def test_managed_settings_allow_the_two_binaries_and_hook_every_bash_call():

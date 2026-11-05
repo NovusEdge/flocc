@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field, replace
 
@@ -11,6 +12,7 @@ from flocc.host import Reading
 from flocc.linear import BOT_PREFIX, Comment, Issue, LinearError
 from flocc.notice import Notifier
 from flocc.poller import (
+    TRANSIENT_RETRY_S,
     forward_comments,
     maybe_daily,
     poll,
@@ -18,10 +20,11 @@ from flocc.poller import (
     release_claim,
     repo_for,
     restart_timed_out,
+    retry_transient,
 )
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
-from flocc.supervisor import LaunchError, supervise
+from flocc.supervisor import BLOCKED, PUBLISH_TRIES, LaunchError, supervise
 from flocc.tick import tick, tick_lock
 from flocc.worktree import (
     BranchDiverged,
@@ -255,8 +258,8 @@ def test_a_fresh_claim_forgets_the_last_run_s_rebase_and_base_hold(rt):
         "rebase_tried",
         "base_held",
         "base_released",
-        "cardinal_fix",
         "cardinal_resume",
+        "transient_retry",
     )
     for kept in kept_keys:
         ledger.meta_set(rt.con, f"{kept}:NF-9", "1")
@@ -1163,6 +1166,85 @@ def test_a_blocked_claim_is_not_restarted(rt, monkeypatch):
     ledger.update_claim(rt.con, "NF-5", state="blocked")
     restart_timed_out(rt)
     assert ledger.get_claim(rt.con, "NF-5") is not None
+
+
+NOW = 100_000.0
+
+
+def claim_of(rt, key="NF-5"):
+    c = ledger.get_claim(rt.con, key)
+    assert c is not None
+    return c
+
+
+def publish_blocked(rt, key="NF-5", age=TRANSIENT_RETRY_S, cause="publish-failed", done=True):
+    rt.now = lambda: NOW
+    finished(rt, key, state="blocked")
+    ledger.update_claim(rt.con, key, phase="impl", started_at=NOW - 7200)
+    d = state_dir(rt.cfg, key)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / BLOCKED).write_text(f"{cause}\n\nPublishing failed 3 times in a row\n")
+    os.utime(d / BLOCKED, (NOW - age, NOW - age))
+    if done:
+        (d / "done.json").write_text(json.dumps({"summary": "Did it.", "at": NOW - 3600}))
+    rt.linear.state_types = lambda keys: {k: "started" for k in keys}
+    return d
+
+
+def test_a_publish_failure_is_retried_once_after_thirty_minutes(rt):
+    d = publish_blocked(rt)
+    retry_transient(rt)
+    c = claim_of(rt)
+    assert (c.state, c.phase, c.started_at, c.restarts) == ("running", "impl", NOW - 7200, 0)
+    assert ledger.meta_get(rt.con, "publish_failures:NF-5") == str(PUBLISH_TRIES - 1)
+    assert ledger.meta_get(rt.con, "transient_retry:NF-5") == "1"
+    assert not (d / BLOCKED).exists()
+    [(_, text)] = rt.linear.comments
+    assert "trying once more" in text
+    # Blocked again: no second retry.
+    ledger.update_claim(rt.con, "NF-5", state="blocked")
+    (d / BLOCKED).write_text("publish-failed\n\nagain\n")
+    os.utime(d / BLOCKED, (NOW - TRANSIENT_RETRY_S, NOW - TRANSIENT_RETRY_S))
+    retry_transient(rt)
+    assert claim_of(rt).state == "blocked"
+
+
+def test_the_retry_makes_one_more_try_then_the_stop_is_the_owner_s(rt):
+    publish_blocked(rt)
+    retry_transient(rt)
+
+    def rejected(claim, title, summary):
+        raise subprocess.CalledProcessError(128, ["git", "push"], stderr="fatal: denied")
+
+    rt.publish_fn = rejected
+    supervise(rt, claim_of(rt))
+    assert claim_of(rt).state == "blocked"
+    assert rt.notifier.sent[-1].stop_type == "owner"
+
+
+def test_a_publish_failure_is_not_retried_before_thirty_minutes(rt):
+    publish_blocked(rt, age=TRANSIENT_RETRY_S - 60)
+    retry_transient(rt)
+    assert claim_of(rt).state == "blocked"
+    assert not ledger.meta_get(rt.con, "transient_retry:NF-5") and rt.linear.comments == []
+
+
+@pytest.mark.parametrize("why", ["held", "parked", "unlabelled", "other-cause", "no-done"])
+def test_no_retry_for_a_held_unwanted_or_other_stop(rt, why):
+    publish_blocked(
+        rt,
+        cause="branch-moved" if why == "other-cause" else "publish-failed",
+        done=why != "no-done",
+    )
+    if why == "held":
+        ledger.add_hold(rt.con, "NF-5", "owner said wait", 1.0)
+    if why == "parked":
+        rt.linear.state_types = lambda keys: {k: "unstarted" for k in keys}
+    if why == "unlabelled":
+        rt.linear.issue = lambda key: issue(key, labels=("backend",))
+    retry_transient(rt)
+    assert claim_of(rt).state == "blocked"
+    assert not ledger.meta_get(rt.con, "transient_retry:NF-5")
 
 
 def test_reap_leaves_live_claims_alone(rt):

@@ -1,6 +1,6 @@
 import json
 
-from flocc import events, ledger
+from flocc import causes, events, ledger
 
 HOLD_S = 24 * 3600
 OUTPUT_CHARS = 1500
@@ -28,7 +28,15 @@ def mark(con, repo: str, sha: str, now: float, output: str, check: str | None = 
     ledger.meta_set(con, _key(repo), json.dumps(value))
     if ledger.meta_get(con, _event_key(repo)) != sha:
         what = f"`{check}`" if check else "./setup"
-        events.emit(con, "base-broken", now, repo=repo, detail=f"{what} fails at {sha[:9]}")
+        events.emit(
+            con,
+            "base-broken",
+            now,
+            repo=repo,
+            detail=f"{what} fails at {sha[:9]}",
+            cause="base-broken",
+            stop_type=causes.type_of("base-broken"),
+        )
         ledger.meta_set(con, _event_key(repo), sha)
 
 

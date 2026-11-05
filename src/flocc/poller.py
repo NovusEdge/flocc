@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from flocc import canary, events, host, ledger
+from flocc import agentfs, canary, events, host, ledger
 from flocc.admission import admit
 from flocc.agentblock import (
     BlockError,
@@ -14,13 +14,22 @@ from flocc.agentblock import (
     parse_settings,
     settings_to_json,
 )
-from flocc.context import state_dir, write_context
+from flocc.context import agent_dir, state_dir, write_context
+from flocc.control import stop_cause
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
 from flocc.sequence import SequenceError, parse_sequence
 from flocc.sessions import session_name
-from flocc.supervisor import BLOCKED, LAST_SUMMARY, QUESTIONS, RESUME_NOTE, launch
+from flocc.supervisor import (
+    BLOCKED,
+    LAST_SUMMARY,
+    PUBLISH_TRIES,
+    QUESTIONS,
+    RESUME_NOTE,
+    TRANSIENT_RETRY,
+    launch,
+)
 from flocc.usage import latest_usage
 from flocc.worktree import (
     BranchDiverged,
@@ -35,6 +44,7 @@ from flocc.worktree import (
 
 COMMENT_ONCE_S = 365 * 24 * 3600
 RERUN_COMMENTS_S = 7 * 24 * 3600
+TRANSIENT_RETRY_S = 30 * 60
 
 
 def repo_for(issue: Issue, cfg) -> str | None:
@@ -151,6 +161,45 @@ def restart_timed_out(rt) -> None:
         except LinearError as exc:
             print(f"restart: {key} not commented: {exc}", file=sys.stderr)
         release_claim(rt, claim, keep_worktree=True, to_todo=True)
+
+
+def retry_transient(rt) -> None:
+    """Sets a claim blocked on publish-failed running again, once, TRANSIENT_RETRY_S after the
+    block: the next tick finds its done.json and publishes again, check included."""
+    holds = ledger.issue_holds(rt.con)
+    for claim in ledger.live_claims(rt.con):
+        key = claim.issue_key
+        once = f"{TRANSIENT_RETRY}:{key}"
+        if claim.state != "blocked" or key in holds or ledger.meta_get(rt.con, once):
+            continue
+        if stop_cause(rt, claim) != "publish-failed":
+            continue
+        blocked = state_dir(rt.cfg, key) / BLOCKED
+        try:
+            if rt.now() - blocked.stat().st_mtime < TRANSIENT_RETRY_S:
+                continue
+            # Without the session's done.json the running claim would read as a dead session,
+            # and supervise would relaunch it.
+            if agentfs.read_text(agent_dir(rt.cfg, key), "done.json") is None:
+                continue
+            if not still_wanted(rt, key):
+                continue
+        except (OSError, LinearError, KeyError) as exc:
+            print(f"retry: {key} not checked: {exc}", file=sys.stderr)
+            continue
+        # Recorded first, like the timeout restart: a tick that dies below must not retry again.
+        ledger.meta_set(rt.con, once, "1")
+        # One try left, not PUBLISH_TRIES: each try runs the repo's full check again.
+        ledger.meta_set(rt.con, f"publish_failures:{key}", str(PUBLISH_TRIES - 1))
+        # The state alone: a new started_at would make the session's done.json read as stale.
+        ledger.update_claim(rt.con, key, state="running")
+        blocked.unlink(missing_ok=True)
+        try:
+            rt.linear.comment(
+                claim.issue_id, "publishing failed earlier; trying once more, check included"
+            )
+        except LinearError as exc:
+            print(f"retry: {key} not commented: {exc}", file=sys.stderr)
 
 
 def reap_worktrees(rt) -> None:
@@ -388,9 +437,9 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         "rebase_tried",
         "base_held",
         "base_released",
-        "cardinal_fix",
         "cardinal_resume",
         "host_wait",
+        TRANSIENT_RETRY,
     ):
         ledger.meta_set(rt.con, f"{kept}:{issue.key}", "")
     for round_ in (1, 2):

@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from flocc import ledger
+from flocc import events, ledger
 from flocc.ledger import Claim
 
 
@@ -123,6 +123,8 @@ def test_a_fresh_ledger_is_at_the_latest_version(con):
         "printed_at",
         "acked_at",
         "prints",
+        "cause",
+        "type",
     } == (_columns(con, "events"))
     assert {"issue_key", "reason", "at"} == _columns(con, "holds")
 
@@ -143,6 +145,54 @@ def test_a_second_connection_finds_the_ledger_migrated(tmp_path):
     first, second = ledger.connect(path), ledger.connect(path)
     assert second.execute("PRAGMA user_version").fetchone()[0] == len(ledger._MIGRATIONS)
     assert ledger.get_claim(first, "NF-9") is not None
+
+
+def _ledger_at(path, version):
+    raw = sqlite3.connect(path)
+    raw.executescript(ledger._SCHEMA)
+    for statements in ledger._MIGRATIONS[:version]:
+        for sql in statements:
+            raw.execute(sql)
+    raw.execute(f"PRAGMA user_version = {version}")
+    raw.commit()
+    return raw
+
+
+def test_events_written_before_the_stop_columns_read_null(tmp_path):
+    path = tmp_path / "old.sqlite"
+    raw = _ledger_at(path, 5)
+    raw.execute(
+        "INSERT INTO events (kind, issue_key, detail, at) VALUES ('ended', 'NF-1', 'crash: x', 1.0)"
+    )
+    raw.commit()
+    raw.close()
+    con = ledger.connect(path)
+    [e] = events.unacked(con)
+    assert (e.kind, e.detail, e.cause, e.stop_type) == ("ended", "crash: x", None, None)
+
+
+def test_cardinal_fix_marks_become_resume_marks(tmp_path):
+    path = tmp_path / "old.sqlite"
+    raw = _ledger_at(path, 6)
+    raw.executemany(
+        "INSERT INTO meta (key, value) VALUES (?, ?)",
+        [
+            ("cardinal_fix:NF-1", "1"),
+            ("cardinal_fix:NF-2", ""),
+            ("cardinal_fix:NF-3", "1"),
+            ("cardinal_resume:NF-3", ""),
+            ("cardinal_resume:NF-4", "1"),
+            ("cardinal_fixed:NF-5", "x"),
+        ],
+    )
+    raw.commit()
+    raw.close()
+    con = ledger.connect(path)
+    keys = ("NF-1", "NF-2", "NF-3", "NF-4")
+    got = {k: ledger.meta_get(con, f"cardinal_resume:{k}") for k in keys}
+    assert got == {"NF-1": "1", "NF-2": None, "NF-3": "1", "NF-4": "1"}
+    left = con.execute("SELECT key FROM meta WHERE key GLOB 'cardinal_fix:*'").fetchall()
+    assert left == [] and ledger.meta_get(con, "cardinal_fixed:NF-5") == "x"
 
 
 def test_a_claim_keeps_its_sequence(con):

@@ -25,7 +25,7 @@ DETAIL_CHARS = 300
 # Bounds one monitor notification, which cardinal reads whole.
 PER_LINE = 50
 KEEP_ACKED_S = 30 * 86400
-_COLUMNS = "id, kind, issue_key, repo, detail, at, printed_at, acked_at, prints"
+_COLUMNS = "id, kind, issue_key, repo, detail, at, printed_at, acked_at, prints, cause, type"
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,9 @@ class Event:
     printed_at: float | None
     acked_at: float | None
     prints: int
+    # A stop's cause and its causes.TYPES entry; None for other events and older rows.
+    cause: str | None = None
+    stop_type: str | None = None
 
 
 def emit(
@@ -49,13 +52,16 @@ def emit(
     issue_key: str | None = None,
     repo: str | None = None,
     detail: str = "",
+    cause: str | None = None,
+    stop_type: str | None = None,
 ) -> int:
     if kind not in KINDS:
         raise ValueError(f"unknown event kind {kind!r}")
     with ledger.transaction(con):
         cur = con.execute(
-            "INSERT INTO events (kind, issue_key, repo, detail, at) VALUES (?, ?, ?, ?, ?)",
-            (kind, issue_key, repo, detail[:DETAIL_CHARS], now),
+            "INSERT INTO events (kind, issue_key, repo, detail, at, cause, type)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (kind, issue_key, repo, detail[:DETAIL_CHARS], now, cause, stop_type),
         )
     return int(cur.lastrowid or 0)
 
@@ -91,6 +97,8 @@ def line(batch, now: float) -> str:
                 {
                     "id": e.id,
                     "kind": e.kind,
+                    "cause": e.cause,
+                    "type": e.stop_type,
                     "issue": e.issue_key,
                     "repo": e.repo,
                     "detail": e.detail,
