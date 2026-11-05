@@ -159,9 +159,9 @@ def test_missing_labels_counts_team_and_workspace_labels():
             "teams": {"nodes": [{"id": "t1"}]},
             "issueLabels": {
                 "nodes": [
-                    {"name": "claude", "team": {"key": "NF"}},
-                    {"name": "escalation", "team": None},
-                    {"name": "backend", "team": {"key": "ORG"}},
+                    {"id": "l1", "name": "claude", "team": {"key": "NF"}},
+                    {"id": "l2", "name": "escalation", "team": None},
+                    {"id": "l3", "name": "backend", "team": {"key": "ORG"}},
                 ]
             },
         }
@@ -174,8 +174,8 @@ def test_missing_labels_counts_team_and_workspace_labels():
 def test_missing_labels_queries_at_most_100_names_per_call():
     team = {"nodes": [{"id": "t1"}]}
     post = FakePost(
-        {"teams": team, "issueLabels": {"nodes": [{"name": "r0", "team": None}]}},
-        {"teams": team, "issueLabels": {"nodes": [{"name": "r100", "team": None}]}},
+        {"teams": team, "issueLabels": {"nodes": [{"id": "x", "name": "r0", "team": None}]}},
+        {"teams": team, "issueLabels": {"nodes": [{"id": "x", "name": "r100", "team": None}]}},
     )
     names = [f"r{i}" for i in range(101)]
     missing = Linear(post).missing_labels("NF", names)
@@ -187,6 +187,116 @@ def test_missing_labels_on_an_unknown_team_raises():
     post = FakePost({"teams": {"nodes": []}, "issueLabels": {"nodes": []}})
     with pytest.raises(LinearError, match="team NF"):
         Linear(post).missing_labels("NF", ["claude"])
+
+
+def detail_node(**over):
+    node = {
+        "id": "u1",
+        "identifier": "NF-1",
+        "title": "Fix rounding",
+        "description": None,
+        "url": "https://l/NF-1",
+        "state": {"name": "In Progress"},
+        "team": {"id": "t1"},
+        "labels": {"nodes": [{"name": "claude"}]},
+        "comments": {
+            "nodes": [
+                {"body": "b", "createdAt": "2026-11-02T10:00:00Z", "user": None, "botActor": None},
+                {"body": "a", "createdAt": "2026-11-01T10:00:00Z", "user": {"name": "Owner"}},
+            ]
+        },
+        "relations": {
+            "nodes": [
+                {
+                    "type": "blocks",
+                    "relatedIssue": {"identifier": "NF-2", "title": "T2", "state": {"name": "Todo"}},
+                }
+            ]
+        },
+        "inverseRelations": {
+            "nodes": [
+                {"type": "related", "issue": {"identifier": "NF-3", "title": "T3", "state": {"name": "Done"}}}
+            ]
+        },
+    }
+    return {**node, **over}
+
+
+def test_issue_detail_reads_comments_oldest_first_and_both_relation_directions():
+    d = Linear(FakePost({"issue": detail_node()})).issue_detail("NF-1")
+    assert (d.key, d.description, d.state, d.team_id, d.labels) == (
+        "NF-1", "", "In Progress", "t1", ("claude",)
+    )
+    assert d.comments == (
+        ("2026-11-01T10:00:00Z", "Owner", "a"),
+        ("2026-11-02T10:00:00Z", "unknown", "b"),
+    )
+    assert d.relations == (
+        ("blocks", "NF-2", "Todo", "T2"),
+        ("related (from)", "NF-3", "Done", "T3"),
+    )
+
+
+def test_search_filters_the_team_s_open_issues_by_title_or_description():
+    post = FakePost(
+        {"issues": {"nodes": [{"identifier": "NF-5", "title": "Flaky export", "state": {"name": "Backlog"}}]}}
+    )
+    assert Linear(post).search("NF", "export") == [("NF-5", "Backlog", "Flaky export")]
+    assert post.calls[0][1] == {"team": "NF", "text": "export"}
+    assert "completed" in post.calls[0][0] and "canceled" in post.calls[0][0]
+
+
+def test_label_ids_keeps_team_and_workspace_labels_only():
+    post = FakePost(
+        {
+            "teams": {"nodes": [{"id": "t1"}]},
+            "issueLabels": {
+                "nodes": [
+                    {"id": "l1", "name": "cardinal-draft", "team": {"key": "NF"}},
+                    {"id": "l2", "name": "other", "team": {"key": "ORG"}},
+                ]
+            },
+        }
+    )
+    assert Linear(post).label_ids("NF", ["cardinal-draft", "other"]) == {"cardinal-draft": "l1"}
+
+
+def test_state_id_takes_the_first_state_of_the_type():
+    post = FakePost(
+        {"team": {"states": {"nodes": [{"id": "b2", "position": 2.0}, {"id": "b1", "position": 1.0}]}}}
+    )
+    assert Linear(post).state_id("t1", "backlog") == "b1"
+    assert post.calls[0][1] == {"team": "t1", "type": "backlog"}
+
+
+def test_state_id_without_such_a_state_raises():
+    post = FakePost({"team": {"states": {"nodes": []}}})
+    with pytest.raises(LinearError, match="no backlog state"):
+        Linear(post).state_id("t1", "backlog")
+
+
+def test_create_issue_sends_the_labels_and_state_and_returns_the_new_key():
+    post = FakePost(
+        {"issueCreate": {"success": True, "issue": {"id": "u9", "identifier": "NF-9", "url": "https://l/NF-9"}}}
+    )
+    got = Linear(post).create_issue("t1", "Title", "Body", ["l1"], "b1")
+    assert got == ("u9", "NF-9", "https://l/NF-9")
+    assert post.calls[0][1] == {
+        "team": "t1", "title": "Title", "description": "Body", "labels": ["l1"], "state": "b1"
+    }
+
+
+def test_create_issue_that_linear_refuses_raises():
+    post = FakePost({"issueCreate": {"success": False, "issue": None}})
+    with pytest.raises(LinearError, match="not created"):
+        Linear(post).create_issue("t1", "Title", "Body", ["l1"], "b1")
+
+
+def test_relate_links_the_two_issues_as_related():
+    post = FakePost({"issueRelationCreate": {"success": True}})
+    Linear(post).relate("u9", "u1")
+    assert post.calls[0][1] == {"id": "u9", "related": "u1"}
+    assert "type: related" in post.calls[0][0]
 
 
 def test_http_transport_raises_on_graphql_errors(monkeypatch):
