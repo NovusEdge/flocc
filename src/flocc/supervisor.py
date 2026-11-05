@@ -56,6 +56,13 @@ HOST_WAIT = "host_wait"
 RESUME_NOTE = "resume-note.md"
 # Meta key: the service has already retried this claim's publish-failed block once.
 TRANSIENT_RETRY = "transient_retry"
+# Set while a fix session works on steering comments posted on a done claim's open PR;
+# COMMENT_FIXES counts them per claim against comment_fix_max.
+COMMENT_FIX = "comment_fix"
+COMMENT_FIXES = "comment_fixes"
+# Handed to the comment fix's own session only, so its flocc done --nothing-to-do is accepted. A
+# check round after it must make the check pass.
+COMMENT_FIX_FILE = "comment-fix"
 # Service files a session reads, copied into its state directory at every start.
 _HANDOFF = (
     "context.md",
@@ -65,6 +72,7 @@ _HANDOFF = (
     "pr.diff",
     FIX_CONTEXT,
     CHECK_OUTPUT,
+    COMMENT_FIX_FILE,
 )
 # A previous session's files that the new one would be taken to have written.
 _CLEAR = ("done.json", "status.json", "idle", BACKGROUND, "review.md")
@@ -352,6 +360,20 @@ def _post_owner_items(rt, claim: Claim) -> None:
         _comment_or_digest(rt, claim, owner)
 
 
+def _clear_comment_fix(rt, key: str) -> None:
+    ledger.meta_set(rt.con, f"{COMMENT_FIX}:{key}", "")
+    (state_dir(rt.cfg, key) / COMMENT_FIX_FILE).unlink(missing_ok=True)
+
+
+def _end_comment_fix(rt, claim: Claim, line: str, detail: str) -> None:
+    key = claim.issue_key
+    if int(ledger.meta_get(rt.con, f"{COMMENT_FIXES}:{key}") or 0) >= rt.cfg.comment_fix_max:
+        line += "\n\nThat was this run's last comment fix; further comments need a Todo rerun."
+    _comment_or_digest(rt, claim, line)
+    _clear_comment_fix(rt, key)
+    _end_done(rt, claim, detail=detail)
+
+
 def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     """One fix session on the review's findings; False when it is skipped or cannot start."""
     key = claim.issue_key
@@ -431,6 +453,73 @@ def start_rebase(rt, claim: Claim, base_sha: str) -> None:
         )
 
 
+def start_comment_fix(rt, claim: Claim, url: str, replies: list[str], cursor: str) -> None:
+    """One fix session on a done claim's open PR for steering comments posted since it finished.
+    A launch that fails leaves the claim as it was, cursor included, so a later tick reads the
+    comments again."""
+    key = claim.issue_key
+    extra = (
+        "Comments on the issue since its PR opened, oldest first:\n\n"
+        + "\n\n".join(replies)
+        + "\n\nMake the change they ask for that is agent work, on this branch; `flocc done` runs"
+        " the full check and pushes to the open PR. For what needs the owner (a decision, access,"
+        " a manual step), make no change and pass it to `flocc done` as `--needs-owner '<item>'`,"
+        " one per item. If they ask for no change to the code, finish with"
+        " `flocc done --nothing-to-do '<your answer, for the owner>'`."
+    )
+    d = state_dir(rt.cfg, key)
+    d.mkdir(parents=True, exist_ok=True)
+    kept = {n: (d / n).read_text() for n in (FIX_CONTEXT, OWNER_ITEMS) if (d / n).exists()}
+    fixes = ledger.meta_get(rt.con, f"{COMMENT_FIXES}:{key}") or ""
+    (d / OWNER_ITEMS).unlink(missing_ok=True)
+    (d / FIX_CONTEXT).write_text(extra)
+    (d / COMMENT_FIX_FILE).write_text("1\n")
+    # Before the launch, like the rebase: a tick that dies after the session starts must find the
+    # claim running in the fix phase, its publish reusing the open PR and the comments read.
+    ledger.meta_set(rt.con, f"{COMMENT_FIX}:{key}", "1")
+    ledger.meta_set(rt.con, f"{COMMENT_FIXES}:{key}", str(int(fixes or 0) + 1))
+    ledger.update_claim(
+        rt.con,
+        key,
+        state="running",
+        phase="fix",
+        fix_attempts=0,
+        restarts=0,
+        started_at=rt.now(),
+        last_comment_at=cursor,
+    )
+    try:
+        launch(rt, claim, "fix", extra=extra)
+    except Exception as exc:  # noqa: BLE001 - the PR is open; nothing here may block the claim
+        print(f"{key}: comment fix not started: {exc}", file=sys.stderr)
+        cause = f"{key}:comment-fix-start"
+        if not ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
+            ledger.add_digest(rt.con, key, f"comment fix not started ({exc})", rt.now())
+            ledger.record_alert(rt.con, cause, 3, key, rt.now())
+        (d / COMMENT_FIX_FILE).unlink(missing_ok=True)
+        for name in (FIX_CONTEXT, OWNER_ITEMS):
+            if name in kept:
+                (d / name).write_text(kept[name])
+            else:
+                (d / name).unlink(missing_ok=True)
+        ledger.meta_set(rt.con, f"{COMMENT_FIX}:{key}", "")
+        ledger.meta_set(rt.con, f"{COMMENT_FIXES}:{key}", fixes)
+        ledger.update_claim(
+            rt.con,
+            key,
+            state=claim.state,
+            phase=claim.phase,
+            fix_attempts=claim.fix_attempts,
+            restarts=claim.restarts,
+            started_at=claim.started_at,
+            last_comment_at=claim.last_comment_at,
+        )
+        return
+    _comment_or_digest(
+        rt, claim, f"Started a fix session for the comment; it pushes to {url}, with no new review."
+    )
+
+
 def block_unrebased(rt, claim: Claim, base_sha: str) -> None:
     base = rt.cfg.repos[claim.repo].base_branch
     line = f"the PR still conflicts with {base} at {base_sha[:9]} after a rebase attempt"
@@ -479,16 +568,22 @@ def _finish_phase(
     if claim.phase == "review":
         _finish_review(rt, claim)
         return
-    review_fix = bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
+    comment_fix = bool(ledger.meta_get(rt.con, f"{COMMENT_FIX}:{key}"))
+    # review_fix stays set for the rest of the claim once its round ran, and a comment fix after
+    # it gets no second review.
+    review_fix = not comment_fix and bool(ledger.meta_get(rt.con, f"review_fix:{key}"))
     rebasing = bool(ledger.meta_get(rt.con, f"{REBASE}:{key}"))
-    # A review fixer's owner items ride to the final comment instead: the PR is open and a
-    # second review follows.
-    if questions and not review_fix and not rebasing:
+    # A review or comment fixer's owner items ride to the final comment instead: the PR is open.
+    if questions and not review_fix and not rebasing and not comment_fix:
         _ask_owner(rt, claim, list(questions))
         return
     if outcome == "nothing" and claim.phase in ("test", "impl"):
         _comment_or_digest(rt, claim, f"Nothing to do: {summary}")
         _end_done(rt, claim, detail=f"done, nothing to do: {summary}")
+        return
+    if outcome == "nothing" and comment_fix and claim.fix_attempts == 0:
+        line = f"Nothing to do for the comment: {summary}"
+        _end_comment_fix(rt, claim, line, f"done, nothing to do: {summary}")
         return
     if claim.phase == "test":
         head = rt.git_head(claim)
@@ -509,7 +604,7 @@ def _finish_phase(
             rt.con, key, tester_sha=head, phase="impl", restarts=0, started_at=start
         )
         return
-    if claim.phase == "fix" and review_fix and not rebasing and questions:
+    if claim.phase == "fix" and (review_fix or comment_fix) and not rebasing and questions:
         # Kept apart from later check-fix summaries, which would overwrite it.
         items = f"Needs the owner:\n{_owner_list(list(questions))}\n"
         (state_dir(rt.cfg, key) / OWNER_ITEMS).write_text(items)
@@ -534,11 +629,11 @@ def _finish_phase(
         key, issue.title, issue.labels, branch_subjects(claim, rt.cfg.repos[claim.repo])
     )
     try:
-        # After a review fix or a rebase the PR must still be open: a new one would reopen
-        # finished work.
+        # After a review fix, a comment fix or a rebase the PR must still be open: a new one
+        # would reopen finished work.
         result = (
             rt.publish_fn(claim, title, summary, reuse_only=True)
-            if review_fix or rebasing
+            if review_fix or rebasing or comment_fix
             else rt.publish_fn(claim, title, summary)
         )
     except Exception as exc:  # noqa: BLE001 - a push or gh failure is counted, not re-raised
@@ -555,11 +650,12 @@ def _finish_phase(
     # Failures count only in a row: the fix phase's publish, or a rerun's, starts from zero.
     ledger.meta_set(rt.con, f"publish_failures:{key}", "0")
     if result.status == "pr_closed":
-        what = "rebase" if rebasing else "review fix"
+        what = "rebase" if rebasing else "comment fix" if comment_fix else "review fix"
         line = f"The PR was closed or merged during the {what}; nothing more was published."
         owner = _owner_items(rt, claim)
         _comment_or_digest(rt, claim, f"{line}\n\n{owner}" if owner else line)
         ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
+        _clear_comment_fix(rt, key)
         _end_done(rt, claim, emit=not rebasing)
     elif result.status == "opened":
         if rebasing:
@@ -571,7 +667,7 @@ def _finish_phase(
             )
         elif review_fix and result.existing:
             rt.linear.comment(issue.id, f"Review fix pushed to {result.url}; reviewing again")
-        else:
+        elif not comment_fix:
             rt.linear.comment(issue.id, f"PR for review: {result.url}")
             ledger.add_digest(rt.con, key, f"PR ready for review: {result.url}", rt.now())
         if result.label_error:
@@ -584,6 +680,10 @@ def _finish_phase(
             # A merge adds no behaviour for a reviewer to judge, and the earlier review stands.
             ledger.meta_set(rt.con, f"{REBASE}:{key}", "")
             _end_done(rt, claim, emit=False, phase="review")
+        elif comment_fix:
+            owner = _owner_items(rt, claim)
+            line = f"Comment fix pushed to {result.url}." + (f"\n\n{owner}" if owner else "")
+            _end_comment_fix(rt, claim, line, f"done, comment fix: PR {result.url}")
         elif "reviewer" in claim.sequence:
             _start_review(rt, claim, issue.title, issue.description, result.url)
         else:
@@ -619,10 +719,11 @@ def _finish_phase(
         context = state_dir(rt.cfg, key) / FIX_CONTEXT
         if context.exists() and claim.fix_attempts > 0:
             extra = f"An earlier fix round failed with:\n\n{context.read_text()}\n\n{extra}"
-        elif context.exists() and rebasing:
+        elif context.exists() and (rebasing or comment_fix):
             extra = f"This session was started with:\n\n{context.read_text()}\n\n{extra}"
         context.write_text(extra)
         (state_dir(rt.cfg, key) / FAILURE_HASH).write_text(_digest(result.detail))
+        (state_dir(rt.cfg, key) / COMMENT_FIX_FILE).unlink(missing_ok=True)
         start = rt.now()
         launch(rt, claim, "fix", extra=extra)
         ledger.update_claim(

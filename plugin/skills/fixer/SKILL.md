@@ -1,6 +1,6 @@
 ---
 name: fixer
-description: Use when you are the fixer session for a flocc issue (a failed check, a review's findings, or a PR that no longer merges)
+description: Use when you are the fixer session for a flocc issue (a failed check, a review's findings, comments on an open PR, or a PR that no longer merges)
 ---
 
 Fix what the text you were started with reports, on the existing branch, and nothing else.
@@ -15,6 +15,10 @@ Fix what the text you were started with reports, on the existing branch, and not
 - When the fix answers a review, fix what is agent work. For a finding that needs the owner (a
   manual run, a product decision), change nothing and pass it as `--needs-owner '<item>'` to
   `flocc done`; it goes into the final review comment.
+- When you were started on comments posted after the PR opened, do what they ask that is agent
+  work. For what needs the owner, change nothing and pass it as `--needs-owner '<item>'`; it
+  goes into the issue comment. When they ask for no change to the code (a question, a thanks),
+  run `flocc done --nothing-to-do '<your answer, for the owner>'` instead of a summary.
 - When you were started on a failed check and cannot make it pass, pass what you could not fix as
   `--needs-owner '<what and why>'`; the run then ends blocked.
 - Start on the fix: the failure and the findings are already recorded, so do not run the full

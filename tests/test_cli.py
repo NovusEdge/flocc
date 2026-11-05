@@ -285,6 +285,14 @@ def test_nothing_to_do_is_refused_outside_its_use(tmp_path, monkeypatch, phase, 
     assert not (tmp_path / "done.json").exists()
 
 
+def test_a_comment_fix_may_end_with_nothing_to_do(tmp_path, monkeypatch):
+    session_env(monkeypatch, tmp_path, "fix")
+    (tmp_path / "comment-fix").write_text("1\n")
+    assert main(["done", "--nothing-to-do", "The comment asks no change."]) == 0
+    data = json.loads((tmp_path / "done.json").read_text())
+    assert (data["outcome"], data["summary"]) == ("nothing", "The comment asks no change.")
+
+
 def test_the_reviewer_cannot_pass_owner_questions(tmp_path, monkeypatch):
     session_env(monkeypatch, tmp_path, "review")
     (tmp_path / "review.md").write_text("Verdict: approve\n")

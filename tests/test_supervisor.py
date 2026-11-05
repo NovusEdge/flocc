@@ -1600,3 +1600,103 @@ def test_a_finished_step_drops_the_resume_note(rt):
     done(rt)
     supervise(rt, current(rt))
     assert not (state_dir(rt.cfg, "NF-1") / RESUME_NOTE).exists()
+
+
+def comment_fix(rt, fixes="1"):
+    """A claim whose comment fix session just ran, after its review fix round."""
+    add(rt, phase="fix", sequence=["executor", "reviewer"])
+    ledger.meta_set(rt.con, "comment_fix:NF-1", "1")
+    ledger.meta_set(rt.con, "comment_fixes:NF-1", fixes)
+    ledger.meta_set(rt.con, "review_fix:NF-1", "1")
+    rt.sessions.alive_names.add("NF-1")
+    rt.publish_fn = lambda *a, **kw: PublishResult("opened", url="https://pr/1", existing=bool(kw))
+
+
+def test_a_comment_fix_pushes_to_the_open_pr_with_the_owner_items_and_no_review(rt):
+    comment_fix(rt)
+    done(rt, "Renamed the flag.", ["Is the old flag documented anywhere public?"])
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and not rt.notifier.sent
+    assert rt.linear.comments[-1] == (
+        "Comment fix pushed to https://pr/1.\n\n"
+        "Needs the owner:\n1. Is the old flag documented anywhere public?"
+    )
+    assert all(name != "NF-1-review" for name, _ in rt.sessions.started)
+    assert not ledger.meta_get(rt.con, "comment_fix:NF-1")
+    [e] = events.unacked(rt.con)
+    assert (e.kind, e.detail) == ("ended", "done, comment fix: PR https://pr/1")
+
+
+def test_the_last_comment_fix_says_further_comments_need_a_rerun(rt):
+    comment_fix(rt, fixes="3")
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert rt.linear.comments[-1].endswith("further comments need a Todo rerun.")
+
+
+def test_an_earlier_comment_fix_has_no_cap_note(rt):
+    comment_fix(rt, fixes="2")
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert "Todo rerun" not in rt.linear.comments[-1]
+
+
+def test_a_comment_fix_with_nothing_to_do_ends_done_without_a_push(rt):
+    comment_fix(rt)
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(kw) or PublishResult("opened", url="u")
+    done(rt, "It asks a question: the flag stays.", outcome="nothing")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and not published
+    why = "It asks a question: the flag stays."
+    assert rt.linear.comments == [f"Nothing to do for the comment: {why}"]
+    [e] = events.unacked(rt.con)
+    assert e.detail == "done, nothing to do: It asks a question: the flag stays."
+
+
+def test_nothing_to_do_after_a_check_round_still_publishes(rt):
+    comment_fix(rt)
+    ledger.update_claim(rt.con, "NF-1", fix_attempts=1)
+    published = []
+    rt.publish_fn = lambda *a, **kw: published.append(kw) or PublishResult(
+        "opened", url="https://pr/1", existing=True
+    )
+    done(rt, "Nothing.", outcome="nothing")
+    supervise(rt, current(rt))
+    assert published == [{"reuse_only": True}]
+
+
+def test_a_pr_closed_during_a_comment_fix_names_it(rt):
+    comment_fix(rt)
+    rt.publish_fn = lambda *a, **kw: PublishResult("pr_closed")
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and not ledger.meta_get(rt.con, "comment_fix:NF-1")
+    assert "closed or merged during the comment fix" in rt.linear.comments[-1]
+
+
+def test_a_check_round_in_a_comment_fix_keeps_the_comments_and_drops_the_marker(rt):
+    comment_fix(rt)
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "check-failure.md").write_text("The owner: rename the flag to --dry-run")
+    (d / "comment-fix").write_text("1\n")
+    rt.publish_fn = lambda *a, **kw: PublishResult("check_failed", "FAILED tests/test_a.py::test_x")
+    done(rt, "Renamed.")
+    supervise(rt, current(rt))
+    c = current(rt)
+    assert (c.state, c.phase, c.fix_attempts) == ("running", "fix", 1)
+    context = (d / "check-failure.md").read_text()
+    assert "rename the flag to --dry-run" in context and "test_x" in context
+    assert not (d / "comment-fix").exists()
+
+
+def test_a_comment_fix_restart_keeps_its_comments_and_its_marker(rt):
+    comment_fix(rt)
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "check-failure.md").write_text("The owner: rename the flag to --dry-run")
+    (d / "comment-fix").write_text("1\n")
+    rt.sessions.alive_names.clear()
+    supervise(rt, current(rt))
+    name, argv = rt.sessions.started[-1]
+    assert name == "NF-1" and any("rename the flag to --dry-run" in a for a in argv)
+    assert rt.sessions.starts[-1]["files"]["comment-fix"] == "1\n"

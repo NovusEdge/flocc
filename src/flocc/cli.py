@@ -289,8 +289,13 @@ def cmd_done(args) -> int:
             return 1
         summary, outcome = "review", "work"
     elif nothing is not None:
-        if phase not in ("test", "impl"):
-            return _done_refused("--nothing-to-do is for the tester and the executor")
+        from flocc.supervisor import COMMENT_FIX_FILE
+
+        comment_fix = phase == "fix" and (state / COMMENT_FIX_FILE).exists()
+        if phase not in ("test", "impl") and not comment_fix:
+            return _done_refused(
+                "--nothing-to-do is for the tester, the executor and a comment fix"
+            )
         if questions or args.summary is not None:
             return _done_refused("--nothing-to-do stands alone; its reason is the summary")
         if not nothing.strip():
