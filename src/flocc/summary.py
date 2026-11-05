@@ -3,7 +3,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
-from flocc import control, events, host, ledger
+from flocc import control, events, host, ledger, reach
 from flocc.config import Config
 from flocc.context import state_dir
 from flocc.publisher import failure_excerpt
@@ -140,6 +140,23 @@ def digest_data(cfg: Config, con, now: float) -> tuple[str, int]:
     if lines:
         lines.insert(0, f"- {len(lines)} resumed, {ended_done} ended done")
     out += _capped(lines, LIST_ROWS)
+    day = reach.writes(con, now - 86400)
+    out += ["", "## What cardinal wrote in Linear and GitHub in the last 24 hours"]
+    out += _capped(
+        [
+            f"- {w['kind']} {w['key']}"
+            + (f" → {w['filed']}" if w.get("filed") else "")
+            + f": {str(w['text'])[:LINE_CHARS]}"
+            for w in day
+            if w.get("mode") == "on"
+        ],
+        LIST_ROWS,
+    )
+    out += ["", "## Follow-ups cardinal would have filed in the last 24 hours"]
+    out += _capped(
+        [f"- {w['key']}: {str(w['text'])[:LINE_CHARS]}" for w in day if w.get("mode") == "observe"],
+        LIST_ROWS,
+    )
     through = shown[-1][0] if shown else 0
     out += ["", f"When the digest is sent: flocc digest-data --done {through}"]
     return "\n".join(out), through

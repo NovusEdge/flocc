@@ -24,6 +24,7 @@ SETTABLE: dict[str, tuple[type, float, float]] = {
     "digest_hour": (int, 0, 23),
     "shared_uv_cache": (bool, 0, 1),
     "skip_unmapped": (bool, 0, 1),
+    "cardinal_file_on": (bool, 0, 1),
 }
 # Every other Config field. test_settings fails when a field is in neither table.
 NOT_SETTABLE = frozenset(

@@ -177,10 +177,38 @@ def test_the_triage_skill_sets_a_long_timeout_for_the_slow_verbs():
     assert all(verb in text for verb in ("cleanup --now", "stop-tests", "agent-shell"))
 
 
-def test_agent_shell_times_out_before_the_two_minute_tool_timeout():
+def test_agent_shell_times_out_before_cardinal_s_bash_timeout():
     from flocc import agentrun
 
-    assert agentrun.SHELL_TIMEOUT_S < 120
+    # Agent.shell waits 30 s past the command; triage gives the Bash call 600000 ms.
+    assert agentrun.SHELL_TIMEOUT_S == 540 and agentrun.SHELL_TIMEOUT_S + 30 < 600
+    assert agentrun.SHELL_CHARS == 24_000
+
+
+def test_the_triage_skill_allows_agent_shell_for_diagnosis_but_not_writes():
+    text = (PLUGIN / "skills" / "triage" / "SKILL.md").read_text()
+    assert "Diagnosis" in text and "never write" in text
+    assert "Pipes" in text and "inside the single quotes" in text
+
+
+def test_the_triage_skill_names_every_reach_verb_and_searches_before_filing():
+    text = (PLUGIN / "skills" / "triage" / "SKILL.md").read_text()
+    for verb in (
+        "issue KEY",
+        "pr KEY",
+        "comment KEY",
+        "pr-comment KEY",
+        "search --query",
+        "file KEY",
+    ):
+        assert f"{EXECUTOR} {verb}" in text
+    assert text.index(f"{EXECUTOR} search") < text.index(f"{EXECUTOR} file")
+    assert "never add the `claude` label" in text
+
+
+def test_the_digest_skill_reports_cardinal_s_writes_and_drafts():
+    text = " ".join((PLUGIN / "skills" / "digest" / "SKILL.md").read_text().split())
+    assert "would have filed" in text and "wrote in Linear and GitHub" in text
 
 
 def test_dispatch_restarts_work_only_through_resume():

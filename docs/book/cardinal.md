@@ -45,8 +45,11 @@ emit nothing.
 
 cardinal's key runs only `flocc-cardinal-gate` on the executor, and only from cardinal's address.
 The gate splits the request without a shell and allows `events`, `ack`, `status`, `run-summary`,
-`resume` (and `fix`, an alias of `resume` for one release), `hold`, `release`, `cleanup`, `cleanup --now`, `digest-data`, `host`, `stop-tests` and
-`shell`, with every issue key matching `^[A-Z]+-[0-9]+$`. Its `release` is
+`resume` (and `fix`, an alias of `resume` for one release), `hold`, `release`, `cleanup`,
+`cleanup --now`, `digest-data`, `host`, `stop-tests`, `shell`, `issue`, `pr`, `comment`, `pr-comment`, `search` and `file`, with every issue key
+matching `^[A-Z]+-[0-9]+$`. The six Linear and GitHub verbs run as the service user with its
+Linear key and publish token, so neither reaches `flocc-agent`; `file` only drafts unless
+`cardinal_file_on` is set, and never adds the trigger label. Its `release` is
 `release --hold-only`: it lifts a hold and nothing else, and is refused for a blocked, timed-out
 or done run. Its `host` runs `flocc host-report`.
 
@@ -56,8 +59,9 @@ web and MCP tools. A managed PreToolUse hook,
 `only-executor`, refuses any Bash command that is not one call to `executor` or `agent-shell`, or
 that holds a shell operator, so cardinal cannot read its own key or Claude login. `executor`
 refuses `shell`: the only way to the gate's `shell` verb is `agent-shell`, which runs one command
-as `flocc-agent` with a 120-second timeout and lists it in the next digest. It does not ask you
+as `flocc-agent` with a 540-second timeout and lists it in the next digest. It does not ask you
 first: `flocc-agent` is the user every agent session already runs as in `bypassPermissions` mode.
+Triage uses it to read a run's worktree, git history, check output and logs, and for host repairs.
 
 ## Daily fresh start
 

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Runs one command as flocc-agent on the executor VM. No allow rule covers this file, so each
-# call asks the owner in the Claude app. The quoting is executor's, which refuses shell itself.
+# Runs one command as flocc-agent on the executor VM; the digest lists every call. The quoting
+# is executor's, which refuses shell itself so this is the only way to the gate's shell verb.
 set -eu
 if [ "$#" -ne 1 ]; then
   echo "usage: agent-shell 'COMMAND'" >&2

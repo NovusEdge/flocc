@@ -102,9 +102,33 @@ class FakeNotifier:
 @dataclass
 class FakeLinear:
     comments: list = field(default_factory=list)
+    detail: Any = None
+    found: list = field(default_factory=list)
+    labels: dict = field(default_factory=lambda: {"cardinal-draft": "lab-draft"})
+    created: list = field(default_factory=list)
+    related: list = field(default_factory=list)
 
     def comment(self, issue_id, text):
         self.comments.append(text)
 
     def issue(self, key):
         return ISSUE
+
+    def issue_detail(self, key):
+        return self.detail
+
+    def search(self, team_key, text):
+        return self.found
+
+    def label_ids(self, team_key, names):
+        return {n: self.labels[n] for n in names if n in self.labels}
+
+    def state_id(self, team_id, state_type):
+        return f"state-{state_type}"
+
+    def create_issue(self, team_id, title, description, label_ids, state_id):
+        self.created.append((team_id, title, description, tuple(label_ids), state_id))
+        return "u9", "NF-9", "https://l/NF-9"
+
+    def relate(self, issue_id, related_id):
+        self.related.append((issue_id, related_id))

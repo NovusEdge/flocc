@@ -700,7 +700,7 @@ def test_shell_runs_bash_in_the_agent_home_and_caps_the_output(tmp_path, monkeyp
     monkeypatch.setenv("HOME", str(tmp_path))
     out = agentrun.shell({"command": "pwd; echo err >&2; exit 3"})
     assert out == {"code": 3, "output": f"{tmp_path}\nerr\n"}
-    big = agentrun.shell({"command": "head -c 20000 /dev/zero | tr '\\0' x"})
+    big = agentrun.shell({"command": "head -c 30000 /dev/zero | tr '\\0' x"})
     assert big["code"] == 0 and big["output"] == "[...]\n" + "x" * agentrun.SHELL_CHARS
 
 

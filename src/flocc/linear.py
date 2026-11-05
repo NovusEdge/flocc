@@ -41,6 +41,22 @@ class Comment:
     author: str | None = None
 
 
+@dataclass(frozen=True)
+class IssueDetail:
+    id: str
+    key: str
+    title: str
+    description: str
+    url: str
+    state: str
+    team_id: str
+    labels: tuple[str, ...]
+    # (created_at, author name, body), oldest first.
+    comments: tuple[tuple[str, str, str], ...]
+    # (kind, key, state name, title); an inverse relation's kind ends in "(from)".
+    relations: tuple[tuple[str, str, str, str], ...]
+
+
 def http_transport(api_key: str) -> Transport:
     def post(query: str, variables: dict) -> dict:
         req = urllib.request.Request(
@@ -133,19 +149,103 @@ class Linear:
     def unstart(self, issue: Issue) -> None:
         self._move(issue, "unstarted")
 
-    def _move(self, issue: Issue, state_type: str) -> None:
+    def issue_detail(self, key: str) -> IssueDetail:
+        related = "identifier title state { name }"
+        data = self._post(
+            f"""query($id: String!) {{ issue(id: $id) {{
+                 id identifier title description url state {{ name }} team {{ id }}
+                 labels {{ nodes {{ name }} }}
+                 comments(first: 50) {{ nodes {{ body createdAt user {{ name }} botActor {{ name }} }} }}
+                 relations {{ nodes {{ type relatedIssue {{ {related} }} }} }}
+                 inverseRelations {{ nodes {{ type issue {{ {related} }} }} }} }} }}""",
+            {"id": key},
+        )["issue"]
+        comments = sorted(
+            (
+                n["createdAt"],
+                (n.get("user") or n.get("botActor") or {}).get("name") or "unknown",
+                n["body"],
+            )
+            for n in data["comments"]["nodes"]
+        )
+        relations = [
+            (n["type"], r["identifier"], r["state"]["name"], r["title"])
+            for n in data["relations"]["nodes"]
+            for r in [n["relatedIssue"]]
+        ] + [
+            (f"{n['type']} (from)", r["identifier"], r["state"]["name"], r["title"])
+            for n in data["inverseRelations"]["nodes"]
+            for r in [n["issue"]]
+        ]
+        return IssueDetail(
+            id=data["id"],
+            key=data["identifier"],
+            title=data["title"],
+            description=data.get("description") or "",
+            url=data["url"],
+            state=data["state"]["name"],
+            team_id=data["team"]["id"],
+            labels=tuple(n["name"] for n in data["labels"]["nodes"]),
+            comments=tuple(comments),
+            relations=tuple(relations),
+        )
+
+    def search(self, team_key: str, text: str) -> list[tuple[str, str, str]]:
+        data = self._post(
+            """query($team: String!, $text: String!) { issues(first: 20, filter: {
+                 team: { key: { eq: $team } },
+                 state: { type: { nin: ["completed", "canceled"] } },
+                 or: [{ title: { containsIgnoreCase: $text } },
+                      { description: { containsIgnoreCase: $text } }] }) {
+                   nodes { identifier title state { name } } } }""",
+            {"team": team_key, "text": text},
+        )
+        return [(n["identifier"], n["state"]["name"], n["title"]) for n in data["issues"]["nodes"]]
+
+    def state_id(self, team_id: str, state_type: str) -> str:
         states = self._post(
             """query($team: String!, $type: String!) { team(id: $team) {
                  states(filter: { type: { eq: $type } }) { nodes { id position } } } }""",
-            {"team": issue.team_id, "type": state_type},
+            {"team": team_id, "type": state_type},
         )["team"]["states"]["nodes"]
         if not states:
-            raise LinearError(f"team of {issue.key} has no {state_type} state")
-        first = min(states, key=lambda s: s["position"])
+            raise LinearError(f"team {team_id} has no {state_type} state")
+        return min(states, key=lambda s: s["position"])["id"]
+
+    def _move(self, issue: Issue, state_type: str) -> None:
         self._post(
             "mutation($id: String!, $stateId: String!) {"
             " issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
-            {"id": issue.id, "stateId": first["id"]},
+            {"id": issue.id, "stateId": self.state_id(issue.team_id, state_type)},
+        )
+
+    def create_issue(
+        self, team_id: str, title: str, description: str, label_ids: list[str], state_id: str
+    ) -> tuple[str, str, str]:
+        made = self._post(
+            """mutation($team: String!, $title: String!, $description: String!,
+                        $labels: [String!], $state: String!) {
+                 issueCreate(input: { teamId: $team, title: $title, description: $description,
+                                      labelIds: $labels, stateId: $state }) {
+                   success issue { id identifier url } } }""",
+            {
+                "team": team_id,
+                "title": title,
+                "description": description,
+                "labels": label_ids,
+                "state": state_id,
+            },
+        )["issueCreate"]
+        if not made["success"] or not made["issue"]:
+            raise LinearError(f"issue {title!r} was not created")
+        issue = made["issue"]
+        return issue["id"], issue["identifier"], issue["url"]
+
+    def relate(self, issue_id: str, related_id: str) -> None:
+        self._post(
+            "mutation($id: String!, $related: String!) { issueRelationCreate(input: {"
+            " issueId: $id, relatedIssueId: $related, type: related }) { success } }",
+            {"id": issue_id, "related": related_id},
         )
 
     def comment(self, issue_id: str, text: str) -> None:
@@ -155,25 +255,29 @@ class Linear:
             {"id": issue_id, "body": f"{BOT_PREFIX} {text}"},
         )
 
-    def missing_labels(self, team_key: str, names: list[str]) -> list[str]:
-        usable: set[str] = set()
+    def label_ids(self, team_key: str, names: list[str]) -> dict[str, str]:
+        found: dict[str, str] = {}
         # Chunked so a long name list cannot push a label past the 250-node page.
         for i in range(0, max(len(names), 1), 100):
             data = self._post(
                 """query($key: String!, $names: [String!]) {
                      teams(filter: { key: { eq: $key } }) { nodes { id } }
                      issueLabels(first: 250, filter: { name: { in: $names } }) {
-                       nodes { name team { key } } } }""",
+                       nodes { id name team { key } } } }""",
                 {"key": team_key, "names": names[i : i + 100]},
             )
             if not data["teams"]["nodes"]:
                 raise LinearError(f"team {team_key} does not exist or the key cannot see it")
             # A workspace label, or one of this team's.
-            usable |= {
-                n["name"]
+            found |= {
+                n["name"]: n["id"]
                 for n in data["issueLabels"]["nodes"]
                 if n["team"] is None or n["team"]["key"] == team_key
             }
+        return found
+
+    def missing_labels(self, team_key: str, names: list[str]) -> list[str]:
+        usable = self.label_ids(team_key, names)
         return [n for n in names if n not in usable]
 
     def comments_since(self, issue_id: str, after_iso: str | None) -> list[Comment]:

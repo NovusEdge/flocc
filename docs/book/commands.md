@@ -52,7 +52,13 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `cleanup [--now]` | Remove worktrees, state, scratchpads and finished pytest runs under `/tmp/pytest-of-flocc-agent` that no claim owns. A worktree with uncommitted changes, commits not on GitHub, or a change in the last 7 days stays and is listed. `--now`, cardinal's repair for a full `/tmp`, takes scratchpads idle 10 minutes and pytest runs of any age that no live process holds, and waits up to 60 seconds for a running tick |
 | `host-report` | `/tmp` use, memory available and OOM kills against their limits, the open host episode, the ten largest `/tmp` entries of `flocc-agent`'s, process memory per issue and container memory |
 | `stop-tests <key>` | Kill the processes the issue's session started through its Bash tool and remove the issue's containers, then tell the session not to rerun its tests until the host recovers |
-| `shell --command CMD` | Run one command as `flocc-agent` (cardinal's `agent-shell`). 120-second timeout, output capped at 8,000 characters, listed in the digest |
+| `shell --command CMD` | Run one command as `flocc-agent` (cardinal's `agent-shell`). 540-second timeout, output capped at 24,000 characters, listed in the digest |
+| `issue <key>` | Print an issue's title, state, labels, description, relations and comments, at most 12,000 characters (cardinal's `issue`) |
+| `pr <key>` | Print the state, mergeability, review decision, diff size, checks, reviews and comments of the issue's PR, with the publish token |
+| `comment <key> --text TEXT` | Comment on the issue as cardinal, through the service's Linear key. Listed in the digest |
+| `pr-comment <key> --text TEXT` | Comment on the issue's PR as cardinal, with the publish token. Listed in the digest |
+| `search --query TEXT` | The team's open issues whose title or description holds the text, at most 20 |
+| `file <key> --title TEXT --text TEXT` | With `cardinal_file_on`, create a Backlog issue labelled `cardinal-draft` and related to the key; otherwise record the draft for the digest. At most 2 per source issue and 5 per 24 hours, drafts included |
 | `config list` | The [settable keys](#settable-config-keys), each with its value and whether `config.toml` sets it or the default applies |
 | `config get <key>` | Print one settable key's effective value |
 | `config set <key> <value>` | Write a top-level key of `config.toml`, such as `config set session_cap 3`. A key that is not settable, or a value outside its range, exits 2 with one line. The edited file must also load, or the original stays and the loader's error prints. The old file is kept as `config.toml.bak`. It applies from the next tick; a running tick keeps the config it loaded |
@@ -66,9 +72,11 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `stop [--failure]` | Hook for agent sessions at the end of a turn. A turn that ends without `flocc done` is refused once; ending again marks the session idle and the run ends blocked. With `--failure`, an API error other than a usage limit marks it idle at once |
 | `--version` | Print the host's version |
 
+The five verbs that take a key (`issue`, `pr`, `comment`, `pr-comment`, `file`) refuse one outside `team_key`.
+
 ### Settable config keys
 
-`config set` accepts only these keys, within these ranges: `session_cap` 1 to 6; `check_timeout_s` and `setup_timeout_s` 60 to 7200; `check_fix_rounds` 0 to 3; `default_wall_clock_s` and `review_wall_clock_s` 600 to 21600; `min_available_mem_gb` 0 to 64; `min_free_disk_gb` 0 to 1000; `tmp_max_pct` 1 to 100; `digest_hour` 0 to 23; `shared_uv_cache` and `skip_unmapped`, `true` or `false`. Models, efforts, usage limits, labels, tokens and repos are not settable with it.
+`config set` accepts only these keys, within these ranges: `session_cap` 1 to 6; `check_timeout_s` and `setup_timeout_s` 60 to 7200; `check_fix_rounds` 0 to 3; `default_wall_clock_s` and `review_wall_clock_s` 600 to 21600; `min_available_mem_gb` 0 to 64; `min_free_disk_gb` 0 to 1000; `tmp_max_pct` 1 to 100; `digest_hour` 0 to 23; `shared_uv_cache`, `skip_unmapped` and `cardinal_file_on`, `true` or `false`. Models, efforts, usage limits, labels, tokens and repos are not settable with it.
 
 ### The `Run:` line
 

@@ -151,21 +151,15 @@ SHELL_LOG = "shell"
 
 def record_shell(con, at: float, command: str, code: int | None) -> None:
     """One agent-shell call; code stays None when the call never answered or timed out."""
-    value = json.dumps({"at": at, "command": command, "code": code})
-    ledger.meta_set(con, f"{SHELL_LOG}:{at:.6f}", value)
+    ledger.log_append(con, SHELL_LOG, at, {"command": command, "code": code})
 
 
 def shell_calls(con, since: float) -> list[tuple[float, str, int | None]]:
     calls = []
-    for row in con.execute("SELECT value FROM meta WHERE key LIKE ?", (f"{SHELL_LOG}:%",)):
-        try:
-            v = json.loads(row[0])
-            at, command, code = float(v["at"]), str(v["command"]), v["code"]
-        except (ValueError, KeyError, TypeError):
-            continue
-        if at >= since:
-            calls.append((at, command, code if isinstance(code, int) else None))
-    return sorted(calls)
+    for v in ledger.log_since(con, SHELL_LOG, since):
+        code = v.get("code")
+        calls.append((v["at"], str(v.get("command", "")), code if isinstance(code, int) else None))
+    return calls
 
 
 def report_text(cfg, r: Reading, usage: dict, episode: str) -> str:

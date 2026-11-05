@@ -11,8 +11,10 @@ description: Use when a daily event arrives from the executor VM, or the owner a
    stopped and what each needs from the owner; holds; service problems; events needing
    attention; worktrees cleanup kept, with why. Every command listed under agent-shell, with its
    exit status, always goes in, even on a quiet day. The resumed-runs count, and each resumed
-   run that is not done, always go in too. Leave out anything else that needs nothing
-   from the owner. On a day with nothing, write one line saying so.
+   run that is not done, always go in too. Everything listed under "What cardinal wrote in Linear
+   and GitHub" and "Follow-ups cardinal would have filed" goes in as well, one line each, so the
+   owner sees what you wrote and what you would have filed. Leave out anything else that needs
+   nothing from the owner. On a day with nothing, write one line saying so.
 4. Run `/opt/cardinal/plugin/bin/executor digest-data --done N` with the N from step 2. Then
    acknowledge the `daily` event and every event listed as needing attention, in one
    `/opt/cardinal/plugin/bin/executor ack ID ...` call.

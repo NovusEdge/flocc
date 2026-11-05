@@ -14,17 +14,18 @@ from pathlib import Path
 
 import pytest
 
-from flocc import canary, ledger
+from flocc import canary, ledger, reach
 from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.host import STOPPED
-from flocc.linear import LinearError
+from flocc.linear import BOT_PREFIX, LinearError
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.tick import tick_lock
 from tests.fakes import FakeAgent, FakeLinear, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
+from tests.test_reach import detail
 
 
 def _cfg_file(tmp_path):
@@ -838,6 +839,194 @@ def amend_env(tmp_path, monkeypatch):
     return types.SimpleNamespace(path=path, rt=rt, gh=gh, linear=linear, sessions=sessions)
 
 
+def test_issue_prints_the_rendered_issue(amend_env, capsys):
+    amend_env.linear.detail = detail()
+    assert main(["--config", str(amend_env.path), "issue", "NF-1"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith(reach.DATA_NOTE) and "NF-1: Fix rounding" in out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["issue", "ENG-4"],
+        ["comment", "ENG-4", "--text", "hi"],
+        ["pr", "ENG-4"],
+        ["pr-comment", "ENG-4", "--text", "hi"],
+        ["file", "ENG-4", "--title", "t", "--text", "x"],
+    ],
+)
+def test_every_reach_verb_refuses_another_team_s_issue_before_any_call(amend_env, argv, capsys):
+    assert main(["--config", str(amend_env.path), *argv]) == 1
+    assert "ENG-4 is not an NF issue" in capsys.readouterr().err
+    assert amend_env.gh == [] and amend_env.linear.comments == [] and amend_env.linear.created == []
+
+
+def test_search_prints_the_team_s_matches(amend_env, capsys):
+    amend_env.linear.found = [("NF-5", "Backlog", "Flaky export")]
+    assert main(["--config", str(amend_env.path), "search", "--query", "export"]) == 0
+    assert "- NF-5 (Backlog): Flaky export" in capsys.readouterr().out
+
+
+def test_comment_posts_as_cardinal_and_logs_the_write(amend_env, capsys):
+    assert main(["--config", str(amend_env.path), "comment", "NF-1", "--text", "Answered."]) == 0
+    assert amend_env.linear.comments == ["cardinal: Answered."]
+    [w] = reach.writes(amend_env.rt.con, 0.0)
+    assert (w["kind"], w["key"], w["text"]) == ("comment", "NF-1", "Answered.")
+    assert "commented on NF-1" in capsys.readouterr().out
+
+
+def test_a_linear_failure_is_reported_and_logs_nothing(amend_env, monkeypatch, capsys):
+    def fail(issue_id, text):
+        raise LinearError("rate limited")
+
+    monkeypatch.setattr(amend_env.linear, "comment", fail)
+    assert main(["--config", str(amend_env.path), "comment", "NF-1", "--text", "x"]) == 1
+    assert "comment: rate limited" in capsys.readouterr().err
+    assert reach.writes(amend_env.rt.con, 0.0) == []
+
+
+PR_FIELDS = (
+    "state,mergeable,reviewDecision,additions,deletions,changedFiles,statusCheckRollup,"
+    "reviews,comments"
+)
+
+
+def test_pr_prints_the_claim_s_pr_with_the_publish_token(amend_env, monkeypatch, capsys):
+    calls = []
+
+    def run(argv, **kw):
+        calls.append((argv, kw["env"]["GH_TOKEN"]))
+        return subprocess.CompletedProcess(argv, 0, json.dumps({"state": "OPEN"}), "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert main(["--config", str(amend_env.path), "pr", "NF-1"]) == 0
+    url = "https://github.com/o/r/pull/7"
+    assert calls == [(["gh", "pr", "view", url, "--json", PR_FIELDS], "ghp_publish")]
+    assert "State: OPEN" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", [["pr"], ["pr-comment", "--text", "x"]])
+def test_pr_verbs_without_a_pr_or_a_claim_are_refused_before_gh(amend_env, verb, capsys):
+    (amend_env.rt.cfg.state_root / "NF-1" / "pr-url").unlink()
+    assert main(["--config", str(amend_env.path), verb[0], "NF-1", *verb[1:]]) == 1
+    assert "NF-1 has no PR" in capsys.readouterr().err
+    assert main(["--config", str(amend_env.path), verb[0], "NF-404", *verb[1:]]) == 1
+    assert "no claim for NF-404" in capsys.readouterr().err
+    assert amend_env.gh == []
+
+
+def test_pr_comment_posts_as_cardinal_and_logs_the_write(amend_env, monkeypatch, capsys):
+    bodies = []
+
+    def run(argv, **kw):
+        bodies.append((argv, kw["input"], kw["env"]["GH_TOKEN"]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert main(["--config", str(amend_env.path), "pr-comment", "NF-1", "--text", "LGTM"]) == 0
+    url = "https://github.com/o/r/pull/7"
+    assert bodies == [
+        (
+            ["gh", "pr", "comment", url, "--body-file", "-"],
+            f"{BOT_PREFIX} cardinal: LGTM",
+            "ghp_publish",
+        )
+    ]
+    assert [w["kind"] for w in reach.writes(amend_env.rt.con, 0.0)] == ["pr-comment"]
+
+
+def test_a_failed_pr_comment_is_reported_and_logs_nothing(amend_env, monkeypatch, capsys):
+    def fail(argv, **kw):
+        raise subprocess.CalledProcessError(1, argv, stderr="HTTP 403")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    assert main(["--config", str(amend_env.path), "pr-comment", "NF-1", "--text", "x"]) == 1
+    assert "pr-comment: HTTP 403" in capsys.readouterr().err
+    assert reach.writes(amend_env.rt.con, 0.0) == []
+
+
+def test_an_issue_that_moved_teams_is_refused_by_the_key_linear_returns(amend_env, capsys):
+    e = amend_env
+    e.linear.detail = detail(key="ENG-45")
+    e.rt.cfg = replace(e.rt.cfg, cardinal_file_on=True)
+    moved = replace(e.linear.issue("NF-1"), key="ENG-45")
+    e.linear.issue = lambda key: moved
+    for argv in (["issue", "NF-1"], ["comment", "NF-1", "--text", "x"], file_argv(e)[2:]):
+        assert main(["--config", str(e.path), *argv]) == 1
+        assert "NF-1 is now ENG-45" in capsys.readouterr().err
+    assert e.linear.comments == [] and e.linear.created == []
+    assert reach.writes(e.rt.con, 0.0) == []
+
+
+def file_argv(e, key="NF-1"):
+    return [
+        "--config", str(e.path), "file", key,
+        "--title", "Export rounds wrong", "--text", "Seen in review.",
+    ]  # fmt: skip
+
+
+def turn_filing_on(e):
+    # The fixture's build_runtime patch returns this runtime, so the file on disk is not read.
+    e.rt.cfg = replace(e.rt.cfg, cardinal_file_on=True)
+
+
+def test_file_in_observe_mode_creates_nothing_and_records_the_draft(amend_env, capsys):
+    amend_env.linear.detail = detail()
+    assert main(file_argv(amend_env)) == 0
+    assert amend_env.linear.created == []
+    [w] = reach.writes(amend_env.rt.con, 0.0)
+    assert (w["kind"], w["mode"], w["text"]) == ("file", "observe", "Export rounds wrong")
+    assert "observe mode" in capsys.readouterr().out
+
+
+def test_file_when_on_creates_a_backlog_draft_linked_to_the_source(amend_env, capsys):
+    turn_filing_on(amend_env)
+    amend_env.linear.detail = detail()
+    assert main(file_argv(amend_env)) == 0
+    [(team, title, body, labels, state)] = amend_env.linear.created
+    assert (team, title, labels, state) == (
+        "t1",
+        "Export rounds wrong",
+        ("lab-draft",),
+        "state-backlog",
+    )
+    assert "Seen in review." in body and "NF-1" in body
+    assert amend_env.linear.related == [("u9", "u1")]
+    [w] = reach.writes(amend_env.rt.con, 0.0)
+    assert (w["mode"], w["filed"]) == ("on", "NF-9")
+    assert "filed NF-9" in capsys.readouterr().out
+
+
+def test_file_never_sends_the_trigger_label(amend_env):
+    turn_filing_on(amend_env)
+    amend_env.linear.detail = detail()
+    amend_env.linear.labels["claude"] = "lab-claude"
+    assert main(file_argv(amend_env)) == 0
+    assert all("lab-claude" not in c[3] for c in amend_env.linear.created)
+
+
+def test_file_without_the_draft_label_in_linear_is_refused(amend_env, capsys):
+    turn_filing_on(amend_env)
+    amend_env.linear.detail = detail()
+    amend_env.linear.labels.clear()
+    assert main(file_argv(amend_env)) == 1
+    assert "create the cardinal-draft label" in capsys.readouterr().err
+    assert amend_env.linear.created == [] and reach.writes(amend_env.rt.con, 0.0) == []
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_file_past_the_cap_is_refused_in_either_mode(amend_env, on, capsys):
+    if on:
+        turn_filing_on(amend_env)
+    amend_env.linear.detail = detail()
+    for at in (1.0, 2.0):
+        reach.record_write(amend_env.rt.con, at, "file", "NF-1", "t", mode="observe")
+    assert main(file_argv(amend_env)) == 1
+    assert "NF-1 already has 2" in capsys.readouterr().err
+    assert amend_env.linear.created == []
+
+
 def test_amend_tests_labels_the_pr_and_tells_the_running_session(amend_env, capsys):
     e = amend_env
     assert main(["--config", str(e.path), "amend-tests", "NF-1"]) == 0
@@ -912,4 +1101,4 @@ def test_shell_that_timed_out_exits_1_and_says_so(tmp_path, monkeypatch, capsys)
     path = _cfg_file(tmp_path)
     monkeypatch.setattr("flocc.agent.Agent.shell", lambda self, c: {"code": None, "output": ""})
     assert main(["--config", str(path), "shell", "--command=sleep 999"]) == 1
-    assert capsys.readouterr().out == "timed out after 90 s\n"
+    assert capsys.readouterr().out == "timed out after 540 s\n"

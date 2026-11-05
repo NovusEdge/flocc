@@ -98,6 +98,10 @@ def test_list_shows_defaults_and_what_the_file_sets(tmp_path, capsys):
     assert len(out) == len(settings.SETTABLE)
 
 
+def test_cardinal_file_on_is_a_settable_bool():
+    assert settings.SETTABLE["cardinal_file_on"][0] is bool
+
+
 def test_every_config_field_is_decided():
     fields = {f.name for f in dataclasses.fields(Config)}
     assert not settings.SETTABLE.keys() & settings.NOT_SETTABLE
