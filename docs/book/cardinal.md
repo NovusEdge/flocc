@@ -40,12 +40,15 @@ expiring or rejected), `daily` (the digest hour) and `host-pressure` (`/tmp` abo
 `tmp_max_pct`, memory available below `min_available_mem_gb`, or a new OOM kill; once per
 episode, and again for each new kill). Routine starts, fixers under the cap, reviews and rebases
 emit nothing.
+A stopped run's event also carries the stop's `cause` and its `type`: `agent` (cardinal may
+resume it), `owner`, `transient` (the service retries it once) or `repo` (the repo's base is
+broken). Other events carry null in both.
 
 ## What it can do
 
 cardinal's key runs only `flocc-cardinal-gate` on the executor, and only from cardinal's address.
 The gate splits the request without a shell and allows `events`, `ack`, `status`, `run-summary`,
-`resume` (and `fix`, an alias of `resume` for one release), `hold`, `release`, `cleanup`,
+`resume`, `hold`, `release`, `cleanup`,
 `cleanup --now`, `digest-data`, `host`, `stop-tests`, `shell`, `issue`, `pr`, `comment`, `pr-comment`, `search` and `file`, with every issue key
 matching `^[A-Z]+-[0-9]+$`. The six Linear and GitHub verbs run as the service user with its
 Linear key and publish token, so neither reaches `flocc-agent`; `file` only drafts unless

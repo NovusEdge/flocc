@@ -73,14 +73,15 @@ A session's state lives outside its context: commits in the worktree, its summar
 |---|---|
 | Session process gone while its claim is live | Restart once. On a second failure the claim blocks and the service comments on the issue |
 | Wall-clock limit reached | Kill the session, keep the branch, report in the digest |
-| The check fails | The same check runs on the base branch. If it fails the same way there, the repo is held as main-broken and no fix round starts. Otherwise up to `check_fix_rounds` (default 2) fresh fixer sessions, each with the failure output. After the last one fails, the claim blocks and the service comments on the issue |
+| The check fails | The same check runs on the base branch. If it fails the same way there, the repo is held as main-broken and no fix round starts. Otherwise up to `check_fix_rounds` (default 2) fresh fixer sessions, each with the failure output. After the last one fails, the claim blocks as `check-cap` and the service comments on the issue |
+| Publishing fails three ticks in a row | The claim blocks as `publish-failed`. 30 minutes later the service sets it running once more, for one more check and push. A second failure is yours |
 | An open PR conflicts with its base | One session merges the base and resolves the conflicts, then pushes to the same PR. A second conflict on the same base commit blocks |
 | Usage limit hit mid-run | The session waits for the reset. Nothing new is admitted until usage is below the thresholds |
 | Agent needs a decision | It takes the spec's default and passes what needs the owner as `--needs-owner` questions to `flocc done`, and the run ends blocked with those questions on the issue |
 | A turn ends without `flocc done` | The Stop hook refuses once. Ending again marks the session idle, and the run ends blocked with a comment on the issue. An API error other than a usage limit does the same |
 | A Linear, git or tmux call fails partway through a step | The claim's state changes only after the step's side effects succeed, so the next tick repeats the step |
 
-A blocked or timed-out issue keeps its claim until you release it. Release moves it back to Todo, and the next tick continues on the kept branch.
+Every stop has a cause, and each cause has a type that says who acts: `transient` (the service retries), `agent` (cardinal may resume), `owner` or `repo` (the base is broken). The table is `src/flocc/causes.py`. A blocked or timed-out issue keeps its claim until you release it. Release moves it back to Todo, and the next tick continues on the kept branch.
 
 ## Coordination between issues
 
