@@ -20,7 +20,7 @@ from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
 from flocc.sequence import SequenceError, parse_sequence
 from flocc.sessions import session_name
-from flocc.supervisor import BLOCKED, LAST_SUMMARY, QUESTIONS, launch
+from flocc.supervisor import BLOCKED, LAST_SUMMARY, QUESTIONS, RESUME_NOTE, launch
 from flocc.usage import latest_usage
 from flocc.worktree import (
     BranchDiverged,
@@ -389,6 +389,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         "base_held",
         "base_released",
         "cardinal_fix",
+        "cardinal_resume",
         "host_wait",
     ):
         ledger.meta_set(rt.con, f"{kept}:{issue.key}", "")
@@ -398,6 +399,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     (d / LAST_SUMMARY).unlink(missing_ok=True)
     (d / BLOCKED).unlink(missing_ok=True)
     (d / QUESTIONS).unlink(missing_ok=True)
+    (d / RESUME_NOTE).unlink(missing_ok=True)
     # A rerun on a kept branch that already holds the tester's commit resumes at the
     # executor: a fresh tester would block on adding nothing, and the guard would lose the
     # first run's tests.

@@ -13,7 +13,7 @@ from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.publisher import BranchMoved, PublishResult
 from flocc.runtime import Runtime
-from flocc.supervisor import BLOCKED, LaunchError, supervise
+from flocc.supervisor import BLOCKED, RESUME_NOTE, LaunchError, supervise
 from flocc.usage import write_status
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
@@ -1527,3 +1527,20 @@ def test_a_check_that_ends_goes_through_the_usual_outcomes(rt):
     assert current(rt).phase == "impl" and current(rt).fix_attempts == 0
     supervise(rt, current(rt))
     assert current(rt).phase == "fix" and current(rt).fix_attempts == 1
+
+
+def test_a_dead_session_s_restart_keeps_cardinal_s_resume_note(rt):
+    add(rt, phase="impl")
+    (state_dir(rt.cfg, "NF-1") / RESUME_NOTE).write_text("cardinal's note: finish db/schema.py")
+    supervise(rt, current(rt))
+    name, argv = rt.sessions.started[-1]
+    assert name == "NF-1" and any("finish db/schema.py" in a for a in argv)
+
+
+def test_a_finished_step_drops_the_resume_note(rt):
+    add(rt, phase="impl", tester_sha="sha-tests")
+    rt.sessions.alive_names.add("NF-1")
+    (state_dir(rt.cfg, "NF-1") / RESUME_NOTE).write_text("note")
+    done(rt)
+    supervise(rt, current(rt))
+    assert not (state_dir(rt.cfg, "NF-1") / RESUME_NOTE).exists()

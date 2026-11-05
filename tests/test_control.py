@@ -1,11 +1,13 @@
+import json
+
 import pytest
 
 from flocc import host, ledger
 from flocc.context import state_dir
-from flocc.control import Refused, start_fix
+from flocc.control import Refused, resume, resumes
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
-from flocc.supervisor import BLOCKED, FIX_CONTEXT, LaunchError
+from flocc.supervisor import BLOCKED, FIX_CONTEXT, RESUME_NOTE, LaunchError
 from tests.fakes import FakeLinear, FakeNotifier, FakeSessions
 from tests.test_ledger import make
 
@@ -29,7 +31,7 @@ def rt(tmp_cfg, tmp_path):
     )
 
 
-def blocked(rt, tmp_path, **kw):
+def blocked(rt, tmp_path, cause="idle", **kw):
     wt = tmp_path / "wt" / "NF-1"
     wt.mkdir(parents=True, exist_ok=True)
     c = make("NF-1", state="blocked", worktree=str(wt))
@@ -39,78 +41,137 @@ def blocked(rt, tmp_path, **kw):
     ledger.insert_claim(rt.con, c)
     d = state_dir(rt.cfg, "NF-1")
     d.mkdir(parents=True, exist_ok=True)
-    (d / BLOCKED).write_text("idle\n\nstopped twice")
+    if cause is not None:
+        (d / BLOCKED).write_text(f"{cause}\n\nwhy it stopped")
     return c
 
 
-def test_fix_starts_one_fixer_with_the_note(rt, tmp_path):
+def test_resume_after_idle_relaunches_the_executor_with_the_note(rt, tmp_path):
     blocked(rt, tmp_path)
-    claim = start_fix(rt, "NF-1", "The import path moved to flocc.events; update it.")
+    claim = resume(rt, "NF-1", "Finish the migration in db/schema.py, then run flocc done.")
     assert (claim.state, claim.phase, claim.fix_attempts, claim.started_at) == (
         "running",
-        "fix",
-        1,
+        "impl",
+        0,
         100.0,
     )
     name, argv = rt.sessions.started[-1]
-    assert name == "NF-1" and any("flocc.events" in a for a in argv)
+    assert name == "NF-1" and any("db/schema.py" in a for a in argv)
     d = state_dir(rt.cfg, "NF-1")
-    assert "flocc.events" in (d / FIX_CONTEXT).read_text() and not (d / BLOCKED).exists()
-    assert "cardinal started a fixer" in rt.linear.comments[-1]
+    assert "db/schema.py" in (d / RESUME_NOTE).read_text() and not (d / BLOCKED).exists()
+    assert rt.linear.comments[-1].startswith("cardinal resumed the executor after idle:")
+    assert ledger.meta_get(rt.con, "cardinal_resume:NF-1") == "1"
 
 
-def test_a_second_cardinal_fixer_on_the_same_run_is_refused(rt, tmp_path):
-    blocked(rt, tmp_path)
-    start_fix(rt, "NF-1", "first")
-    ledger.update_claim(rt.con, "NF-1", state="blocked")
-    with pytest.raises(Refused, match="already started a fixer"):
-        start_fix(rt, "NF-1", "second")
+def test_resume_answers_the_questions_in_the_tester_s_own_phase(rt, tmp_path):
+    blocked(rt, tmp_path, cause="needs-owner", phase="test")
+    d = state_dir(rt.cfg, "NF-1")
+    (d / "questions.json").write_text(json.dumps(["Which timezone do dates use?"]))
+    resume(rt, "NF-1", "UTC everywhere; the spec says so under Dates.")
+    name, argv = rt.sessions.started[-1]
+    prompt = " ".join(argv)
+    assert name == "NF-1-test"
+    assert "1. Which timezone do dates use?" in prompt and "UTC everywhere" in prompt
+    assert "answered the questions" in prompt
+
+
+def test_resume_after_a_repeated_check_failure_starts_a_fix_round_with_the_check(rt, tmp_path):
+    blocked(rt, tmp_path, cause="check-failed", phase="fix", fix_attempts=1)
+    d = state_dir(rt.cfg, "NF-1")
+    (d / FIX_CONTEXT).write_text("The check failed with:\n\nFAILED tests/test_a.py::test_x")
+    claim = resume(rt, "NF-1", "test_x needs the fixture from conftest, not a new one.")
+    assert (claim.phase, claim.fix_attempts) == ("fix", 2)
+    context = (d / FIX_CONTEXT).read_text()
+    assert context.index("needs the fixture") < context.index("FAILED tests/test_a.py::test_x")
+    assert not (d / RESUME_NOTE).exists()
+
+
+def test_resume_on_a_timed_out_run_says_so(rt, tmp_path):
+    blocked(rt, tmp_path, cause=None, state="timed_out")
+    resume(rt, "NF-1", "finish the migration")
+    assert "after it timed out" in (state_dir(rt.cfg, "NF-1") / RESUME_NOTE).read_text()
+    assert "after timed-out" in rt.linear.comments[-1]
 
 
 @pytest.mark.parametrize(
-    ("setup", "match"),
-    [
-        ({"state": "running"}, "is running"),
-        ({"state": "done"}, "is done"),
-        ({"phase": "test"}, "stopped at the tester"),
-        ({"fix_attempts": 2}, "used 2 of 2 fix rounds"),
-    ],
+    "cause", ["tests-touched", "branch-moved", "publish-failed", "rebase-conflict", "no-tests"]
 )
-def test_fix_is_refused_outside_its_window(rt, tmp_path, setup, match):
-    blocked(rt, tmp_path, **setup)
-    with pytest.raises(Refused, match=match):
-        start_fix(rt, "NF-1", "note")
+def test_the_owner_s_stops_are_refused(rt, tmp_path, cause):
+    blocked(rt, tmp_path, cause=cause)
+    with pytest.raises(Refused, match=f"stopped with {cause}"):
+        resume(rt, "NF-1", "note")
     assert rt.sessions.started == []
 
 
-def test_fix_is_refused_for_a_held_issue_and_without_a_note(rt, tmp_path):
+def test_a_block_with_no_recorded_cause_is_refused(rt, tmp_path):
+    blocked(rt, tmp_path, cause=None)
+    with pytest.raises(Refused, match="no recorded cause"):
+        resume(rt, "NF-1", "note")
+
+
+def test_a_check_failure_at_the_fix_cap_is_refused(rt, tmp_path):
+    blocked(rt, tmp_path, cause="check-failed", phase="fix", fix_attempts=2)
+    with pytest.raises(Refused, match="used 2 of 2 fix rounds"):
+        resume(rt, "NF-1", "note")
+
+
+def test_a_second_resume_on_the_same_run_is_refused(rt, tmp_path):
+    blocked(rt, tmp_path)
+    resume(rt, "NF-1", "first")
+    ledger.update_claim(rt.con, "NF-1", state="blocked")
+    (state_dir(rt.cfg, "NF-1") / BLOCKED).write_text("idle\n\nagain")
+    with pytest.raises(Refused, match="already resumed"):
+        resume(rt, "NF-1", "second")
+
+
+def test_a_run_the_old_fix_verb_marked_is_still_capped(rt, tmp_path):
+    blocked(rt, tmp_path)
+    ledger.meta_set(rt.con, "cardinal_fix:NF-1", "1")
+    with pytest.raises(Refused, match="already resumed"):
+        resume(rt, "NF-1", "note")
+
+
+@pytest.mark.parametrize(
+    ("setup", "match"), [({"state": "running"}, "is running"), ({"state": "done"}, "is done")]
+)
+def test_resume_is_refused_outside_its_window(rt, tmp_path, setup, match):
+    blocked(rt, tmp_path, **setup)
+    with pytest.raises(Refused, match=match):
+        resume(rt, "NF-1", "note")
+    assert rt.sessions.started == []
+
+
+def test_resume_is_refused_for_a_held_issue_and_without_a_note(rt, tmp_path):
     blocked(rt, tmp_path)
     with pytest.raises(Refused, match="pass a note"):
-        start_fix(rt, "NF-1", "  ")
+        resume(rt, "NF-1", "  ")
+    with pytest.raises(Refused, match="keep it under 2000"):
+        resume(rt, "NF-1", "x" * 2001)
     ledger.add_hold(rt.con, "NF-1", "wait", 1.0)
     with pytest.raises(Refused, match="is held"):
-        start_fix(rt, "NF-1", "note")
-
-
-def test_fix_on_a_timed_out_run_says_so_in_the_prompt(rt, tmp_path):
-    blocked(rt, tmp_path, state="timed_out")
-    start_fix(rt, "NF-1", "finish the migration")
-    assert "after the run timed out" in (state_dir(rt.cfg, "NF-1") / FIX_CONTEXT).read_text()
+        resume(rt, "NF-1", "note")
 
 
 def test_a_launch_that_fails_leaves_the_run_as_it_was(rt, tmp_path):
     blocked(rt, tmp_path)
     rt.cfg.agent_gh_token_file.unlink()
     with pytest.raises(LaunchError):
-        start_fix(rt, "NF-1", "note")
+        resume(rt, "NF-1", "note")
     assert ledger.get_claim(rt.con, "NF-1").state == "blocked"  # type: ignore[union-attr]
-    assert ledger.meta_get(rt.con, "cardinal_fix:NF-1") is None
+    assert ledger.meta_get(rt.con, "cardinal_resume:NF-1") is None
     assert (state_dir(rt.cfg, "NF-1") / BLOCKED).exists()
+    assert rt.linear.comments == [] and resumes(rt.con, 0.0) == []
 
 
-def test_fix_is_refused_while_the_host_is_under_pressure(rt, tmp_path):
+def test_resume_is_refused_while_the_host_is_under_pressure(rt, tmp_path):
     blocked(rt, tmp_path)
     host.open_episode(rt.con, 1.0, "/tmp 93% (2.8/3.0 GiB)")
     with pytest.raises(Refused, match="not now: host under pressure"):
-        start_fix(rt, "NF-1", "note")
+        resume(rt, "NF-1", "note")
     assert rt.sessions.started == []
+
+
+def test_each_resume_is_logged(rt, tmp_path):
+    blocked(rt, tmp_path, cause="needs-owner")
+    resume(rt, "NF-1", "answer")
+    assert resumes(rt.con, 0.0) == [(100.0, "NF-1", "needs-owner", "impl")]
