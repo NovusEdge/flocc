@@ -14,7 +14,7 @@ def bash(command):
 @pytest.mark.parametrize("tool", ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"])
 def test_dialog_tools_are_denied_with_the_way_forward(tool):
     reason = decide({"tool_name": tool, "tool_input": {}}, "impl", "/s")
-    assert reason is not None and KEEP_MOVING in reason and "Needs the owner" in reason
+    assert reason is not None and KEEP_MOVING in reason and "--needs-owner" in reason
 
 
 @pytest.mark.parametrize(

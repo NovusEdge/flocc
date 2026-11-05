@@ -10,14 +10,14 @@ _COMMANDS = """## Execution only
 
 The issue and the specs it names are the approved design. Do not brainstorm, write a plan for
 approval, or ask for design sign-off: nobody is at this session to approve it. Where the spec
-leaves a choice open, take its default; what needs the owner goes in your `flocc done` summary
-under a line that starts with "Needs the owner".
+leaves a choice open, take its default; pass each question only the owner can answer to
+`flocc done` as its own `--needs-owner '<question>'`.
 
 ## Commands
 
 - `flocc context` to see this text again.
-- `flocc done --summary '<one paragraph>'` when this step is finished; the reviewer runs
-  `flocc done` after writing review.md.
+- `flocc done --summary '<one paragraph>' [--needs-owner '<question>' ...]` when this step is
+  finished; the reviewer runs `flocc done` after writing review.md.
 - `flocc commit -m '<message>' -- <paths>` to commit only those paths.
 """
 

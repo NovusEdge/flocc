@@ -336,7 +336,7 @@ def test_changes_requested_starts_one_fix_round_on_the_review(rt):
     c = current(rt)
     assert (c.state, c.phase, c.fix_attempts, c.restarts) == ("running", "fix", 0, 0)
     name, argv = rt.sessions.started[-1]
-    assert name == "NF-1" and any("a.py:2 wrong" in a and "Needs the owner" in a for a in argv)
+    assert name == "NF-1" and any("a.py:2 wrong" in a and "--needs-owner" in a for a in argv)
     assert "fix round" in rt.linear.comments[-1]
     assert "Review: changes requested — https://pr/1" in rt.linear.comments[-1]
     assert ledger.meta_get(rt.con, "review_fix:NF-1") == "1"

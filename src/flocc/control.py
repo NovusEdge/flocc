@@ -27,8 +27,8 @@ def _fix_prompt(claim: Claim, note: str) -> str:
     return (
         f"cardinal, the owner's supervisor, started this fix round after the run {stopped}."
         f" Its note:\n\n{note}\n\nThe previous step's summary is in `flocc context`. Fix what"
-        " the note asks. What needs the owner goes in your summary under a line that starts"
-        ' with "Needs the owner". Then finish as usual.'
+        " the note asks. Pass what needs the owner to flocc done as --needs-owner '<question>',"
+        " one per question. Then finish as usual."
     )
 
 

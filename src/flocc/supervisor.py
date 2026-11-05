@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -337,9 +338,8 @@ def _start_review_fix(rt, claim: Claim, review: str) -> bool:
     extra = (
         f"The reviewer asked for changes:\n\n{review.strip()}\n\n"
         "Fix what the review asks that is agent work. For what needs the owner (a manual run, a"
-        " product decision, a question for the lead), make no change and list it in your"
-        ' `flocc done` summary under a line that starts with "Needs the owner". Then finish as'
-        " usual."
+        " product decision, a question for the lead), make no change and pass it to `flocc done`"
+        " as `--needs-owner '<item>'`, one per item. Then finish as usual."
     )
     d = state_dir(rt.cfg, key)
     start = rt.now()
@@ -444,7 +444,7 @@ def _ask_owner(rt, claim: Claim, questions: list[str]) -> None:
 
 
 def _finish_phase(
-    rt, claim: Claim, summary: str, questions: list[str] = (), outcome: str = "work"
+    rt, claim: Claim, summary: str, questions: Sequence[str] = (), outcome: str = "work"
 ) -> None:
     key = claim.issue_key
     # Before the usage record, which would add a row on every tick of the wait.

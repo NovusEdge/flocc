@@ -496,7 +496,7 @@ def test_a_release_no_start_followed_for_a_week_delivers_nothing(rt):
     text = (state_dir(rt.cfg, "NF-9") / "context.md").read_text()
     assert "fix the query guard" not in text
     c = ledger.get_claim(rt.con, "NF-9")
-    assert c is not None and c.last_comment_at.startswith("1970-01-09")
+    assert c is not None and (c.last_comment_at or "").startswith("1970-01-09")
 
 
 def test_a_second_start_does_not_repeat_the_comments(rt):

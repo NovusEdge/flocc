@@ -11,9 +11,10 @@ Write tests for the issue's acceptance criteria and nothing else.
 - Do not write implementation code.
 - Commit them with `flocc commit -m '<message naming the criteria>' -- <paths>`.
 - Where the spec leaves a choice open, take its default. Nobody answers questions in this
-  session; if a criterion cannot be tested without the owner, write that under a line that
-  starts with `Needs the owner` in your summary, and the run ends blocked. Leave the line out
-  when nothing needs the owner.
+  session; if a criterion cannot be tested without the owner, pass the question as
+  `--needs-owner '<question>'` to `flocc done`, one flag per question, and the run ends blocked.
+  If the issue needs no tests because the behaviour already exists, run
+  `flocc done --nothing-to-do '<why>'` instead.
 - To look up how a library or API behaves, use `flocc:source-finder` then `flocc:source-reader`,
   with today's date in the task. Start no other agents.
 - Never push or touch Linear.

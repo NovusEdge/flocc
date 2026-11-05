@@ -87,7 +87,7 @@ Host sessions run in `bypassPermissions`, so no permission dialog can hold one, 
 
 The service comments on the issue when a run blocks, when `./setup` fails at prepare, and when a turn ends without `flocc done`. Problems that belong to no issue, such as a failed tick, an expiring GitHub token or a lapsed Claude login, go to the digest issue and the service log. Nothing is pushed to your phone.
 
-A session does not ask you questions. Where the spec leaves a choice open it takes the default, and it lists what needs you under "Needs the owner" in its `flocc done` summary. That ends the run blocked with the list on the issue; in the review fix round it goes into the final comment instead. To steer a running session, comment on the issue; the service types the comment into the session.
+A session does not ask you questions. Where the spec leaves a choice open it takes the default, and it passes what needs you as `--needs-owner` questions to `flocc done`. That ends the run blocked with the questions on the issue; in the review fix round it goes into the final comment instead. To steer a running session, comment on the issue; the service types the comment into the session.
 
 ## Upgrade notes
 
