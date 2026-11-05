@@ -502,6 +502,64 @@ def cmd_amend_tests(args) -> int:
     return 0
 
 
+def _reach_runtime(args, verb: str, key: str | None):
+    """The runtime for one of cardinal's Linear and GitHub verbs, or None after a refusal. They
+    run as the service user with its own Linear key and publish token, and touch no claim, so
+    they take no tick lock."""
+    from flocc import reach
+    from flocc.tick import build_runtime
+
+    cfg, path = _config(args)
+    if key is not None and not reach.in_team(cfg, key):
+        print(f"{verb}: {key} is not an {cfg.team_key} issue", file=sys.stderr)
+        return None
+    return build_runtime(cfg, path)
+
+
+def cmd_issue(args) -> int:
+    from flocc import reach
+    from flocc.linear import LinearError
+
+    if (rt := _reach_runtime(args, "issue", args.key)) is None:
+        return 1
+    try:
+        print(reach.render_issue(rt.linear.issue_detail(args.key)))
+    except LinearError as exc:
+        print(f"issue: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_search(args) -> int:
+    from flocc import reach
+    from flocc.linear import LinearError
+
+    if (rt := _reach_runtime(args, "search", None)) is None:
+        return 1
+    try:
+        print(reach.render_search(rt.linear.search(rt.cfg.team_key, args.query)))
+    except LinearError as exc:
+        print(f"search: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_comment(args) -> int:
+    from flocc import reach
+    from flocc.linear import LinearError
+
+    if (rt := _reach_runtime(args, "comment", args.key)) is None:
+        return 1
+    try:
+        rt.linear.comment(rt.linear.issue(args.key).id, f"cardinal: {args.text}")
+    except LinearError as exc:
+        print(f"comment: {exc}", file=sys.stderr)
+        return 1
+    reach.record_write(rt.con, rt.now(), "comment", args.key, args.text)
+    print(f"commented on {args.key}")
+    return 0
+
+
 def cmd_run_summary(args) -> int:
     from flocc.status import issue_lines
     from flocc.summary import run_summary
@@ -954,6 +1012,9 @@ COMMANDS = {
     "host-report": cmd_host_report,
     "stop-tests": cmd_stop_tests,
     "amend-tests": cmd_amend_tests,
+    "issue": cmd_issue,
+    "search": cmd_search,
+    "comment": cmd_comment,
     "shell": cmd_shell,
     "config": cmd_config,
 }
@@ -1045,6 +1106,13 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     am = add("amend-tests", "Add the repo's amended-tests label to an issue's PR for cardinal")
     am.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    iss = add("issue", "Print an issue's text, labels, relations and comments for cardinal")
+    iss.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    se = add("search", "List the team's open issues whose title or description holds the text")
+    se.add_argument("--query", required=True, help="text to look for")
+    cm = add("comment", "Comment on an issue as cardinal; logged for the digest")
+    cm.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    cm.add_argument("--text", required=True, help="the comment")
     sh = add(
         "shell", "Run one command as flocc-agent for cardinal's agent-shell; logged for the digest"
     )

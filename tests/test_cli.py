@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from flocc import canary, ledger
+from flocc import canary, ledger, reach
 from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.host import STOPPED
@@ -25,6 +25,7 @@ from flocc.tick import tick_lock
 from tests.fakes import FakeAgent, FakeLinear, FakeNotifier, FakeSessions
 from tests.paths import EXAMPLE
 from tests.test_ledger import make
+from tests.test_reach import detail
 
 
 def _cfg_file(tmp_path):
@@ -836,6 +837,53 @@ def amend_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     return types.SimpleNamespace(path=path, rt=rt, gh=gh, linear=linear, sessions=sessions)
+
+
+def test_issue_prints_the_rendered_issue(amend_env, capsys):
+    amend_env.linear.detail = detail()
+    assert main(["--config", str(amend_env.path), "issue", "NF-1"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith(reach.DATA_NOTE) and "NF-1: Fix rounding" in out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["issue", "ENG-4"],
+        ["comment", "ENG-4", "--text", "hi"],
+        ["pr", "ENG-4"],
+        ["pr-comment", "ENG-4", "--text", "hi"],
+        ["file", "ENG-4", "--title", "t", "--text", "x"],
+    ],
+)
+def test_every_reach_verb_refuses_another_team_s_issue_before_any_call(amend_env, argv, capsys):
+    assert main(["--config", str(amend_env.path), *argv]) == 1
+    assert "ENG-4 is not an NF issue" in capsys.readouterr().err
+    assert amend_env.gh == [] and amend_env.linear.comments == [] and amend_env.linear.created == []
+
+
+def test_search_prints_the_team_s_matches(amend_env, capsys):
+    amend_env.linear.found = [("NF-5", "Backlog", "Flaky export")]
+    assert main(["--config", str(amend_env.path), "search", "--query", "export"]) == 0
+    assert "- NF-5 (Backlog): Flaky export" in capsys.readouterr().out
+
+
+def test_comment_posts_as_cardinal_and_logs_the_write(amend_env, capsys):
+    assert main(["--config", str(amend_env.path), "comment", "NF-1", "--text", "Answered."]) == 0
+    assert amend_env.linear.comments == ["cardinal: Answered."]
+    [w] = reach.writes(amend_env.rt.con, 0.0)
+    assert (w["kind"], w["key"], w["text"]) == ("comment", "NF-1", "Answered.")
+    assert "commented on NF-1" in capsys.readouterr().out
+
+
+def test_a_linear_failure_is_reported_and_logs_nothing(amend_env, monkeypatch, capsys):
+    def fail(issue_id, text):
+        raise LinearError("rate limited")
+
+    monkeypatch.setattr(amend_env.linear, "comment", fail)
+    assert main(["--config", str(amend_env.path), "comment", "NF-1", "--text", "x"]) == 1
+    assert "comment: rate limited" in capsys.readouterr().err
+    assert reach.writes(amend_env.rt.con, 0.0) == []
 
 
 def test_amend_tests_labels_the_pr_and_tells_the_running_session(amend_env, capsys):
