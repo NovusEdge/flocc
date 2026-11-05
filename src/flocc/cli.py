@@ -18,6 +18,8 @@ def _state_dir() -> Path:
 
 
 _KEY = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
+# The heading agents used before --needs-owner; a summary still using it would hide the question.
+_OWNER_LINE = re.compile(r"^[\s#*-]*needs the owner", re.IGNORECASE | re.MULTILINE)
 
 
 def _issue_key(raw: str) -> str:
@@ -203,9 +205,9 @@ def _hook_input(strict: bool = False) -> dict:
 
 
 STOP_REASON = (
-    "flocc done has not run, so this run is not finished. Finish the work and run flocc done,"
-    ' or write what needs the owner under a line that starts with "Needs the owner" in your'
-    " summary and run flocc done. Nobody answers questions in this session."
+    "flocc done has not run, so this run is not finished. Finish the work and run flocc done;"
+    " pass each question only the owner can answer as its own --needs-owner '<question>'."
+    " Nobody answers questions in this session."
 )
 
 
@@ -266,20 +268,46 @@ def cmd_session_start(args) -> int:
     return cmd_context(args)
 
 
+def _done_refused(why: str) -> int:
+    print(f"done: {why}", file=sys.stderr)
+    return 2
+
+
 def cmd_done(args) -> int:
     state = _state_dir()
-    if os.environ.get("FLOCC_PHASE") == "review":
+    phase = os.environ.get("FLOCC_PHASE")
+    questions = [q.strip() for q in args.needs_owner]
+    nothing = args.nothing_to_do
+    if not all(questions):
+        return _done_refused("a --needs-owner question is empty")
+    if phase == "review":
+        if questions or nothing is not None:
+            return _done_refused("the reviewer puts owner items in review.md under ## Important")
         review = state / "review.md"
         if not review.exists() or not review.read_text().strip():
             print(f"done: write {review} first; the service posts it", file=sys.stderr)
             return 1
-        summary = "review"
+        summary, outcome = "review", "work"
+    elif nothing is not None:
+        if phase not in ("test", "impl"):
+            return _done_refused("--nothing-to-do is for the tester and the executor")
+        if questions or args.summary is not None:
+            return _done_refused("--nothing-to-do stands alone; its reason is the summary")
+        if not nothing.strip():
+            return _done_refused("--nothing-to-do needs the reason")
+        summary, outcome = nothing.strip(), "nothing"
     elif not (args.summary or "").strip():
         print("done: pass --summary '<what you did, for the PR body>'", file=sys.stderr)
         return 2
+    elif _OWNER_LINE.search(args.summary):
+        return _done_refused(
+            "pass each question for the owner as its own --needs-owner '<question>',"
+            " not under a Needs the owner line in --summary"
+        )
     else:
-        summary = args.summary
-    (state / "done.json").write_text(json.dumps({"summary": summary, "at": time.time()}))
+        summary, outcome = args.summary, "work"
+    record = {"summary": summary, "at": time.time(), "questions": questions, "outcome": outcome}
+    (state / "done.json").write_text(json.dumps(record))
     print("marked done; the service takes over on its next run")
     return 0
 
@@ -968,6 +996,19 @@ def build_parser() -> argparse.ArgumentParser:
     com.add_argument("paths", nargs=argparse.REMAINDER, help="-- then the paths to commit")
     done = add("done", "Mark this step done (the reviewer's review.md, or --summary)")
     done.add_argument("--summary", default=None, help="what was done, for the PR body")
+    done.add_argument(
+        "--needs-owner",
+        action="append",
+        default=[],
+        metavar="QUESTION",
+        help="a question only the owner can answer; repeat per question; the run ends blocked",
+    )
+    done.add_argument(
+        "--nothing-to-do",
+        default=None,
+        metavar="WHY",
+        help="tester or executor: the work is not needed; ends the run without a PR",
+    )
     add("tick", "Run one service tick")
     add("run", "Run ticks in a loop")
     rel = add("release", "Clear a claim and kill its session")
