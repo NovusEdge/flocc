@@ -18,7 +18,7 @@ from flocc import canary, ledger, reach
 from flocc.cli import build_parser, main
 from flocc.config import load
 from flocc.host import STOPPED
-from flocc.linear import LinearError
+from flocc.linear import BOT_PREFIX, LinearError
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.tick import tick_lock
@@ -883,6 +883,66 @@ def test_a_linear_failure_is_reported_and_logs_nothing(amend_env, monkeypatch, c
     monkeypatch.setattr(amend_env.linear, "comment", fail)
     assert main(["--config", str(amend_env.path), "comment", "NF-1", "--text", "x"]) == 1
     assert "comment: rate limited" in capsys.readouterr().err
+    assert reach.writes(amend_env.rt.con, 0.0) == []
+
+
+PR_FIELDS = (
+    "state,mergeable,reviewDecision,additions,deletions,changedFiles,statusCheckRollup,"
+    "reviews,comments"
+)
+
+
+def test_pr_prints_the_claim_s_pr_with_the_publish_token(amend_env, monkeypatch, capsys):
+    calls = []
+
+    def run(argv, **kw):
+        calls.append((argv, kw["env"]["GH_TOKEN"]))
+        return subprocess.CompletedProcess(argv, 0, json.dumps({"state": "OPEN"}), "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert main(["--config", str(amend_env.path), "pr", "NF-1"]) == 0
+    url = "https://github.com/o/r/pull/7"
+    assert calls == [(["gh", "pr", "view", url, "--json", PR_FIELDS], "ghp_publish")]
+    assert "State: OPEN" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", [["pr"], ["pr-comment", "--text", "x"]])
+def test_pr_verbs_without_a_pr_or_a_claim_are_refused_before_gh(amend_env, verb, capsys):
+    (amend_env.rt.cfg.state_root / "NF-1" / "pr-url").unlink()
+    assert main(["--config", str(amend_env.path), verb[0], "NF-1", *verb[1:]]) == 1
+    assert "NF-1 has no PR" in capsys.readouterr().err
+    assert main(["--config", str(amend_env.path), verb[0], "NF-404", *verb[1:]]) == 1
+    assert "no claim for NF-404" in capsys.readouterr().err
+    assert amend_env.gh == []
+
+
+def test_pr_comment_posts_as_cardinal_and_logs_the_write(amend_env, monkeypatch, capsys):
+    bodies = []
+
+    def run(argv, **kw):
+        bodies.append((argv, kw["input"], kw["env"]["GH_TOKEN"]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert main(["--config", str(amend_env.path), "pr-comment", "NF-1", "--text", "LGTM"]) == 0
+    url = "https://github.com/o/r/pull/7"
+    assert bodies == [
+        (
+            ["gh", "pr", "comment", url, "--body-file", "-"],
+            f"{BOT_PREFIX} cardinal: LGTM",
+            "ghp_publish",
+        )
+    ]
+    assert [w["kind"] for w in reach.writes(amend_env.rt.con, 0.0)] == ["pr-comment"]
+
+
+def test_a_failed_pr_comment_is_reported_and_logs_nothing(amend_env, monkeypatch, capsys):
+    def fail(argv, **kw):
+        raise subprocess.CalledProcessError(1, argv, stderr="HTTP 403")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    assert main(["--config", str(amend_env.path), "pr-comment", "NF-1", "--text", "x"]) == 1
+    assert "pr-comment: HTTP 403" in capsys.readouterr().err
     assert reach.writes(amend_env.rt.con, 0.0) == []
 
 

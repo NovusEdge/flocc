@@ -467,6 +467,24 @@ def pr_view(claim: Claim, url: str, token: str, runner=subprocess.run) -> dict:
     return json.loads(out.stdout)
 
 
+PR_DETAIL_FIELDS = (
+    "state,mergeable,reviewDecision,additions,deletions,changedFiles,statusCheckRollup,reviews,"
+    "comments"
+)
+
+
+def pr_detail(url: str, token: str, runner=subprocess.run) -> dict:
+    out = runner(
+        ["gh", "pr", "view", url, "--json", PR_DETAIL_FIELDS],
+        cwd=None,
+        env={**os.environ, "GH_TOKEN": token},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(out.stdout)
+
+
 def comment_on_pr(claim: Claim, url: str, body: str, token: str, runner=subprocess.run) -> None:
     # The body goes in on stdin: a long review would otherwise ride on the command line.
     runner(

@@ -560,6 +560,59 @@ def cmd_comment(args) -> int:
     return 0
 
 
+def _claim_pr(rt, verb: str, key: str):
+    from flocc.publisher import pr_url
+
+    claim = ledger.get_claim(rt.con, key)
+    if claim is None:
+        print(f"{verb}: no claim for {key}", file=sys.stderr)
+        return None, None
+    url = pr_url(rt, claim)
+    if url is None:
+        print(f"{verb}: {key} has no PR", file=sys.stderr)
+        return None, None
+    return claim, url
+
+
+def cmd_pr(args) -> int:
+    from flocc import reach
+    from flocc.publisher import pr_detail
+
+    if (rt := _reach_runtime(args, "pr", args.key)) is None:
+        return 1
+    _, url = _claim_pr(rt, "pr", args.key)
+    if url is None:
+        return 1
+    try:
+        view = pr_detail(url, rt.cfg.publish_gh_token_file.read_text().strip(), subprocess.run)
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        print(f"pr: {(getattr(exc, 'stderr', '') or str(exc)).strip()}", file=sys.stderr)
+        return 1
+    print(reach.render_pr(url, view))
+    return 0
+
+
+def cmd_pr_comment(args) -> int:
+    from flocc import reach
+    from flocc.linear import BOT_PREFIX
+    from flocc.publisher import comment_on_pr
+
+    if (rt := _reach_runtime(args, "pr-comment", args.key)) is None:
+        return 1
+    claim, url = _claim_pr(rt, "pr-comment", args.key)
+    if claim is None or url is None:
+        return 1
+    token = rt.cfg.publish_gh_token_file.read_text().strip()
+    try:
+        comment_on_pr(claim, url, f"{BOT_PREFIX} cardinal: {args.text}", token, subprocess.run)
+    except subprocess.CalledProcessError as exc:
+        print(f"pr-comment: {(exc.stderr or str(exc)).strip()}", file=sys.stderr)
+        return 1
+    reach.record_write(rt.con, rt.now(), "pr-comment", args.key, args.text)
+    print(f"commented on {url}")
+    return 0
+
+
 def cmd_run_summary(args) -> int:
     from flocc.status import issue_lines
     from flocc.summary import run_summary
@@ -1015,6 +1068,8 @@ COMMANDS = {
     "issue": cmd_issue,
     "search": cmd_search,
     "comment": cmd_comment,
+    "pr": cmd_pr,
+    "pr-comment": cmd_pr_comment,
     "shell": cmd_shell,
     "config": cmd_config,
 }
@@ -1113,6 +1168,11 @@ def build_parser() -> argparse.ArgumentParser:
     cm = add("comment", "Comment on an issue as cardinal; logged for the digest")
     cm.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
     cm.add_argument("--text", required=True, help="the comment")
+    pr = add("pr", "Print the state, checks, reviews and comments of an issue's PR for cardinal")
+    pr.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    pc = add("pr-comment", "Comment on an issue's PR as cardinal; logged for the digest")
+    pc.add_argument("key", type=_issue_key, help="issue key, e.g. NF-12")
+    pc.add_argument("--text", required=True, help="the comment")
     sh = add(
         "shell", "Run one command as flocc-agent for cardinal's agent-shell; logged for the digest"
     )
