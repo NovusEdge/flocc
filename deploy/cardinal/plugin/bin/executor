@@ -3,7 +3,7 @@
 # so every argument goes single-quoted, with its own quotes escaped.
 set -eu
 if [ "${1:-}" = shell ]; then
-  echo "executor: shell goes through agent-shell, which asks the owner first" >&2
+  echo "executor: shell goes through agent-shell" >&2
   exit 2
 fi
 line=""

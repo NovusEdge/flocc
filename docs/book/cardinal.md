@@ -56,8 +56,9 @@ web and MCP tools. A managed PreToolUse hook,
 `only-executor`, refuses any Bash command that is not one call to `executor` or `agent-shell`, or
 that holds a shell operator, so cardinal cannot read its own key or Claude login. `executor`
 refuses `shell`: the only way to the gate's `shell` verb is `agent-shell`, which runs one command
-as `flocc-agent` with a 120-second timeout and lists it in the next digest. It does not ask you
+as `flocc-agent` with a 540-second timeout and lists it in the next digest. It does not ask you
 first: `flocc-agent` is the user every agent session already runs as in `bypassPermissions` mode.
+Triage uses it to read a run's worktree, git history, check output and logs, and for host repairs.
 
 ## Daily fresh start
 

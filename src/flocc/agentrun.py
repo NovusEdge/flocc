@@ -856,9 +856,9 @@ def stop_tests(req: dict) -> dict:
     return {"claude": claude, "killed": killed, "containers": removed, "testcontainers": unowned}
 
 
-# Under Claude Code's 2-minute tool timeout, so the command's own timeout reply arrives first.
-SHELL_TIMEOUT_S = 90
-SHELL_CHARS = 8000
+# Agent.shell waits 30 s longer, and cardinal's Bash call for agent-shell allows 600 s.
+SHELL_TIMEOUT_S = 540
+SHELL_CHARS = 24_000
 
 
 def shell(req: dict) -> dict:
