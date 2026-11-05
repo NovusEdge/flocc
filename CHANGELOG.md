@@ -11,6 +11,11 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
   owner" heading is refused. `flocc done --nothing-to-do '<why>'` ends a tester or executor run
   done without a PR, and an executor that finishes with no commits now blocks as `no-changes`
   instead of failing publish three times with "Fix the push or the gh token".
+- cardinal's `fix` verb becomes `resume`: it restarts a blocked or timed-out run once, on its
+  kept branch and in the step that stopped, with a note. After `needs-owner` the note answers the
+  agent's questions. It is refused for `tests-touched`, `branch-moved`, `publish-failed`,
+  `rebase-conflict`, `no-tests` and a check at its last fix round. The daily digest counts the
+  resumes and how many ended done. `fix` still works as an alias for one release.
 - A rerun reads your comments: owner and steering comments posted after the previous run stopped
   go into the restarted session's `context.md` under "Comments since the last run", whether the
   issue went back to Todo by hand or through `flocc release`. Before, only comments posted during

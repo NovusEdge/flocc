@@ -65,7 +65,7 @@ def argv_for(command: str) -> list[str]:
             # Only bin/agent-shell sends this verb, and cardinal's managed settings make every
             # agent-shell call ask the owner.
             return [verb, f"--command={_text(command, 'command')}"]
-        case ("resume" | "fix"), [key, "--note", note]:
+        case (("resume" | "fix"), [key, "--note", note]):
             # fix is the verb resume replaced; cardinal's VM and the executor deploy separately.
             return ["resume", _key(key), f"--note={_text(note, 'note')}"]
         case "hold", [key]:

@@ -507,7 +507,8 @@ def _finish_phase(
             claim,
             "no-changes",
             f"The {ARCHETYPE['impl']} finished with no commits.",
-            "Comment what it should do and move the issue back to Todo, or close the issue",
+            "Resume it with a note, or comment what it should do and move the issue back to Todo,"
+            " or close the issue",
         )
         return
     issue = rt.linear.issue(key)

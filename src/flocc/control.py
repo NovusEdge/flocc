@@ -99,11 +99,15 @@ def resume(rt, key: str, note: str) -> Claim:
         raise Refused(f"{key} is {claim.state}; cardinal resumes only a blocked or timed-out run")
     cause = stop_cause(rt, claim)
     if cause not in RESUMABLE:
-        raise Refused(f"{key} stopped with {cause or 'no recorded cause'}; that stop is the owner's")
+        raise Refused(
+            f"{key} stopped with {cause or 'no recorded cause'}; that stop is the owner's"
+        )
     cap = rt.cfg.check_fix_rounds
     # The same-failure block and the cap block share the cause; only the rounds tell them apart.
     if cause == "check-failed" and claim.fix_attempts >= cap:
-        raise Refused(f"{key} used {claim.fix_attempts} of {cap} fix rounds; that stop is the owner's")
+        raise Refused(
+            f"{key} used {claim.fix_attempts} of {cap} fix rounds; that stop is the owner's"
+        )
     if any(ledger.meta_get(rt.con, f"{k}:{key}") for k in _CAPS):
         raise Refused(f"cardinal already resumed this run of {key}")
     if key in ledger.issue_holds(rt.con):
