@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from flocc import events, host, ledger
@@ -101,3 +103,29 @@ def test_digest_data_lists_the_day_s_agent_shell_calls(tmp_cfg, con):
     assert "## Commands cardinal ran with agent-shell in the last 24 hours" in text
     assert "exit 0: du -sh /tmp/pytest-of-flocc-agent" in text
     assert "no exit status: sleep 999" in text and "old command" not in text
+
+
+def test_digest_data_lists_cardinal_s_resumes_and_how_they_ended(tmp_cfg, con):
+    for key, state in (("NF-1", "done"), ("NF-2", "blocked")):
+        ledger.insert_claim(con, make(key, state=state))
+    now = 8 * 86_400.0
+    rows = [(now - 100, "NF-1", "needs-owner", "impl"), (now - 50, "NF-2", "idle", "impl")]
+    rows.append((50.0, "NF-1", "crash", "impl"))
+    for at, key, cause, phase in rows:
+        value = json.dumps({"at": at, "key": key, "cause": cause, "phase": phase})
+        ledger.meta_set(con, f"resume_log:{at:.6f}", value)
+    text, _ = digest_data(tmp_cfg, con, now)
+    assert "## Runs cardinal resumed in the last 7 days" in text
+    assert "- 2 resumed, 1 ended done" in text
+    assert "- NF-1 after needs-owner: done" in text and "- NF-2 after idle: blocked" in text
+    assert "after crash" not in text
+
+
+def test_a_resumed_claim_the_owner_reran_says_so(tmp_cfg, con):
+    ledger.meta_set(
+        con,
+        "resume_log:10.000000",
+        json.dumps({"at": 10.0, "key": "NF-5", "cause": "idle", "phase": "impl"}),
+    )
+    text, _ = digest_data(tmp_cfg, con, 100.0)
+    assert "- NF-5 after idle: no claim" in text

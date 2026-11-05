@@ -3,7 +3,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
-from flocc import events, host, ledger
+from flocc import control, events, host, ledger
 from flocc.config import Config
 from flocc.context import state_dir
 from flocc.publisher import failure_excerpt
@@ -129,6 +129,16 @@ def digest_data(cfg: Config, con, now: float) -> tuple[str, int]:
         ],
         LIST_ROWS,
     )
+    out += ["", "## Runs cardinal resumed in the last 7 days"]
+    lines, ended_done = [], 0
+    for _, key, cause, _ in control.resumes(con, now - 7 * 86400):
+        c = ledger.get_claim(con, key)
+        state = c.state.replace("_", " ") if c else "no claim"
+        ended_done += state == "done"
+        lines.append(f"- {key} after {cause}: {state}")
+    if lines:
+        lines.insert(0, f"- {len(lines)} resumed, {ended_done} ended done")
+    out += _capped(lines, LIST_ROWS)
     through = shown[-1][0] if shown else 0
     out += ["", f"When the digest is sent: flocc digest-data --done {through}"]
     return "\n".join(out), through
