@@ -25,6 +25,13 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
   go into the restarted session's `context.md` under "Comments since the last run", whether the
   issue went back to Todo by hand or through `flocc release`. Before, only comments posted during
   a run reached it, so "comment, then move to Todo" restarted without the comment.
+- A comment on a done issue whose PR is still open starts a fix session on the same branch: from
+  you or a `steer_authors` id, five minutes after the last one, within 7 days of the run's last
+  session. It pushes to the open PR without a new review and comments on the issue; owner items
+  go in that comment, and `flocc done --nothing-to-do` ends it without a push. `comment_fix_max`
+  (default 3, not settable) caps them per run; later comments wait for a Todo rerun. Comments
+  posted during a review or a rebase are no longer typed into those sessions; they wait for the
+  run to finish. Comments from before the upgrade never start one.
 - A branch's check no longer times out while it waits on a lock, such as nimblefox's machine-wide
   suite lock held by another worktree: time a process of the check spends blocked in
   `/proc/locks` on a lock held outside the check does not count against `check_timeout_s`. systemd allows 4 h of waiting on top,
