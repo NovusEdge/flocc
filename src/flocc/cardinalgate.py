@@ -10,6 +10,8 @@ import sys
 KEY = re.compile(r"[A-Z]+-[0-9]+")
 _ID = re.compile(r"[0-9]+")
 NOTE_CHARS = 2000
+TITLE_CHARS = 200
+QUERY_CHARS = 200
 
 
 class Refused(ValueError):
@@ -22,9 +24,9 @@ def _key(word: str) -> str:
     return word
 
 
-def _text(word: str, what: str) -> str:
-    if not word.strip() or len(word) > NOTE_CHARS or "\0" in word:
-        raise Refused(f"the {what} must be 1 to {NOTE_CHARS} characters")
+def _text(word: str, what: str, limit: int = NOTE_CHARS) -> str:
+    if not word.strip() or len(word) > limit or "\0" in word:
+        raise Refused(f"the {what} must be 1 to {limit} characters")
     return word
 
 
@@ -62,12 +64,25 @@ def argv_for(command: str) -> list[str]:
         case (("stop-tests" | "amend-tests"), [key]):
             return [verb, _key(key)]
         case "shell", [command]:
-            # Only bin/agent-shell sends this verb, and cardinal's managed settings make every
-            # agent-shell call ask the owner.
+            # Only bin/agent-shell sends this verb; bin/executor refuses it.
             return [verb, f"--command={_text(command, 'command')}"]
         case (("resume" | "fix"), [key, "--note", note]):
             # fix is the verb resume replaced; cardinal's VM and the executor deploy separately.
             return ["resume", _key(key), f"--note={_text(note, 'note')}"]
+        case (("issue" | "pr"), [key]):
+            return [verb, _key(key)]
+        case (("comment" | "pr-comment"), [key, "--text", text]):
+            return [verb, _key(key), f"--text={_text(text, 'text')}"]
+        case "search", ["--query", query]:
+            return [verb, f"--query={_text(query, 'query', QUERY_CHARS)}"]
+        case "file", [key, "--title", title, "--text", text]:
+            # No label option: the service adds cardinal-draft and nothing else.
+            return [
+                verb,
+                _key(key),
+                f"--title={_text(title, 'title', TITLE_CHARS)}",
+                f"--text={_text(text, 'text')}",
+            ]
         case "hold", [key]:
             return [verb, _key(key)]
         case "hold", [key, "--reason", reason]:
