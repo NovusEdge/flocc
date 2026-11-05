@@ -516,6 +516,16 @@ def _reach_runtime(args, verb: str, key: str | None):
     return build_runtime(cfg, path)
 
 
+def _in_team_now(rt, verb: str, key: str, found: str) -> bool:
+    """Linear resolves the old key of an issue that moved teams; refuse on the key it returns."""
+    from flocc import reach
+
+    if reach.in_team(rt.cfg, found):
+        return True
+    print(f"{verb}: {key} is now {found}, not an {rt.cfg.team_key} issue", file=sys.stderr)
+    return False
+
+
 def cmd_issue(args) -> int:
     from flocc import reach
     from flocc.linear import LinearError
@@ -523,10 +533,13 @@ def cmd_issue(args) -> int:
     if (rt := _reach_runtime(args, "issue", args.key)) is None:
         return 1
     try:
-        print(reach.render_issue(rt.linear.issue_detail(args.key)))
+        detail = rt.linear.issue_detail(args.key)
     except LinearError as exc:
         print(f"issue: {exc}", file=sys.stderr)
         return 1
+    if not _in_team_now(rt, "issue", args.key, detail.key):
+        return 1
+    print(reach.render_issue(detail))
     return 0
 
 
@@ -551,7 +564,10 @@ def cmd_comment(args) -> int:
     if (rt := _reach_runtime(args, "comment", args.key)) is None:
         return 1
     try:
-        rt.linear.comment(rt.linear.issue(args.key).id, f"cardinal: {args.text}")
+        issue = rt.linear.issue(args.key)
+        if not _in_team_now(rt, "comment", args.key, issue.key):
+            return 1
+        rt.linear.comment(issue.id, f"cardinal: {args.text}")
     except LinearError as exc:
         print(f"comment: {exc}", file=sys.stderr)
         return 1
@@ -628,6 +644,8 @@ def cmd_file(args) -> int:
         return 0
     try:
         source = rt.linear.issue_detail(args.key)
+        if not _in_team_now(rt, "file", args.key, source.key):
+            return 1
         # Only the draft label: the trigger label would start paid work nobody asked for.
         labels = rt.linear.label_ids(rt.cfg.team_key, [reach.DRAFT_LABEL])
         if reach.DRAFT_LABEL not in labels:

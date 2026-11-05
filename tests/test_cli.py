@@ -946,6 +946,19 @@ def test_a_failed_pr_comment_is_reported_and_logs_nothing(amend_env, monkeypatch
     assert reach.writes(amend_env.rt.con, 0.0) == []
 
 
+def test_an_issue_that_moved_teams_is_refused_by_the_key_linear_returns(amend_env, capsys):
+    e = amend_env
+    e.linear.detail = detail(key="ENG-45")
+    e.rt.cfg = replace(e.rt.cfg, cardinal_file_on=True)
+    moved = replace(e.linear.issue("NF-1"), key="ENG-45")
+    e.linear.issue = lambda key: moved
+    for argv in (["issue", "NF-1"], ["comment", "NF-1", "--text", "x"], file_argv(e)[2:]):
+        assert main(["--config", str(e.path), *argv]) == 1
+        assert "NF-1 is now ENG-45" in capsys.readouterr().err
+    assert e.linear.comments == [] and e.linear.created == []
+    assert reach.writes(e.rt.con, 0.0) == []
+
+
 def file_argv(e, key="NF-1"):
     return [
         "--config", str(e.path), "file", key,
