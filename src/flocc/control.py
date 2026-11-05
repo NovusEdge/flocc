@@ -6,6 +6,7 @@ from pathlib import Path
 from flocc import host, ledger
 from flocc.admission import admit
 from flocc.agentblock import settings_from_json
+from flocc.causes import RESUMABLE
 from flocc.context import state_dir
 from flocc.ledger import Claim
 from flocc.linear import LinearError
@@ -20,9 +21,6 @@ CARDINAL_RESUME = "cardinal_resume"
 _CAPS = (CARDINAL_RESUME, "cardinal_fix")
 RESUME_LOG = "resume_log"
 NOTE_CHARS = 2000
-# The stops a note can redirect. tests-touched guards the tester's work against the executor,
-# the publish, branch and rebase stops need the host or the owner, and no-tests needs criteria.
-RESUMABLE = frozenset({"needs-owner", "check-failed", "no-changes", "idle", "crash", "timed-out"})
 
 
 class Refused(Exception):
@@ -103,7 +101,7 @@ def resume(rt, key: str, note: str) -> Claim:
             f"{key} stopped with {cause or 'no recorded cause'}; that stop is the owner's"
         )
     cap = rt.cfg.check_fix_rounds
-    # The same-failure block and the cap block share the cause; only the rounds tell them apart.
+    # Blocks at the cap write check-cap now; one written before that still says check-failed.
     if cause == "check-failed" and claim.fix_attempts >= cap:
         raise Refused(
             f"{key} used {claim.fix_attempts} of {cap} fix rounds; that stop is the owner's"
