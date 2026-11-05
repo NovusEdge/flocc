@@ -121,16 +121,26 @@ def resume(rt, key: str, note: str) -> Claim:
     extra = _resume_prompt(rt, claim, cause, note)
     d = state_dir(rt.cfg, key)
     d.mkdir(parents=True, exist_ok=True)
+    context = d / FIX_CONTEXT
+    old_context = context.read_text() if context.exists() else None
     if phase == "fix":
         # Before the launch, which hands the file to the session; a fixer keeps the check output
         # it was started with.
-        context = d / FIX_CONTEXT
-        if context.exists():
-            extra = f"{extra}\n\n{context.read_text()}"
+        if old_context is not None:
+            extra = f"{extra}\n\n{old_context}"
         context.write_text(extra)
     rt.sessions.kill(session_name(key, claim.phase))
     start = rt.now()
-    launch(rt, claim, phase, extra=extra)
+    try:
+        launch(rt, claim, phase, extra=extra)
+    except BaseException:
+        # A retry would otherwise stack its note on one that no session ever saw.
+        if phase == "fix":
+            if old_context is None:
+                context.unlink(missing_ok=True)
+            else:
+                context.write_text(old_context)
+        raise
     if phase != "fix":
         (d / RESUME_NOTE).write_text(extra)
     ledger.meta_set(rt.con, f"{CARDINAL_RESUME}:{key}", "1")
