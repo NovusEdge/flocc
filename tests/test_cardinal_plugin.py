@@ -191,6 +191,26 @@ def test_the_triage_skill_allows_agent_shell_for_diagnosis_but_not_writes():
     assert "Pipes" in text and "inside the single quotes" in text
 
 
+def test_the_triage_skill_names_every_reach_verb_and_searches_before_filing():
+    text = (PLUGIN / "skills" / "triage" / "SKILL.md").read_text()
+    for verb in (
+        "issue KEY",
+        "pr KEY",
+        "comment KEY",
+        "pr-comment KEY",
+        "search --query",
+        "file KEY",
+    ):
+        assert f"{EXECUTOR} {verb}" in text
+    assert text.index(f"{EXECUTOR} search") < text.index(f"{EXECUTOR} file")
+    assert "never add the `claude` label" in text
+
+
+def test_the_digest_skill_reports_cardinal_s_writes_and_drafts():
+    text = " ".join((PLUGIN / "skills" / "digest" / "SKILL.md").read_text().split())
+    assert "would have filed" in text and "wrote in Linear and GitHub" in text
+
+
 def test_dispatch_restarts_work_only_through_resume():
     text = (PLUGIN / "skills" / "dispatch" / "SKILL.md").read_text()
     assert "lifts a hold and nothing else" in text and f"{EXECUTOR} resume KEY" in text

@@ -63,6 +63,22 @@ def test_digest_data_lists_runs_lines_holds_events_and_attention(tmp_cfg, con):
     assert text.rstrip().endswith(f"flocc digest-data --done {through}")
 
 
+def test_digest_data_lists_cardinal_s_writes_and_observe_drafts(tmp_cfg, con):
+    from flocc import reach
+
+    reach.record_write(con, 50.0, "comment", "NF-1", "too old")
+    reach.record_write(con, 86_400.0 + 50.0, "comment", "NF-1", "Answered from the spec")
+    reach.record_write(con, 86_400.0 + 60.0, "file", "NF-2", "Export rounds", filed="NF-9")
+    reach.record_write(con, 86_400.0 + 70.0, "file", "NF-3", "Flaky test", mode="observe")
+    text, _ = digest_data(tmp_cfg, con, 86_400.0 + 100.0)
+    wrote = text.split("## What cardinal wrote in Linear and GitHub in the last 24 hours")[1]
+    assert "too old" not in text
+    assert "comment NF-1: Answered from the spec" in wrote
+    assert "file NF-2 → NF-9: Export rounds" in wrote
+    drafts = text.split("## Follow-ups cardinal would have filed in the last 24 hours")[1]
+    assert "- NF-3: Flaky test" in drafts and "Export rounds" not in drafts.split("##")[0]
+
+
 def test_digest_data_caps_every_list(tmp_cfg, con):
     for n in range(DIGEST_LINES + 5):
         ledger.add_digest(con, None, f"line {n}", float(n))

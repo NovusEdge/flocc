@@ -53,6 +53,14 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `host-report` | `/tmp` use, memory available and OOM kills against their limits, the open host episode, the ten largest `/tmp` entries of `flocc-agent`'s, process memory per issue and container memory |
 | `stop-tests <key>` | Kill the processes the issue's session started through its Bash tool and remove the issue's containers, then tell the session not to rerun its tests until the host recovers |
 | `shell --command CMD` | Run one command as `flocc-agent` (cardinal's `agent-shell`). 540-second timeout, output capped at 24,000 characters, listed in the digest |
+| `issue <key>` | Print an issue's title, state, labels, description, relations and comments, at most 12,000 characters (cardinal's `issue`) |
+| `pr <key>` | Print the state, mergeability, review decision, diff size, checks, reviews and comments of the issue's PR, with the publish token |
+| `comment <key> --text TEXT` | Comment on the issue as cardinal, through the service's Linear key. Listed in the digest |
+| `pr-comment <key> --text TEXT` | Comment on the issue's PR as cardinal, with the publish token. Listed in the digest |
+| `search --query TEXT` | The team's open issues whose title or description holds the text, at most 20 |
+| `file <key> --title TEXT --text TEXT` | With `cardinal_file_on`, create a Backlog issue labelled `cardinal-draft` and related to the key; otherwise record the draft for the digest. At most 2 per source issue and 5 per 24 hours, drafts included |
+
+All six refuse a key outside `team_key`.
 | `config list` | The [settable keys](#settable-config-keys), each with its value and whether `config.toml` sets it or the default applies |
 | `config get <key>` | Print one settable key's effective value |
 | `config set <key> <value>` | Write a top-level key of `config.toml`, such as `config set session_cap 3`. A key that is not settable, or a value outside its range, exits 2 with one line. The edited file must also load, or the original stays and the loader's error prints. The old file is kept as `config.toml.bak`. It applies from the next tick; a running tick keeps the config it loaded |

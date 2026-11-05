@@ -45,8 +45,11 @@ emit nothing.
 
 cardinal's key runs only `flocc-cardinal-gate` on the executor, and only from cardinal's address.
 The gate splits the request without a shell and allows `events`, `ack`, `status`, `run-summary`,
-`resume` (and `fix`, an alias of `resume` for one release), `hold`, `release`, `cleanup`, `cleanup --now`, `digest-data`, `host`, `stop-tests` and
-`shell`, with every issue key matching `^[A-Z]+-[0-9]+$`. Its `release` is
+`resume` (and `fix`, an alias of `resume` for one release), `hold`, `release`, `cleanup`,
+`cleanup --now`, `digest-data`, `host`, `stop-tests`, `shell`, `issue`, `pr`, `comment`, `pr-comment`, `search` and `file`, with every issue key
+matching `^[A-Z]+-[0-9]+$`. The six Linear and GitHub verbs run as the service user with its
+Linear key and publish token, so neither reaches `flocc-agent`; `file` only drafts unless
+`cardinal_file_on` is set, and never adds the trigger label. Its `release` is
 `release --hold-only`: it lifts a hold and nothing else, and is refused for a blocked, timed-out
 or done run. Its `host` runs `flocc host-report`.
 

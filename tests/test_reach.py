@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from flocc import host, ledger, reach
@@ -10,19 +12,19 @@ def con(tmp_cfg):
 
 
 def detail(**over):
-    base = {
-        "id": "u1",
-        "key": "NF-1",
-        "title": "Fix rounding",
-        "description": "Round half up.",
-        "url": "https://l/NF-1",
-        "state": "In Progress",
-        "team_id": "t1",
-        "labels": ("claude",),
-        "comments": (("2026-11-01T10:00:00Z", "Owner", "use banker's rounding?"),),
-        "relations": (("blocks", "NF-2", "Todo", "Export"),),
-    }
-    return IssueDetail(**{**base, **over})
+    base = IssueDetail(
+        "u1",
+        "NF-1",
+        "Fix rounding",
+        "Round half up.",
+        "https://l/NF-1",
+        "In Progress",
+        "t1",
+        ("claude",),
+        (("2026-11-01T10:00:00Z", "Owner", "use banker's rounding?"),),
+        (("blocks", "NF-2", "Todo", "Export"),),
+    )
+    return replace(base, **over)
 
 
 def test_render_issue_marks_the_text_as_data_and_lists_everything():
