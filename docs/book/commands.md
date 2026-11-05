@@ -59,8 +59,6 @@ flocc host run -H my-host -- tmux -L flocc ls
 | `pr-comment <key> --text TEXT` | Comment on the issue's PR as cardinal, with the publish token. Listed in the digest |
 | `search --query TEXT` | The team's open issues whose title or description holds the text, at most 20 |
 | `file <key> --title TEXT --text TEXT` | With `cardinal_file_on`, create a Backlog issue labelled `cardinal-draft` and related to the key; otherwise record the draft for the digest. At most 2 per source issue and 5 per 24 hours, drafts included |
-
-All six refuse a key outside `team_key`.
 | `config list` | The [settable keys](#settable-config-keys), each with its value and whether `config.toml` sets it or the default applies |
 | `config get <key>` | Print one settable key's effective value |
 | `config set <key> <value>` | Write a top-level key of `config.toml`, such as `config set session_cap 3`. A key that is not settable, or a value outside its range, exits 2 with one line. The edited file must also load, or the original stays and the loader's error prints. The old file is kept as `config.toml.bak`. It applies from the next tick; a running tick keeps the config it loaded |
@@ -73,6 +71,8 @@ All six refuse a key outside `team_key`.
 | `guard` | PreToolUse hook, run from the managed settings: denies `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `git push`, GitHub writes through `gh` and Linear tools, and keeps the reviewer to `review.md` |
 | `stop [--failure]` | Hook for agent sessions at the end of a turn. A turn that ends without `flocc done` is refused once; ending again marks the session idle and the run ends blocked. With `--failure`, an API error other than a usage limit marks it idle at once |
 | `--version` | Print the host's version |
+
+The five verbs that take a key (`issue`, `pr`, `comment`, `pr-comment`, `file`) refuse one outside `team_key`.
 
 ### Settable config keys
 
