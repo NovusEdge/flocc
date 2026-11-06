@@ -23,7 +23,8 @@ from flocc's own review. The trigger needs all of these:
   defaults to `[]`, which turns the feature off. The key is in `settings.NOT_SETTABLE`, because a
   match starts paid sessions.
 - The author's `type` is not `Bot`.
-- The body, after leading whitespace, starts with `/flocc`. The rest of the body is the
+- The body, after leading whitespace, starts with the word `/flocc`, followed by whitespace
+  (`/floccx` and `/flocc-x` do not count; a bare `/flocc` asks for nothing). The rest of the body is the
   request. A comment that does not address flocc is never read as one. This also keeps out
   flocc's own comments and stray comments from other sessions.
 
@@ -49,8 +50,10 @@ two kinds of item:
   - Otherwise it holds only the inline comments that have the prefix.
   - A review with neither, an empty approval body included, makes no item.
 
-Only `created_at` and `submitted_at` count, never `updated_at`, so editing `/flocc` into an old
-comment does nothing. Paging uses `--paginate`. The reader is one function in `publisher.py`,
+Only `created_at` and `submitted_at` count, never `updated_at`. Editing `/flocc` into a comment
+from before `comment_fix_since` does nothing, because its time puts it before the cutoff. A later
+comment without the prefix is never marked seen, so adding the prefix to it later does fire.
+Paging uses `--paginate` with `per_page=100`. The reader is one function in `publisher.py`,
 next to `pr_view`, and it returns `(key, time, text)` items oldest first.
 
 `build_runtime` (tick.py) adds `rt.pr_comments` next to `rt.pr_view`, closed over the publish
@@ -123,7 +126,8 @@ about 60 calls an hour per claim, well inside GitHub's 5,000 an hour.
 - `test_publisher.py`, the reader:
   - maps the three endpoints into the two kinds of item
   - skips bots, logins that are not listed, and bodies that contain `BOT_PREFIX`
-  - keeps only bodies that start with `/flocc`, and strips the prefix
+  - keeps only bodies that start with the word `/flocc`, rejects `/floccx` and a bare `/flocc`, and
+    strips the prefix
   - skips `PENDING` reviews and empty review bodies
   - an inline comment drafted before a later item, but submitted after it, is timed by its
     review's `submitted_at`

@@ -171,7 +171,7 @@ def test_the_session_publishes_to_the_open_pr_and_ends_without_a_review(pr):
     assert "https://pr/1" in pr.linear.comments[-1]
     assert "not reviewed again" in pr.linear.comments[-1]
     assert not ledger.meta_get(pr.con, "rebase:NF-1")
-    assert len(pr.pr_comments) == 0
+    assert len(pr.pr_posted) == 0
 
 
 def test_a_pr_closed_during_the_rebase_ends_the_claim(pr):

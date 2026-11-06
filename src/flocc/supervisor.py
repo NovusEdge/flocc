@@ -495,7 +495,8 @@ def start_comment_fix(
     gh_flag = ledger.meta_get(rt.con, f"{COMMENT_FIX_GH}:{key}") or ""
     if gh_seen is not None:
         ledger.meta_set(rt.con, f"{GH_COMMENTS_SEEN}:{key}", json.dumps(gh_seen))
-        ledger.meta_set(rt.con, f"{COMMENT_FIX_GH}:{key}", "1")
+    # Always written: a flag from an earlier GitHub batch must not reach a Linear-only fix.
+    ledger.meta_set(rt.con, f"{COMMENT_FIX_GH}:{key}", "1" if gh_seen is not None else "")
     ledger.update_claim(
         rt.con,
         key,

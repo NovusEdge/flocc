@@ -21,7 +21,7 @@ from flocc.control import admit_rerun, stop_cause
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
-from flocc.publisher import pr_url
+from flocc.publisher import epoch, pr_url
 from flocc.sequence import SequenceError, parse_sequence
 from flocc.sessions import session_name
 from flocc.supervisor import (
@@ -611,10 +611,6 @@ def forward_comments(rt) -> dict[str, LinearError]:
     return failed
 
 
-def _epoch(iso: str) -> float:
-    return datetime.fromisoformat(iso).timestamp()
-
-
 def _comment_fix_waits(rt, claim: Claim) -> None:
     once = f"{COMMENT_FIX_MOVED}:{claim.issue_key}"
     if ledger.meta_get(rt.con, once):
@@ -682,9 +678,9 @@ def comment_fixes(rt) -> None:
             if not rt.cfg.github_steer_logins:
                 continue
         steering = [
-            (_epoch(c.created_at), f"{who}: {c.body}")
+            (epoch(c.created_at), f"{who}: {c.body}")
             for c in unread
-            if _epoch(c.created_at) >= float(since) and (who := _steering(rt, c))
+            if epoch(c.created_at) >= float(since) and (who := _steering(rt, c))
         ]
         gh_new, gh_seen = _github_items(rt, claim, url, float(since))
         if not steering and not gh_new:

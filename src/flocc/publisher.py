@@ -492,7 +492,7 @@ def _pages(endpoint: str, token: str, runner) -> list[dict]:
     return items
 
 
-def _epoch(iso: str) -> float:
+def epoch(iso: str) -> float:
     return datetime.fromisoformat(iso).timestamp()
 
 
@@ -514,20 +514,23 @@ def pr_comments(
         )
 
     def asks(item) -> bool:
-        return listed(item) and (item.get("body") or "").lstrip().startswith(STEER_PREFIX)
+        # A word, not a prefix: `/flocc-x` and `/floccx` are other commands. A bare `/flocc`
+        # asks for nothing.
+        words = (item.get("body") or "").split(None, 1)
+        return listed(item) and len(words) == 2 and words[0] == STEER_PREFIX
 
     def request(item) -> str:
         return item["body"].lstrip().removeprefix(STEER_PREFIX).strip()
 
     found = []
-    for c in _pages(f"{base}/issues/{number}/comments", token, runner):
+    for c in _pages(f"{base}/issues/{number}/comments?per_page=100", token, runner):
         if asks(c):
             text = f"{c['user']['login']} on the PR: {request(c)}"
-            found.append((f"c:{c['id']}", _epoch(c["created_at"]), text))
+            found.append((f"c:{c['id']}", epoch(c["created_at"]), text))
     inline: dict[int | None, list[dict]] = {}
-    for c in _pages(f"{base}/pulls/{number}/comments", token, runner):
+    for c in _pages(f"{base}/pulls/{number}/comments?per_page=100", token, runner):
         inline.setdefault(c.get("pull_request_review_id"), []).append(c)
-    for review in _pages(f"{base}/pulls/{number}/reviews", token, runner):
+    for review in _pages(f"{base}/pulls/{number}/reviews?per_page=100", token, runner):
         if review.get("state") == "PENDING" or not review.get("submitted_at"):
             continue
         whole = asks(review)
@@ -539,7 +542,7 @@ def pr_comments(
                 at = c.get("line") or c.get("original_line")
                 lines.append(f"{c['user']['login']} on {c['path']}:{at}: {request(c)}")
         if lines:
-            found.append((f"r:{review['id']}", _epoch(review["submitted_at"]), "\n".join(lines)))
+            found.append((f"r:{review['id']}", epoch(review["submitted_at"]), "\n".join(lines)))
     return sorted(found, key=lambda item: item[1])
 
 

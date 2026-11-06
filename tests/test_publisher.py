@@ -684,9 +684,9 @@ OWNER = {"login": "NovusEdge", "type": "User"}
 def gh_api(conversation=(), inline=(), reviews=()):
     """A runner serving the three endpoints, each split over two pages like --paginate prints."""
     served = {
-        "repos/o/r/issues/7/comments": conversation,
-        "repos/o/r/pulls/7/comments": inline,
-        "repos/o/r/pulls/7/reviews": reviews,
+        "repos/o/r/issues/7/comments?per_page=100": conversation,
+        "repos/o/r/pulls/7/comments?per_page=100": inline,
+        "repos/o/r/pulls/7/reviews?per_page=100": reviews,
     }
 
     def gh(argv, **kw):
@@ -745,6 +745,19 @@ def test_pr_comments_skips_bots_unlisted_logins_and_the_services_own_text():
 def test_pr_comments_reads_only_bodies_that_start_with_the_prefix():
     items = read(conversation=[talk(1, "  \n/flocc  trim me  "), talk(2, "see /flocc")])
     assert [(key, text) for key, _, text in items] == [("c:1", "NovusEdge on the PR: trim me")]
+
+
+def test_the_prefix_is_a_word_and_a_bare_one_asks_for_nothing():
+    items = read(
+        conversation=[
+            talk(1, "/floccx do it"),
+            talk(2, "/flocc-x do it"),
+            talk(3, "/flocc"),
+            talk(4, "/flocc   \n"),
+            talk(5, "/flocc\nmultiline"),
+        ]
+    )
+    assert [(key, text) for key, _, text in items] == [("c:5", "NovusEdge on the PR: multiline")]
 
 
 def test_pr_comments_skips_pending_reviews_and_empty_review_bodies():
