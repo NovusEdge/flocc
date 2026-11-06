@@ -6,6 +6,13 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+## 0.14.0 (2026-11-06)
+
+cardinal acts on more stops by itself. Agents ask the owner through `flocc done`, every stop has a
+type that tells cardinal who acts, cardinal can resume a run once, and a comment on a finished run
+with an open PR starts a fix without a Todo move. Hosts report the commit they run, so the
+dashboard shows which ones need a ship.
+
 - `flocc status --json` reports the commit a host runs, and the dashboard and fleet table mark a
   host "behind" when it differs from the commit of the flocc binary, not only when the report
   predates the schema. An unstamped build judges nothing, and `flocc ship` notes when its binary
