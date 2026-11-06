@@ -1261,9 +1261,12 @@ def test_without_done_json_the_owner_is_told_once_instead(rt):
     assert "done.json" in notice.summary
 
 
+@pytest.mark.parametrize("done", [True, False])
 @pytest.mark.parametrize("why", ["held", "parked", "unlabelled", "other-cause"])
-def test_no_retry_for_a_held_unwanted_or_other_stop(rt, why):
-    publish_blocked(rt, cause="branch-moved" if why == "other-cause" else "publish-failed")
+def test_no_retry_for_a_held_unwanted_or_other_stop(rt, why, done):
+    publish_blocked(
+        rt, cause="branch-moved" if why == "other-cause" else "publish-failed", done=done
+    )
     if why == "held":
         ledger.add_hold(rt.con, "NF-5", "owner said wait", 1.0)
     if why == "parked":
@@ -1272,7 +1275,7 @@ def test_no_retry_for_a_held_unwanted_or_other_stop(rt, why):
         rt.linear.issue = lambda key: issue(key, labels=("backend",))
     retry_transient(rt)
     assert claim_of(rt).state == "blocked"
-    assert not ledger.meta_get(rt.con, "transient_retry:NF-5")
+    assert not ledger.meta_get(rt.con, "transient_retry:NF-5") and rt.notifier.sent == []
 
 
 def test_reap_leaves_live_claims_alone(rt):
