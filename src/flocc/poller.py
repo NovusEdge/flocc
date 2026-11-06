@@ -15,6 +15,7 @@ from flocc.agentblock import (
     parse_settings,
     settings_to_json,
 )
+from flocc.causes import OWNER
 from flocc.context import agent_dir, state_dir, write_context
 from flocc.control import admit_rerun, stop_cause
 from flocc.ledger import Claim
@@ -189,11 +190,25 @@ def retry_transient(rt) -> None:
         try:
             if rt.now() - blocked.stat().st_mtime < TRANSIENT_RETRY_S:
                 continue
-            # Without the session's done.json the running claim would read as a dead session,
-            # and supervise would relaunch it.
-            if agentfs.read_text(agent_dir(rt.cfg, key), "done.json") is None:
-                continue
             if not still_wanted(rt, key):
+                continue
+            # Without the session's done.json the running claim would read as a dead session,
+            # and supervise would relaunch it. The block was typed transient, so cardinal is
+            # waiting on this retry: tell the owner instead, once.
+            if agentfs.read_text(agent_dir(rt.cfg, key), "done.json") is None:
+                rt.notifier.send(
+                    Notice(
+                        f"{key}:publish-failed",
+                        "Publishing failed, and the retry cannot run: the session's done.json"
+                        " is gone",
+                        "Move the issue to Todo to run it again on the same branch",
+                        issue_key=key,
+                        event="ended",
+                        stop_type=OWNER,
+                    ),
+                    rt.linear.issue(key),
+                )
+                ledger.meta_set(rt.con, once, "1")
                 continue
         except (OSError, LinearError, KeyError) as exc:
             print(f"retry: {key} not checked: {exc}", file=sys.stderr)

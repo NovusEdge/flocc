@@ -6,6 +6,9 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- A `publish-failed` block whose session left no `done.json` can't be retried, and was left
+  waiting with nobody told. It now becomes the owner's stop once, with a comment and an event.
+
 ## 0.14.0 (2026-11-06)
 
 cardinal acts on more stops by itself. Agents ask the owner through `flocc done`, every stop has a
