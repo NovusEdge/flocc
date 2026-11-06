@@ -18,6 +18,7 @@ import (
 	"github.com/NovusEdge/flocc/installer/internal/host"
 	"github.com/NovusEdge/flocc/installer/internal/hosts"
 	"github.com/NovusEdge/flocc/installer/internal/identity"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui"
 )
 
@@ -166,7 +167,17 @@ func stageFiles(ctx context.Context, s ui.Session, r host.Runner, root, dir, arc
 	err = stage(s, "Bundle", func(st *ui.Step) (string, error) {
 		st.Detail("git bundle HEAD")
 		_, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "bundle", "create", filepath.Join(dir, "flocc.bundle"), "HEAD"}})
-		return "", err
+		if err != nil {
+			return "", err
+		}
+		// The dashboard judges hosts by this binary's build commit, not by the checkout shipped.
+		if self := SelfBuild(); self != "" {
+			if head, err := host.Must(ctx, r, host.Cmd{Name: "git", Args: []string{"-C", root, "rev-parse", "HEAD"}}); err == nil && strings.TrimSpace(head) != self {
+				s.Note("ship", fmt.Sprintf("this flocc is built from %s, the checkout is at %s: go install ./installer/cmd/flocc",
+					steps.Short(self), steps.Short(strings.TrimSpace(head))))
+			}
+		}
+		return "", nil
 	})
 	if err != nil {
 		return err

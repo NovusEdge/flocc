@@ -10,6 +10,7 @@ import (
 
 	"github.com/NovusEdge/flocc/installer/internal/safe"
 	"github.com/NovusEdge/flocc/installer/internal/ship"
+	"github.com/NovusEdge/flocc/installer/internal/steps"
 	"github.com/NovusEdge/flocc/installer/internal/ui/theme"
 )
 
@@ -45,17 +46,17 @@ func (m *Model) visible() []row {
 	return out
 }
 
-// commitFact is the commit a host runs, with the warning appended when it is behind. A host with no
-// commit shows only the warning.
+// commitFact is the commit a host runs. A host that differs from this flocc's build also shows the
+// build's commit, then the warning; a host with no commit shows only the warning.
 func commitFact(th theme.Theme, rep *ship.Report) string {
 	warn := th.Warn.Render("behind" + theme.Sep + "ship to update")
 	switch {
 	case rep.Commit == "":
 		return warn
 	case ship.Behind(rep):
-		return ship.ShortCommit(rep.Commit) + theme.Sep + warn
+		return steps.Short(rep.Commit) + " not " + steps.Short(ship.SelfBuild()) + theme.Sep + warn
 	}
-	return ship.ShortCommit(rep.Commit)
+	return steps.Short(rep.Commit)
 }
 
 func stateGlyph(th theme.Theme, spin string, state string) string {

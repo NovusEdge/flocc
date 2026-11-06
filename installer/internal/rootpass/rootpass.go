@@ -31,10 +31,7 @@ func SSH(opts []string, tty bool, dest, remote string) host.Cmd {
 }
 
 // selfRevision is the commit this flocc was built from; empty without VCS stamps, as under go test.
-var selfRevision = func() string {
-	rev, _ := ship.SelfBuild()
-	return rev
-}
+var selfRevision = func() string { return ship.SelfBuild() }
 
 // checkoutHasSelf stops a build from a checkout that lacks the commit this flocc came from: its
 // flocc-setup could miss phases this flocc calls, which shows only after the sudo password.

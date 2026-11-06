@@ -20,11 +20,9 @@ type Repo struct{}
 
 func (Repo) Name() string { return "Service repo" }
 
-func short(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	return sha
+// Short is the first seven characters of a commit, the form every screen shows.
+func Short(sha string) string {
+	return sha[:min(7, len(sha))]
 }
 
 func (Repo) Check(ctx context.Context, e *Env) (bool, string, error) {
@@ -34,18 +32,18 @@ func (Repo) Check(ctx context.Context, e *Env) (bool, string, error) {
 	}
 	got := e.Output(ctx, "git", "-C", e.Real(repoRel), "rev-parse", "HEAD")
 	if got != want {
-		return false, "checkout at " + short(got) + ", bundle at " + short(want), nil
+		return false, "checkout at " + Short(got) + ", bundle at " + Short(want), nil
 	}
 	if _, err := os.Stat(e.HomePath(".local/bin/flocc")); err != nil {
 		return false, "flocc not installed", nil
 	}
 	if b, _ := os.ReadFile(e.Path(OptDir + "/.flocc-commit")); strings.TrimSpace(string(b)) != want {
-		return false, OptDir + " not published at " + short(want), nil
+		return false, OptDir + " not published at " + Short(want), nil
 	}
 	if _, err := os.Stat(e.Path(OptDir + "/bin/flocc-agent")); err != nil {
 		return false, "flocc-agent not published", nil
 	}
-	return true, "at " + short(want), nil
+	return true, "at " + Short(want), nil
 }
 
 // publishCmds put the flocc build, the plugin and the plugin allowlist in /opt/flocc, where
