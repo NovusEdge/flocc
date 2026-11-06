@@ -6,6 +6,10 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+## 0.15.0 (2026-11-06)
+
+A review on GitHub can now steer a finished run, the same way a Linear comment does.
+
 - A `/flocc` comment, inline comment or review on a flocc PR on GitHub, from a login in
   `github_steer_logins`, starts the same comment fix as a Linear comment. The fix replies on the
   PR. The key defaults to empty, which leaves the scan off.
