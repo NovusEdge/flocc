@@ -128,7 +128,7 @@ When a step needs the real terminal (a `sudo` password, a Tailscale login, a bro
 
 Bare `flocc`, or `flocc status --watch`, on a terminal. The fleet screen has three panes:
 
-- hosts: per host, its status version, last tick, live sessions against the cap, usage and free disk.
+- hosts: per host, the commit it runs (marked "behind" when that is not the commit this flocc was built from, or the host reports none), last tick, live sessions against the cap, usage and free disk.
 - issues: every claimed issue with its Linear title, phase, state, context use and host. Titles come from the Linear key stored by `flocc keys`; without it the keys show alone, and the line above the key bar says why.
 - activity: the selected issue's recent service-log lines.
 

@@ -40,6 +40,16 @@ def test_fresh_host_has_no_ledger_log_or_usage(cfg):
     assert not cfg.ledger_path.exists()
 
 
+def test_status_carries_the_published_commit_or_null(cfg, tmp_path):
+    cfg = replace(cfg, plugin_dir=tmp_path / "opt" / "plugin")
+    assert collect(cfg, FakeSessions(), now=1000.0, mode="loop")["commit"] is None
+    (tmp_path / "opt").mkdir()
+    (tmp_path / "opt" / ".flocc-commit").write_text("0123456789abcdef\n")
+    assert collect(cfg, FakeSessions(), now=1000.0, mode="loop")["commit"] == "0123456789abcdef"
+    (tmp_path / "opt" / ".flocc-commit").write_text("\n")
+    assert collect(cfg, FakeSessions(), now=1000.0, mode="loop")["commit"] is None
+
+
 def test_status_names_the_tick_lock(cfg):
     report = collect(cfg, FakeSessions(), now=1000.0, mode="loop")
     assert report["tick_lock"] == str(cfg.ledger_path.with_suffix(".lock"))

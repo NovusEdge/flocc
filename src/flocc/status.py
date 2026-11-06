@@ -277,6 +277,15 @@ def detect_mode() -> str:
     return "systemd" if comm == "systemd" else "loop"
 
 
+def running_commit(cfg: Config) -> str | None:
+    # flocc ship writes this beside the published plugin, from the commit it installs.
+    try:
+        sha = (cfg.plugin_dir.parent / ".flocc-commit").read_text().strip()
+    except OSError:
+        return None
+    return sha or None
+
+
 def collect(
     cfg: Config,
     sessions,
@@ -306,6 +315,7 @@ def collect(
     report = {
         "v": 1,
         "host": socket.gethostname(),
+        "commit": running_commit(cfg),
         "mode": mode,
         "now": now,
         "last_tick": tick,

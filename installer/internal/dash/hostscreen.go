@@ -156,10 +156,7 @@ func (m *Model) hostFacts(h hostState) []string {
 		return []string{m.th.Err.Render(h.err)}
 	}
 	const w = 9
-	ver := fmt.Sprintf("status v%d", rep.V)
-	if rep.V == 0 {
-		ver = m.th.Warn.Render("behind" + theme.Sep + "ship to update")
-	}
+	ver := commitFact(m.th, rep)
 	tick, tv := ship.TickFact(rep)
 	usage := m.sev("-", ship.SevDim)
 	if u := rep.Usage; u != nil {
