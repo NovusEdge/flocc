@@ -45,6 +45,9 @@ func report(v int, claims ...ship.Claim) *ship.Report {
 		TotalBytes uint64 `json:"total_bytes"`
 	}{82 << 30, 200 << 30}
 	r.ClaudeLogin = new("full")
+	if v > 0 {
+		r.Commit = "abc1234def5678"
+	}
 	return r
 }
 

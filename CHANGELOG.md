@@ -6,6 +6,9 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- `flocc status --json` reports the commit a host runs, and the dashboard and fleet table mark a
+  host "behind" when it differs from the commit of the flocc binary, not only when the report
+  predates the schema. A dirty or unstamped build judges nothing.
 - Agents ask the owner with `flocc done --needs-owner '<question>'`, one flag per question, and
   cardinal gets a `needs-owner` event with the count. A summary that still uses a "Needs the
   owner" heading is refused. `flocc done --nothing-to-do '<why>'` ends a tester or executor run

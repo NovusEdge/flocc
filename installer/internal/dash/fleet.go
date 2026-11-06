@@ -45,6 +45,19 @@ func (m *Model) visible() []row {
 	return out
 }
 
+// commitFact is the commit a host runs, with the warning appended when it is behind. A host with no
+// commit shows only the warning.
+func commitFact(th theme.Theme, rep *ship.Report) string {
+	warn := th.Warn.Render("behind" + theme.Sep + "ship to update")
+	switch {
+	case rep.Commit == "":
+		return warn
+	case ship.Behind(rep):
+		return ship.ShortCommit(rep.Commit) + theme.Sep + warn
+	}
+	return ship.ShortCommit(rep.Commit)
+}
+
 func stateGlyph(th theme.Theme, spin string, state string) string {
 	switch state {
 	case "running":
@@ -147,8 +160,8 @@ func (m *Model) hostLines() (out []string, selAt int) {
 			first = th.Down.Render(theme.DownMark) + " " + th.Dim.Render(name) + "  " + th.Err.Render(h.err)
 		default:
 			ver := th.Warn.Render("behind" + theme.Sep + "ship to update")
-			if h.rep != nil && h.rep.V > 0 {
-				ver = fmt.Sprintf("v%d", h.rep.V)
+			if h.rep != nil {
+				ver = commitFact(th, h.rep)
 			}
 			first = th.Up.Render(theme.UpMark) + " " + name + "  " + ver
 		}

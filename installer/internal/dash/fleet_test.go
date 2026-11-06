@@ -182,6 +182,33 @@ func TestAHostWithoutAVersionIsBehind(t *testing.T) {
 	}
 }
 
+func TestAHostShowsItsCommitAndIsBehindWhenItDiffersFromTheBinary(t *testing.T) {
+	old := ship.SelfBuild
+	defer func() { ship.SelfBuild = old }()
+	m, _ := newModel(t)
+
+	ship.SelfBuild = func() (string, bool) { return "abc1234def5678", true }
+	m.Update(canned())
+	if l := line(m, "flocc-nimble"); !strings.Contains(l, "abc1234") || strings.Contains(l, "behind") {
+		t.Errorf("host on the binary's commit %q", l)
+	}
+
+	ship.SelfBuild = func() (string, bool) { return "fff0000", true }
+	f := canned()
+	f.at = t0.Add(1)
+	m.Update(f)
+	if l := line(m, "flocc-nimble"); !strings.Contains(l, "abc1234 · behind · ship to update") {
+		t.Errorf("host on another commit %q", l)
+	}
+
+	ship.SelfBuild = func() (string, bool) { return "fff0000", false }
+	f.at = t0.Add(2)
+	m.Update(f)
+	if l := line(m, "flocc-nimble"); !strings.Contains(l, "abc1234") || strings.Contains(l, "behind") {
+		t.Errorf("host judged by a dirty build %q", l)
+	}
+}
+
 func TestAHostThatIsNotStarted(t *testing.T) {
 	m, _ := newModel(t)
 	f := canned()

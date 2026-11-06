@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 
 	"github.com/NovusEdge/flocc/installer/internal/host"
@@ -33,14 +32,8 @@ func SSH(opts []string, tty bool, dest, remote string) host.Cmd {
 
 // selfRevision is the commit this flocc was built from; empty without VCS stamps, as under go test.
 var selfRevision = func() string {
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			if s.Key == "vcs.revision" {
-				return s.Value
-			}
-		}
-	}
-	return ""
+	rev, _ := ship.SelfBuild()
+	return rev
 }
 
 // checkoutHasSelf stops a build from a checkout that lacks the commit this flocc came from: its

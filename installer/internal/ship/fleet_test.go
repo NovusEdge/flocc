@@ -457,7 +457,7 @@ func TestDrawPutsPlainTablesAndNotesOnTheSession(t *testing.T) {
 func TestAHostWithoutAVersionedReportIsMarkedBehind(t *testing.T) {
 	var old, current Report
 	json.Unmarshal([]byte(`{"mode":"live","session_cap":2}`), &old)
-	json.Unmarshal([]byte(`{"v":1,"mode":"live","session_cap":2,"claims":[{"issue":"NF-1","state":"running","phase":"impl","activity":[{"at":1700000000,"text":"reading"}]}]}`), &current)
+	json.Unmarshal([]byte(`{"v":1,"commit":"abc1234def","mode":"live","session_cap":2,"claims":[{"issue":"NF-1","state":"running","phase":"impl","activity":[{"at":1700000000,"text":"reading"}]}]}`), &current)
 	if c := current.Claims[0]; len(c.Activity) != 1 || c.Activity[0].Text != "reading" {
 		t.Fatalf("%+v", current.Claims)
 	}
@@ -473,12 +473,22 @@ func TestAHostWithoutAVersionedReportIsMarkedBehind(t *testing.T) {
 	}
 }
 
+func TestAHostOnAnotherCommitIsMarkedBehind(t *testing.T) {
+	old := SelfBuild
+	defer func() { SelfBuild = old }()
+	SelfBuild = func() (string, bool) { return "fff0000", true }
+	tables, _ := fleetTables([]Row{{FleetHost: FleetHost{Name: "h"}, Report: &Report{V: 1, Commit: "abc1234def", Mode: "live"}}})
+	if got := unstyled(tables[0].Rows[0][1]); got != "behind" {
+		t.Errorf("host state %q", got)
+	}
+}
+
 func TestCollectOpensAStepPerHostAndEndsEachWithItsRow(t *testing.T) {
 	f := &lockedFake{Fake: host.NewFake()}
 	cache := newDestCache(nil)
 	hs := []FleetHost{{Name: "a", Target: "root@a"}, {Name: "b", Target: "root@b"}, {Name: "off", State: "stopped"}}
 	remote := asServiceUser([]string{"flocc", "status", "--json"})
-	f.On("ssh -o BatchMode=yes -o ConnectTimeout=10 root@a "+remote, 0, `{"v":1,"mode":"live"}`)
+	f.On("ssh -o BatchMode=yes -o ConnectTimeout=10 root@a "+remote, 0, `{"v":1,"commit":"abc1234def","mode":"live"}`)
 	f.Responses["ssh -o BatchMode=yes -o ConnectTimeout=10 root@b "+remote] = host.Result{Stderr: "refused", Code: 255}
 	rec := &ui.Recorder{}
 	collect(context.Background(), f, cache, hs, hostSteps(ui.New(rec)))

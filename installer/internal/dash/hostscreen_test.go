@@ -38,7 +38,7 @@ func TestHostScreenFacts(t *testing.T) {
 	openHost(t, m, "flocc-nimble")
 	for _, want := range []string{
 		"─ flocc-nimble ─",
-		"version status v1", "mode live", "last tick 2m ago, ok", "usage 5h 12% of 80% · wk 31% of 90%",
+		"version abc1234", "mode live", "last tick 2m ago, ok", "usage 5h 12% of 80% · wk 31% of 90%",
 		"disk 82.0 GiB free of 200 GiB", "claude full", "tokens -", "cap 2 sessions",
 		"─ doctor ─", "─ log ─", "l full screen",
 	} {

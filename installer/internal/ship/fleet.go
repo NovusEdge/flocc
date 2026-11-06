@@ -55,7 +55,8 @@ func estimateHourly(cpu, memGiB, diskGiB int) float64 {
 
 // Report is the JSON of flocc status --json.
 type Report struct {
-	V        int    `json:"v"` // 0 from a host that predates the versioned report
+	V        int    `json:"v"`      // 0 from a host that predates the versioned report
+	Commit   string `json:"commit"` // empty from a host that predates the field or cannot tell
 	Host     string `json:"host"`
 	Mode     string `json:"mode"`
 	LastTick *struct {
@@ -287,7 +288,7 @@ func hostSteps(s ui.Session) *tracker {
 		},
 		end: func(st *ui.Step, r Row) {
 			switch {
-			case r.Report != nil && r.Report.V == 0:
+			case r.Report != nil && Behind(r.Report):
 				st.Done("behind")
 			case r.Report != nil:
 				st.Done("up")
@@ -471,7 +472,7 @@ func fleetTables(rows []Row) (tables []ui.Table, failures []string) {
 		if state == "" {
 			state = "up"
 		}
-		if rep.V == 0 {
+		if Behind(rep) {
 			state = cell("behind", SevWarn)
 		}
 		running := 0
