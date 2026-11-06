@@ -10,7 +10,7 @@ from flocc.agentblock import IssueSettings, settings_to_json
 from flocc.agentfs import AgentFileError
 from flocc.context import agent_dir, state_dir
 from flocc.ledger import Claim
-from flocc.linear import LinearError
+from flocc.linear import BOT_PREFIX, LinearError
 from flocc.publisher import BranchMoved, PublishResult
 from flocc.runtime import Runtime
 from flocc.supervisor import (
@@ -1625,6 +1625,36 @@ def test_a_comment_fix_pushes_to_the_open_pr_with_the_owner_items_and_no_review(
     assert not ledger.meta_get(rt.con, "comment_fix:NF-1")
     [e] = events.unacked(rt.con)
     assert (e.kind, e.detail) == ("ended", "done, comment fix: PR https://pr/1")
+
+
+def test_a_comment_fix_with_a_github_item_answers_on_the_pr(rt):
+    comment_fix(rt)
+    ledger.meta_set(rt.con, "comment_fix_gh:NF-1", "1")
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert rt.pr_comments == [("https://pr/1", f"{BOT_PREFIX} Comment fix pushed to https://pr/1.")]
+    assert not ledger.meta_get(rt.con, "comment_fix_gh:NF-1")
+
+
+def test_a_comment_fix_without_a_github_item_posts_nothing_on_the_pr(rt):
+    comment_fix(rt)
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert rt.pr_comments == []
+
+
+def test_a_failed_pr_reply_does_not_fail_the_finish(rt, capsys):
+    comment_fix(rt)
+    ledger.meta_set(rt.con, "comment_fix_gh:NF-1", "1")
+
+    def refuse(claim, url, body):
+        raise subprocess.CalledProcessError(1, ["gh"])
+
+    rt.comment_pr = refuse
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and rt.linear.comments[-1].startswith("Comment fix pushed")
+    assert "PR reply not posted" in capsys.readouterr().err
 
 
 def test_the_last_comment_fix_says_further_comments_need_a_rerun(rt):

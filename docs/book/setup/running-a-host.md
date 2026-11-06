@@ -33,6 +33,7 @@ The host reads `~/.config/flocc/config.toml`. `flocc ship` writes it from the ho
 | `min_free_disk_gb` | 2.0 | New starts are held below this free space |
 | `skip_unmapped` | false | Ignore issues that match none of this host's repositories |
 | `steer_authors` | none | Linear user or app ids, not names, whose comments on a running issue steer the session, or start a comment fix, like yours |
+| `github_steer_logins` | none | GitHub logins whose `/flocc ...` comments, inline comments or reviews on a done issue's open PR start a comment fix; bots are ignored |
 | `comment_fix_max` | 3 | Fix sessions your comments may start on a done issue whose PR is open, per run; 0 turns them off |
 | `shared_uv_cache` | false | One uv cache for every setup |
 

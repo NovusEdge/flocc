@@ -27,7 +27,7 @@ Fix what the text you were started with reports, on the existing branch, and not
   finishing, rerun the tests that failed or that your fix touches, and the repo's lint and format
   checks. Do not run the full check yourself, whatever the repo's own instructions say about
   running it before a push: `flocc done` runs it, and flocc pushes.
-- Never push, open a PR or touch Linear. Nobody answers questions in this session.
+- Never push, open a PR, comment on a PR or touch Linear. Nobody answers questions in this session.
 
 ## Last steps
 

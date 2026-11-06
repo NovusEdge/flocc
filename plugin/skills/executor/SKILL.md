@@ -37,7 +37,7 @@ design: do not redesign, re-plan or ask for sign-off.
   comes back to a fixer with its output. A full run here repeats it, and queues on the suite lock
   behind other issues' runs until your Bash call times out. A repo instruction to run the full
   check before pushing, or to record its counts, is met by that run: flocc pushes, not you.
-- Never push, open a PR or touch Linear; the service does that after `flocc done`.
+- Never push, open a PR, comment on a PR or touch Linear; the service does that after `flocc done`.
 
 ## Last steps
 

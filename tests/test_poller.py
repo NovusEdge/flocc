@@ -1606,6 +1606,145 @@ def test_a_comment_fix_pushes_to_the_open_pr_and_ends_done_without_a_review(fixa
     assert ledger.meta_get(fixable.con, "comment_fixes:NF-1") == "1"
 
 
+def github(rt, *items):
+    """Lets the GitHub scan run, serving (key, seconds ago, text) items."""
+    rt.cfg = replace(rt.cfg, github_steer_logins=("NovusEdge",))
+    rt.gh_items = [(key, NOW - ago, text) for key, ago, text in items]
+    rt.pr_comments = lambda claim, url: rt.gh_items
+
+
+def only_github(rt, *items):
+    rt.linear.replies = {}
+    github(rt, *items)
+
+
+def fix_context(rt):
+    return (state_dir(rt.cfg, "NF-1") / "check-failure.md").read_text()
+
+
+def gh_seen(rt):
+    return json.loads(ledger.meta_get(rt.con, "gh_comments_seen:NF-1") or "[]")
+
+
+def test_the_github_scan_is_off_without_logins(fixable):
+    def never(claim, url):
+        raise AssertionError("PR comments read")
+
+    fixable.pr_comments = never
+    comment_fixes(fixable)
+    assert fixable.sessions.started
+
+
+def test_a_github_item_alone_starts_a_fix_and_is_marked_seen(fixable):
+    only_github(fixable, ("c:1", 600, "NovusEdge on the PR: rename the flag"))
+    comment_fixes(fixable)
+    assert "Comments on the issue and the PR since its PR opened" in fix_context(fixable)
+    assert "NovusEdge on the PR: rename the flag" in fix_context(fixable)
+    assert gh_seen(fixable) == ["c:1"]
+    assert ledger.meta_get(fixable.con, "comment_fix_gh:NF-1") == "1"
+    assert nf1(fixable).last_comment_at == iso(7200)
+
+
+def test_a_linear_and_a_github_item_make_one_session_counted_once(fixable):
+    github(fixable, ("r:2", 500, "NovusEdge on a.py:3: use a set"))
+    comment_fixes(fixable)
+    text = fix_context(fixable)
+    assert text.index("The owner: rename the flag") < text.index("NovusEdge on a.py:3: use a set")
+    assert [name for name, _ in fixable.sessions.started] == ["NF-1"]
+    assert ledger.meta_get(fixable.con, "comment_fixes:NF-1") == "1"
+    assert nf1(fixable).last_comment_at == iso(600)
+
+
+def test_a_linear_only_batch_sets_no_github_flag(fixable):
+    github(fixable)
+    comment_fixes(fixable)
+    assert fixable.sessions.started
+    assert not ledger.meta_get(fixable.con, "comment_fix_gh:NF-1")
+
+
+def test_a_github_only_batch_starts_when_the_linear_read_fails(fixable):
+    only_github(fixable, ("c:1", 600, "NovusEdge on the PR: rename the flag"))
+
+    def down(issue_id, after):
+        raise LinearError("down")
+
+    fixable.linear.comments_since = down
+    comment_fixes(fixable)
+    assert fixable.sessions.started and nf1(fixable).last_comment_at == iso(7200)
+
+
+def test_the_settle_uses_the_newest_item_from_either_source(fixable):
+    github(fixable, ("c:1", 120, "NovusEdge on the PR: and one more"))
+    comment_fixes(fixable)
+    left_alone(fixable)
+    assert gh_seen(fixable) == []
+
+
+def test_a_github_read_failure_leaves_the_linear_half_working_and_marks_nothing(fixable, capsys):
+    github(fixable)
+
+    def broken(claim, url):
+        raise subprocess.CalledProcessError(1, ["gh", "api"])
+
+    fixable.pr_comments = broken
+    comment_fixes(fixable)
+    assert fixable.sessions.started and gh_seen(fixable) == []
+    assert not ledger.meta_get(fixable.con, "comment_fix_gh:NF-1")
+    assert "PR comments not read" in capsys.readouterr().err
+
+
+def test_a_github_item_from_before_the_first_scan_is_marked_seen_and_ignored(fixable):
+    only_github(fixable, ("c:1", 2 * 86_400, "NovusEdge on the PR: old"))
+    comment_fixes(fixable)
+    left_alone(fixable)
+    assert gh_seen(fixable) == ["c:1"]
+
+
+def test_two_same_second_items_are_both_handled_and_a_seen_one_never_again(fixable):
+    only_github(
+        fixable,
+        ("c:1", 600, "NovusEdge on the PR: first"),
+        ("c:2", 600, "NovusEdge on the PR: second"),
+    )
+    comment_fixes(fixable)
+    assert "first" in fix_context(fixable) and "second" in fix_context(fixable)
+    assert gh_seen(fixable) == ["c:1", "c:2"]
+    ledger.update_claim(fixable.con, "NF-1", state="done")
+    comment_fixes(fixable)
+    assert len(fixable.sessions.started) == 1
+
+
+def test_a_later_github_comment_is_scanned_after_a_fix_restarted_the_claim(fixable):
+    only_github(fixable, ("c:1", 600, "NovusEdge on the PR: first"))
+    comment_fixes(fixable)
+    ledger.update_claim(fixable.con, "NF-1", state="done")
+    fixable.gh_items.append(("c:2", NOW - 400, "NovusEdge on the PR: later"))
+    comment_fixes(fixable)
+    assert len(fixable.sessions.started) == 2
+    assert "PR: later" in fix_context(fixable) and "PR: first" not in fix_context(fixable)
+    assert ledger.meta_get(fixable.con, "comment_fixes:NF-1") == "2"
+    assert gh_seen(fixable) == ["c:1", "c:2"]
+
+
+def test_a_launch_failure_restores_the_seen_list_and_the_flag(fixable):
+    only_github(fixable, ("c:1", 600, "NovusEdge on the PR: rename the flag"))
+    ledger.meta_set(fixable.con, "gh_comments_seen:NF-1", json.dumps(["c:0"]))
+    fixable.cfg.agent_gh_token_file.write_text("")
+    comment_fixes(fixable)
+    assert gh_seen(fixable) == ["c:0"]
+    assert not ledger.meta_get(fixable.con, "comment_fix_gh:NF-1")
+    assert not ledger.meta_get(fixable.con, "comment_fixes:NF-1")
+
+
+def test_a_rerun_keeps_the_seen_list_and_drops_the_github_flag(rt):
+    ledger.meta_set(rt.con, "gh_comments_seen:NF-9", json.dumps(["c:1"]))
+    ledger.meta_set(rt.con, "comment_fix_gh:NF-9", "1")
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert json.loads(ledger.meta_get(rt.con, "gh_comments_seen:NF-9") or "[]") == ["c:1"]
+    assert not ledger.meta_get(rt.con, "comment_fix_gh:NF-9")
+
+
 def test_a_fresh_claim_gets_its_own_comment_fixes(rt):
     for key in ("comment_fix", "comment_fixes", "comment_fix_moved"):
         ledger.meta_set(rt.con, f"{key}:NF-9", "1")

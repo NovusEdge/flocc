@@ -6,6 +6,9 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- A `/flocc` comment, inline comment or review on a flocc PR on GitHub, from a login in
+  `github_steer_logins`, starts the same comment fix as a Linear comment. The fix replies on the
+  PR. The key defaults to empty, which leaves the scan off.
 - A `publish-failed` block whose session left no `done.json` can't be retried, and was left
   waiting with nobody told. It now becomes the owner's stop once, with a comment and an event.
 

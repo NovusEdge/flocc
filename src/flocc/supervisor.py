@@ -14,7 +14,7 @@ from flocc.causes import OWNER, type_of
 from flocc.context import agent_dir, phase_prompt, state_dir
 from flocc.idle import BACKGROUND
 from flocc.ledger import Claim
-from flocc.linear import LinearError
+from flocc.linear import BOT_PREFIX, LinearError
 from flocc.notice import Notice
 from flocc.publisher import (
     BASE_CHECKOUT,
@@ -60,6 +60,10 @@ TRANSIENT_RETRY = "transient_retry"
 # COMMENT_FIXES counts them per claim against comment_fix_max.
 COMMENT_FIX = "comment_fix"
 COMMENT_FIXES = "comment_fixes"
+# Set when the batch held a GitHub item, so the finish answers on the PR. GH_COMMENTS_SEEN holds
+# the handled GitHub item keys as JSON; a Todo rerun keeps it, or old comments would fire again.
+COMMENT_FIX_GH = "comment_fix_gh"
+GH_COMMENTS_SEEN = "gh_comments_seen"
 # Handed to the comment fix's own session only, so its flocc done --nothing-to-do is accepted. A
 # check round after it must make the check pass.
 COMMENT_FIX_FILE = "comment-fix"
@@ -362,6 +366,7 @@ def _post_owner_items(rt, claim: Claim) -> None:
 
 def _clear_comment_fix(rt, key: str) -> None:
     ledger.meta_set(rt.con, f"{COMMENT_FIX}:{key}", "")
+    ledger.meta_set(rt.con, f"{COMMENT_FIX_GH}:{key}", "")
     (state_dir(rt.cfg, key) / COMMENT_FIX_FILE).unlink(missing_ok=True)
 
 
@@ -453,19 +458,27 @@ def start_rebase(rt, claim: Claim, base_sha: str) -> None:
         )
 
 
-def start_comment_fix(rt, claim: Claim, url: str, replies: list[str], cursor: str) -> None:
+def start_comment_fix(
+    rt,
+    claim: Claim,
+    url: str,
+    replies: list[str],
+    cursor: str | None,
+    gh_seen: list[str] | None = None,
+) -> None:
     """One fix session on a done claim's open PR for steering comments posted since it finished.
-    A launch that fails leaves the claim as it was, cursor included, so a later tick reads the
-    comments again."""
+    gh_seen is the handled GitHub item keys when the batch held one. A launch that fails leaves
+    the claim as it was, cursor and seen list included, so a later tick reads the comments
+    again."""
     key = claim.issue_key
     extra = (
-        "Comments on the issue since its PR opened, oldest first:\n\n"
+        "Comments on the issue and the PR since its PR opened, oldest first:\n\n"
         + "\n\n".join(replies)
         + "\n\nMake the change they ask for that is agent work, on this branch; `flocc done` runs"
-        " the full check and pushes to the open PR. For what needs the owner (a decision, access,"
-        " a manual step), make no change and pass it to `flocc done` as `--needs-owner '<item>'`,"
-        " one per item. If they ask for no change to the code, finish with"
-        " `flocc done --nothing-to-do '<your answer, for the owner>'`."
+        " the full check and pushes to the open PR. Do not post comments on the PR. For what needs"
+        " the owner (a decision, access, a manual step), make no change and pass it to"
+        " `flocc done` as `--needs-owner '<item>'`, one per item. If they ask for no change to the"
+        " code, finish with `flocc done --nothing-to-do '<your answer, for the owner>'`."
     )
     d = state_dir(rt.cfg, key)
     d.mkdir(parents=True, exist_ok=True)
@@ -478,6 +491,11 @@ def start_comment_fix(rt, claim: Claim, url: str, replies: list[str], cursor: st
     # claim running in the fix phase, its publish reusing the open PR and the comments read.
     ledger.meta_set(rt.con, f"{COMMENT_FIX}:{key}", "1")
     ledger.meta_set(rt.con, f"{COMMENT_FIXES}:{key}", str(int(fixes or 0) + 1))
+    seen = ledger.meta_get(rt.con, f"{GH_COMMENTS_SEEN}:{key}") or ""
+    gh_flag = ledger.meta_get(rt.con, f"{COMMENT_FIX_GH}:{key}") or ""
+    if gh_seen is not None:
+        ledger.meta_set(rt.con, f"{GH_COMMENTS_SEEN}:{key}", json.dumps(gh_seen))
+        ledger.meta_set(rt.con, f"{COMMENT_FIX_GH}:{key}", "1")
     ledger.update_claim(
         rt.con,
         key,
@@ -504,6 +522,8 @@ def start_comment_fix(rt, claim: Claim, url: str, replies: list[str], cursor: st
                 (d / name).unlink(missing_ok=True)
         ledger.meta_set(rt.con, f"{COMMENT_FIX}:{key}", "")
         ledger.meta_set(rt.con, f"{COMMENT_FIXES}:{key}", fixes)
+        ledger.meta_set(rt.con, f"{GH_COMMENTS_SEEN}:{key}", seen)
+        ledger.meta_set(rt.con, f"{COMMENT_FIX_GH}:{key}", gh_flag)
         ledger.update_claim(
             rt.con,
             key,
@@ -682,7 +702,13 @@ def _finish_phase(
             _end_done(rt, claim, emit=False, phase="review")
         elif comment_fix:
             owner = _owner_items(rt, claim)
-            line = f"Comment fix pushed to {result.url}." + (f"\n\n{owner}" if owner else "")
+            pushed = f"Comment fix pushed to {result.url}."
+            line = pushed + (f"\n\n{owner}" if owner else "")
+            if ledger.meta_get(rt.con, f"{COMMENT_FIX_GH}:{key}"):
+                try:
+                    rt.comment_pr(claim, result.url, f"{BOT_PREFIX} {pushed}")
+                except Exception as exc:  # noqa: BLE001 - the fix is pushed; the reply is a courtesy
+                    print(f"{key}: PR reply not posted: {exc}", file=sys.stderr)
             _end_comment_fix(rt, claim, line, f"done, comment fix: PR {result.url}")
         elif "reviewer" in claim.sequence:
             _start_review(rt, claim, issue.title, issue.description, result.url)
