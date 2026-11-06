@@ -688,16 +688,13 @@ def gh_api(conversation=(), inline=(), reviews=()):
         "repos/o/r/pulls/7/comments": inline,
         "repos/o/r/pulls/7/reviews": reviews,
     }
-    seen = []
 
     def gh(argv, **kw):
-        seen.append(argv)
         assert argv[:3] == ["gh", "api", "--paginate"]
         items = list(served[argv[3]])
         out = json.dumps(items[:1]) + "\n" + json.dumps(items[1:])
         return subprocess.CompletedProcess(argv, 0, out, "")
 
-    gh.seen = seen
     return gh
 
 
@@ -746,10 +743,8 @@ def test_pr_comments_skips_bots_unlisted_logins_and_the_services_own_text():
 
 
 def test_pr_comments_reads_only_bodies_that_start_with_the_prefix():
-    items = read(
-        conversation=[talk(1, "  \n/flocc  trim me  "), talk(2, "see /flocc"), talk(3, "/floccx")]
-    )
-    assert [(key, text) for key, _, text in items][0] == ("c:1", "NovusEdge on the PR: trim me")
+    items = read(conversation=[talk(1, "  \n/flocc  trim me  "), talk(2, "see /flocc")])
+    assert [(key, text) for key, _, text in items] == [("c:1", "NovusEdge on the PR: trim me")]
 
 
 def test_pr_comments_skips_pending_reviews_and_empty_review_bodies():

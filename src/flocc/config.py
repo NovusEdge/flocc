@@ -86,6 +86,9 @@ class Config:
     # Linear user or bot/app ids whose comments on a running issue are forwarded into the live
     # session like the owner's own, letting another agent steer. Empty forwards only the owner's.
     steer_authors: tuple[str, ...] = ()
+    # GitHub logins whose `/flocc ...` comments or reviews on a done issue's open PR start a
+    # comment fix like a Linear comment. Empty turns the GitHub scan off.
+    github_steer_logins: tuple[str, ...] = ()
     # Fix sessions that steering comments on a done issue's open PR may start per claim. Past it
     # the comments wait for a Todo rerun; 0 turns the scan off.
     comment_fix_max: int = 3
@@ -163,13 +166,15 @@ def load(path: Path) -> Config:
     for key in _PATH_KEYS:
         if key in raw:
             raw[key] = Path(raw[key]).expanduser()
-    if "steer_authors" in raw:
-        authors = raw["steer_authors"]
+    for key in ("steer_authors", "github_steer_logins"):
+        if key not in raw:
+            continue
+        names = raw[key]
         # A bare string would become a char tuple and match nothing, so steering would silently
         # never fire; fail at load like the effort check instead.
-        if not isinstance(authors, list) or not all(isinstance(a, str) for a in authors):
-            raise ValueError(f"{path}: steer_authors must be a list of id strings")
-        raw["steer_authors"] = tuple(authors)
+        if not isinstance(names, list) or not all(isinstance(a, str) for a in names):
+            raise ValueError(f"{path}: {key} must be a list of strings")
+        raw[key] = tuple(names)
     stale = path.with_name("permissions.toml")
     if stale.exists():
         print(

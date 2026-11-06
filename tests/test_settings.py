@@ -108,6 +108,12 @@ def test_comment_fix_max_starts_paid_sessions_so_it_is_not_settable():
         settings.check("comment_fix_max")
 
 
+def test_github_steer_logins_start_paid_sessions_so_they_are_not_settable():
+    assert "github_steer_logins" in settings.NOT_SETTABLE
+    with pytest.raises(settings.SettingError, match="not settable"):
+        settings.check("github_steer_logins")
+
+
 def test_every_config_field_is_decided():
     fields = {f.name for f in dataclasses.fields(Config)}
     assert not settings.SETTABLE.keys() & settings.NOT_SETTABLE

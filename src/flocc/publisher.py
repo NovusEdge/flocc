@@ -524,7 +524,7 @@ def pr_comments(
         if asks(c):
             text = f"{c['user']['login']} on the PR: {request(c)}"
             found.append((f"c:{c['id']}", _epoch(c["created_at"]), text))
-    inline: dict[int, list[dict]] = {}
+    inline: dict[int | None, list[dict]] = {}
     for c in _pages(f"{base}/pulls/{number}/comments", token, runner):
         inline.setdefault(c.get("pull_request_review_id"), []).append(c)
     for review in _pages(f"{base}/pulls/{number}/reviews", token, runner):

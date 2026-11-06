@@ -30,6 +30,9 @@ class Runtime:
     free_disk_gb: Callable[[Path], float] = free_disk_gb
     # The PR's state, head and mergeability; None in tests that never reach the rebase step.
     pr_view: Callable[[Claim, str], dict] | None = None
+    # The PR's `/flocc` requests as (key, epoch time, text) oldest first; None in tests that never
+    # reach the GitHub scan.
+    pr_comments: Callable[[Claim, str], list[tuple[str, float, str]]] | None = None
     # Runs the repo's check on its base branch: (base SHA, failure or None). None skips the
     # base comparison.
     base_check: Callable[[str], tuple[str, Any]] | None = None

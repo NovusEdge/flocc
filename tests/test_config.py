@@ -84,11 +84,19 @@ def test_comment_fix_max_defaults_to_three():
     assert load(EXAMPLE).comment_fix_max == 3
 
 
-def test_bad_steer_authors_is_an_error(tmp_path):
+@pytest.mark.parametrize("key", ["steer_authors", "github_steer_logins"])
+def test_a_bad_login_list_is_an_error(tmp_path, key):
     p = tmp_path / "c.toml"
-    p.write_text('steer_authors = "just-one-id"\n' + EXAMPLE.read_text())
-    with pytest.raises(ValueError, match="steer_authors"):
+    p.write_text(f'{key} = "just-one-id"\n' + EXAMPLE.read_text())
+    with pytest.raises(ValueError, match=key):
         load(p)
+
+
+def test_github_steer_logins_default_to_none_and_load_as_a_tuple(tmp_path):
+    assert load(EXAMPLE).github_steer_logins == ()
+    p = tmp_path / "c.toml"
+    p.write_text('github_steer_logins = ["NovusEdge"]\n' + EXAMPLE.read_text())
+    assert load(p).github_steer_logins == ("NovusEdge",)
 
 
 def test_a_retired_repo_key_is_ignored_with_a_warning(tmp_path, capsys):
