@@ -16,8 +16,8 @@ class Notice:
     event: str = ""
     # The event's detail when cause and summary are not what cardinal needs, e.g. a count.
     detail: str = ""
-    # The stop's causes.TYPES entry; set by supervisor._block only, which also makes the cause's
-    # last segment the event's cause.
+    # The stop's causes.TYPES entry, set for stops only; send then makes the cause's last segment
+    # the event's cause.
     stop_type: str | None = None
 
     def text(self) -> str:
