@@ -5,12 +5,14 @@ import shlex
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 from flocc import agentfs
 from flocc.config import TRAILER, RepoConfig
 from flocc.context import state_dir
 from flocc.ledger import Claim
+from flocc.linear import BOT_PREFIX
 from flocc.worktree import (
     agent_ref,
     base_checkout,
@@ -465,6 +467,80 @@ def pr_view(claim: Claim, url: str, token: str, runner=subprocess.run) -> dict:
         text=True,
     )
     return json.loads(out.stdout)
+
+
+STEER_PREFIX = "/flocc"
+
+
+def _pages(endpoint: str, token: str, runner) -> list[dict]:
+    out = runner(
+        ["gh", "api", "--paginate", endpoint],
+        cwd=None,
+        env={**os.environ, "GH_TOKEN": token},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # --paginate prints one JSON array per page, back to back.
+    decoder, text, at, items = json.JSONDecoder(), out.stdout, 0, []
+    while at < len(text):
+        if text[at].isspace():
+            at += 1
+            continue
+        page, at = decoder.raw_decode(text, at)
+        items.extend(page)
+    return items
+
+
+def _epoch(iso: str) -> float:
+    return datetime.fromisoformat(iso).timestamp()
+
+
+def pr_comments(
+    url: str, token: str, logins: tuple[str, ...], runner=subprocess.run
+) -> list[tuple[str, float, str]]:
+    """The `/flocc` requests on a PR from the listed logins, as (key, time, text) oldest first.
+    A conversation comment is `c:<id>`; a submitted review is `r:<id>` and holds its body and
+    inline comments, timed at submission because an inline comment carries its draft time."""
+    repo, _, number = url.removeprefix("https://github.com/").partition("/pull/")
+    base = f"repos/{repo}"
+
+    def listed(item) -> bool:
+        user = item.get("user") or {}
+        return (
+            user.get("login") in logins
+            and user.get("type") != "Bot"
+            and BOT_PREFIX not in (item.get("body") or "")
+        )
+
+    def asks(item) -> bool:
+        return listed(item) and (item.get("body") or "").lstrip().startswith(STEER_PREFIX)
+
+    def request(item) -> str:
+        return item["body"].lstrip().removeprefix(STEER_PREFIX).strip()
+
+    found = []
+    for c in _pages(f"{base}/issues/{number}/comments", token, runner):
+        if asks(c):
+            text = f"{c['user']['login']} on the PR: {request(c)}"
+            found.append((f"c:{c['id']}", _epoch(c["created_at"]), text))
+    inline: dict[int, list[dict]] = {}
+    for c in _pages(f"{base}/pulls/{number}/comments", token, runner):
+        inline.setdefault(c.get("pull_request_review_id"), []).append(c)
+    for review in _pages(f"{base}/pulls/{number}/reviews", token, runner):
+        if review.get("state") == "PENDING" or not review.get("submitted_at"):
+            continue
+        whole = asks(review)
+        lines = []
+        if whole:
+            lines.append(f"{review['user']['login']} in a review: {request(review)}")
+        for c in inline.get(review["id"], []):
+            if asks(c) or (whole and listed(c)):
+                at = c.get("line") or c.get("original_line")
+                lines.append(f"{c['user']['login']} on {c['path']}:{at}: {request(c)}")
+        if lines:
+            found.append((f"r:{review['id']}", _epoch(review["submitted_at"]), "\n".join(lines)))
+    return sorted(found, key=lambda item: item[1])
 
 
 PR_DETAIL_FIELDS = (

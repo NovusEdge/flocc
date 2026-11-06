@@ -1,6 +1,8 @@
+import json
 import subprocess
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from flocc.publisher import (
     check_worktree,
     comment_on_pr,
     failure_excerpt,
+    pr_comments,
     pr_title,
     pr_view,
     review_comment,
@@ -672,3 +675,133 @@ def test_review_diff_ignores_base_commits_the_service_clone_has_not_fetched(
     claim.branch = "agent/nf-5"
     diff = rt.review_diff(claim)
     assert "mine.txt" in diff and "newer.txt" not in diff
+
+
+PR_URL = "https://github.com/o/r/pull/7"
+OWNER = {"login": "NovusEdge", "type": "User"}
+
+
+def gh_api(conversation=(), inline=(), reviews=()):
+    """A runner serving the three endpoints, each split over two pages like --paginate prints."""
+    served = {
+        "repos/o/r/issues/7/comments": conversation,
+        "repos/o/r/pulls/7/comments": inline,
+        "repos/o/r/pulls/7/reviews": reviews,
+    }
+    seen = []
+
+    def gh(argv, **kw):
+        seen.append(argv)
+        assert argv[:3] == ["gh", "api", "--paginate"]
+        items = list(served[argv[3]])
+        out = json.dumps(items[:1]) + "\n" + json.dumps(items[1:])
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    gh.seen = seen
+    return gh
+
+
+def talk(id_, body, at="2026-11-06T10:00:00Z", user=OWNER, **kw):
+    return {"id": id_, "body": body, "created_at": at, "updated_at": at, "user": user, **kw}
+
+
+def review(id_, body="", at="2026-11-06T10:00:00Z", state="COMMENTED", user=OWNER):
+    return {"id": id_, "body": body, "submitted_at": at, "state": state, "user": user}
+
+
+def drafted(id_, review_id, body, at="2026-11-06T09:00:00Z", user=OWNER, **kw):
+    return talk(id_, body, at, user, pull_request_review_id=review_id, path="a.py", line=3, **kw)
+
+
+def read(logins=("NovusEdge",), **served):
+    return pr_comments(PR_URL, "t", logins, runner=gh_api(**served))
+
+
+def test_pr_comments_maps_the_three_endpoints_into_two_kinds_of_item():
+    items = read(
+        conversation=[talk(1, "/flocc rename the flag"), talk(2, "no prefix"), talk(3, "/flocc x")],
+        inline=[drafted(10, 20, "/flocc use a set here"), drafted(11, 22, "plain")],
+        reviews=[review(20), review(21, "/flocc and the docs"), review(22)],
+    )
+    assert [(key, text) for key, _, text in items] == [
+        ("c:1", "NovusEdge on the PR: rename the flag"),
+        ("c:3", "NovusEdge on the PR: x"),
+        ("r:20", "NovusEdge on a.py:3: use a set here"),
+        ("r:21", "NovusEdge in a review: and the docs"),
+    ]
+
+
+def test_pr_comments_skips_bots_unlisted_logins_and_the_services_own_text():
+    bot = {"login": "NovusEdge", "type": "Bot"}
+    stranger = {"login": "someone", "type": "User"}
+    items = read(
+        conversation=[
+            talk(1, "/flocc from a bot", user=bot),
+            talk(2, "/flocc from a stranger", user=stranger),
+            talk(3, "/flocc 🤖 flocc: Comment fix pushed"),
+            talk(4, "/flocc ok"),
+        ]
+    )
+    assert [key for key, _, _ in items] == ["c:4"]
+
+
+def test_pr_comments_reads_only_bodies_that_start_with_the_prefix():
+    items = read(
+        conversation=[talk(1, "  \n/flocc  trim me  "), talk(2, "see /flocc"), talk(3, "/floccx")]
+    )
+    assert [(key, text) for key, _, text in items][0] == ("c:1", "NovusEdge on the PR: trim me")
+
+
+def test_pr_comments_skips_pending_reviews_and_empty_review_bodies():
+    items = read(
+        inline=[drafted(10, 20, "/flocc draft"), drafted(11, 21, "plain")],
+        reviews=[review(20, state="PENDING"), review(21, "")],
+    )
+    assert items == []
+
+
+def test_an_inline_comment_is_timed_by_its_reviews_submission():
+    items = read(
+        conversation=[talk(1, "/flocc first", "2026-11-06T09:30:00Z")],
+        inline=[drafted(10, 20, "/flocc second", at="2026-11-06T09:00:00Z")],
+        reviews=[review(20, at="2026-11-06T10:00:00Z")],
+    )
+    assert [key for key, _, _ in items] == ["c:1", "r:20"]
+
+
+def test_a_prefixed_review_body_brings_in_every_inline_comment_of_its_review():
+    items = read(
+        inline=[drafted(10, 20, "plain one"), drafted(11, 20, "/flocc two"), drafted(12, 21, "x")],
+        reviews=[review(20, "/flocc see the notes"), review(21)],
+    )
+    [(key, _, text)] = items
+    assert key == "r:20"
+    assert text.splitlines() == [
+        "NovusEdge in a review: see the notes",
+        "NovusEdge on a.py:3: plain one",
+        "NovusEdge on a.py:3: two",
+    ]
+
+
+def test_an_inline_comment_without_a_line_falls_back_to_its_original_line():
+    inline = drafted(10, 20, "/flocc here")
+    inline["line"], inline["original_line"] = None, 9
+    [(_, _, text)] = read(inline=[inline], reviews=[review(20)])
+    assert text == "NovusEdge on a.py:9: here"
+
+
+def test_an_edited_old_comment_keeps_its_creation_time():
+    old = talk(1, "/flocc edited in later", "2026-11-01T10:00:00Z")
+    old["updated_at"] = "2026-11-06T10:00:00Z"
+    [(_, at, _)] = read(conversation=[old])
+    assert at == datetime(2026, 11, 1, 10, tzinfo=UTC).timestamp()
+
+
+def test_pr_comments_come_back_oldest_first():
+    items = read(
+        conversation=[
+            talk(1, "/flocc b", "2026-11-06T11:00:00Z"),
+            talk(2, "/flocc a", "2026-11-06T08:00:00Z"),
+        ]
+    )
+    assert [key for key, _, _ in items] == ["c:2", "c:1"]
