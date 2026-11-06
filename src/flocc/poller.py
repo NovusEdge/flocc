@@ -21,13 +21,14 @@ from flocc.control import admit_rerun, stop_cause
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
-from flocc.publisher import pr_url
+from flocc.publisher import epoch, pr_url
 from flocc.sequence import SequenceError, parse_sequence
 from flocc.sessions import session_name
 from flocc.supervisor import (
     BLOCKED,
     COMMENT_FIX_FILE,
     COMMENT_FIXES,
+    GH_COMMENTS_SEEN,
     LAST_SUMMARY,
     PUBLISH_TRIES,
     QUESTIONS,
@@ -495,6 +496,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         "comment_fix",
         "comment_fixes",
         "comment_fix_moved",
+        "comment_fix_gh",
     ):
         ledger.meta_set(rt.con, f"{kept}:{issue.key}", "")
     for round_ in (1, 2):
@@ -609,10 +611,6 @@ def forward_comments(rt) -> dict[str, LinearError]:
     return failed
 
 
-def _epoch(iso: str) -> float:
-    return datetime.fromisoformat(iso).timestamp()
-
-
 def _comment_fix_waits(rt, claim: Claim) -> None:
     once = f"{COMMENT_FIX_MOVED}:{claim.issue_key}"
     if ledger.meta_get(rt.con, once):
@@ -628,6 +626,29 @@ def _comment_fix_waits(rt, claim: Claim) -> None:
         )
     except LinearError as exc:
         print(f"{claim.issue_key}: comment-fix wait not commented: {exc}", file=sys.stderr)
+
+
+def _github_items(rt, claim: Claim, url: str, since: float) -> tuple[list, list[str]]:
+    """The PR's unhandled `/flocc` items as (time, text), and the seen keys a batch holding them
+    would store. Items older than the first scan are marked seen here; a failed read marks
+    nothing."""
+    if not rt.cfg.github_steer_logins or rt.pr_comments is None:
+        return [], []
+    key = claim.issue_key
+    try:
+        items = rt.pr_comments(claim, url)
+    except (subprocess.CalledProcessError, ValueError, OSError) as exc:
+        print(f"{key}: PR comments not read for a comment fix: {exc}", file=sys.stderr)
+        return [], []
+    seen_key = f"{GH_COMMENTS_SEEN}:{key}"
+    seen = json.loads(ledger.meta_get(rt.con, seen_key) or "[]")
+    fresh = [item for item in items if item[0] not in seen]
+    old = [item for item in fresh if item[1] < since]
+    if old:
+        seen += [item[0] for item in old]
+        ledger.meta_set(rt.con, seen_key, json.dumps(seen))
+    new = [item for item in fresh if item[1] >= since]
+    return [(at, text) for _, at, text in new], seen + [item[0] for item in new]
 
 
 def comment_fixes(rt) -> None:
@@ -648,21 +669,26 @@ def comment_fixes(rt) -> None:
         # Before the read: past the cap the comments stay unread, so a Todo rerun gets them.
         if int(ledger.meta_get(rt.con, f"{COMMENT_FIXES}:{key}") or 0) >= cap:
             continue
+        unread: list = []
         try:
             unread = rt.linear.comments_since(claim.issue_id, claim.last_comment_at)
         except LinearError as exc:
             print(f"{key}: comments not read for a comment fix: {exc}", file=sys.stderr)
-            continue
+            # A GitHub-only batch can still start.
+            if not rt.cfg.github_steer_logins:
+                continue
         steering = [
-            (who, c)
+            (epoch(c.created_at), f"{who}: {c.body}")
             for c in unread
-            if _epoch(c.created_at) >= float(since) and (who := _steering(rt, c))
+            if epoch(c.created_at) >= float(since) and (who := _steering(rt, c))
         ]
-        if not steering:
+        gh_new, gh_seen = _github_items(rt, claim, url, float(since))
+        if not steering and not gh_new:
             if unread:
                 ledger.update_claim(rt.con, key, last_comment_at=unread[-1].created_at)
             continue
-        if rt.now() - _epoch(steering[-1][1].created_at) < COMMENT_SETTLE_S:
+        batch = sorted(steering + gh_new, key=lambda item: item[0])
+        if rt.now() - batch[-1][0] < COMMENT_SETTLE_S:
             continue
         if reason := rerun_held(rt, claim, bases):
             print(f"{key}: comment fix held, {reason}", file=sys.stderr)
@@ -680,8 +706,10 @@ def comment_fixes(rt) -> None:
         if moved:
             _comment_fix_waits(rt, claim)
             continue
-        replies = [f"{who}: {c.body}" for who, c in steering]
-        start_comment_fix(rt, claim, url, replies, unread[-1].created_at)
+        cursor = unread[-1].created_at if unread else claim.last_comment_at
+        start_comment_fix(
+            rt, claim, url, [text for _, text in batch], cursor, gh_seen if gh_new else None
+        )
 
 
 def _local_hour_and_date(now: float) -> tuple[int, str]:

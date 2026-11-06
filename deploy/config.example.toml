@@ -27,6 +27,9 @@ setup_timeout_s = 900
 # Linear user or bot/app ids (not names) whose comments on a running issue are typed into the
 # live session like the owner's, so another agent can steer. Empty forwards only the owner's.
 # steer_authors = ["your-hermes-linear-id"]
+# GitHub logins whose "/flocc ..." comments or reviews on a done issue's open PR start a comment
+# fix, like a Linear comment. Bots are ignored. Empty turns the GitHub scan off.
+# github_steer_logins = ["your-github-login"]
 # Fix sessions your comments, or a steer_authors id's, may start on a done issue whose PR is
 # still open, per run. They push to the PR with no new review; 0 turns them off.
 # comment_fix_max = 3

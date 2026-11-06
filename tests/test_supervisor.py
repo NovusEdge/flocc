@@ -10,7 +10,7 @@ from flocc.agentblock import IssueSettings, settings_to_json
 from flocc.agentfs import AgentFileError
 from flocc.context import agent_dir, state_dir
 from flocc.ledger import Claim
-from flocc.linear import LinearError
+from flocc.linear import BOT_PREFIX, LinearError
 from flocc.publisher import BranchMoved, PublishResult
 from flocc.runtime import Runtime
 from flocc.supervisor import (
@@ -30,7 +30,7 @@ from tests.test_ledger import make
 
 @pytest.fixture
 def rt(tmp_cfg, tmp_path):
-    pr_comments: list = []
+    pr_posted: list = []
     runtime = Runtime(
         cfg=tmp_cfg,
         con=ledger.connect(tmp_cfg.ledger_path),
@@ -44,9 +44,9 @@ def rt(tmp_cfg, tmp_path):
         publish_fn=lambda claim, title, summary, **kw: PublishResult("opened", url="https://pr/1"),
         git_head=lambda path: "sha-impl",
         review_diff=lambda claim: "diff --git a/x b/x",
-        comment_pr=lambda claim, url, body: pr_comments.append((url, body)),
+        comment_pr=lambda claim, url, body: pr_posted.append((url, body)),
     )
-    runtime.pr_comments = pr_comments  # type: ignore[attr-defined]
+    runtime.pr_posted = pr_posted  # type: ignore[attr-defined]
     return runtime
 
 
@@ -178,7 +178,7 @@ def test_review_md_that_is_a_link_is_never_posted(rt, tmp_path):
     done(rt, "review")
     with pytest.raises(AgentFileError):
         supervise(rt, current(rt))
-    assert rt.pr_comments == []
+    assert rt.pr_posted == []
 
 
 def test_session_files_are_read_from_the_agent_state_root(rt, tmp_path):
@@ -359,7 +359,7 @@ def test_review_done_posts_the_comment_and_finishes_the_claim(rt):
     done(rt, "review")
     supervise(rt, current(rt))
     assert rt.sessions.killed[-1] == "NF-1-review"
-    [(url, body)] = rt.pr_comments
+    [(url, body)] = rt.pr_posted
     assert url == "https://pr/1" and body.startswith("🤖 flocc review")
     assert "a.py:1 nit" in body
     assert rt.linear.comments[-1] == "Review: approve — https://pr/1"
@@ -392,7 +392,7 @@ def test_changes_requested_starts_one_fix_round_on_the_review(rt):
     assert "Review: changes requested — https://pr/1" in rt.linear.comments[-1]
     assert ledger.meta_get(rt.con, "review_fix:NF-1") == "1"
     assert not (state_dir(rt.cfg, "NF-1") / "done.json").exists()
-    assert len(rt.pr_comments) == 1
+    assert len(rt.pr_posted) == 1
 
 
 def test_fix_round_ends_in_a_second_review_posted_again(rt):
@@ -409,7 +409,7 @@ def test_fix_round_ends_in_a_second_review_posted_again(rt):
     (d / "review.md").write_text(CHANGES)
     done(rt, "review")
     supervise(rt, current(rt))
-    assert len(rt.pr_comments) == 2
+    assert len(rt.pr_posted) == 2
     assert current(rt).state == "done"
     last = rt.linear.comments[-1]
     assert last.startswith("Review: changes requested — https://pr/1")
@@ -515,7 +515,7 @@ def test_a_tick_that_dies_after_the_fix_launch_does_not_post_or_relaunch_a_revie
     done(rt, "review")
     with pytest.raises(KeyboardInterrupt):
         supervise(rt, current(rt))
-    assert current(rt).phase == "fix" and len(rt.pr_comments) == 1
+    assert current(rt).phase == "fix" and len(rt.pr_posted) == 1
     assert ledger.meta_get(rt.con, "review_posted:NF-1:1") == "1"
 
 
@@ -592,7 +592,7 @@ def test_linear_failure_after_the_comment_goes_to_the_digest(rt):
     rt.linear.comment = down
     done(rt, "review")
     supervise(rt, current(rt))
-    assert current(rt).state == "done" and len(rt.pr_comments) == 1
+    assert current(rt).state == "done" and len(rt.pr_posted) == 1
     assert any("Review: approve" in line for _, _, line in ledger.pending_digest(rt.con))
 
 
@@ -603,7 +603,7 @@ def test_review_session_that_dies_twice_is_skipped_quietly(rt):
     assert current(rt).restarts == 1 and current(rt).phase == "review"
     rt.sessions.alive_names.clear()
     supervise(rt, current(rt))
-    assert current(rt).state == "done" and rt.notifier.sent == [] and rt.pr_comments == []
+    assert current(rt).state == "done" and rt.notifier.sent == [] and rt.pr_posted == []
     assert "review skipped" in ledger.pending_digest(rt.con)[-1][2]
 
 
@@ -612,7 +612,7 @@ def test_review_past_its_wall_clock_is_skipped_quietly(rt):
     rt.now = lambda: 100.0 + 3601
     supervise(rt, current(rt))
     assert rt.sessions.killed[-1] == "NF-1-review"
-    assert current(rt).state == "done" and rt.notifier.sent == [] and rt.pr_comments == []
+    assert current(rt).state == "done" and rt.notifier.sent == [] and rt.pr_posted == []
     assert "wall-clock" in ledger.pending_digest(rt.con)[-1][2]
 
 
@@ -910,13 +910,13 @@ def test_comment_already_posted_is_not_posted_again(rt):
     rt.linear.comment = lambda issue_id, text: (_ for _ in ()).throw(LinearError("x"))
     done(rt, "review")
     supervise(rt, current(rt))
-    assert len(rt.pr_comments) == 1
+    assert len(rt.pr_posted) == 1
     # A tick that died after the post but before finishing the claim.
     ledger.update_claim(rt.con, "NF-1", state="running")
     ledger.meta_set(rt.con, "review_posted:NF-1:1", "1")
     done(rt, "review")
     supervise(rt, current(rt))
-    assert len(rt.pr_comments) == 1 and current(rt).state == "done"
+    assert len(rt.pr_posted) == 1 and current(rt).state == "done"
 
 
 @pytest.mark.parametrize("pct", ["five_hour", "seven_day"])
@@ -1538,7 +1538,7 @@ def test_a_review_asking_for_changes_waits_out_host_pressure(rt):
     done(rt, "review")
     pressure(rt)
     supervise(rt, current(rt))
-    assert current(rt).phase == "review" and rt.pr_comments == []
+    assert current(rt).phase == "review" and rt.pr_posted == []
     recover(rt)
     supervise(rt, current(rt))
     assert (current(rt).phase, current(rt).fix_attempts) == ("fix", 0)
@@ -1625,6 +1625,36 @@ def test_a_comment_fix_pushes_to_the_open_pr_with_the_owner_items_and_no_review(
     assert not ledger.meta_get(rt.con, "comment_fix:NF-1")
     [e] = events.unacked(rt.con)
     assert (e.kind, e.detail) == ("ended", "done, comment fix: PR https://pr/1")
+
+
+def test_a_comment_fix_with_a_github_item_answers_on_the_pr(rt):
+    comment_fix(rt)
+    ledger.meta_set(rt.con, "comment_fix_gh:NF-1", "1")
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert rt.pr_posted == [("https://pr/1", f"{BOT_PREFIX} Comment fix pushed to https://pr/1.")]
+    assert not ledger.meta_get(rt.con, "comment_fix_gh:NF-1")
+
+
+def test_a_comment_fix_without_a_github_item_posts_nothing_on_the_pr(rt):
+    comment_fix(rt)
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert rt.pr_posted == []
+
+
+def test_a_failed_pr_reply_does_not_fail_the_finish(rt, capsys):
+    comment_fix(rt)
+    ledger.meta_set(rt.con, "comment_fix_gh:NF-1", "1")
+
+    def refuse(claim, url, body):
+        raise subprocess.CalledProcessError(1, ["gh"])
+
+    rt.comment_pr = refuse
+    done(rt, "Renamed the flag.")
+    supervise(rt, current(rt))
+    assert current(rt).state == "done" and rt.linear.comments[-1].startswith("Comment fix pushed")
+    assert "PR reply not posted" in capsys.readouterr().err
 
 
 def test_the_last_comment_fix_says_further_comments_need_a_rerun(rt):
