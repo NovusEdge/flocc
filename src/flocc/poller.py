@@ -415,7 +415,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
             print(f"{issue.key}: held, comments not read: {exc}", file=sys.stderr)
             return
         for comment in unread:
-            if who := _steering(rt, comment):
+            if who := _steering(rt, comment, cardinal=True):
                 replies.append(f"{who}: {comment.body}")
             cursor = comment.created_at
     cause = f"{issue.key}:prepare"
@@ -569,10 +569,13 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
     ledger.meta_set(rt.con, since_key, "")
 
 
-def _steering(rt, comment) -> str | None:
-    """Who a steering comment is from, or None for one the session must not see."""
+def _steering(rt, comment, *, cardinal: bool = False) -> str | None:
+    """Who a steering comment is from, or None for one the session must not see. `cardinal` keeps
+    cardinal's own comments: a rerun's only record of the answer cardinal posted before it."""
     # The service's own comments carry BOT_PREFIX, and teammates comment on NF issues too.
     # The owner's replies steer; so do an allowlisted author's (e.g. a steering agent).
+    if comment.body.startswith(f"{BOT_PREFIX} cardinal:"):
+        return "Cardinal" if cardinal else None
     if comment.body.startswith(BOT_PREFIX):
         return None
     if comment.mine:
