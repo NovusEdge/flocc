@@ -25,7 +25,7 @@ The host reads `~/.config/flocc/config.toml`. `flocc ship` writes it from the ho
 | Key | Default | Meaning |
 |---|---|---|
 | `trigger_label` | set at setup (`claude`) | Label that makes an issue ready |
-| `session_cap` | 2 | Most concurrent sessions the host runs |
+| `session_cap` | 2 | Most concurrent sessions the host runs; a run in its background check still counts |
 | `five_hour_max_pct`, `weekly_max_pct` | 80.0 | New issues are held once usage reaches these shares of each window |
 | `default_wall_clock_s` | 10800 | Per-session time limit; an issue's `wall_clock` overrides it |
 | `review_model` | `opus` | Model for the reviewer session |
@@ -37,7 +37,7 @@ The host reads `~/.config/flocc/config.toml`. `flocc ship` writes it from the ho
 | `comment_fix_max` | 3 | Fix sessions your comments may start on a done issue whose PR is open, per run; 0 turns them off |
 | `shared_uv_cache` | false | One uv cache for every setup |
 
-Each `[repos.<name>]` table maps a repository. It takes `path`, `base_branch`, `draft` and `commit_trailer`. A private repository of a GitHub Free organization cannot have draft PRs, so set `draft = false` there.
+Each `[repos.<name>]` table maps a repository. It takes `path`, `base_branch`, `draft`, `commit_trailer`, `check_min_mem_gb`, `check_memory_high` and `check_memory_max`. A check starts only while `MemAvailable` is at least `check_min_mem_gb` GiB (default 5.5: the check's peak plus `min_available_mem_gb`); until then the run shows as `waiting-for-check`, and after `check_timeout_s` of waiting it blocks as `check-waiting-memory`. The check's systemd unit is throttled at `check_memory_high` (default `4.5G`) and killed alone at `check_memory_max` (default `5G`). A private repository of a GitHub Free organization cannot have draft PRs, so set `draft = false` there.
 
 ## Disk use
 

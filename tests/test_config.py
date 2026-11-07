@@ -27,6 +27,13 @@ def test_example_loads_with_defaults():
     assert cfg.tmp_max_pct == 80.0
     assert cfg.min_available_mem_gb == 1.0
     assert cfg.shared_uv_cache is False
+    backend = cfg.repos["backend"]
+    assert (backend.check_min_mem_gb, backend.check_memory_high, backend.check_memory_max) == (
+        5.5,
+        "4.5G",
+        "5G",
+    )
+    assert not hasattr(cfg, "check_cap")
     assert cfg.state_root.is_absolute()
     assert cfg.mcp_servers["sentry"]["type"] == "http"
     assert cfg.agent_plugins_file is None

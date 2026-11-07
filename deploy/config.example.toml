@@ -33,7 +33,7 @@ setup_timeout_s = 900
 # Fix sessions your comments, or a steer_authors id's, may start on a done issue whose PR is
 # still open, per run. They push to the PR with no new review; 0 turns them off.
 # comment_fix_max = 3
-# Most concurrent sessions this host runs.
+# Most concurrent sessions this host runs. A claim in its background check still counts.
 # session_cap = 2
 # Admission stops starting issues once sessions have used this share of each usage window.
 # five_hour_max_pct = 80.0
@@ -59,6 +59,13 @@ base_branch = "main"
 # draft = false
 # Overrides the top-level commit_trailer for this repo.
 # commit_trailer = false
+# A check for this repo starts only with this many GiB of memory available: the check's peak
+# plus min_available_mem_gb. It waits for a later tick, and the claim blocks as
+# check-waiting-memory after check_timeout_s of waiting.
+# check_min_mem_gb = 5.5
+# Memory limits of the check's systemd unit: throttled at High, killed alone at Max.
+# check_memory_high = "4.5G"
+# check_memory_max = "5G"
 
 [mcp_servers.sentry]
 type = "http"

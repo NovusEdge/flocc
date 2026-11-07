@@ -287,6 +287,8 @@ def check(req: dict) -> dict:
             checkjob.stop_job(state, key)
             return {}
         return checkjob.step(req, key, wt, state)
+    if mode == "base-check" and (why := checkjob.memory_wait(req.get("min_mem_gb"))):
+        return {"waiting": why}
     write_token(req["token"])
     clone = _clone(req["repo"], req["url"])
     repo = RepoConfig(path=clone, base_branch=str(req["base_branch"]), check=str(req["command"]))

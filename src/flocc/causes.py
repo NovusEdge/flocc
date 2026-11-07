@@ -20,6 +20,8 @@ CAUSES = {
     # The check outran check_timeout_s; a fixer cannot make a slow check fast, so the owner raises
     # the limit or splits the check.
     "check-timeout": OWNER,
+    # The check waited check_timeout_s for MemAvailable to reach the repo's check_min_mem_gb.
+    "check-waiting-memory": OWNER,
     "tests-touched": OWNER,
     "no-tests": OWNER,
     "branch-moved": OWNER,

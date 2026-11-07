@@ -57,6 +57,7 @@ class PublishResult:
     existing: bool = False  # "opened" by finding the PR that was already open
     # Status "check_running": the check still runs in the background; the next tick publishes again.
     # Status "check_timeout": it outran the time limit; the claim blocks with no fixer round.
+    # Status "check_wait_timeout": it never started, for lack of memory; same block, other cause.
     label_error: str = ""  # why the amended-tests label was not added to the open PR
     # A base-check result that says nothing lasting: ./setup failed or the check timed out.
     transient: bool = False
@@ -342,9 +343,12 @@ def publish(
     ):
         return touched
     ran = check(claim, repo, check_timeout_s)
-    if ran["status"] == "running":
+    # "waiting" is a start held for memory; the next tick asks again.
+    if ran["status"] in ("running", "waiting"):
         return PublishResult("check_running")
     out = str(ran.get("output", ""))
+    if ran["status"] == "wait_timeout":
+        return PublishResult("check_wait_timeout", out)
     if ran["status"] == "dirty":
         detail = f"Uncommitted changes; commit them or remove them, then finish again:\n{out}"
         return PublishResult("check_failed", detail[:_TAIL])

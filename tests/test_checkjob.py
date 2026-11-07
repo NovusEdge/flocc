@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -101,6 +102,83 @@ def test_the_unit_runs_dotnet_builds_without_servers_that_outlive_it(systemd, wt
     [argv] = systemd.runs
     assert "--setenv=MSBUILDDISABLENODEREUSE=1" in argv
     assert "--setenv=DOTNET_CLI_USE_MSBUILD_SERVER=0" in argv
+
+
+def limited(wt, state, kb, tmp_path, monkeypatch, timeout_s=600, **req):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal: 16000000 kB\nMemAvailable: {kb} kB\n")
+    monkeypatch.setattr(checkjob, "MEMINFO", meminfo)
+    body = {"command": "just check", "timeout_s": timeout_s, "min_mem_gb": 5.5, **req}
+    return checkjob.step(body, "NF-7", wt, state)
+
+
+GB = 1024 * 1024
+
+
+@pytest.mark.parametrize(("kb", "status"), [(5 * GB, "waiting"), (6 * GB, "running")])
+def test_a_check_starts_only_with_the_memory_the_repo_asks_for(
+    systemd, wt, tmp_path, monkeypatch, kb, status
+):
+    state = tmp_path / "state"
+    ran = limited(wt, state, kb, tmp_path, monkeypatch)
+    assert ran["status"] == status
+    assert len(systemd.runs) == (status == "running")
+    if status == "waiting":
+        assert "available memory 5.0 GB is below 5.5 GB" in ran["reason"]
+        assert not (state / "check.json").exists() and (state / "check-waiting").exists()
+    else:
+        assert not (state / "check-waiting").exists()
+
+
+def test_a_waiting_check_starts_once_memory_frees_up(systemd, wt, tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    assert limited(wt, state, 1 * GB, tmp_path, monkeypatch)["status"] == "waiting"
+    assert limited(wt, state, 8 * GB, tmp_path, monkeypatch) == {"status": "running"}
+    assert not (state / "check-waiting").exists() and len(systemd.runs) == 1
+
+
+def test_the_wait_began_at_the_first_refusal_and_keeps_that_time(
+    systemd, wt, tmp_path, monkeypatch
+):
+    state = tmp_path / "state"
+    limited(wt, state, 1 * GB, tmp_path, monkeypatch)
+    began = json.loads((state / "check-waiting").read_text())["since"]
+    limited(wt, state, 1 * GB, tmp_path, monkeypatch)
+    assert json.loads((state / "check-waiting").read_text())["since"] == began
+
+
+def test_a_check_that_waited_check_timeout_s_for_memory_gives_up(
+    systemd, wt, tmp_path, monkeypatch
+):
+    state = tmp_path / "state"
+    limited(wt, state, 1 * GB, tmp_path, monkeypatch, timeout_s=600)
+    marker = json.loads((state / "check-waiting").read_text())
+    (state / "check-waiting").write_text(json.dumps({**marker, "since": time.time() - 601}))
+    ran = limited(wt, state, 1 * GB, tmp_path, monkeypatch, timeout_s=600)
+    assert ran["status"] == "wait_timeout" and "available memory 1.0 GB" in ran["output"]
+    assert systemd.runs == [] and not (state / "check-waiting").exists()
+
+
+def test_base_checks_use_the_same_memory_gate(tmp_path, monkeypatch):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemAvailable: 1048576 kB\n")
+    monkeypatch.setattr(checkjob, "MEMINFO", meminfo)
+    assert checkjob.memory_wait(5.5) == "available memory 1.0 GB is below 5.5 GB"
+    assert checkjob.memory_wait(0.5) is None
+
+
+def test_the_unit_gets_the_repos_memory_limits(systemd, wt, tmp_path):
+    state = tmp_path / "state"
+    req = {"command": "just check", "timeout_s": 600, "memory_high": "4.5G", "memory_max": "5G"}
+    checkjob.step(req, "NF-7", wt, state)
+    [argv] = systemd.runs
+    assert "--property=MemoryHigh=4.5G" in argv and "--property=MemoryMax=5G" in argv
+
+
+def test_a_request_without_limits_sets_none(systemd, wt, tmp_path):
+    step(wt, tmp_path / "state")
+    [argv] = systemd.runs
+    assert not any(a.startswith(("--property=MemoryHigh", "--property=MemoryMax")) for a in argv)
 
 
 def test_a_check_that_ends_reports_its_output_and_stops_the_unit(systemd, wt, tmp_path):

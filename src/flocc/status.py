@@ -280,6 +280,8 @@ def _claim_row(cfg: Config, claim: ledger.Claim, sessions, now: float) -> dict:
         "tmux_alive": sessions.alive(session_name(claim.issue_key, claim.phase)),
         # The session ended and the repo's check runs in the background.
         "checking": agentfs.exists(agent, "check.json"),
+        # The check is held back for low memory and starts on a later tick.
+        "check_waiting": agentfs.exists(agent, "check-waiting"),
         "context_pct": usage.context_pct(status) if status else None,
     }
 

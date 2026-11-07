@@ -119,6 +119,22 @@ def test_a_check_timeout_blocks_with_its_own_cause_and_starts_no_fixer(rt):
     assert rt.sessions.started == []
 
 
+def test_a_check_that_waited_too_long_for_memory_blocks_for_the_owner(rt):
+    add(rt, phase="impl")
+    rt.sessions.alive_names.add("NF-1")
+    rt.publish_fn = lambda claim, title, summary, **kw: PublishResult(
+        "check_wait_timeout", "available memory 2.0 GB is below 5.5 GB"
+    )
+    done(rt, "built")
+    supervise(rt, current(rt))
+    sent = rt.notifier.sent[-1]
+    assert current(rt).state == "blocked" and current(rt).fix_attempts == 0
+    assert (sent.cause, sent.stop_type) == ("NF-1:check-waiting-memory", "owner")
+    assert "available memory 2.0 GB" in sent.summary
+    assert (state_dir(rt.cfg, "NF-1") / BLOCKED).read_text().startswith("check-waiting-memory\n")
+    assert rt.sessions.started == []
+
+
 def test_the_same_failure_at_the_last_round_is_check_cap(rt):
     add(rt, phase="fix", fix_attempts=rt.cfg.check_fix_rounds)
     rt.sessions.alive_names.add("NF-1")

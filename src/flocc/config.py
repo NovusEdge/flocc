@@ -39,6 +39,14 @@ class RepoConfig:
     # Added with the publish token to a PR whose implementer amended tester files, for repos whose
     # PR check fails such PRs without it. Empty adds none; flocc never removes it.
     amended_label: str = ""
+    # A check starts only with this much MemAvailable, in GiB: its peak plus
+    # Config.min_available_mem_gb, so starting it never opens a host memory episode. A repo whose
+    # check builds a lot (dotnet, a full test stack) needs more than the default.
+    check_min_mem_gb: float = 5.5
+    # systemd MemoryHigh and MemoryMax of the check's unit. A runaway check throttles at High and
+    # is killed alone at Max, instead of the host's OOM killer choosing among sessions.
+    check_memory_high: str = "4.5G"
+    check_memory_max: str = "5G"
 
 
 # No claude_config_dir: sessions must share the owner's Claude Code login and

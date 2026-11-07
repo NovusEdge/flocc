@@ -727,6 +727,15 @@ def _finish_phase(
             "Raise check_timeout_s or speed the check up, then run"
             f" flocc release --keep-worktree {key}",
         )
+    elif result.status == "check_wait_timeout":
+        _block(
+            rt,
+            claim,
+            "check-waiting-memory",
+            f"The check never started: {result.detail}"[:3000],
+            "Free memory on the host or lower check_min_mem_gb, then run"
+            f" flocc release --keep-worktree {key}",
+        )
     elif (
         result.status == "check_failed"
         and claim.fix_attempts > 0

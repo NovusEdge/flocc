@@ -64,6 +64,23 @@ def test_check_reports_dirty_failed_and_ok(origin):
     assert dirty["status"] == "dirty" and "stray.txt" in dirty["output"]
 
 
+def test_a_base_check_waits_on_memory_before_it_checks_anything_out(tmp_path, monkeypatch):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemAvailable: 1048576 kB\n")
+    monkeypatch.setattr(agentrun.checkjob, "MEMINFO", meminfo)
+    out = agentrun.check({"mode": "base-check", "min_mem_gb": 5.5})
+    assert list(out) == ["waiting"] and "available memory 1.0 GB" in out["waiting"]
+
+
+def test_a_base_check_that_waited_raises_instead_of_reporting_a_failure(
+    tmp_cfg, origin, tmp_path, monkeypatch
+):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    monkeypatch.setattr(Agent, "call", lambda self, *a, **kw: {"waiting": "low memory"})
+    with pytest.raises(AgentError, match="base check not run: low memory"):
+        Agent(cfg).check_base("backend")
+
+
 def test_the_branch_is_fetched_into_the_service_clone(origin, tmp_path):
     service = tmp_path / "service"
     subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(service)], check=True)
