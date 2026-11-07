@@ -526,7 +526,6 @@ func cardinalFiles(spec CardinalSpec, ip, hostKey string) ([]vmFile, error) {
 	render := strings.NewReplacer("{{executor}}", spec.Executor, "{{hour}}", fmt.Sprintf("%02d", spec.RenewHour))
 	files = append(files,
 		vmFile{"/etc/claude-code/managed-settings.json", 0o644, "root", read("managed-settings.json")},
-		vmFile{cardinalEtc + "/session-settings.json", 0o644, "root", read("session-settings.json")},
 		vmFile{cardinalEtc + "/ssh_config", 0o644, "root", []byte(sshConfig(ip))},
 		vmFile{cardinalEtc + "/known_hosts", 0o644, "root", []byte(ip + " " + hk[0] + " " + hk[1] + "\n")},
 	)
