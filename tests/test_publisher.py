@@ -235,17 +235,27 @@ def _labelled(repo):
     return replace(repo, amended_label="tests-amended")
 
 
+def _label(n):
+    return [
+        "gh",
+        "api",
+        "-X",
+        "POST",
+        f"repos/o/r/issues/{n}/labels",
+        "-f",
+        "labels[]=tests-amended",
+    ]
+
+
 def _edits(gh):
-    return [c for c in gh.calls if c[2] == "edit"]
+    return [c for c in gh.calls if c[-1].startswith("labels[]=")]
 
 
 def test_amended_label_is_added_to_a_new_pr(origin, tmp_path):
     repo, path, claim = setup_claim(origin, tmp_path)
     gh = Gh()
     publish(claim, _labelled(repo), "t", "s", token="t", runner=gh, amended=_amend(path))
-    assert _edits(gh) == [
-        ["gh", "pr", "edit", "https://github.com/o/r/pull/9", "--add-label", "tests-amended"]
-    ]
+    assert _edits(gh) == [_label(9)]
     assert gh.kw["env"]["GH_TOKEN"] == "t"
 
 
@@ -256,7 +266,7 @@ def test_amended_label_is_added_to_an_existing_pr(origin, tmp_path):
     publish(
         claim, _labelled(repo), "t", "s", token="t", runner=gh, amended=amended, reuse_only=True
     )
-    assert [c[3] for c in _edits(gh)] == ["https://github.com/o/r/pull/4"]
+    assert _edits(gh) == [_label(4)]
 
 
 @pytest.mark.parametrize("existing", ["", "https://github.com/o/r/pull/4\n"])
@@ -265,7 +275,7 @@ def test_a_label_the_edit_rejects_does_not_fail_the_publish(origin, tmp_path, ex
     gh = Gh(existing=existing)
 
     def runner(argv, **kw):
-        if argv[:3] == ["gh", "pr", "edit"]:
+        if argv[-1].startswith("labels[]="):
             raise subprocess.CalledProcessError(1, argv, stderr="could not add label: not found")
         return gh(argv, **kw)
 

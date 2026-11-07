@@ -236,12 +236,11 @@ def test_triage_decides_on_the_stop_type_and_on_the_kind_when_it_is_null():
     assert f"{EXECUTOR} amend-tests KEY" in text and "`tests-amended`" in text
 
 
-def test_managed_settings_allow_the_two_binaries_and_hook_every_bash_call():
+def test_managed_settings_bypass_but_deny_and_hook_every_bash_call():
     s = json.loads((CARDINAL / "managed-settings.json").read_text())
     p = s["permissions"]
-    assert p["defaultMode"] == "default"
-    assert p["allow"] == [f"Bash({EXECUTOR}:*)", f"Bash({AGENT_SHELL}:*)", "Skill"]
-    assert "ask" not in p
+    assert p["defaultMode"] == "bypassPermissions"
+    assert "allow" not in p and "ask" not in p and "disableBypassPermissionsMode" not in p
     assert p["deny"] == [
         "Read",
         "Glob",
@@ -253,13 +252,22 @@ def test_managed_settings_allow_the_two_binaries_and_hook_every_bash_call():
         "NotebookEdit",
         "mcp__*",
         "Monitor",
+        "Agent",
+        "Workflow",
+        "CronCreate",
+        "ScheduleWakeup",
+        "RemoteTrigger",
     ]
-    assert p["disableBypassPermissionsMode"] == "disable"
+    service = (CARDINAL / "cardinal.service").read_text()
+    assert "--permission-mode bypassPermissions" in service
+    assert "--settings /etc/flocc-cardinal/session-settings.json" in service
+    skip = json.loads((CARDINAL / "session-settings.json").read_text())
+    assert skip == {"skipDangerousModePermissionPrompt": True}
     command = {"type": "command", "command": "/opt/cardinal/plugin/bin/only-executor"}
     assert s["hooks"]["PreToolUse"] == [{"matcher": "Bash", "hooks": [command]}]
 
 
-def test_the_unit_runs_sonnet_in_the_empty_session_directory():
+def test_the_unit_runs_opus_in_the_empty_session_directory():
     unit = (CARDINAL / "cardinal.service").read_text()
     for part in (
         "-c /var/lib/flocc-cardinal/session",
@@ -269,7 +277,6 @@ def test_the_unit_runs_sonnet_in_the_empty_session_directory():
         "{{executor}}",
     ):
         assert part in unit
-    assert "--permission-mode" not in unit
     assert "%" not in unit.replace("%h", "")
     assert "OnCalendar=*-*-* {{hour}}:00:00" in (CARDINAL / "cardinal-renew.timer").read_text()
 

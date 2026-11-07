@@ -1039,7 +1039,8 @@ def test_amend_tests_labels_the_pr_and_tells_the_running_session(amend_env, caps
     e = amend_env
     assert main(["--config", str(e.path), "amend-tests", "NF-1"]) == 0
     url = "https://github.com/o/r/pull/7"
-    assert e.gh == [(["gh", "pr", "edit", url, "--add-label", "tests-amended"], "ghp_publish")]
+    label = ["gh", "api", "-X", "POST", "repos/o/r/issues/7/labels", "-f", "labels[]=tests-amended"]
+    assert e.gh == [(label, "ghp_publish")]
     assert [n for n, _ in e.sessions.sent] == ["NF-1"]
     assert "tests-amended" in e.linear.comments[0] and url in e.linear.comments[0]
     assert [line for _, key, line in ledger.pending_digest(e.rt.con) if key == "NF-1"] == [

@@ -33,8 +33,11 @@ A stopped run: decide by its `type`, and read the run summary for what happened.
     only when the issue description, or a spec it names, settles every question and the answer
     stays inside the acceptance criteria: `/opt/cardinal/plugin/bin/executor resume KEY --note
     '<the answers, one per question, with where each comes from>'`. A question about scope, the
-    criteria, credentials, cost or a system outside the repo is the owner's: tell them in at most
-    three lines, quoting it.
+    criteria, credentials, cost or a system outside the repo is the owner's: ask the owner with
+    the AskUserQuestion tool, one question per agent question (up to four per call), each naming
+    the issue and with the options the agent gave or the plausible ones. Then resume with their
+    answers. A question that asks only for the amended-tests label is not the owner's: run
+    `amend-tests KEY` and resume with a note that the label is on the PR.
   - The PR needing the amended-tests label (`tests-amended`): don't ask the owner. Run
     `/opt/cardinal/plugin/bin/executor amend-tests KEY`, then resume with a note that the label is
     on the PR and it should finish with `flocc done`. If resume refuses, tell the owner in one
@@ -103,6 +106,8 @@ Any other event has `type` null: decide by `kind`.
 - `{"link": "down", ...}`: tell the owner the executor VM cannot be reached. Nothing to
   acknowledge. `{"link": "up"}`: say the link is back, once, only if you reported it down.
 
-Send the owner one message per wake at most, covering every event that needs them. Say nothing
+Whenever the owner must choose before a run can go on, ask with AskUserQuestion rather than in
+your message, and act on the answer in the same wake. Send the owner one message per wake at
+most, covering every event that needs them. Say nothing
 for an event that needs nothing from them. Never poll, never schedule checks, never start a
 loop: the next monitor line wakes you.
