@@ -180,6 +180,7 @@ def test_resume_with_the_session_cap_full_is_queued_and_uses_the_one_resume(rt, 
     assert json.loads(ledger.meta_get(rt.con, "resume_pending:NF-1") or "null") == {
         "note": "do the thing",
         "at": 100.0,
+        "started_at": 0.0,
     }
     assert ledger.get_claim(rt.con, "NF-1").state == "blocked"  # type: ignore[union-attr]
     with pytest.raises(Refused, match="already resumed"):

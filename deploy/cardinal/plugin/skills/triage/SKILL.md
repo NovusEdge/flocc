@@ -25,8 +25,11 @@ A stopped run: decide by its `type`, and read the run summary for what happened.
 - `type` `agent`: resume when you can say what the next attempt does differently:
   `/opt/cardinal/plugin/bin/executor resume KEY --note '<what to do and where, one paragraph>'`.
   You get one resume per run. If it prints `queued`, no slot is free: the service starts it on
-  a later tick, so do not run it again. When you cannot say what would change, tell the owner in at most
-  three lines: the issue, why it stopped, the one thing they need to do.
+  a later tick, so do not run it again. If an event's detail starts `resume-dropped`, that queued
+  resume never started (the detail says why, and repeats your note) and the run's one resume is
+  free again: resume once more with the note if the issue is still in progress, else tell the
+  owner in one line. When you cannot say what would change, tell the owner in at most three lines:
+  the issue, why it stopped, the one thing they need to do.
 - `type` `owner`: tell the owner in at most three lines: the issue, why it stopped, the one thing
   they need to do. For `kind` `cap`, the check still fails after every fix round: say what fails,
   from the run summary, and start no fixer. Two exceptions:

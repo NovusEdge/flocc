@@ -17,7 +17,7 @@ from flocc.agentblock import (
 )
 from flocc.causes import OWNER
 from flocc.context import agent_dir, state_dir, write_context
-from flocc.control import PENDING_RESUME, admit_rerun, run_pending_resumes, stop_cause
+from flocc.control import PENDING_RESUME, admit_rerun, run_pending_resumes, stop_cause, wanted
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
@@ -130,10 +130,7 @@ def release_claim(rt, claim: Claim, *, keep_worktree: bool = False, to_todo: boo
 
 def still_wanted(rt, key: str) -> bool:
     """False for an issue since parked, unlabelled or closed."""
-    return (
-        rt.linear.state_types([key])[key] == "started"
-        and rt.cfg.trigger_label in rt.linear.issue(key).labels
-    )
+    return wanted(rt, key, rt.linear.state_types([key])[key])
 
 
 def restart_timed_out(rt) -> None:
