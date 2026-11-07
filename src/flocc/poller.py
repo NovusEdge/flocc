@@ -17,7 +17,7 @@ from flocc.agentblock import (
 )
 from flocc.causes import OWNER
 from flocc.context import agent_dir, state_dir, write_context
-from flocc.control import admit_rerun, stop_cause
+from flocc.control import PENDING_RESUME, admit_rerun, run_pending_resumes, stop_cause
 from flocc.ledger import Claim
 from flocc.linear import BOT_PREFIX, Issue, LinearError
 from flocc.notice import Notice
@@ -323,6 +323,7 @@ def pushed_elsewhere(rt, claim: Claim, view: dict) -> bool:
 
 def poll(rt) -> None:
     cfg = rt.cfg
+    run_pending_resumes(rt)
     bases: dict[str, str | None] = {}
     holds = ledger.issue_holds(rt.con)
     for issue in rt.linear.ready_issues(cfg.team_key, cfg.trigger_label):
@@ -517,6 +518,7 @@ def _start(rt, issue: Issue, repo: str, settings, sequence: tuple[str, ...]) -> 
         "base_held",
         "base_released",
         "cardinal_resume",
+        PENDING_RESUME,
         "host_wait",
         TRANSIENT_RETRY,
         "comment_fix",

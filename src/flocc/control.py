@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -13,17 +14,25 @@ from flocc.ledger import Claim
 from flocc.linear import LinearError
 from flocc.sequence import ARCHETYPE
 from flocc.sessions import session_name
-from flocc.supervisor import BLOCKED, FIX_CONTEXT, QUESTIONS, RESUME_NOTE, launch
+from flocc.supervisor import BLOCKED, FIX_CONTEXT, QUESTIONS, RESUME_NOTE, LaunchError, launch
 from flocc.usage import latest_usage
 
 # One cardinal resume per claim; poller._start clears it with the claim's other per-run meta.
 CARDINAL_RESUME = "cardinal_resume"
 RESUME_LOG = "resume_log"
+# A resume admission refused for a cap or usage, as {"note", "at"}; poller._start clears it, so a
+# human's move to Todo supersedes it.
+PENDING_RESUME = "resume_pending"
+PENDING_TTL_S = 24 * 3600
 NOTE_CHARS = 2000
 
 
 class Refused(Exception):
     pass
+
+
+class Queued(Exception):
+    """Admission refused for a cap or usage; the resume waits for run_pending_resumes."""
 
 
 def stop_cause(cfg: Config, claim: Claim) -> str:
@@ -83,12 +92,9 @@ def admit_rerun(rt, claim: Claim):
     )
 
 
-def resume(rt, key: str, note: str) -> Claim:
-    note = note.strip()
-    if not note:
-        raise Refused("pass a note saying what the next attempt does")
-    if len(note) > NOTE_CHARS:
-        raise Refused(f"the note is {len(note)} characters; keep it under {NOTE_CHARS}")
+def _resumable(rt, key: str, *, queued: bool = False) -> tuple[Claim, str]:
+    """The claim and its stop cause, or Refused. A queued resume already holds the run's one
+    resume."""
     claim = ledger.get_claim(rt.con, key)
     if claim is None:
         raise Refused(f"no claim for {key}")
@@ -105,15 +111,38 @@ def resume(rt, key: str, note: str) -> Claim:
         raise Refused(
             f"{key} used {claim.fix_attempts} of {cap} fix rounds; that stop is the owner's"
         )
-    if ledger.meta_get(rt.con, f"{CARDINAL_RESUME}:{key}"):
+    if not queued and ledger.meta_get(rt.con, f"{CARDINAL_RESUME}:{key}"):
         raise Refused(f"cardinal already resumed this run of {key}")
     if key in ledger.issue_holds(rt.con):
         raise Refused(f"{key} is held; the owner's flocc release {key} lifts the hold")
     if not Path(claim.worktree).exists():
         raise Refused(f"{key}'s worktree is gone")
+    return claim, cause
+
+
+def resume(rt, key: str, note: str) -> Claim:
+    """Restarts the run; raises Queued when a cap or usage refused it and it was stored."""
+    note = note.strip()
+    if not note:
+        raise Refused("pass a note saying what the next attempt does")
+    if len(note) > NOTE_CHARS:
+        raise Refused(f"the note is {len(note)} characters; keep it under {NOTE_CHARS}")
+    claim, cause = _resumable(rt, key)
     decision = admit_rerun(rt, claim)
     if not decision.ok:
-        raise Refused(f"not now: {decision.reason}")
+        if not decision.queue:
+            raise Refused(f"not now: {decision.reason}")
+        # The mark is set now, so a second resume of this run is refused while this one waits.
+        ledger.meta_set(
+            rt.con, f"{PENDING_RESUME}:{key}", json.dumps({"note": note, "at": rt.now()})
+        )
+        ledger.meta_set(rt.con, f"{CARDINAL_RESUME}:{key}", "1")
+        raise Queued(decision.reason)
+    return _launch_resume(rt, claim, cause, note)
+
+
+def _launch_resume(rt, claim: Claim, cause: str, note: str) -> Claim:
+    key = claim.issue_key
     phase = "fix" if cause == "check-failed" else claim.phase
     extra = _resume_prompt(rt, claim, cause, note)
     d = state_dir(rt.cfg, key)
@@ -160,6 +189,46 @@ def resume(rt, key: str, note: str) -> Claim:
     except LinearError as exc:
         print(f"{key}: resume comment not posted: {exc}", file=sys.stderr)
     return ledger.get_claim(rt.con, key) or claim
+
+
+def run_pending_resumes(rt) -> None:
+    """Launches queued resumes, oldest first, while admission allows; drops those past
+    PENDING_TTL_S or whose run changed (released, held, resumed by hand). Runs before poll admits
+    Todo work, so a queued resume gets a freed slot first."""
+    rows = rt.con.execute(
+        "SELECT key, value FROM meta WHERE key LIKE ? AND value != ''", (f"{PENDING_RESUME}:%",)
+    ).fetchall()
+    pending = []
+    for row in rows:
+        key = row["key"].split(":", 1)[1]
+        try:
+            entry = json.loads(row["value"])
+            pending.append((float(entry["at"]), key, str(entry["note"])))
+        except (ValueError, KeyError, TypeError):
+            ledger.meta_set(rt.con, row["key"], "")
+    for at, key, note in sorted(pending):
+        clear = f"{PENDING_RESUME}:{key}"
+        if rt.now() - at >= PENDING_TTL_S:
+            print(f"{key}: queued resume expired after 24 hours", file=sys.stderr)
+            ledger.meta_set(rt.con, clear, "")
+            continue
+        try:
+            claim, cause = _resumable(rt, key, queued=True)
+        except Refused as exc:
+            print(f"{key}: queued resume dropped: {exc}", file=sys.stderr)
+            ledger.meta_set(rt.con, clear, "")
+            continue
+        decision = admit_rerun(rt, claim)
+        if not decision.ok:
+            # Oldest first: a younger one must not take the slot the older one waits for.
+            print(f"{key}: queued resume waits, {decision.reason}", file=sys.stderr)
+            return
+        try:
+            _launch_resume(rt, claim, cause, note)
+        except (LaunchError, subprocess.SubprocessError, OSError) as exc:
+            print(f"{key}: queued resume did not start, will retry: {exc}", file=sys.stderr)
+            continue
+        ledger.meta_set(rt.con, clear, "")
 
 
 def resumes(con, since: float) -> list[tuple[float, str, str, str]]:
