@@ -8,7 +8,7 @@ from flocc.config import Config
 from flocc.context import state_dir
 from flocc.publisher import failure_excerpt
 from flocc.sequence import ARCHETYPE
-from flocc.status import age_text, pr_state
+from flocc.status import age_text, finished_state, pr_states
 from flocc.supervisor import BLOCKED, CHECK_OUTPUT, LAST_SUMMARY, POSTED_REVIEW
 
 # cardinal reads these whole on every wake they cover, so they are bounded.
@@ -84,17 +84,19 @@ def _exit(code: int | None) -> str:
     return "no exit status" if code is None else f"exit {code}"
 
 
-def digest_data(cfg: Config, con, now: float, pr_view=None) -> tuple[str, int]:
+def digest_data(cfg: Config, con, now: float, pr_states_fn=None) -> tuple[str, int]:
     out = [f"# Digest data, {time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}", "", "## Runs"]
     runs = []
-    for c in [*ledger.live_claims(con), *ledger.finished_claims(con)]:
-        url = _read(state_dir(cfg, c.issue_key), "pr-url")
+    claims = [*ledger.live_claims(con), *ledger.finished_claims(con)]
+    urls = {c.issue_key: _read(state_dir(cfg, c.issue_key), "pr-url") for c in claims}
+    states = pr_states(pr_states_fn, [(c, urls[c.issue_key]) for c in claims])
+    for c in claims:
+        url = urls[c.issue_key]
         pr = f", PR {url}" if url and url != "unknown" else ""
         cause = control.stop_cause(cfg, c) if c.state in ("blocked", "timed_out") else ""
         why = f" ({cause})" if cause and cause != "timed-out" else ""
         # A merged PR is finished work, not a PR waiting for review.
-        merged = pr_state(pr_view, c, url) == "merged"
-        state = "merged" if merged else c.state.replace("_", " ")
+        state = finished_state(c.state, states.get(url, "")).replace("_", " ")
         runs.append(f"- {c.issue_key}: {_step(c.phase)}, {state}{why}{pr}")
     out += _capped(runs, LIST_ROWS)
     out += ["", "## Since the last digest"]

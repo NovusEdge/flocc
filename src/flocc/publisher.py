@@ -3,7 +3,10 @@ import os
 import re
 import shlex
 import subprocess
+import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -477,6 +480,51 @@ def pr_view(claim: Claim, url: str, token: str, runner=subprocess.run) -> dict:
         text=True,
     )
     return json.loads(out.stdout)
+
+
+PR_STATES_DEADLINE_S = 15.0
+
+
+def pr_states(
+    urls: list[str],
+    token: str,
+    runner=subprocess.run,
+    deadline_s: float = PR_STATES_DEADLINE_S,
+    workers: int = 8,
+) -> dict[str, str]:
+    """Each PR's lowercase state (open, merged, closed) from one `gh pr view --json state` per URL,
+    run in parallel under one deadline for all of them. A PR gh did not answer for is absent. The
+    first timeout stops the rest, so a hung gh costs one deadline, not one per row. Unlike pr_view
+    this fetches no files or mergeability."""
+    end = time.monotonic() + deadline_s
+    stop = threading.Event()
+
+    def one(url: str) -> str | None:
+        left = end - time.monotonic()
+        if stop.is_set() or left <= 0:
+            return None
+        try:
+            out = runner(
+                ["gh", "pr", "view", url, "--json", "state"],
+                cwd=None,
+                env={**os.environ, "GH_TOKEN": token},
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=left,
+            )
+            return str(json.loads(out.stdout)["state"]).lower()
+        except subprocess.TimeoutExpired:
+            stop.set()
+        except (subprocess.SubprocessError, OSError, ValueError, KeyError):
+            pass
+        return None
+
+    if not urls:
+        return {}
+    with ThreadPoolExecutor(min(workers, len(urls))) as pool:
+        states = list(pool.map(one, urls))
+    return {url: state for url, state in zip(urls, states, strict=True) if state is not None}
 
 
 STEER_PREFIX = "/flocc"

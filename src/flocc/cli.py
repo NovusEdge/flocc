@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -693,13 +694,11 @@ def cmd_run_summary(args) -> int:
     return 0
 
 
-GH_VIEW_TIMEOUT_S = 15
-
-
-def _github_reader(cfg):
-    """A PR reader on the publish token, or None when this user cannot read the token. Each call
-    is bounded, so one hung gh cannot hold a status or digest read."""
-    from flocc.publisher import pr_view
+def _github_states(cfg, con=None, runner=subprocess.run):
+    """A batched PR-state reader on the publish token, or None when this user cannot read the
+    token. One deadline bounds the whole batch. A merged PR is final, so it is remembered in meta
+    and not asked again; con is None, or unwritable, for a reader that only asks."""
+    from flocc.publisher import pr_states
 
     try:
         token = cfg.publish_gh_token_file.read_text().strip()
@@ -708,10 +707,22 @@ def _github_reader(cfg):
     if not token:
         return None
 
-    def bounded(argv, **kw):
-        return subprocess.run(argv, timeout=GH_VIEW_TIMEOUT_S, check=kw.pop("check", True), **kw)
+    def ask(urls):
+        known = set()
+        try:
+            known = {u for u in urls if con is not None and ledger.meta_get(con, f"pr_merged:{u}")}
+        except sqlite3.Error:
+            pass
+        got = pr_states([u for u in urls if u not in known], token, runner=runner)
+        for url, state in got.items():
+            if state == "merged" and con is not None:
+                try:
+                    ledger.meta_set(con, f"pr_merged:{url}", "1")
+                except sqlite3.Error:
+                    pass
+        return {**got, **{u: "merged" for u in known}}
 
-    return lambda claim, url: pr_view(claim, url, token, runner=bounded)
+    return ask
 
 
 def cmd_digest_data(args) -> int:
@@ -723,7 +734,7 @@ def cmd_digest_data(args) -> int:
         ledger.clear_digest(con, args.done)
         print(f"cleared digest lines through {args.done}")
         return 0
-    print(digest_data(cfg, con, time.time(), pr_view=_github_reader(cfg))[0])
+    print(digest_data(cfg, con, time.time(), pr_states_fn=_github_states(cfg, con))[0])
     return 0
 
 
@@ -941,17 +952,23 @@ def cmd_doctor(args) -> int:
 
 def cmd_status(args) -> int:
     from flocc.agent import Agent
-    from flocc.status import age_text, collect
+    from flocc.status import age_text, collect, finished_state
 
     cfg, _ = _config(args)
     agent = Agent(cfg)
     # The desktop's --json report makes no GitHub call; the text table, cardinal's, asks for the
     # state of each finished run's PR.
+    con = None
+    if not args.json and cfg.ledger_path.exists():
+        try:
+            con = ledger.connect(cfg.ledger_path)
+        except sqlite3.Error:
+            pass
     report = collect(
         cfg,
         agent.sessions(),
         claude=agent.claude_argv(),
-        pr_view=None if args.json else _github_reader(cfg),
+        pr_states_fn=None if args.json else _github_states(cfg, con),
     )
     if args.json:
         print(json.dumps(report))
@@ -973,8 +990,7 @@ def cmd_status(args) -> int:
     for c in report.get("finished", []):
         fix = f"{c['fix_attempts']}/{cap}"
         age = age_text(c["started_age_s"])
-        merged = c.get("pr_state") == "merged"
-        state = "merged" if merged else c["state"]
+        state = finished_state(c["state"], c.get("pr_state", ""))
         line = f"  {c['issue']:<9}{c['archetype']:<10}{state:<11}{fix:<5}{age:<6}{'-':<6}-"
         print(f"{line}  {c['pr_url']}" if c["pr_url"] else line)
     if report["ledger_error"]:

@@ -22,7 +22,14 @@ from flocc.poller import (
     restart_timed_out,
     retry_transient,
 )
-from flocc.publisher import comment_on_pr, pr_comments, pr_view, publish, read_amended
+from flocc.publisher import (
+    comment_on_pr,
+    pr_comments,
+    pr_states,
+    pr_view,
+    publish,
+    read_amended,
+)
 from flocc.runtime import Runtime
 from flocc.supervisor import supervise
 from flocc.tokens import check_claude_login, check_tokens
@@ -100,6 +107,7 @@ def build_runtime(cfg: Config, config_path: Path) -> Runtime:
         review_diff=review_diff,
         comment_pr=comment_pr,
         pr_view=lambda claim, url: pr_view(claim, url, token),
+        pr_states=lambda urls: pr_states(urls, token),
         pr_comments=lambda claim, url: pr_comments(url, token, cfg.github_steer_logins),
         base_check=agent.check_base,
         agent=agent,

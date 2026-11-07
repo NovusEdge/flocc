@@ -30,6 +30,9 @@ class Runtime:
     free_disk_gb: Callable[[Path], float] = free_disk_gb
     # The PR's state, head and mergeability; None in tests that never reach the rebase step.
     pr_view: Callable[[Claim, str], dict] | None = None
+    # PR URLs to their state (open, merged, closed), bounded by one deadline; None in tests that
+    # never reach the reap.
+    pr_states: Callable[[list[str]], dict[str, str]] | None = None
     # The PR's `/flocc` requests as (key, epoch time, text) oldest first; None in tests that never
     # reach the GitHub scan.
     pr_comments: Callable[[Claim, str], list[tuple[str, float, str]]] | None = None

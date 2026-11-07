@@ -258,7 +258,7 @@ def reap_worktrees(rt) -> None:
                 ledger.record_alert(rt.con, cause, 3, claim.issue_key, rt.now())
             continue
         if merged:
-            # Before the claim goes (d194): a tick that dies between the two emits again, and a
+            # Before the claim goes: a tick that dies between the two emits again, and a
             # duplicate is acked away where a lost event is never seen.
             events.emit(
                 rt.con,
@@ -276,10 +276,10 @@ def _merged_pr(rt, claim: Claim) -> str | None:
     """The URL of a done claim's PR when GitHub says it is merged; None otherwise, and when GitHub
     cannot say: a reap must not wait on it."""
     url = pr_url(rt, claim)
-    if rt.pr_view is None or claim.state != "done" or url is None:
+    if rt.pr_states is None or claim.state != "done" or url is None:
         return None
     try:
-        return url if rt.pr_view(claim, url).get("state") == "MERGED" else None
+        return url if rt.pr_states([url]).get(url) == "merged" else None
     except Exception as exc:  # noqa: BLE001 - gh, its token and the network all fail alike
         print(f"reap: {claim.issue_key} PR state not read: {exc}", file=sys.stderr)
         return None

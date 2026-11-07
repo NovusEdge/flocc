@@ -220,22 +220,37 @@ def _read_queue(
     return finished, holds, counts
 
 
-def pr_state(pr_view: Callable[[ledger.Claim, str], dict] | None, claim, url: str) -> str:
-    """The PR's state on GitHub (open, merged, closed), "unknown" when GitHub did not answer, ""
-    when nothing was asked: no reader, no PR, or a run that is not done."""
-    if pr_view is None or not url or url == "unknown" or claim.state != "done":
-        return ""
+PrStates = Callable[[list[str]], dict[str, str]]
+
+
+def pr_states(ask: PrStates | None, pairs: list[tuple[ledger.Claim, str]]) -> dict[str, str]:
+    """State on GitHub (open, merged, closed) by PR URL for the done runs among (claim, url) pairs,
+    "unknown" for one GitHub did not answer. Empty when nothing was asked: no reader, or no done
+    run with a PR. One batched call, so a slow GitHub costs the reader's deadline once."""
+    urls = sorted({url for c, url in pairs if c.state == "done" and url and url != "unknown"})
+    if ask is None or not urls:
+        return {}
     try:
-        return str(pr_view(claim, url)["state"]).lower()
-    except Exception:  # noqa: BLE001 - gh, its token and the network all fail alike; the row stays
-        return "unknown"
+        got = ask(urls)
+    except Exception:  # noqa: BLE001 - gh, its token and the network all fail alike; rows stay
+        got = {}
+    return {url: got.get(url, "unknown") for url in urls}
 
 
-def _finished_row(cfg: Config, claim: ledger.Claim, now: float, pr_view=None) -> dict:
+def finished_state(claim_state: str, pr_state: str) -> str:
+    """The state column of a finished run: a PR merged or closed on GitHub says more than done."""
+    return pr_state if pr_state in ("merged", "closed") else claim_state
+
+
+def pr_url_of(cfg: Config, claim: ledger.Claim) -> str:
     url_file = cfg.state_root / claim.issue_key / "pr-url"
-    url = url_file.read_text().strip() if url_file.is_file() else ""
+    return url_file.read_text().strip() if url_file.is_file() else ""
+
+
+def _finished_row(cfg: Config, claim: ledger.Claim, now: float, states: dict[str, str]) -> dict:
+    url = pr_url_of(cfg, claim)
     return {
-        "pr_state": pr_state(pr_view, claim, url),
+        "pr_state": states.get(url, ""),
         "issue": claim.issue_key,
         "state": claim.state,
         "phase": claim.phase,
@@ -306,10 +321,10 @@ def collect(
     mode: str | None = None,
     run=subprocess.run,
     claude: list[str] | None = None,
-    pr_view: Callable[[ledger.Claim, str], dict] | None = None,
+    pr_states_fn: PrStates | None = None,
 ) -> dict:
     """Reads host state without taking the tick lock or touching Linear. GitHub is asked only
-    through pr_view, for the PR of each finished run: the desktop's report passes none."""
+    through pr_states_fn, once for the PRs of the finished runs: the desktop's report passes none."""
     now = time.time() if now is None else now
     mode = mode or detect_mode()
     tick = systemd_tick(run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
@@ -319,6 +334,7 @@ def collect(
     claims, expiry, ledger_error = _read_ledger(cfg.ledger_path)
     rows = [_claim_row(cfg, c, sessions, now) for c in claims]
     finished, holds, (unacked, oldest, attention) = _read_queue(cfg.ledger_path, now)
+    states = pr_states(pr_states_fn, [(c, pr_url_of(cfg, c)) for c in finished])
     activity_error = None
     if rows:
         try:
@@ -336,7 +352,7 @@ def collect(
         "last_tick": tick,
         "session_cap": cfg.session_cap,
         "check_fix_rounds": cfg.check_fix_rounds,
-        "finished": [_finished_row(cfg, c, now, pr_view) for c in finished],
+        "finished": [_finished_row(cfg, c, now, states) for c in finished],
         "holds": [
             {"issue": k, "reason": reason, "age_s": max(0.0, now - at)}
             for k, (reason, at) in holds.items()
