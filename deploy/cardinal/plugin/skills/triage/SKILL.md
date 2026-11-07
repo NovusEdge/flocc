@@ -55,6 +55,8 @@ Any other event has `type` null: decide by `kind`.
   service sent it before it typed its stops. Handle `needs-owner` and `cap` as under `owner`,
   `base-broken` as under `repo`, and a blocked or timed-out `ended` as under `agent`. `resume`
   refuses a stop that is the owner's; then tell the owner.
+- `merged`: a finished run's PR was merged and its worktree is gone. Say nothing to the owner
+  unless an earlier message of yours called that PR open; then say it merged, in one line.
 - A running session asks for the amended-tests label (it reaches you only through the owner):
   run `/opt/cardinal/plugin/bin/executor amend-tests KEY`; the verb tells the session.
 - `bad-sequence`: tell the owner the issue's `Run:` line is unusable, quoting the detail.

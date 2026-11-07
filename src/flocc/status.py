@@ -6,6 +6,7 @@ import socket
 import sqlite3
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from flocc import agentfs, events, ledger, usage
@@ -219,10 +220,22 @@ def _read_queue(
     return finished, holds, counts
 
 
-def _finished_row(cfg: Config, claim: ledger.Claim, now: float) -> dict:
+def pr_state(pr_view: Callable[[ledger.Claim, str], dict] | None, claim, url: str) -> str:
+    """The PR's state on GitHub (open, merged, closed), "unknown" when GitHub did not answer, ""
+    when nothing was asked: no reader, no PR, or a run that is not done."""
+    if pr_view is None or not url or url == "unknown" or claim.state != "done":
+        return ""
+    try:
+        return str(pr_view(claim, url)["state"]).lower()
+    except Exception:  # noqa: BLE001 - gh, its token and the network all fail alike; the row stays
+        return "unknown"
+
+
+def _finished_row(cfg: Config, claim: ledger.Claim, now: float, pr_view=None) -> dict:
     url_file = cfg.state_root / claim.issue_key / "pr-url"
     url = url_file.read_text().strip() if url_file.is_file() else ""
     return {
+        "pr_state": pr_state(pr_view, claim, url),
         "issue": claim.issue_key,
         "state": claim.state,
         "phase": claim.phase,
@@ -293,8 +306,10 @@ def collect(
     mode: str | None = None,
     run=subprocess.run,
     claude: list[str] | None = None,
+    pr_view: Callable[[ledger.Claim, str], dict] | None = None,
 ) -> dict:
-    """Reads host state without taking the tick lock or touching Linear and GitHub."""
+    """Reads host state without taking the tick lock or touching Linear. GitHub is asked only
+    through pr_view, for the PR of each finished run: the desktop's report passes none."""
     now = time.time() if now is None else now
     mode = mode or detect_mode()
     tick = systemd_tick(run) if mode == "systemd" else last_tick(cfg.state_root / "run.log")
@@ -321,7 +336,7 @@ def collect(
         "last_tick": tick,
         "session_cap": cfg.session_cap,
         "check_fix_rounds": cfg.check_fix_rounds,
-        "finished": [_finished_row(cfg, c, now) for c in finished],
+        "finished": [_finished_row(cfg, c, now, pr_view) for c in finished],
         "holds": [
             {"issue": k, "reason": reason, "age_s": max(0.0, now - at)}
             for k, (reason, at) in holds.items()

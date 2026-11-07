@@ -8,6 +8,8 @@ from flocc import ledger
 KINDS = frozenset(
     {
         "ended",
+        # A finished run's PR was merged, seen when its claim is reaped.
+        "merged",
         "cap",
         "needs-owner",
         "base-broken",

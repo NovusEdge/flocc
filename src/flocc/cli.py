@@ -693,6 +693,27 @@ def cmd_run_summary(args) -> int:
     return 0
 
 
+GH_VIEW_TIMEOUT_S = 15
+
+
+def _github_reader(cfg):
+    """A PR reader on the publish token, or None when this user cannot read the token. Each call
+    is bounded, so one hung gh cannot hold a status or digest read."""
+    from flocc.publisher import pr_view
+
+    try:
+        token = cfg.publish_gh_token_file.read_text().strip()
+    except OSError:
+        return None
+    if not token:
+        return None
+
+    def bounded(argv, **kw):
+        return subprocess.run(argv, timeout=GH_VIEW_TIMEOUT_S, check=kw.pop("check", True), **kw)
+
+    return lambda claim, url: pr_view(claim, url, token, runner=bounded)
+
+
 def cmd_digest_data(args) -> int:
     from flocc.summary import digest_data
 
@@ -702,7 +723,7 @@ def cmd_digest_data(args) -> int:
         ledger.clear_digest(con, args.done)
         print(f"cleared digest lines through {args.done}")
         return 0
-    print(digest_data(cfg, con, time.time())[0])
+    print(digest_data(cfg, con, time.time(), pr_view=_github_reader(cfg))[0])
     return 0
 
 
@@ -924,7 +945,14 @@ def cmd_status(args) -> int:
 
     cfg, _ = _config(args)
     agent = Agent(cfg)
-    report = collect(cfg, agent.sessions(), claude=agent.claude_argv())
+    # The desktop's --json report makes no GitHub call; the text table, cardinal's, asks for the
+    # state of each finished run's PR.
+    report = collect(
+        cfg,
+        agent.sessions(),
+        claude=agent.claude_argv(),
+        pr_view=None if args.json else _github_reader(cfg),
+    )
     if args.json:
         print(json.dumps(report))
         return 0
@@ -945,7 +973,9 @@ def cmd_status(args) -> int:
     for c in report.get("finished", []):
         fix = f"{c['fix_attempts']}/{cap}"
         age = age_text(c["started_age_s"])
-        line = f"  {c['issue']:<9}{c['archetype']:<10}{c['state']:<11}{fix:<5}{age:<6}{'-':<6}-"
+        merged = c.get("pr_state") == "merged"
+        state = "merged" if merged else c["state"]
+        line = f"  {c['issue']:<9}{c['archetype']:<10}{state:<11}{fix:<5}{age:<6}{'-':<6}-"
         print(f"{line}  {c['pr_url']}" if c["pr_url"] else line)
     if report["ledger_error"]:
         print(f"  ledger unreadable: {report['ledger_error']}")

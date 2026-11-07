@@ -33,7 +33,7 @@ waits for the next connection, and `flocc status` and the digest list it as need
 After 5 failed connections in a row the loop prints one `link-down` line, and one `link-up` line
 when a connection holds again.
 
-Events: `ended` (a PR is ready, or a run blocked or timed out), `cap` (the check still fails after
+Events: `ended` (a PR is ready, or a run blocked or timed out), `merged` (a finished run's PR was merged; seen when the service removes the run), `cap` (the check still fails after
 every fix round), `needs-owner` (an agent stopped with questions), `base-broken` (once per break), `bad-sequence` (an unusable `Run:` line),
 `service-error` (a failing tick, Linear failing three ticks in a row, a token or the Claude login
 expiring or rejected), `daily` (the digest hour) and `host-pressure` (`/tmp` above
