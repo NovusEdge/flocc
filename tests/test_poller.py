@@ -1564,6 +1564,124 @@ def test_the_fix_context_lists_the_steering_comments_oldest_first(fixable):
     assert (d / "comment-fix").exists()
 
 
+def _queued_resume(rt, at=1000.0, started_at=0.0, state="started"):
+    rt.linear.state_types = lambda keys: {k: state for k in keys}
+    wt = rt.cfg.worktree_root / "NF-1"
+    wt.mkdir(parents=True, exist_ok=True)
+    claim = make("NF-1", state="blocked", worktree=str(wt))
+    claim.phase = "impl"
+    ledger.insert_claim(rt.con, claim)
+    d = state_dir(rt.cfg, "NF-1")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / BLOCKED).write_text("idle\n\nwhy it stopped")
+    ledger.meta_set(rt.con, "cardinal_resume:NF-1", "1")
+    entry = {"note": "finish it", "at": at, "started_at": started_at}
+    ledger.meta_set(rt.con, "resume_pending:NF-1", json.dumps(entry))
+
+
+def test_a_queued_resume_waits_for_a_slot_and_starts_before_ready_todo_work(rt):
+    rt.cfg = replace(rt.cfg, session_cap=1)
+    _queued_resume(rt)
+    ledger.insert_claim(rt.con, make("NF-7"))
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert rt.sessions.started == [] and ledger.meta_get(rt.con, "resume_pending:NF-1")
+    ledger.delete_claim(rt.con, "NF-7")
+    poll(rt)
+    assert [name for name, _ in rt.sessions.started] == ["NF-1"]
+    assert ledger.get_claim(rt.con, "NF-1").state == "running"  # type: ignore[union-attr]
+    assert ledger.get_claim(rt.con, "NF-9") is None
+    assert not ledger.meta_get(rt.con, "resume_pending:NF-1")
+    assert "finish it" in (state_dir(rt.cfg, "NF-1") / "resume-note.md").read_text()
+
+
+def test_an_expired_queued_resume_is_dropped(rt):
+    _queued_resume(rt, at=1000.0 - 24 * 3600 - 1)
+    poll(rt)
+    assert rt.sessions.started == []
+    assert not ledger.meta_get(rt.con, "resume_pending:NF-1")
+    assert ledger.get_claim(rt.con, "NF-1").state == "blocked"  # type: ignore[union-attr]
+
+
+def test_the_oldest_queued_resume_goes_first(rt):
+    rt.cfg = replace(rt.cfg, session_cap=1)
+    _queued_resume(rt, at=900.0)
+    other = make("NF-2", state="blocked", worktree=str(rt.cfg.worktree_root / "NF-2"))
+    other.phase = "impl"
+    (rt.cfg.worktree_root / "NF-2").mkdir(parents=True)
+    ledger.insert_claim(rt.con, other)
+    state_dir(rt.cfg, "NF-2").mkdir(parents=True, exist_ok=True)
+    (state_dir(rt.cfg, "NF-2") / BLOCKED).write_text("idle\n\nwhy")
+    entry = {"note": "n", "at": 800.0, "started_at": 0.0}
+    ledger.meta_set(rt.con, "resume_pending:NF-2", json.dumps(entry))
+    asked = []
+    rt.linear.state_types = lambda keys: asked.append(keys) or {k: "started" for k in keys}
+    poll(rt)
+    assert [name for name, _ in rt.sessions.started] == ["NF-2"]
+    assert ledger.meta_get(rt.con, "resume_pending:NF-1")
+    assert asked == [["NF-1", "NF-2"]]
+
+
+def test_a_move_to_todo_supersedes_a_queued_resume(rt):
+    _queued_resume(rt, state="unstarted")
+    rt.linear.ready = [issue("NF-1")]
+    poll(rt)
+    claim = ledger.get_claim(rt.con, "NF-1")
+    assert claim is not None and claim.state == "running" and claim.started_at == 1000.0
+    assert not (state_dir(rt.cfg, "NF-1") / "resume-note.md").exists()
+    assert not ledger.meta_get(rt.con, "resume_pending:NF-1")
+
+
+def _dropped(rt):
+    return [n for n in rt.notifier.sent if n.cause == "NF-1:resume-dropped"]
+
+
+def test_an_expired_queued_resume_tells_cardinal_and_frees_its_resume(rt):
+    _queued_resume(rt, at=1000.0 - 24 * 3600 - 1)
+    poll(rt)
+    [notice] = _dropped(rt)
+    assert notice.event == "ended" and notice.stop_type == "agent"
+    assert "finish it" in notice.summary and "finish it" in notice.detail
+    assert not ledger.meta_get(rt.con, "cardinal_resume:NF-1")
+
+
+def test_a_queued_resume_for_an_issue_no_longer_wanted_is_dropped_with_a_notice(rt):
+    _queued_resume(rt, state="canceled")
+    poll(rt)
+    assert rt.sessions.started == [] and len(_dropped(rt)) == 1
+    assert not ledger.meta_get(rt.con, "resume_pending:NF-1")
+    assert not ledger.meta_get(rt.con, "cardinal_resume:NF-1")
+
+
+def test_a_queued_resume_for_an_unlabelled_issue_is_dropped(rt):
+    _queued_resume(rt)
+    rt.linear.issue = lambda key: issue(key, labels=("backend",))
+    poll(rt)
+    assert rt.sessions.started == [] and len(_dropped(rt)) == 1
+
+
+def test_a_queued_resume_of_an_earlier_run_is_dropped_without_touching_the_new_run(rt):
+    _queued_resume(rt, started_at=-5.0)
+    poll(rt)
+    assert rt.sessions.started == [] and _dropped(rt) == []
+    assert not ledger.meta_get(rt.con, "resume_pending:NF-1")
+    assert ledger.meta_get(rt.con, "cardinal_resume:NF-1")
+
+
+def test_a_failing_queued_resume_does_not_block_todo_admission(rt, capsys):
+    _queued_resume(rt)
+
+    def boom(key):
+        raise ValueError("bad entry")
+
+    rt.linear.issue = boom
+    rt.linear.ready = [issue()]
+    poll(rt)
+    assert "bad entry" in capsys.readouterr().err
+    assert ledger.get_claim(rt.con, "NF-9") is not None
+    assert ledger.meta_get(rt.con, "resume_pending:NF-1")
+
+
 def _fresh_comment(rt):
     rt.linear.replies["id-NF-1"].append(Comment("c2", "one more thing", iso(120), mine=True))
 

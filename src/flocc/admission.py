@@ -12,6 +12,8 @@ STALE_USAGE_S = 15 * 60
 class Decision:
     ok: bool
     reason: str = ""
+    # A refusal that clears by itself as sessions end or usage resets, so a resume may wait for it.
+    queue: bool = False
 
 
 def admit(
@@ -35,20 +37,20 @@ def admit(
     # A claim held on a broken base runs no session.
     running = [c for c in live if c.state == "running" and c.issue_key not in held]
     if len(running) >= cfg.session_cap:
-        return Decision(False, f"session cap {cfg.session_cap} reached")
+        return Decision(False, f"session cap {cfg.session_cap} reached", queue=True)
     # Usage within a window only grows, and latest_usage zeroes a window whose reset has passed,
     # so a stale reading over a limit still holds.
     if usage is not None and usage.five_hour_pct >= cfg.five_hour_max_pct:
-        return Decision(False, f"5-hour usage {usage.five_hour_pct:.0f}%")
+        return Decision(False, f"5-hour usage {usage.five_hour_pct:.0f}%", queue=True)
     if usage is not None and usage.weekly_pct >= cfg.weekly_max_pct:
-        return Decision(False, f"weekly usage {usage.weekly_pct:.0f}%")
+        return Decision(False, f"weekly usage {usage.weekly_pct:.0f}%", queue=True)
     # Usage is only readable from a live session's status line, so with nothing running the
     # first session has to start on a stale reading or none.
     # A claim whose check runs in the background has no session to refresh the reading, yet it
     # counts toward the cap above.
     sessions = [c for c in running if c.issue_key not in checking]
     if (usage is None or now - usage.observed_at > STALE_USAGE_S) and sessions:
-        return Decision(False, "usage unknown while sessions are running")
+        return Decision(False, "usage unknown while sessions are running", queue=True)
     waiting = [d for d in settings.depends_on if dep_states.get(d) != "completed"]
     if waiting:
         return Decision(False, f"waiting on {', '.join(waiting)}")

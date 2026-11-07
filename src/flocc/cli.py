@@ -429,7 +429,7 @@ def cmd_release(args) -> int:
 
 
 def cmd_resume(args) -> int:
-    from flocc.control import Refused, resume
+    from flocc.control import Queued, Refused, resume
     from flocc.sequence import ARCHETYPE
     from flocc.supervisor import LaunchError
     from flocc.tick import build_runtime, tick_lock
@@ -442,6 +442,12 @@ def cmd_resume(args) -> int:
         rt = build_runtime(cfg, path)
         try:
             claim = resume(rt, args.key, args.note)
+        except Queued as exc:
+            print(
+                f"queued: {exc} for {args.key} now; it starts on a later tick, oldest first,"
+                " and is dropped after 24 hours"
+            )
+            return 0
         except Refused as exc:
             print(f"resume: {exc}", file=sys.stderr)
             return 1

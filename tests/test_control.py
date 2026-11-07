@@ -4,7 +4,7 @@ import pytest
 
 from flocc import host, ledger
 from flocc.context import state_dir
-from flocc.control import Refused, resume, resumes
+from flocc.control import Queued, Refused, resume, resumes
 from flocc.publisher import PublishResult
 from flocc.runtime import Runtime
 from flocc.supervisor import BLOCKED, FIX_CONTEXT, RESUME_NOTE, LaunchError
@@ -168,6 +168,39 @@ def test_resume_is_refused_while_the_host_is_under_pressure(rt, tmp_path):
     with pytest.raises(Refused, match="not now: host under pressure"):
         resume(rt, "NF-1", "note")
     assert rt.sessions.started == []
+
+
+def test_resume_with_the_session_cap_full_is_queued_and_uses_the_one_resume(rt, tmp_path):
+    blocked(rt, tmp_path)
+    for key in ("NF-8", "NF-9"):
+        ledger.insert_claim(rt.con, make(key))
+    with pytest.raises(Queued, match="session cap 2 reached"):
+        resume(rt, "NF-1", "do the thing")
+    assert rt.sessions.started == []
+    assert json.loads(ledger.meta_get(rt.con, "resume_pending:NF-1") or "null") == {
+        "note": "do the thing",
+        "at": 100.0,
+        "started_at": 0.0,
+    }
+    assert ledger.get_claim(rt.con, "NF-1").state == "blocked"  # type: ignore[union-attr]
+    with pytest.raises(Refused, match="already resumed"):
+        resume(rt, "NF-1", "again")
+
+
+def test_resume_refused_for_usage_is_queued_too(rt, tmp_path):
+    blocked(rt, tmp_path)
+    ledger.insert_claim(rt.con, make("NF-9"))
+    with pytest.raises(Queued, match="usage unknown"):
+        resume(rt, "NF-1", "note")
+    assert ledger.meta_get(rt.con, "resume_pending:NF-1")
+
+
+def test_a_refusal_that_will_not_clear_by_itself_is_not_queued(rt, tmp_path):
+    blocked(rt, tmp_path)
+    host.open_episode(rt.con, 1.0, "/tmp 93% (2.8/3.0 GiB)")
+    with pytest.raises(Refused, match="not now"):
+        resume(rt, "NF-1", "note")
+    assert not ledger.meta_get(rt.con, "resume_pending:NF-1")
 
 
 @pytest.mark.parametrize("old", [None, "The check failed with:\n\nFAILED tests/test_a.py::test_x"])
