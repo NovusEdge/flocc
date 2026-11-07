@@ -7,6 +7,7 @@ from flocc import host, ledger
 from flocc.admission import admit
 from flocc.agentblock import settings_from_json
 from flocc.causes import RESUMABLE
+from flocc.config import Config
 from flocc.context import state_dir
 from flocc.ledger import Claim
 from flocc.linear import LinearError
@@ -25,11 +26,11 @@ class Refused(Exception):
     pass
 
 
-def stop_cause(rt, claim: Claim) -> str:
+def stop_cause(cfg: Config, claim: Claim) -> str:
     """Why the claim stopped: timed-out, or the cause _block wrote on blocked.md's first line."""
     if claim.state == "timed_out":
         return "timed-out"
-    path = state_dir(rt.cfg, claim.issue_key) / BLOCKED
+    path = state_dir(cfg, claim.issue_key) / BLOCKED
     return path.read_text().split("\n", 1)[0].strip() if path.exists() else ""
 
 
@@ -93,7 +94,7 @@ def resume(rt, key: str, note: str) -> Claim:
         raise Refused(f"no claim for {key}")
     if claim.state not in ("blocked", "timed_out"):
         raise Refused(f"{key} is {claim.state}; cardinal resumes only a blocked or timed-out run")
-    cause = stop_cause(rt, claim)
+    cause = stop_cause(rt.cfg, claim)
     if cause not in RESUMABLE:
         raise Refused(
             f"{key} stopped with {cause or 'no recorded cause'}; that stop is the owner's"

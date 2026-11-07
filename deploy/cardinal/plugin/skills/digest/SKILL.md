@@ -6,7 +6,10 @@ description: Use when a daily event arrives from the executor VM, or the owner a
 1. Run `/opt/cardinal/plugin/bin/executor cleanup`. Note what it removed and what it kept, with
    the reasons.
 2. Run `/opt/cardinal/plugin/bin/executor digest-data`. Its last line names the `--done N` to
-   run once the digest is sent.
+   run once the digest is sent. A blocked run shows its stop cause in parentheses. For each run
+   that is blocked or timed out, read `/opt/cardinal/plugin/bin/executor run-summary KEY` and
+   name the one thing the owner must do. A stop you already reported stays in every digest
+   until the owner acts, so report it again in full each time.
 3. Write the owner one message of at most 15 lines: PRs ready for review, with links; runs that
    stopped and what each needs from the owner; holds; service problems; events needing
    attention; worktrees cleanup kept, with why. Every command listed under agent-shell, with its

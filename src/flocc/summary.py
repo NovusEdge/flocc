@@ -90,7 +90,9 @@ def digest_data(cfg: Config, con, now: float) -> tuple[str, int]:
     for c in [*ledger.live_claims(con), *ledger.finished_claims(con)]:
         url = _read(state_dir(cfg, c.issue_key), "pr-url")
         pr = f", PR {url}" if url and url != "unknown" else ""
-        runs.append(f"- {c.issue_key}: {_step(c.phase)}, {c.state.replace('_', ' ')}{pr}")
+        cause = control.stop_cause(cfg, c) if c.state in ("blocked", "timed_out") else ""
+        why = f" ({cause})" if cause and cause != "timed-out" else ""
+        runs.append(f"- {c.issue_key}: {_step(c.phase)}, {c.state.replace('_', ' ')}{why}{pr}")
     out += _capped(runs, LIST_ROWS)
     out += ["", "## Since the last digest"]
     rows = ledger.pending_digest(con)

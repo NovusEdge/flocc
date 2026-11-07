@@ -47,3 +47,6 @@ plugin/evals/results/
 # macOS
 .DS_Store
 ._*
+
+# Git worktrees
+worktrees/
