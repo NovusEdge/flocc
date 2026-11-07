@@ -63,6 +63,17 @@ def test_digest_data_lists_runs_lines_holds_events_and_attention(tmp_cfg, con):
     assert text.rstrip().endswith(f"flocc digest-data --done {through}")
 
 
+def test_digest_data_names_why_a_run_stopped(tmp_cfg, con):
+    ledger.insert_claim(con, make("NF-1", state="blocked"))
+    ledger.insert_claim(con, make("NF-2", state="timed_out"))
+    d = state_dir(tmp_cfg, "NF-1")
+    d.mkdir(parents=True)
+    (d / BLOCKED).write_text("check-cap\n\nThe check still fails")
+    text, _ = digest_data(tmp_cfg, con, 86_400.0)
+    assert "- NF-1: tester, blocked (check-cap)" in text
+    assert "- NF-2: tester, timed out\n" in text
+
+
 def test_digest_data_lists_cardinal_s_writes_and_observe_drafts(tmp_cfg, con):
     from flocc import reach
 

@@ -32,6 +32,8 @@ func (Containers) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return true, "apt hosts only", nil
 	case !e.Ok(ctx, "sh", "-c", "command -v podman"):
 		return false, "podman is not installed", nil
+	case !e.Ok(ctx, "docker", "compose", "version"):
+		return false, "docker compose is not installed", nil
 	}
 	for _, f := range []string{"/etc/subuid", "/etc/subgid"} {
 		if !hasSubIDs(e.Path(f), AgentUser) {
@@ -44,8 +46,19 @@ func (Containers) Check(ctx context.Context, e *Env) (bool, string, error) {
 	return true, "rootless Podman for " + AgentUser, nil
 }
 
+// composePkgs is the docker CLI and its Compose v2 plugin, which repos' tests run against the
+// Podman socket. Debian 12's docker-compose is v1, so Check keeps failing there until it is
+// installed by hand.
+func composePkgs(d host.Distro) []string {
+	if d.ID == "ubuntu" {
+		return []string{"docker-compose-v2"}
+	}
+	return []string{"docker-cli", "docker-compose"}
+}
+
 func (Containers) Apply(ctx context.Context, e *Env) error {
-	install := host.Cmd{Name: "apt-get", Args: []string{"install", "-y", "podman", "uidmap", "slirp4netns"}, Env: []string{"DEBIAN_FRONTEND=noninteractive"}}
+	pkgs := append([]string{"install", "-y", "podman", "uidmap", "slirp4netns"}, composePkgs(e.Distro)...)
+	install := host.Cmd{Name: "apt-get", Args: pkgs, Env: []string{"DEBIAN_FRONTEND=noninteractive"}}
 	if err := e.SpinCmd(ctx, install); err != nil {
 		return err
 	}

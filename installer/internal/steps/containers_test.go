@@ -18,7 +18,15 @@ func containersEnv(t *testing.T, f *host.Fake) *Env {
 func podmanHost(serviceGroups string) *host.Fake {
 	return host.NewFake().
 		On("sh -c command -v podman", 0, "/usr/bin/podman").
+		On("docker compose version", 0, "Docker Compose version 2.26.1").
 		On("id -nG flocc", 0, serviceGroups)
+}
+
+func TestContainersAreNotDoneWithoutCompose(t *testing.T) {
+	f := host.NewFake().On("sh -c command -v podman", 0, "/usr/bin/podman")
+	if ok, detail, _ := (Containers{}).Check(context.Background(), containersEnv(t, f)); ok || detail != "docker compose is not installed" {
+		t.Fatalf("%v %q", ok, detail)
+	}
 }
 
 func TestContainersAreDoneWhenNotAskedFor(t *testing.T) {
@@ -78,7 +86,7 @@ func TestContainersApplyInstallsPodmanAddsIDsAndLeavesDockerdAlone(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"apt-get install -y podman uidmap slirp4netns",
+		"apt-get install -y podman uidmap slirp4netns docker-cli docker-compose",
 		"usermod --add-subuids 165536-231071 --add-subgids 165536-231071 flocc-agent",
 		"gpasswd -d flocc docker",
 	} {

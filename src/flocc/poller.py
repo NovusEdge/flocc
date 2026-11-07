@@ -185,7 +185,7 @@ def retry_transient(rt) -> None:
         once = f"{TRANSIENT_RETRY}:{key}"
         if claim.state != "blocked" or key in holds or ledger.meta_get(rt.con, once):
             continue
-        if stop_cause(rt, claim) != "publish-failed":
+        if stop_cause(rt.cfg, claim) != "publish-failed":
             continue
         blocked = state_dir(rt.cfg, key) / BLOCKED
         try:
