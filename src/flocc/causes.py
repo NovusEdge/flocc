@@ -17,6 +17,9 @@ CAUSES = {
     # cardinal resumes it only when the issue text settles every question.
     "needs-owner": OWNER,
     "check-cap": OWNER,
+    # The check outran check_timeout_s; a fixer cannot make a slow check fast, so the owner raises
+    # the limit or splits the check.
+    "check-timeout": OWNER,
     "tests-touched": OWNER,
     "no-tests": OWNER,
     "branch-moved": OWNER,

@@ -471,11 +471,11 @@ def test_uncommitted_changes_fail_before_the_check(origin, tmp_path):
     assert not (path / "ran.txt").exists() and gh.calls == []
 
 
-def test_check_that_outlives_its_timeout_fails(origin, tmp_path):
+def test_check_that_outlives_its_timeout_is_a_timeout_not_a_failure(origin, tmp_path):
     repo, _, claim = setup_claim(origin, tmp_path, check="sh -c 'sleep 30; echo late'")
     start = time.monotonic()
     result = publish(claim, repo, "t", "s", token="t", runner=Gh(), check_timeout_s=0.5)
-    assert result.status == "check_failed" and "timed out after 0.5" in result.detail
+    assert result.status == "check_timeout" and "timed out after 0.5" in result.detail
     assert time.monotonic() - start < 10
 
 

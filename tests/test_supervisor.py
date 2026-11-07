@@ -103,6 +103,22 @@ def test_a_used_fix_cap_is_a_cap_event_typed_owner(rt):
     assert (state_dir(rt.cfg, "NF-1") / BLOCKED).read_text().startswith("check-cap\n")
 
 
+def test_a_check_timeout_blocks_with_its_own_cause_and_starts_no_fixer(rt):
+    add(rt, phase="impl")
+    rt.sessions.alive_names.add("NF-1")
+    rt.publish_fn = lambda claim, title, summary, **kw: PublishResult(
+        "check_timeout", "`just check` timed out after 1800s\n\nslow", log="slow"
+    )
+    done(rt, "built")
+    supervise(rt, current(rt))
+    sent = rt.notifier.sent[-1]
+    assert current(rt).state == "blocked" and current(rt).fix_attempts == 0
+    assert (sent.cause, sent.stop_type) == ("NF-1:check-timeout", "owner")
+    assert "timed out after 1800s" in sent.summary
+    assert (state_dir(rt.cfg, "NF-1") / BLOCKED).read_text().startswith("check-timeout\n")
+    assert rt.sessions.started == []
+
+
 def test_the_same_failure_at_the_last_round_is_check_cap(rt):
     add(rt, phase="fix", fix_attempts=rt.cfg.check_fix_rounds)
     rt.sessions.alive_names.add("NF-1")
