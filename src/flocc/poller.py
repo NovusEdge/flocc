@@ -575,7 +575,8 @@ def _steering(rt, comment, *, cardinal: bool = False) -> str | None:
     # The service's own comments carry BOT_PREFIX, and teammates comment on NF issues too.
     # The owner's replies steer; so do an allowlisted author's (e.g. a steering agent).
     if comment.body.startswith(f"{BOT_PREFIX} cardinal:"):
-        return "Cardinal" if cardinal else None
+        # The prefix is text anyone can type; only the token's own user (flocc posts as it) counts.
+        return "Cardinal" if cardinal and comment.mine else None
     if comment.body.startswith(BOT_PREFIX):
         return None
     if comment.mine:
