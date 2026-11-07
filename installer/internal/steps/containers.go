@@ -32,7 +32,7 @@ func (Containers) Check(ctx context.Context, e *Env) (bool, string, error) {
 		return true, "apt hosts only", nil
 	case !e.Ok(ctx, "sh", "-c", "command -v podman"):
 		return false, "podman is not installed", nil
-	case !e.Ok(ctx, "docker", "compose", "version"):
+	case !e.Ok(ctx, "docker", "compose", "version") && composeKnown(ctx, e):
 		return false, "docker compose is not installed", nil
 	}
 	for _, f := range []string{"/etc/subuid", "/etc/subgid"} {
@@ -46,18 +46,19 @@ func (Containers) Check(ctx context.Context, e *Env) (bool, string, error) {
 	return true, "rootless Podman for " + AgentUser, nil
 }
 
-// composePkgs is the docker CLI and its Compose v2 plugin, which repos' tests run against the
-// Podman socket. Debian 12's docker-compose is v1, so Check keeps failing there until it is
-// installed by hand.
-func composePkgs(d host.Distro) []string {
-	if d.ID == "ubuntu" {
-		return []string{"docker-compose-v2"}
-	}
-	return []string{"docker-cli", "docker-compose"}
+// composeKnown reports whether the distribution packages the docker CLI apart from dockerd (Debian
+// 13 and later, whose docker-compose is v2); repos' tests run Compose against the Podman socket.
+// Debian 12 has no docker-cli and a v1 docker-compose, and Ubuntu's docker-compose-v2 depends on
+// docker.io, which would start a root dockerd, so those hosts get no Compose from this step.
+func composeKnown(ctx context.Context, e *Env) bool {
+	return e.Ok(ctx, "apt-cache", "show", "docker-cli")
 }
 
 func (Containers) Apply(ctx context.Context, e *Env) error {
-	pkgs := append([]string{"install", "-y", "podman", "uidmap", "slirp4netns"}, composePkgs(e.Distro)...)
+	pkgs := []string{"install", "-y", "podman", "uidmap", "slirp4netns"}
+	if composeKnown(ctx, e) {
+		pkgs = append(pkgs, "docker-cli", "docker-compose")
+	}
 	install := host.Cmd{Name: "apt-get", Args: pkgs, Env: []string{"DEBIAN_FRONTEND=noninteractive"}}
 	if err := e.SpinCmd(ctx, install); err != nil {
 		return err

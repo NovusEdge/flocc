@@ -23,9 +23,25 @@ func podmanHost(serviceGroups string) *host.Fake {
 }
 
 func TestContainersAreNotDoneWithoutCompose(t *testing.T) {
-	f := host.NewFake().On("sh -c command -v podman", 0, "/usr/bin/podman")
+	f := host.NewFake().On("sh -c command -v podman", 0, "/usr/bin/podman").On("apt-cache show docker-cli", 0, "")
 	if ok, detail, _ := (Containers{}).Check(context.Background(), containersEnv(t, f)); ok || detail != "docker compose is not installed" {
 		t.Fatalf("%v %q", ok, detail)
+	}
+}
+
+func TestContainersSkipComposeWhereTheDistroLacksDockerCLI(t *testing.T) {
+	f := host.NewFake().On("sh -c command -v podman", 0, "/usr/bin/podman").On("id -nG flocc", 0, "flocc")
+	e := containersEnv(t, f)
+	writeSubIDs(t, e)
+	if ok, detail, _ := (Containers{}).Check(context.Background(), e); !ok {
+		t.Fatalf("%v %q", ok, detail)
+	}
+	f.OnName("apt-get", 0, "")
+	if err := (Containers{}).Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("apt-get install -y podman uidmap slirp4netns") || f.Ran("apt-get install -y podman uidmap slirp4netns docker-cli docker-compose") {
+		t.Errorf("ran %v", f.Calls)
 	}
 }
 
@@ -77,7 +93,7 @@ func TestContainersAreDone(t *testing.T) {
 
 func TestContainersApplyInstallsPodmanAddsIDsAndLeavesDockerdAlone(t *testing.T) {
 	f := host.NewFake().OnName("apt-get", 0, "").OnName("usermod", 0, "").OnName("gpasswd", 0, "").
-		On("id -nG flocc", 0, "flocc docker")
+		On("id -nG flocc", 0, "flocc docker").On("apt-cache show docker-cli", 0, "")
 	e := containersEnv(t, f)
 	os.MkdirAll(e.Path("/etc"), 0o755)
 	os.WriteFile(e.Path("/etc/subuid"), []byte("flocc:100000:65536\n"), 0o644)
