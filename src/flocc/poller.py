@@ -244,6 +244,8 @@ def reap_worktrees(rt) -> None:
         # Anything else stays: the owner may move the issue to Todo to rerun, which reuses it.
         if state not in ("completed", "canceled"):
             continue
+        # Read before the removal, which deletes the state directory holding the PR's URL.
+        merged = _merged_pr(rt, claim)
         # A run stopped by the wall clock may hold work nobody committed, new files included;
         # a finished one published, so what is left is disposable.
         if not remove_issue(rt, claim, keep_dirty=claim.state == "timed_out"):
@@ -255,8 +257,32 @@ def reap_worktrees(rt) -> None:
                 )
                 ledger.record_alert(rt.con, cause, 3, claim.issue_key, rt.now())
             continue
+        if merged:
+            # Before the claim goes: a tick that dies between the two emits again, and a
+            # duplicate is acked away where a lost event is never seen.
+            events.emit(
+                rt.con,
+                "merged",
+                rt.now(),
+                issue_key=claim.issue_key,
+                repo=claim.repo,
+                detail=f"PR merged: {merged}",
+            )
         ledger.delete_claim(rt.con, claim.issue_key)
         ledger.clear_issue_alerts(rt.con, claim.issue_key)
+
+
+def _merged_pr(rt, claim: Claim) -> str | None:
+    """The URL of a done claim's PR when GitHub says it is merged; None otherwise, and when GitHub
+    cannot say: a reap must not wait on it."""
+    url = pr_url(rt, claim)
+    if rt.pr_states is None or claim.state != "done" or url is None:
+        return None
+    try:
+        return url if rt.pr_states([url]).get(url) == "merged" else None
+    except Exception as exc:  # noqa: BLE001 - gh, its token and the network all fail alike
+        print(f"reap: {claim.issue_key} PR state not read: {exc}", file=sys.stderr)
+        return None
 
 
 def main_hold(rt, repo: str, bases: dict[str, str | None]) -> str | None:

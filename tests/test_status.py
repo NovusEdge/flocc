@@ -175,6 +175,104 @@ def test_status_lists_finished_runs_holds_and_waiting_events(cfg):
     assert report["events"] == {"unacked": 2, "oldest_age_s": 9900.0, "attention": 1}
 
 
+class FakeGh:
+    """Stands in for gh: reports each PR's state by URL and records what it was asked."""
+
+    def __init__(self, states):
+        self.states, self.asked = states, []
+
+    def __call__(self, argv, **kw):
+        # Only the state: the files and mergeability a full pr_view fetches cost a row each.
+        assert argv[:3] == ["gh", "pr", "view"] and argv[4:] == ["--json", "state"]
+        self.asked.append(argv[3])
+        if self.states[argv[3]] is None:
+            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+        out = json.dumps({"state": self.states[argv[3]]})
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+
+def two_finished(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    for key in ("NF-2", "NF-4", "NF-6"):
+        ledger.insert_claim(con, make(key, state="done"))
+        (cfg.state_root / key).mkdir(parents=True)
+        (cfg.state_root / key / "pr-url").write_text(f"https://pr/{key}\n")
+    return FakeGh(
+        {"https://pr/NF-2": "MERGED", "https://pr/NF-4": "OPEN", "https://pr/NF-6": "CLOSED"}
+    )
+
+
+def test_status_asks_github_and_marks_a_finished_run_whose_pr_merged_or_closed(cfg):
+    from flocc.publisher import pr_states
+
+    gh = two_finished(cfg)
+    report = collect(
+        cfg,
+        FakeSessions(),
+        now=1000.0,
+        mode="loop",
+        pr_states_fn=lambda urls: pr_states(urls, "tok", runner=gh),
+    )
+    rows = {f["issue"]: f for f in report["finished"]}
+    assert [rows[k]["pr_state"] for k in ("NF-2", "NF-4", "NF-6")] == ["merged", "open", "closed"]
+    assert rows["NF-2"]["pr_url"] == "https://pr/NF-2"
+    assert sorted(gh.asked) == ["https://pr/NF-2", "https://pr/NF-4", "https://pr/NF-6"]
+
+
+def test_status_without_a_github_reader_asks_nothing_and_sets_no_pr_state(cfg):
+    two_finished(cfg)
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop")
+    assert all(f["pr_state"] == "" for f in report["finished"])
+
+
+def test_a_github_failure_leaves_the_row_listed_as_unknown(cfg):
+    two_finished(cfg)
+
+    def down(urls):
+        raise subprocess.CalledProcessError(1, "gh")
+
+    report = collect(cfg, FakeSessions(), now=1000.0, mode="loop", pr_states_fn=down)
+    assert {f["pr_state"] for f in report["finished"]} == {"unknown"}
+
+
+def test_the_first_gh_timeout_stops_the_rest_of_the_batch():
+    from flocc.publisher import pr_states
+
+    urls = [f"https://pr/{n}" for n in range(5)]
+    gh = FakeGh({u: None for u in urls})
+    assert pr_states(urls, "tok", runner=gh, workers=1) == {}
+    assert gh.asked == urls[:1]
+
+
+def test_the_batch_gives_gh_no_more_than_its_deadline():
+    from flocc.publisher import pr_states
+
+    seen = []
+
+    def gh(argv, **kw):
+        seen.append(kw["timeout"])
+        return subprocess.CompletedProcess(argv, 0, '{"state": "OPEN"}', "")
+
+    pr_states(["https://pr/1"], "tok", runner=gh, deadline_s=15.0)
+    assert 0 < seen[0] <= 15.0
+
+
+def test_a_merged_pr_is_remembered_and_not_asked_again(cfg):
+    from flocc import cli
+
+    gh = two_finished(cfg)
+    cfg = replace(cfg, publish_gh_token_file=cfg.state_root / "gh-token")
+    cfg.publish_gh_token_file.write_text("tok\n")
+    con = ledger.connect(cfg.ledger_path)
+    ask = cli._github_states(cfg, con, runner=gh)
+    assert ask is not None
+    first = ask(["https://pr/NF-2", "https://pr/NF-4"])
+    assert first == {"https://pr/NF-2": "merged", "https://pr/NF-4": "open"}
+    gh.asked.clear()
+    second = ask(["https://pr/NF-2", "https://pr/NF-4"])
+    assert second == first and gh.asked == ["https://pr/NF-4"]
+
+
 def test_status_reads_a_ledger_without_holds_or_events(cfg):
     import sqlite3
 
@@ -236,9 +334,11 @@ def test_human_status_prints_the_table(cfg, tmp_path, monkeypatch, capsys):
         "started_age_s": 7200.0,
         "pr_url": "https://pr/2",
     }
+    merged = {**fin, "issue": "NF-5", "pr_state": "merged", "pr_url": "https://pr/5"}
+    closed = {**fin, "issue": "NF-6", "pr_state": "closed", "pr_url": "https://pr/6"}
     full = _report(
         claims=[row],
-        finished=[fin],
+        finished=[fin, merged, closed],
         check_fix_rounds=2,
         holds=[{"issue": "NF-3", "reason": "wait", "age_s": 120.0}],
         events={"unacked": 2, "oldest_age_s": 840.0, "attention": 1},
@@ -249,6 +349,8 @@ def test_human_status_prints_the_table(cfg, tmp_path, monkeypatch, capsys):
     assert "  ISSUE    STEP      STATE      FIX  AGE   CTX   SESSION" in out
     assert "  NF-1     executor  running    0/2  1h    42%   up" in out
     assert "  NF-2     reviewer  done       1/2  2h    -     -  https://pr/2" in out
+    assert "  NF-5     reviewer  merged     1/2  2h    -     -  https://pr/5" in out
+    assert "  NF-6     reviewer  closed     1/2  2h    -     -  https://pr/6" in out
     assert "  held NF-3: wait (2m)" in out
     assert "  events waiting for cardinal: 2, oldest 14m; 1 needs attention" in out
 

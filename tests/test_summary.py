@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import pytest
 
@@ -61,6 +62,41 @@ def test_digest_data_lists_runs_lines_holds_events_and_attention(tmp_cfg, con):
     assert "- NF-7: owner said wait" in text and "ended: 1, 1 not acknowledged" in text
     assert f"- event {stuck}, ended, NF-1: blocked: idle" in text
     assert text.rstrip().endswith(f"flocc digest-data --done {through}")
+
+
+def test_digest_data_asks_github_and_marks_a_run_whose_pr_merged(tmp_cfg, con):
+    from flocc.publisher import pr_states
+
+    states = {"https://pr/1": "MERGED", "https://pr/2": "OPEN", "https://pr/3": "CLOSED"}
+
+    def gh(argv, **kw):
+        out = json.dumps({"state": states[argv[3]]})
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    for key, n in (("NF-1", 1), ("NF-2", 2), ("NF-3", 3)):
+        ledger.insert_claim(con, make(key, state="done"))
+        d = state_dir(tmp_cfg, key)
+        d.mkdir(parents=True)
+        (d / "pr-url").write_text(f"https://pr/{n}\n")
+    text, _ = digest_data(
+        tmp_cfg, con, 86_400.0, pr_states_fn=lambda urls: pr_states(urls, "tok", runner=gh)
+    )
+    assert "- NF-1: tester, merged, PR https://pr/1" in text
+    assert "- NF-2: tester, done, PR https://pr/2" in text
+    assert "- NF-3: tester, closed, PR https://pr/3" in text
+
+
+def test_digest_data_keeps_a_run_listed_when_github_is_down(tmp_cfg, con):
+    ledger.insert_claim(con, make("NF-1", state="done"))
+    d = state_dir(tmp_cfg, "NF-1")
+    d.mkdir(parents=True)
+    (d / "pr-url").write_text("https://pr/1\n")
+
+    def down(urls):
+        raise subprocess.CalledProcessError(1, "gh")
+
+    text, _ = digest_data(tmp_cfg, con, 86_400.0, pr_states_fn=down)
+    assert "- NF-1: tester, done, PR https://pr/1" in text
 
 
 def test_digest_data_names_why_a_run_stopped(tmp_cfg, con):

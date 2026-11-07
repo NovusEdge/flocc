@@ -1346,6 +1346,63 @@ def test_reap_survives_a_linear_error_and_a_failed_removal(rt, capsys):
     assert ledger.get_claim(rt.con, "NF-6") is not None
 
 
+def _reapable(rt, key="NF-5", state="done"):
+    finished(rt, key, state=state)
+    d = state_dir(rt.cfg, key)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "pr-url").write_text(f"https://github.com/o/r/pull/{key[3:]}\n")
+    rt.linear.state_types = lambda keys: {k: "completed" for k in keys}
+
+
+def test_reaping_a_claim_whose_pr_merged_emits_a_merged_event(rt):
+    _reapable(rt)
+    asked = []
+
+    def states(urls):
+        asked.append(urls)
+        return {u: "merged" for u in urls}
+
+    rt.pr_states = states
+    reap_worktrees(rt)
+    assert asked == [["https://github.com/o/r/pull/5"]]
+    [event] = events.since(rt.con, 0)
+    assert (event.kind, event.issue_key) == ("merged", "NF-5")
+    assert "https://github.com/o/r/pull/5" in event.detail
+    assert ledger.get_claim(rt.con, "NF-5") is None
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"https://github.com/o/r/pull/5": "open"},
+        {"https://github.com/o/r/pull/5": "closed"},
+        {},
+        None,
+    ],
+)
+def test_reaping_emits_no_merged_event_for_an_unmerged_or_unread_pr(rt, answer):
+    _reapable(rt)
+
+    def read(urls):
+        if answer is None:
+            raise subprocess.TimeoutExpired("gh", 15)
+        return answer
+
+    rt.pr_states = read
+    reap_worktrees(rt)
+    assert events.since(rt.con, 0) == []
+    assert ledger.get_claim(rt.con, "NF-5") is None
+
+
+def test_a_merged_event_waits_for_the_worktree_removal(rt):
+    _reapable(rt)
+    rt.pr_states = lambda urls: {u: "merged" for u in urls}
+    rt.agent.remove = lambda key, keep_dirty=False: {"removed": False}
+    reap_worktrees(rt)
+    reap_worktrees(rt)
+    assert events.since(rt.con, 0) == [] and ledger.get_claim(rt.con, "NF-5") is not None
+
+
 def test_reap_treats_a_deleted_issue_as_closed(rt):
     finished(rt, "NF-5")
 
