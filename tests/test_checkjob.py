@@ -90,6 +90,19 @@ def test_a_check_starts_as_a_user_unit_and_returns_at_once(systemd, wt, tmp_path
     assert step(wt, state) == {"status": "running"} and len(systemd.runs) == 1
 
 
+def test_the_unit_gets_30_s_to_stop(systemd, wt, tmp_path):
+    step(wt, tmp_path / "state")
+    [argv] = systemd.runs
+    assert "--property=TimeoutStopSec=30" in argv
+
+
+def test_the_unit_runs_dotnet_builds_without_servers_that_outlive_it(systemd, wt, tmp_path):
+    step(wt, tmp_path / "state")
+    [argv] = systemd.runs
+    assert "--setenv=MSBUILDDISABLENODEREUSE=1" in argv
+    assert "--setenv=DOTNET_CLI_USE_MSBUILD_SERVER=0" in argv
+
+
 def test_a_check_that_ends_reports_its_output_and_stops_the_unit(systemd, wt, tmp_path):
     state = tmp_path / "state"
     step(wt, state)

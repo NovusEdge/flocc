@@ -716,6 +716,17 @@ def _finish_phase(
         else:
             (state_dir(rt.cfg, key) / "pr-url").write_text(result.url)
             _end_done(rt, claim)
+    elif result.status == "check_timeout":
+        if result.log:
+            (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
+        _block(
+            rt,
+            claim,
+            "check-timeout",
+            f"The check timed out:\n{result.detail}"[:3000],
+            "Raise check_timeout_s or speed the check up, then run"
+            f" flocc release --keep-worktree {key}",
+        )
     elif (
         result.status == "check_failed"
         and claim.fix_attempts > 0

@@ -75,6 +75,7 @@ A session's state lives outside its context: commits in the worktree, its summar
 | Session process gone while its claim is live | Restart once. On a second failure the claim blocks and the service comments on the issue |
 | Wall-clock limit reached | Kill the session, keep the branch, report in the digest |
 | The check fails | The same check runs on the base branch. If it fails the same way there, the repo is held as main-broken and no fix round starts. Otherwise up to `check_fix_rounds` (default 2) fresh fixer sessions, each with the failure output. After the last one fails, the claim blocks as `check-cap` and the service comments on the issue |
+| The check outruns `check_timeout_s` | No fixer round: the claim blocks as `check-timeout`, which is yours, and the service comments on the issue. Raise the limit or speed the check up, then `flocc release --keep-worktree` |
 | Publishing fails three ticks in a row | The claim blocks as `publish-failed`. 30 minutes later the service sets it running once more, for one more check and push. A second failure is yours |
 | An open PR conflicts with its base | One session merges the base and resolves the conflicts, then pushes to the same PR. A second conflict on the same base commit blocks |
 | Usage limit hit mid-run | The session waits for the reset. Nothing new is admitted until usage is below the thresholds |

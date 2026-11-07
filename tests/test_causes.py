@@ -21,6 +21,7 @@ def test_the_table_matches_the_spec():
         "no-changes": "agent",
         "needs-owner": "owner",
         "check-cap": "owner",
+        "check-timeout": "owner",
         "tests-touched": "owner",
         "no-tests": "owner",
         "branch-moved": "owner",

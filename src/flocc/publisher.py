@@ -56,6 +56,7 @@ class PublishResult:
     log: str = ""  # the check's full output, when it ran and failed
     existing: bool = False  # "opened" by finding the PR that was already open
     # Status "check_running": the check still runs in the background; the next tick publishes again.
+    # Status "check_timeout": it outran the time limit; the claim blocks with no fixer round.
     label_error: str = ""  # why the amended-tests label was not added to the open PR
     # A base-check result that says nothing lasting: ./setup failed or the check timed out.
     transient: bool = False
@@ -349,7 +350,8 @@ def publish(
         return PublishResult("check_failed", detail[:_TAIL])
     if ran["status"] == "timeout":
         detail = f"`{repo.check}` timed out after {check_timeout_s}s\n\n{out[-_TAIL:]}"
-        return PublishResult("check_failed", detail.strip(), log=out)
+        # Not a failure: a fixer round would only rerun a check that is slow, not wrong.
+        return PublishResult("check_timeout", detail.strip(), log=out)
     if ran["status"] != "ok":
         return PublishResult("check_failed", failure_excerpt(out), log=out)
     if ran["head"] != head:

@@ -17,8 +17,14 @@ CHECK_JOB = "check.json"
 CHECK_LOG = "check.log"
 TAIL_BYTES = 4_000_000
 # SIGINT first: pytest turns it into KeyboardInterrupt and runs fixture teardown, which stops the
-# testcontainers it started.
-STOP_GRACE_S = 10
+# testcontainers it started. 30 s, not 10: only more time for that teardown. The SIGKILL at the
+# end of the grace already took the whole cgroup, since KillMode=control-group is systemd's default.
+STOP_GRACE_S = 30
+# dotnet build servers outlive the check by design and survive the SIGINT; with these off, the
+# build runs in the check's own process tree and ends with it.
+_NO_BUILD_SERVERS = ("MSBUILDDISABLENODEREUSE=1", "DOTNET_CLI_USE_MSBUILD_SERVER=0")
+# Bounds one systemctl call; the service's call into flocc-agent-run allows 120 s.
+_RUN_TIMEOUT_S = 60
 # systemd-run returns once the unit is queued; a poll in this window may not find it yet.
 START_GRACE_S = 15
 _RUNNING = ("start-pre", "start", "start-post", "running", "auto-restart")
@@ -46,7 +52,7 @@ def _env() -> dict[str, str]:
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
-        argv, env=_env(), capture_output=True, text=True, check=False, timeout=STOP_GRACE_S * 6
+        argv, env=_env(), capture_output=True, text=True, check=False, timeout=_RUN_TIMEOUT_S
     )
 
 
@@ -174,6 +180,7 @@ def _start(
         f"--property=StandardOutput=truncate:{log}",
         "--property=StandardError=inherit",
         *(f"--setenv={k}={env[k]}" for k in _PASS if k in env),
+        *(f"--setenv={kv}" for kv in _NO_BUILD_SERVERS),
         "--",
         *shlex.split(command),
     ]
