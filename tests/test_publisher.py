@@ -519,6 +519,13 @@ def test_check_at_base_runs_setup_then_the_check_on_a_throwaway_checkout(origin,
     assert check_at_base(passing, tmp_path / "wt", 30, 30, False) == (sha, None)
 
 
+def test_check_at_base_runs_the_check_but_not_setup_behind_the_wrapper(origin, tmp_path):
+    repo = RepoConfig(origin, check="sh -c 'test \"$WRAPPED\" = yes'")
+    assert check_at_base(repo, tmp_path / "wt", 30, 30, False)[1] is not None
+    wrap = ["env", "WRAPPED=yes"]
+    assert check_at_base(repo, tmp_path / "wt", 30, 30, False, wrap)[1] is None
+
+
 def test_check_at_base_hides_the_random_checkout_path(origin, tmp_path):
     repo = RepoConfig(origin, check="sh -c 'pwd; exit 1'")
     _, failure = check_at_base(repo, tmp_path / "wt", 30, 30, False)

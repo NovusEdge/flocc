@@ -7,6 +7,9 @@ agent_gh_token_file = "~/.config/flocc/gh-agent.token"
 publish_gh_token_file = "~/.config/flocc/gh-publish.token"
 digest_issue = "NF-1"
 check_timeout_s = 1800
+# Longest a check waits for memory before its claim blocks as check-waiting-memory; default is
+# twice check_timeout_s.
+# check_wait_s = 3600
 setup_timeout_s = 900
 # New starts are held while the disk holding worktree_root has less free space than this.
 # min_free_disk_gb = 2.0
@@ -59,13 +62,16 @@ base_branch = "main"
 # draft = false
 # Overrides the top-level commit_trailer for this repo.
 # commit_trailer = false
-# A check for this repo starts only with this many GiB of memory available: the check's peak
-# plus min_available_mem_gb. It waits for a later tick, and the claim blocks as
-# check-waiting-memory after check_timeout_s of waiting.
-# check_min_mem_gb = 5.5
-# Memory limits of the check's systemd unit: throttled at High, killed alone at Max.
-# check_memory_high = "4.5G"
-# check_memory_max = "5G"
+# A check for this repo starts only with this many GiB of MemAvailable. MemAvailable counts page
+# cache as available, so set this to the check's anon peak plus min_available_mem_gb, not its
+# total peak: 4.5 suits a heavy repo like nimblefox (2.4 GB anon). Until then the check waits for
+# a later tick, and the claim blocks as check-waiting-memory after check_wait_s.
+# check_min_mem_gb = 2.0
+# Memory limits of the check's systemd unit. Max counts page cache, so keep it above the check's
+# total peak (nimblefox: 5.0 GB). With swap on, a check past Max goes to swap, shared by every
+# session, and dies only when SwapMax is full too.
+# check_memory_max = "6G"
+# check_memory_swap_max = "1G"
 
 [mcp_servers.sentry]
 type = "http"

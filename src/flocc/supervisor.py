@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from flocc import agentfs, canary, events, host, ledger
+from flocc.agent import BaseCheckWaiting
 from flocc.agentblock import settings_from_json
 from flocc.causes import OWNER, type_of
 from flocc.context import agent_dir, phase_prompt, state_dir
@@ -34,6 +35,9 @@ from flocc.worktree import origin_base
 FIX_CONTEXT = "check-failure.md"
 FAILURE_HASH = "check-failure.sha256"
 BASE_HELD = "base_held"
+# Set when the base check was skipped for low memory before the claim's first fix round; a repeat
+# failure asks once more before it blocks, since the skipped answer may have been "the base fails".
+BASE_UNKNOWN = "base_unknown"
 # Set while the repo's check runs in the background after the session ended.
 CHECK_RUNNING = "check_running"
 BASE_RELEASED = "base_released"
@@ -733,7 +737,7 @@ def _finish_phase(
             claim,
             "check-waiting-memory",
             f"The check never started: {result.detail}"[:3000],
-            "Free memory on the host or lower check_min_mem_gb, then run"
+            "Free memory on the host, lower check_min_mem_gb or raise check_wait_s, then run"
             f" flocc release --keep-worktree {key}",
         )
     elif (
@@ -741,6 +745,12 @@ def _finish_phase(
         and claim.fix_attempts > 0
         and _same_failure(rt, claim, result.detail)
     ):
+        unknown = f"{BASE_UNKNOWN}:{key}"
+        if ledger.meta_get(rt.con, unknown):
+            held = _base_fails_too(rt, claim, result)
+            ledger.meta_set(rt.con, unknown, "")
+            if held:
+                return
         if result.log:
             (state_dir(rt.cfg, key) / CHECK_OUTPUT).write_text(result.log)
         _block(
@@ -888,6 +898,8 @@ def _base_fails_too(rt, claim: Claim, result: PublishResult) -> bool:
         sha, failure = _base_result(rt, claim.repo)
     except (subprocess.SubprocessError, OSError) as exc:
         print(f"{key}: base check did not run: {exc}", file=sys.stderr)
+        if isinstance(exc, BaseCheckWaiting):
+            ledger.meta_set(rt.con, f"{BASE_UNKNOWN}:{key}", "1")
         return False
     if failure is None or not _same_as_base(result, claim, failure):
         return False

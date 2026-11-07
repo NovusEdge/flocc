@@ -88,6 +88,8 @@ type Claim struct {
 	StartedAge float64  `json:"started_age_s"`
 	TmuxAlive  bool     `json:"tmux_alive"`
 	ContextPct *float64 `json:"context_pct"`
+	// The claim's check is held back for memory; no TUI view shows a checking state yet.
+	CheckWaiting bool `json:"check_waiting"`
 	// Absent from a host whose claim has no status file yet.
 	UpdatedAge *float64       `json:"updated_age_s"`
 	Activity   []ActivityLine `json:"activity"`

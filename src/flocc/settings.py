@@ -49,6 +49,7 @@ NOT_SETTABLE = frozenset(
         "github_steer_logins",
         "comment_fix_max",
         "digest_issue",
+        "check_wait_s",
         "agent_user",
         "agent_home",
         "worktree_root",

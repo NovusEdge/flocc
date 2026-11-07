@@ -17,7 +17,7 @@ CHECK_JOB = "check.json"
 CHECK_LOG = "check.log"
 # Present while a start is held back for memory; holds when the wait began. Status shows it.
 WAITING = "check-waiting"
-_LIMITS = (("MemoryHigh", "memory_high"), ("MemoryMax", "memory_max"))
+_LIMITS = (("MemoryMax", "memory_max"), ("MemorySwapMax", "memory_swap_max"))
 MEMINFO = Path("/proc/meminfo")
 TAIL_BYTES = 4_000_000
 # SIGINT first: pytest turns it into KeyboardInterrupt and runs fixture teardown, which stops the
@@ -52,6 +52,16 @@ def unit_name(key: str) -> str:
 def _env() -> dict[str, str]:
     # flocc-agent lingers, so its user manager runs; sudo does not carry the session's socket.
     return {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
+
+
+def scoped(req: dict) -> tuple[list[str], dict[str, str]]:
+    """An argv prefix and environment that run a command in a transient scope with the request's
+    memory limits, for a check that runs in the caller's own process (the base check) instead of
+    as a unit. Empty prefix when the request carries no limit."""
+    props = [f"--property={p}={req[k]}" for p, k in _LIMITS if req.get(k)]
+    if not props:
+        return [], dict(os.environ)
+    return ["systemd-run", "--user", "--scope", "--quiet", *props, "--"], _env()
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess:
@@ -110,19 +120,31 @@ def memory_wait(need_gb: float | None) -> str | None:
     return None
 
 
-def _wait(state: Path, reason: str, limit_s: float) -> dict:
+def _marker(state: Path) -> dict:
+    try:
+        marker = json.loads((state / WAITING).read_text())
+    except (OSError, ValueError):
+        return {}
+    return marker if isinstance(marker, dict) else {}
+
+
+def _wait(state: Path, reason: str, limit_s: float, lost: int, requeued: bool) -> dict:
     """Records a start held for memory. `since` survives the retries, so the wait has an end:
-    past limit_s the answer is wait_timeout, and the next start begins a new wait."""
+    past limit_s the answer is wait_timeout, and the next start begins a new wait. `lost` and
+    `requeued` are the restart state of the check this start replaces; the wait outlives its
+    check.json, so the marker carries them to the start that follows."""
     marker = state / WAITING
     try:
-        since = float(json.loads(marker.read_text())["since"])
-    except (OSError, ValueError, KeyError, TypeError):
+        since = float(_marker(state)["since"])
+    except (KeyError, TypeError, ValueError):
         since = time.time()
     if time.time() - since >= limit_s:
         marker.unlink(missing_ok=True)
         return {"status": "wait_timeout", "output": reason}
     state.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"since": since, "reason": reason}))
+    marker.write_text(
+        json.dumps({"since": since, "reason": reason, "lost": lost, "requeued": requeued})
+    )
     return {"status": "waiting", "reason": reason}
 
 
@@ -188,8 +210,11 @@ def _start(
     if dirty := git("status", "--porcelain", cwd=wt):
         return {"status": "dirty", "output": dirty, "head": head}
     if req is not None and (reason := memory_wait(req.get("min_mem_gb"))):
-        # No job is recorded, so the next poll finds none and asks again.
-        return _wait(state, reason, float(req["timeout_s"]))
+        # The old record goes, so the next poll finds none and asks again; the marker holds the
+        # restart state meanwhile.
+        _clear(state)
+        wait_s = float(req.get("wait_s", 2 * timeout_s))
+        return _wait(state, reason, wait_s, lost, requeued)
     (state / WAITING).unlink(missing_ok=True)
     unit, log = unit_name(key), state / CHECK_LOG
     # A unit left by a start whose record was lost would refuse the name.
@@ -221,8 +246,9 @@ def _start(
         f"--property=RuntimeMaxSec={max(1, math.ceil(timeout_s)) + WAIT_MAX_S}",
         "--property=KillSignal=SIGINT",
         f"--property=TimeoutStopSec={STOP_GRACE_S}",
-        # A runaway check is throttled at High, then killed alone at Max, not by the host's OOM
-        # killer picking another session.
+        # Max counts page cache, which the kernel reclaims, so it ends a check only once swap is
+        # full too; SwapMax bounds that, so a runaway dies alone instead of filling the swap every
+        # session shares.
         *(f"--property={p}={req[k]}" for p, k in _LIMITS if req and req.get(k)),
         f"--property=WorkingDirectory={wt}",
         f"--property=StandardOutput=truncate:{log}",
@@ -251,7 +277,18 @@ def step(req: dict, key: str, wt: Path, state: Path) -> dict:
     job = _read_job(state)
     if job is None:
         _clear(state)
-        return _start(state, wt, key, command, timeout_s, 0, req=req)
+        # A wait that outlived its check.json keeps the restart state of the check it replaced.
+        held = _marker(state)
+        return _start(
+            state,
+            wt,
+            key,
+            command,
+            timeout_s,
+            int(held.get("lost", 0)),
+            bool(held.get("requeued", False)),
+            req=req,
+        )
     unit = unit_name(key)
     # A check of older commits says nothing about these.
     if job["head"] != git("rev-parse", "HEAD", cwd=wt):

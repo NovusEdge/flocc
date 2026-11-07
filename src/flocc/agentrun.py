@@ -296,7 +296,10 @@ def check(req: dict) -> dict:
     _clean_stale(root)
     setup_s, shared = float(req["setup_timeout_s"]), bool(req["shared_uv_cache"])
     if mode == "base-check":
-        sha, failure = check_at_base(repo, root, setup_s, float(req["check_timeout_s"]), shared)
+        wrap, env = checkjob.scoped(req)
+        sha, failure = check_at_base(
+            repo, root, setup_s, float(req["check_timeout_s"]), shared, wrap, env
+        )
         found = (
             None
             if failure is None

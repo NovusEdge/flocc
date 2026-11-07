@@ -1352,6 +1352,63 @@ def test_a_base_check_that_cannot_run_falls_back_to_the_fix_round(rt, monkeypatc
     assert current(rt).phase == "fix"
 
 
+def waiting_base(rt, monkeypatch, then):
+    """A base check that is held for memory once, then answers `then` (sha, failure)."""
+    from flocc.agent import BaseCheckWaiting
+
+    answers = [BaseCheckWaiting("base check not run: low memory"), then]
+    calls = []
+
+    def run(repo):
+        calls.append(repo)
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    rt.base_check = run
+    monkeypatch.setattr("flocc.supervisor.origin_base", lambda repo: BASE_SHA)
+    return calls
+
+
+def test_a_skipped_base_check_is_retried_before_a_repeat_failure_blocks(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    calls = waiting_base(rt, monkeypatch, (BASE_SHA, failed("E1 boom")))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    assert current(rt).phase == "fix" and ledger.meta_get(rt.con, "base_unknown:NF-1")
+    done(rt)
+    supervise(rt, current(rt))
+    assert len(calls) == 2
+    assert current(rt).state == "running" and ledger.meta_get(rt.con, "base_held:NF-1")
+    assert not ledger.meta_get(rt.con, "base_unknown:NF-1")
+    assert canary.get_mark(rt.con, "backend") is not None
+
+
+def test_a_retried_base_check_that_passes_lets_the_repeat_failure_block(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    calls = waiting_base(rt, monkeypatch, (BASE_SHA, None))
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    done(rt)
+    supervise(rt, current(rt))
+    assert len(calls) == 2 and current(rt).state == "blocked"
+    assert not ledger.meta_get(rt.con, "base_unknown:NF-1")
+
+
+def test_a_repeat_failure_with_no_skipped_base_check_does_not_ask_again(rt, monkeypatch):
+    rt.publish_fn = lambda c, t, s: failed("E1 boom")
+    runs = base_check(rt, monkeypatch, failure=None)
+    add(rt, phase="impl", tester_sha="sha-tests")
+    done(rt)
+    supervise(rt, current(rt))
+    done(rt)
+    supervise(rt, current(rt))
+    assert len(runs) == 1 and current(rt).state == "blocked"
+
+
 def test_the_base_is_checked_only_before_the_first_fix_round(rt, monkeypatch):
     rt.publish_fn = lambda c, t, s: failed("E1 boom")
     runs = base_check(rt, monkeypatch, failure=None)

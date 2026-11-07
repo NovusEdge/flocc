@@ -147,16 +147,80 @@ def test_the_wait_began_at_the_first_refusal_and_keeps_that_time(
     assert json.loads((state / "check-waiting").read_text())["since"] == began
 
 
-def test_a_check_that_waited_check_timeout_s_for_memory_gives_up(
+def age_wait(state, seconds):
+    marker = json.loads((state / "check-waiting").read_text())
+    (state / "check-waiting").write_text(json.dumps({**marker, "since": time.time() - seconds}))
+
+
+def test_a_check_that_waited_wait_s_for_memory_gives_up(systemd, wt, tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    limited(wt, state, 1 * GB, tmp_path, monkeypatch, timeout_s=600, wait_s=900)
+    age_wait(state, 901)
+    ran = limited(wt, state, 1 * GB, tmp_path, monkeypatch, timeout_s=600, wait_s=900)
+    assert ran["status"] == "wait_timeout" and "available memory 1.0 GB" in ran["output"]
+    assert systemd.runs == [] and not (state / "check-waiting").exists()
+
+
+def test_the_wait_limit_is_not_the_check_timeout(systemd, wt, tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    limited(wt, state, 1 * GB, tmp_path, monkeypatch, timeout_s=600, wait_s=3000)
+    age_wait(state, 1000)
+    ran = limited(wt, state, 1 * GB, tmp_path, monkeypatch, timeout_s=600, wait_s=3000)
+    assert ran["status"] == "waiting"
+
+
+def lose_the_unit(systemd, state):
+    systemd.units.clear()
+    job = json.loads((state / "check.json").read_text())
+    job["started"] -= checkjob.START_GRACE_S + 1
+    (state / "check.json").write_text(json.dumps(job))
+
+
+def test_a_lost_check_held_for_memory_keeps_its_lost_count(systemd, wt, tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    assert limited(wt, state, 8 * GB, tmp_path, monkeypatch) == {"status": "running"}
+    lose_the_unit(systemd, state)
+    assert limited(wt, state, 1 * GB, tmp_path, monkeypatch)["status"] == "waiting"
+    assert not (state / "check.json").exists()
+    assert json.loads((state / "check-waiting").read_text())["lost"] == 1
+    assert limited(wt, state, 8 * GB, tmp_path, monkeypatch) == {"status": "running"}
+    assert json.loads((state / "check.json").read_text())["lost"] == 1
+    lose_the_unit(systemd, state)
+    assert limited(wt, state, 8 * GB, tmp_path, monkeypatch) == {"status": "lost"}
+
+
+def test_a_requeued_check_held_for_memory_stays_requeued(systemd, wt, tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    limited(wt, state, 8 * GB, tmp_path, monkeypatch)
+    job = json.loads((state / "check.json").read_text())
+    (state / "check.json").write_text(json.dumps({**job, "waiting": True}))
+    systemd.units[UNIT].update(SubState="dead", Result="timeout")
+    assert limited(wt, state, 1 * GB, tmp_path, monkeypatch)["status"] == "waiting"
+    assert json.loads((state / "check-waiting").read_text())["requeued"] is True
+    limited(wt, state, 8 * GB, tmp_path, monkeypatch)
+    assert json.loads((state / "check.json").read_text())["requeued"] is True
+
+
+def test_a_plain_wait_records_no_restart_state(systemd, wt, tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    limited(wt, state, 1 * GB, tmp_path, monkeypatch)
+    limited(wt, state, 8 * GB, tmp_path, monkeypatch)
+    job = json.loads((state / "check.json").read_text())
+    assert job["lost"] == 0 and job["requeued"] is False
+
+
+def test_stop_job_removes_the_marker_so_a_later_wait_starts_fresh(
     systemd, wt, tmp_path, monkeypatch
 ):
     state = tmp_path / "state"
-    limited(wt, state, 1 * GB, tmp_path, monkeypatch, timeout_s=600)
-    marker = json.loads((state / "check-waiting").read_text())
-    (state / "check-waiting").write_text(json.dumps({**marker, "since": time.time() - 601}))
-    ran = limited(wt, state, 1 * GB, tmp_path, monkeypatch, timeout_s=600)
-    assert ran["status"] == "wait_timeout" and "available memory 1.0 GB" in ran["output"]
-    assert systemd.runs == [] and not (state / "check-waiting").exists()
+    limited(wt, state, 1 * GB, tmp_path, monkeypatch)
+    age_wait(state, 5000)
+    old = json.loads((state / "check-waiting").read_text())["since"]
+    checkjob.stop_job(state, "NF-7")
+    assert not (state / "check-waiting").exists()
+    ran = limited(wt, state, 1 * GB, tmp_path, monkeypatch)
+    assert ran["status"] == "waiting"
+    assert json.loads((state / "check-waiting").read_text())["since"] > old + 4000
 
 
 def test_base_checks_use_the_same_memory_gate(tmp_path, monkeypatch):
@@ -169,16 +233,18 @@ def test_base_checks_use_the_same_memory_gate(tmp_path, monkeypatch):
 
 def test_the_unit_gets_the_repos_memory_limits(systemd, wt, tmp_path):
     state = tmp_path / "state"
-    req = {"command": "just check", "timeout_s": 600, "memory_high": "4.5G", "memory_max": "5G"}
+    req = {"command": "just check", "timeout_s": 600, "memory_max": "6G", "memory_swap_max": "1G"}
     checkjob.step(req, "NF-7", wt, state)
     [argv] = systemd.runs
-    assert "--property=MemoryHigh=4.5G" in argv and "--property=MemoryMax=5G" in argv
+    assert "--property=MemoryMax=6G" in argv and "--property=MemorySwapMax=1G" in argv
+    assert not any(a.startswith("--property=MemoryHigh") for a in argv)
 
 
 def test_a_request_without_limits_sets_none(systemd, wt, tmp_path):
     step(wt, tmp_path / "state")
     [argv] = systemd.runs
-    assert not any(a.startswith(("--property=MemoryHigh", "--property=MemoryMax")) for a in argv)
+    prefixes = ("--property=MemoryMax", "--property=MemorySwapMax")
+    assert not any(a.startswith(prefixes) for a in argv)
 
 
 def test_a_check_that_ends_reports_its_output_and_stops_the_unit(systemd, wt, tmp_path):
@@ -322,6 +388,54 @@ def test_a_lost_check_reaches_the_service_as_check_lost(tmp_cfg):
     repo = replace(next(iter(tmp_cfg.repos.values())), check="true")
     with pytest.raises(CheckLost, match="vanished twice"):
         Agent(tmp_cfg, runner).check_worktree(claim, repo, 60)
+
+
+MEMORY_KEYS = {
+    "min_mem_gb": 2.0,
+    "memory_max": "6G",
+    "memory_swap_max": "1G",
+}
+
+
+def test_check_worktree_sends_the_gate_and_the_limits(tmp_cfg, monkeypatch):
+    sent = {}
+
+    def call(self, verb, payload, timeout):
+        sent.update(payload)
+        return {"status": "running"}
+
+    monkeypatch.setattr(Agent, "call", call)
+    repo = replace(next(iter(tmp_cfg.repos.values())), check="true")
+    Agent(replace(tmp_cfg, check_timeout_s=100)).check_worktree(
+        make("NF-7", worktree="/wt/NF-7"), repo, 100
+    )
+    assert {k: sent[k] for k in MEMORY_KEYS} == MEMORY_KEYS
+    assert sent["wait_s"] == 200 and "memory_high" not in sent
+
+
+def test_check_base_sends_the_gate_and_the_limits(tmp_cfg, monkeypatch):
+    sent = {}
+
+    def call(self, verb, payload, timeout):
+        sent.update(payload)
+        return {"sha": "abc", "failure": None}
+
+    monkeypatch.setattr(Agent, "call", call)
+    monkeypatch.setattr(Agent, "_repo", lambda self, name: ({}, 10))
+    name = next(iter(tmp_cfg.repos))
+    Agent(tmp_cfg).check_base(name)
+    assert {k: sent[k] for k in MEMORY_KEYS} == MEMORY_KEYS
+
+
+def test_scoped_wraps_a_command_in_a_scope_with_the_limits():
+    prefix, env = checkjob.scoped({"memory_max": "6G", "memory_swap_max": "1G"})
+    assert prefix[:4] == ["systemd-run", "--user", "--scope", "--quiet"] and prefix[-1] == "--"
+    assert "--property=MemoryMax=6G" in prefix and "--property=MemorySwapMax=1G" in prefix
+    assert env["XDG_RUNTIME_DIR"].startswith("/run/user/")
+
+
+def test_scoped_without_limits_wraps_nothing():
+    assert checkjob.scoped({})[0] == []
 
 
 def test_the_timeout_is_whole_seconds_of_at_least_one(systemd, wt, tmp_path):

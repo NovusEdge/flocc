@@ -213,8 +213,14 @@ def branch_subjects(claim: Claim, repo: RepoConfig) -> tuple[str, ...]:
     return tuple(out.splitlines())
 
 
-def run_check(repo: RepoConfig, wt: Path, timeout_s: float) -> PublishResult | None:
-    code, out = run_bounded(shlex.split(repo.check), wt, timeout_s)
+def run_check(
+    repo: RepoConfig,
+    wt: Path,
+    timeout_s: float,
+    wrap: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> PublishResult | None:
+    code, out = run_bounded([*(wrap or []), *shlex.split(repo.check)], wt, timeout_s, env)
     if code is None:
         detail = f"`{repo.check}` timed out after {timeout_s}s\n\n{out[-_TAIL:]}"
         return PublishResult("check_failed", detail.strip(), log=out, transient=True)
@@ -229,8 +235,11 @@ def check_at_base(
     setup_timeout_s: float,
     check_timeout_s: float,
     shared_uv_cache: bool,
+    wrap: list[str] | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[str, PublishResult | None]:
-    """origin/<base>'s SHA and how the repo's check fails there; None when it passes."""
+    """origin/<base>'s SHA and how the repo's check fails there; None when it passes. `wrap` and
+    `env` run the check itself (not ./setup) under the caller's memory limits."""
     with base_checkout(repo, worktree_root) as (path, sha):
         code, out = setup_in_checkout(path, setup_timeout_s, shared_uv_cache)
         if code != 0:
@@ -242,7 +251,7 @@ def check_at_base(
                 log=out,
                 transient=True,
             )
-        failure = run_check(repo, path, check_timeout_s)
+        failure = run_check(repo, path, check_timeout_s, wrap, env)
         if failure is None:
             return sha, None
         # The checkout's name is random, so a branch's failure could never match the same text.
