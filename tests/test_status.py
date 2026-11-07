@@ -79,6 +79,21 @@ def test_a_claim_with_a_background_check_is_marked_checking(cfg):
     assert collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"][0]["checking"] is True
 
 
+def test_a_claim_whose_check_waits_for_memory_is_marked_waiting_for_check(cfg):
+    con = ledger.connect(cfg.ledger_path)
+    ledger.insert_claim(con, make("NF-1"))
+    assert (
+        collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"][0]["check_waiting"] is False
+    )
+    (cfg.agent_state_root / "NF-1").mkdir(parents=True, exist_ok=True)
+    (cfg.agent_state_root / "NF-1" / "check-waiting").write_text(
+        '{"since": 1.0, "reason": "low memory"}'
+    )
+    assert (
+        collect(cfg, FakeSessions(), now=1000.0, mode="loop")["claims"][0]["check_waiting"] is True
+    )
+
+
 def test_reading_leaves_the_ledger_file_unchanged(cfg):
     con = ledger.connect(cfg.ledger_path)
     ledger.insert_claim(con, make("NF-1"))

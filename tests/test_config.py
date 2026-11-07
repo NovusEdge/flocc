@@ -27,6 +27,15 @@ def test_example_loads_with_defaults():
     assert cfg.tmp_max_pct == 80.0
     assert cfg.min_available_mem_gb == 1.0
     assert cfg.shared_uv_cache is False
+    backend = cfg.repos["backend"]
+    assert (backend.check_min_mem_gb, backend.check_memory_max, backend.check_memory_swap_max) == (
+        2.0,
+        "6G",
+        "1G",
+    )
+    assert not hasattr(backend, "check_memory_high")
+    assert cfg.check_wait_s is None and cfg.memory_wait_s == 2 * cfg.check_timeout_s
+    assert not hasattr(cfg, "check_cap")
     assert cfg.state_root.is_absolute()
     assert cfg.mcp_servers["sentry"]["type"] == "http"
     assert cfg.agent_plugins_file is None
@@ -183,3 +192,35 @@ def test_retired_top_level_keys_are_ignored_with_a_warning(tmp_path, capsys):
     p.write_text('ntfy_url = "https://ntfy.sh/x"\n' + "\n".join(kept) + "\n")
     assert load(p).team_key == "NF"
     assert "ntfy_url is no longer used" in capsys.readouterr().err
+
+
+def _with(tmp_path, top="", repo=""):
+    text = EXAMPLE.read_text().replace('base_branch = "main"\n', f'base_branch = "main"\n{repo}', 1)
+    p = tmp_path / "config.toml"
+    p.write_text(top + text)
+    return p
+
+
+def test_check_wait_s_overrides_the_default_wait(tmp_path):
+    cfg = load(_with(tmp_path, top="check_wait_s = 600\n"))
+    assert cfg.memory_wait_s == 600
+
+
+def test_a_negative_check_min_mem_gb_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="check_min_mem_gb"):
+        load(_with(tmp_path, repo="check_min_mem_gb = -1\n"))
+
+
+@pytest.mark.parametrize("value", ["6G", "512M", "1T", "100K", "123", "infinity"])
+def test_systemd_sizes_are_accepted(tmp_path, value):
+    cfg = load(
+        _with(tmp_path, repo=f'check_memory_max = "{value}"\ncheck_memory_swap_max = "{value}"\n')
+    )
+    assert cfg.repos["backend"].check_memory_max == value
+
+
+@pytest.mark.parametrize("value", ["6GB", "5.5G", "", "-1G", "G", "lots", "50%"])
+def test_other_memory_strings_are_rejected(tmp_path, value):
+    for key in ("check_memory_max", "check_memory_swap_max"):
+        with pytest.raises(ValueError, match=key):
+            load(_with(tmp_path, repo=f'{key} = "{value}"\n'))

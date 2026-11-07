@@ -71,6 +71,29 @@ def test_opens_draft_pr(origin, tmp_path):
     assert git("ls-remote", "origin", claim.branch, cwd=path)
 
 
+def test_a_check_waiting_too_long_for_memory_is_its_own_result(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "impl.py").write_text("x = 1\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", "impl", cwd=path)
+    gh = Gh()
+    wait = {"status": "wait_timeout", "output": "available memory 2.0 GB is below 5.5 GB"}
+    result = publish(claim, repo, "t", "s", token="t", runner=gh, check=lambda c, r, t: wait)
+    assert result.status == "check_wait_timeout" and "2.0 GB" in result.detail and gh.calls == []
+
+
+def test_a_check_waiting_for_memory_reads_as_a_check_still_running(origin, tmp_path):
+    repo, path, claim = setup_claim(origin, tmp_path)
+    (path / "impl.py").write_text("x = 1\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", "impl", cwd=path)
+    gh = Gh()
+    result = publish(
+        claim, repo, "t", "s", token="t", runner=gh, check=lambda c, r, t: {"status": "waiting"}
+    )
+    assert result.status == "check_running" and gh.calls == []
+
+
 def test_the_push_goes_from_the_service_clone_with_the_check_run_elsewhere(origin, tmp_path):
     repo, path, claim = setup_claim(origin, tmp_path)
     seen = []
@@ -494,6 +517,13 @@ def test_check_at_base_runs_setup_then_the_check_on_a_throwaway_checkout(origin,
     assert list((tmp_path / "wt").iterdir()) == []
     passing = RepoConfig(origin, check="true")
     assert check_at_base(passing, tmp_path / "wt", 30, 30, False) == (sha, None)
+
+
+def test_check_at_base_runs_the_check_but_not_setup_behind_the_wrapper(origin, tmp_path):
+    repo = RepoConfig(origin, check="sh -c 'test \"$WRAPPED\" = yes'")
+    assert check_at_base(repo, tmp_path / "wt", 30, 30, False)[1] is not None
+    wrap = ["env", "WRAPPED=yes"]
+    assert check_at_base(repo, tmp_path / "wt", 30, 30, False, wrap)[1] is None
 
 
 def test_check_at_base_hides_the_random_checkout_path(origin, tmp_path):

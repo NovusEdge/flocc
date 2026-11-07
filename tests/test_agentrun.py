@@ -64,6 +64,54 @@ def test_check_reports_dirty_failed_and_ok(origin):
     assert dirty["status"] == "dirty" and "stray.txt" in dirty["output"]
 
 
+def test_a_base_check_waits_on_memory_before_it_checks_anything_out(tmp_path, monkeypatch):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemAvailable: 1048576 kB\n")
+    monkeypatch.setattr(agentrun.checkjob, "MEMINFO", meminfo)
+    out = agentrun.check({"mode": "base-check", "min_mem_gb": 5.5})
+    assert list(out) == ["waiting"] and "available memory 1.0 GB" in out["waiting"]
+
+
+def test_a_base_check_runs_under_the_memory_limits(origin, tmp_path, monkeypatch):
+    seen = {}
+
+    def fake(repo, root, setup_s, check_s, shared, wrap, env):
+        seen.update(wrap=wrap, env=env)
+        return "abc", None
+
+    monkeypatch.setattr(agentrun, "check_at_base", fake)
+    monkeypatch.setattr(agentrun, "write_token", lambda t: None)
+    monkeypatch.setattr(agentrun, "_clone", lambda repo, url: origin)
+    monkeypatch.setattr(agentrun, "under_home", lambda p: tmp_path)
+    monkeypatch.setattr(agentrun, "_clean_stale", lambda root: None)
+    req = {
+        "mode": "base-check",
+        "token": "t",
+        "repo": "r",
+        "url": "u",
+        "base_branch": "main",
+        "command": "true",
+        "worktree_root": str(tmp_path),
+        "setup_timeout_s": 5,
+        "shared_uv_cache": False,
+        "check_timeout_s": 5,
+        "memory_max": "6G",
+        "memory_swap_max": "1G",
+    }
+    assert agentrun.check(req) == {"sha": "abc", "failure": None}
+    assert "--property=MemoryMax=6G" in seen["wrap"]
+    assert "--property=MemorySwapMax=1G" in seen["wrap"]
+
+
+def test_a_base_check_that_waited_raises_instead_of_reporting_a_failure(
+    tmp_cfg, origin, tmp_path, monkeypatch
+):
+    cfg = agent_cfg(tmp_cfg, origin, tmp_path)
+    monkeypatch.setattr(Agent, "call", lambda self, *a, **kw: {"waiting": "low memory"})
+    with pytest.raises(AgentError, match="base check not run: low memory"):
+        Agent(cfg).check_base("backend")
+
+
 def test_the_branch_is_fetched_into_the_service_clone(origin, tmp_path):
     service = tmp_path / "service"
     subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(service)], check=True)

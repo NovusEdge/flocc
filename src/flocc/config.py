@@ -1,9 +1,11 @@
 import os
+import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+SYSTEMD_SIZE = re.compile(r"\d+[KMGT]?|infinity")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 _RETIRED = ("ntfy_url", "context_restart_pct", "idle_escalate_s", "stall_escalate_s")
@@ -39,6 +41,18 @@ class RepoConfig:
     # Added with the publish token to a PR whose implementer amended tester files, for repos whose
     # PR check fails such PRs without it. Empty adds none; flocc never removes it.
     amended_label: str = ""
+    # A check starts only with this much MemAvailable, in GiB. MemAvailable already counts page
+    # cache as available, so the right figure is the check's anon (non-cache) peak plus
+    # Config.min_available_mem_gb, which keeps a start from opening a host memory episode; the
+    # default suits a light check. A repo that builds a lot (dotnet, a full test stack) needs more:
+    # nimblefox peaks near 2.4 GB anon, so 4.5 there.
+    check_min_mem_gb: float = 2.0
+    # systemd MemoryMax and MemorySwapMax of the check's unit. Both are needed: with swap on, a
+    # runaway check passes MemoryMax into swap shared with every session, and is killed alone only
+    # once it also exhausts MemorySwapMax. MemoryMax counts page cache, which the kernel reclaims
+    # under it, so it sits above the check's total peak (nimblefox: 5.0 GB).
+    check_memory_max: str = "6G"
+    check_memory_swap_max: str = "1G"
 
 
 # No claude_config_dir: sessions must share the owner's Claude Code login and
@@ -67,6 +81,8 @@ class Config:
     review_effort: str = "medium"
     review_wall_clock_s: int = 3600
     check_timeout_s: int = 1800
+    # Longest a check may wait for memory before its claim blocks; None is twice check_timeout_s.
+    check_wait_s: int | None = None
     setup_timeout_s: int = 900
     min_free_disk_gb: float = 2.0
     # flocc.host opens an episode past either: starts and relaunches wait, and cardinal is told.
@@ -104,6 +120,10 @@ class Config:
     agent_run: tuple[str, ...] = AGENT_RUN
     # The plugins agent sessions get; None means /opt/flocc/deploy/agent-plugins.txt.
     agent_plugins_file: Path | None = None
+
+    @property
+    def memory_wait_s(self) -> int:
+        return 2 * self.check_timeout_s if self.check_wait_s is None else self.check_wait_s
 
     @property
     def agent_token_file(self) -> Path:
@@ -199,4 +219,15 @@ def load(path: Path) -> Config:
         raise ValueError(f"{path}: min_available_mem_gb {cfg.min_available_mem_gb} must be >= 0")
     if not 0 <= cfg.comment_fix_max <= 10:
         raise ValueError(f"{path}: comment_fix_max {cfg.comment_fix_max} is not in 0-10")
+    if cfg.check_wait_s is not None and cfg.check_wait_s < 0:
+        raise ValueError(f"{path}: check_wait_s {cfg.check_wait_s} must be >= 0")
+    for name, repo in cfg.repos.items():
+        if repo.check_min_mem_gb < 0:
+            raise ValueError(f"{path}: repos.{name}.check_min_mem_gb must be >= 0")
+        for key in ("check_memory_max", "check_memory_swap_max"):
+            if not SYSTEMD_SIZE.fullmatch(str(getattr(repo, key))):
+                raise ValueError(
+                    f"{path}: repos.{name}.{key} {getattr(repo, key)!r} is not a systemd size"
+                    " (digits with an optional K, M, G or T, or infinity)"
+                )
     return cfg

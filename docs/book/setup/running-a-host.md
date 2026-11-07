@@ -25,7 +25,7 @@ The host reads `~/.config/flocc/config.toml`. `flocc ship` writes it from the ho
 | Key | Default | Meaning |
 |---|---|---|
 | `trigger_label` | set at setup (`claude`) | Label that makes an issue ready |
-| `session_cap` | 2 | Most concurrent sessions the host runs |
+| `session_cap` | 2 | Most concurrent sessions the host runs; a run in its background check still counts |
 | `five_hour_max_pct`, `weekly_max_pct` | 80.0 | New issues are held once usage reaches these shares of each window |
 | `default_wall_clock_s` | 10800 | Per-session time limit; an issue's `wall_clock` overrides it |
 | `review_model` | `opus` | Model for the reviewer session |
@@ -37,7 +37,7 @@ The host reads `~/.config/flocc/config.toml`. `flocc ship` writes it from the ho
 | `comment_fix_max` | 3 | Fix sessions your comments may start on a done issue whose PR is open, per run; 0 turns them off |
 | `shared_uv_cache` | false | One uv cache for every setup |
 
-Each `[repos.<name>]` table maps a repository. It takes `path`, `base_branch`, `draft` and `commit_trailer`. A private repository of a GitHub Free organization cannot have draft PRs, so set `draft = false` there.
+Each `[repos.<name>]` table maps a repository. It takes `path`, `base_branch`, `draft`, `commit_trailer`, `check_min_mem_gb`, `check_memory_max` and `check_memory_swap_max`. A check starts only while `MemAvailable` is at least `check_min_mem_gb` GiB (default 2.0). `MemAvailable` already counts page cache as available, so set the figure to the check's anon (non-cache) peak plus `min_available_mem_gb`: 4.5 for a heavy repository such as nimblefox, whose check peaks near 2.4 GB anon. Until then the run shows as `waiting-for-check`, and after the top-level `check_wait_s` of waiting (default twice `check_timeout_s`) it blocks as `check-waiting-memory`. The check's systemd unit gets `MemoryMax` from `check_memory_max` (default `6G`, above the total peak, since it counts page cache) and `MemorySwapMax` from `check_memory_swap_max` (default `1G`). Both limits matter: with swap on, a check past `MemoryMax` pushes into the swap every session shares, and dies alone only once `MemorySwapMax` is full too. The base-branch check runs in a transient scope with the same limits. Both accept digits with an optional `K`, `M`, `G` or `T`, or `infinity`. A private repository of a GitHub Free organization cannot have draft PRs, so set `draft = false` there.
 
 ## Disk use
 

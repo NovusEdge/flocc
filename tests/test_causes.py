@@ -22,6 +22,7 @@ def test_the_table_matches_the_spec():
         "needs-owner": "owner",
         "check-cap": "owner",
         "check-timeout": "owner",
+        "check-waiting-memory": "owner",
         "tests-touched": "owner",
         "no-tests": "owner",
         "branch-moved": "owner",

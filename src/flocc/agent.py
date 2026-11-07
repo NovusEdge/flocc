@@ -18,6 +18,18 @@ class CheckLost(AgentError):
     pass
 
 
+class BaseCheckWaiting(AgentError):
+    """The base check did not run: the host was short of memory."""
+
+
+def _memory(repo) -> dict:
+    return {
+        "min_mem_gb": repo.check_min_mem_gb,
+        "memory_max": repo.check_memory_max,
+        "memory_swap_max": repo.check_memory_swap_max,
+    }
+
+
 def _prepare_error(data: dict) -> subprocess.SubprocessError:
     kind, detail = data["error"], str(data.get("detail", ""))
     exc: subprocess.SubprocessError
@@ -155,7 +167,8 @@ class Agent:
         return self.call("shell", payload={"command": command}, timeout=SHELL_TIMEOUT_S + 30)
 
     def check_worktree(self, claim: Claim, repo, timeout_s: float) -> dict:
-        """One step of the check, which runs detached: status running until it ends, then ok,
+        """One step of the check, which runs detached: status running (or waiting, while low
+        memory holds the start; wait_timeout once it held for timeout_s) until it ends, then ok,
         failed, timeout or dirty with its output and the head it ran on."""
         payload = {
             "mode": "background",
@@ -163,6 +176,8 @@ class Agent:
             "state_root": str(self.cfg.agent_state_root),
             "command": repo.check,
             "timeout_s": timeout_s,
+            "wait_s": self.cfg.memory_wait_s,
+            **_memory(repo),
         }
         # Returns at once; the longest call stops a timed-out unit.
         data = self.call("check", payload=payload, timeout=120)
@@ -185,8 +200,12 @@ class Agent:
             "mode": "base-check",
             "command": self.cfg.repos[repo_name].check,
             "check_timeout_s": self.cfg.check_timeout_s,
+            **_memory(self.cfg.repos[repo_name]),
         }
         data = self.call("check", payload=payload, timeout=timeout + self.cfg.check_timeout_s)
+        if "waiting" in data:
+            # Raised, not a failure: a failure here would be cached or mark the canary.
+            raise BaseCheckWaiting(f"base check not run: {data['waiting']}")
         failure = data.get("failure")
         if failure is None:
             return str(data["sha"]), None

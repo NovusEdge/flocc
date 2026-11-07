@@ -287,6 +287,8 @@ def check(req: dict) -> dict:
             checkjob.stop_job(state, key)
             return {}
         return checkjob.step(req, key, wt, state)
+    if mode == "base-check" and (why := checkjob.memory_wait(req.get("min_mem_gb"))):
+        return {"waiting": why}
     write_token(req["token"])
     clone = _clone(req["repo"], req["url"])
     repo = RepoConfig(path=clone, base_branch=str(req["base_branch"]), check=str(req["command"]))
@@ -294,7 +296,10 @@ def check(req: dict) -> dict:
     _clean_stale(root)
     setup_s, shared = float(req["setup_timeout_s"]), bool(req["shared_uv_cache"])
     if mode == "base-check":
-        sha, failure = check_at_base(repo, root, setup_s, float(req["check_timeout_s"]), shared)
+        wrap, env = checkjob.scoped(req)
+        sha, failure = check_at_base(
+            repo, root, setup_s, float(req["check_timeout_s"]), shared, wrap, env
+        )
         found = (
             None
             if failure is None

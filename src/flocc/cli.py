@@ -956,6 +956,10 @@ def cmd_doctor(args) -> int:
     return run_doctor(cfg, path)
 
 
+# "waiting-for-check" plus a space, so the FIX column never runs into it.
+_WAITING_W = 18
+
+
 def cmd_status(args) -> int:
     from flocc.agent import Agent
     from flocc.status import age_text, collect, finished_state
@@ -982,22 +986,25 @@ def cmd_status(args) -> int:
     print(f"{report['host']} ({report['mode']}), v{_version()}, cap {report['session_cap']}")
     cap = report.get("check_fix_rounds", "?")
     rows = [*report["claims"], *report.get("finished", [])]
+    # Wide only when a row needs it, so the usual table keeps its columns.
+    sw = _WAITING_W if any(c.get("check_waiting") for c in report["claims"]) else 11
     if rows:
-        print(f"  {'ISSUE':<9}{'STEP':<10}{'STATE':<11}{'FIX':<5}{'AGE':<6}{'CTX':<6}SESSION")
+        print(f"  {'ISSUE':<9}{'STEP':<10}{'STATE':<{sw}}{'FIX':<5}{'AGE':<6}{'CTX':<6}SESSION")
     for c in report["claims"]:
         alive = "up" if c["tmux_alive"] else "down"
         fix = f"{c.get('fix_attempts', 0)}/{cap}"
         step = "check" if c.get("checking") else c.get("archetype", c["phase"])
         age = age_text(c["started_age_s"])
+        state = "waiting-for-check" if c.get("check_waiting") else c["state"]
         print(
-            f"  {c['issue']:<9}{step:<10}{c['state']:<11}{fix:<5}{age:<6}"
+            f"  {c['issue']:<9}{step:<10}{state:<{sw}}{fix:<5}{age:<6}"
             f"{_pct(c['context_pct']):<6}{alive}"
         )
     for c in report.get("finished", []):
         fix = f"{c['fix_attempts']}/{cap}"
         age = age_text(c["started_age_s"])
         state = finished_state(c["state"], c.get("pr_state", ""))
-        line = f"  {c['issue']:<9}{c['archetype']:<10}{state:<11}{fix:<5}{age:<6}{'-':<6}-"
+        line = f"  {c['issue']:<9}{c['archetype']:<10}{state:<{sw}}{fix:<5}{age:<6}{'-':<6}-"
         print(f"{line}  {c['pr_url']}" if c["pr_url"] else line)
     if report["ledger_error"]:
         print(f"  ledger unreadable: {report['ledger_error']}")

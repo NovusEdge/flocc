@@ -38,6 +38,45 @@ def _cfg_file(tmp_path):
     return path
 
 
+def test_status_keeps_the_fix_column_apart_from_waiting_for_check(tmp_path, monkeypatch, capsys):
+    path = _cfg_file(tmp_path)
+    claim = {
+        "issue": "NF-1",
+        "phase": "impl",
+        "archetype": "impl",
+        "state": "running",
+        "fix_attempts": 0,
+        "started_age_s": 60,
+        "tmux_alive": False,
+        "checking": True,
+        "check_waiting": True,
+        "context_pct": None,
+    }
+    report = {
+        "host": "h",
+        "mode": "loop",
+        "session_cap": 2,
+        "check_fix_rounds": 2,
+        "claims": [claim],
+        "ledger_error": "",
+        "claude_login": "",
+        "token_expiry": {},
+        "last_tick": None,
+        "usage": None,
+        "disk": None,
+        "now": 0,
+    }
+    monkeypatch.setattr("flocc.status.collect", lambda *a, **kw: report)
+    monkeypatch.setattr("flocc.agent.Agent.sessions", lambda self: None)
+    monkeypatch.setattr("flocc.agent.Agent.claude_argv", lambda self: [])
+    assert main(["--config", str(path), "status"]) == 0
+    out = capsys.readouterr().out
+    header = next(line for line in out.splitlines() if "STATE" in line)
+    row = next(line for line in out.splitlines() if "NF-1" in line)
+    assert "waiting-for-check 0/2" in row
+    assert row.index("0/2") == header.index("FIX")
+
+
 def test_hold_says_a_running_claim_goes_on(tmp_path, capsys):
     path = _cfg_file(tmp_path)
     con = ledger.connect(tmp_path / "l.sqlite")
