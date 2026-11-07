@@ -236,12 +236,13 @@ def test_triage_decides_on_the_stop_type_and_on_the_kind_when_it_is_null():
     assert f"{EXECUTOR} amend-tests KEY" in text and "`tests-amended`" in text
 
 
-def test_managed_settings_allow_the_two_binaries_and_hook_every_bash_call():
+def test_managed_settings_never_ask_allow_the_two_binaries_and_hook_every_bash_call():
     s = json.loads((CARDINAL / "managed-settings.json").read_text())
     p = s["permissions"]
-    assert p["defaultMode"] == "default"
-    assert p["allow"] == [f"Bash({EXECUTOR}:*)", f"Bash({AGENT_SHELL}:*)", "Skill"]
-    assert "ask" not in p
+    assert p["defaultMode"] == "dontAsk"
+    allowed = [f"Bash({EXECUTOR}:*)", f"Bash({AGENT_SHELL}:*)", "Skill", "AskUserQuestion"]
+    assert p["allow"] == allowed
+    assert "ask" not in p and p["disableBypassPermissionsMode"] == "disable"
     assert p["deny"] == [
         "Read",
         "Glob",
@@ -253,13 +254,17 @@ def test_managed_settings_allow_the_two_binaries_and_hook_every_bash_call():
         "NotebookEdit",
         "mcp__*",
         "Monitor",
+        "Agent",
+        "Workflow",
+        "CronCreate",
+        "ScheduleWakeup",
+        "RemoteTrigger",
     ]
-    assert p["disableBypassPermissionsMode"] == "disable"
     command = {"type": "command", "command": "/opt/cardinal/plugin/bin/only-executor"}
     assert s["hooks"]["PreToolUse"] == [{"matcher": "Bash", "hooks": [command]}]
 
 
-def test_the_unit_runs_sonnet_in_the_empty_session_directory():
+def test_the_unit_runs_opus_in_the_empty_session_directory():
     unit = (CARDINAL / "cardinal.service").read_text()
     for part in (
         "-c /var/lib/flocc-cardinal/session",

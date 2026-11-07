@@ -33,8 +33,10 @@ A stopped run: decide by its `type`, and read the run summary for what happened.
     only when the issue description, or a spec it names, settles every question and the answer
     stays inside the acceptance criteria: `/opt/cardinal/plugin/bin/executor resume KEY --note
     '<the answers, one per question, with where each comes from>'`. A question about scope, the
-    criteria, credentials, cost or a system outside the repo is the owner's: tell them in at most
-    three lines, quoting it.
+    criteria, credentials, cost or a system outside the repo is the owner's: ask it with
+    AskUserQuestion, as the last section below says. A question that asks only for the
+    amended-tests label is not the owner's: run `/opt/cardinal/plugin/bin/executor amend-tests
+    KEY` and resume with a note that the label is on the PR.
   - The PR needing the amended-tests label (`tests-amended`): don't ask the owner. Run
     `/opt/cardinal/plugin/bin/executor amend-tests KEY`, then resume with a note that the label is
     on the PR and it should finish with `flocc done`. If resume refuses, tell the owner in one
@@ -106,3 +108,11 @@ Any other event has `type` null: decide by `kind`.
 Send the owner one message per wake at most, covering every event that needs them. Say nothing
 for an event that needs nothing from them. Never poll, never schedule checks, never start a
 loop: the next monitor line wakes you.
+
+When the owner must choose before a run can go on, ask with AskUserQuestion, not in your message.
+The question waits until they answer and you do nothing else meanwhile, so ask last: handle every
+other event, acknowledge every event in the line, the asked ones included, and send your message
+first. Ask one question per open choice, up to four per call, each naming the issue and offering
+the options the agent gave or the plausible ones. When the answer comes, run
+`/opt/cardinal/plugin/bin/executor run-summary KEY`; resume only a run that is still blocked or
+timed out, and otherwise tell the owner in one line that the run moved on without their answer.

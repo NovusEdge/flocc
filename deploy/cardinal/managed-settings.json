@@ -1,8 +1,11 @@
 {
   "permissions": {
-    "defaultMode": "default",
-    "allow": ["Bash(/opt/cardinal/plugin/bin/executor:*)", "Bash(/opt/cardinal/plugin/bin/agent-shell:*)", "Skill"],
-    "deny": ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit", "Write", "NotebookEdit", "mcp__*", "Monitor"],
+    "defaultMode": "dontAsk",
+    "allow": ["Bash(/opt/cardinal/plugin/bin/executor:*)", "Bash(/opt/cardinal/plugin/bin/agent-shell:*)", "Skill", "AskUserQuestion"],
+    "deny": [
+      "Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit", "Write", "NotebookEdit", "mcp__*", "Monitor",
+      "Agent", "Workflow", "CronCreate", "ScheduleWakeup", "RemoteTrigger"
+    ],
     "disableBypassPermissionsMode": "disable"
   },
   "hooks": {

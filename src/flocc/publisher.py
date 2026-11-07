@@ -66,9 +66,19 @@ def pr_url(rt, claim: Claim) -> str | None:
 
 def add_label(runner, repo: RepoConfig, url: str, env: dict[str, str]) -> str:
     """The reason the amended-tests label was not added, or ''."""
+    # REST, not `gh pr edit`: gh before 2.47 reads projectCards there, which GitHub now rejects.
+    slug, _, number = url.removeprefix("https://github.com/").partition("/pull/")
     try:
         runner(
-            ["gh", "pr", "edit", url, "--add-label", repo.amended_label],
+            [
+                "gh",
+                "api",
+                "-X",
+                "POST",
+                f"repos/{slug}/issues/{number}/labels",
+                "-f",
+                f"labels[]={repo.amended_label}",
+            ],
             cwd=repo.path,
             env=env,
             check=True,

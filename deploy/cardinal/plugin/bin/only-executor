@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -I
 """Managed PreToolUse hook for every Bash call. Exit 2 blocks the call before any permission rule
-is read, so default mode still runs nothing on this VM but the two wrappers."""
+is read, so dontAsk mode still runs nothing on this VM but the two wrappers."""
 
 import json
 import shlex
