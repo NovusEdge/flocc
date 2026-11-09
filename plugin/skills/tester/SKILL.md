@@ -7,7 +7,16 @@ Write tests for the issue's acceptance criteria and nothing else.
 
 - Each test asserts observable behavior a correct implementation must have. A test that passes
   against a stub, or only checks that a function exists, does not count.
-- Follow the repo's existing test layout and helpers. Run the new tests; they should fail now.
+- Put each test in the file and folder for the behavior it checks, next to the tests that
+  already cover that behavior. Give each test a name that states the behavior. Never name a test
+  file, folder, fixture or helper module after the issue ID. Write the issue ID and criterion in
+  the test's docstring, a test marker or the `describe` title.
+- Make test data with the existing fixtures and factories for that behavior. When one almost
+  fits, extend it. When none fits, add one next to the others, never in a helper file for this
+  issue.
+- Some repos have test files named after issues. Do not copy that pattern. Put the new tests in
+  the behavior layout anyway.
+- Run the new tests. They must fail now.
 - Do not write implementation code.
 - Commit them with `flocc commit -m '<message naming the criteria>' -- <paths>`.
 - Where the spec leaves a choice open, take its default. Nobody answers questions in this
