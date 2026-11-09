@@ -6,6 +6,9 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- The tester files tests by the behavior they check and reuses that behavior's fixtures. It no
+  longer names test files or helper modules after the issue, even where the repo already does.
+
 ## 0.15.0 (2026-11-06)
 
 A review on GitHub can now steer a finished run, the same way a Linear comment does.
