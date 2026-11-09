@@ -6,6 +6,23 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+## 0.16.0 (2026-11-09)
+
+Checks are gated on free memory instead of crowding the host, a slow check blocks for the owner
+instead of starting a fixer, a refused resume waits for a free slot, and cardinal sees merged PRs.
+
+- Checks count toward the session cap again. A check starts only while the host has at least the
+  repo's `check_min_mem_gb` free (default 5.5 GiB). Otherwise it waits, `flocc status` shows
+  `waiting-for-check`, and after `check_timeout_s` of waiting the run blocks as
+  `check-waiting-memory`. The check's unit gets `MemoryHigh` and `MemoryMax` from
+  `check_memory_high` (default `4.5G`) and `check_memory_max` (default `5G`).
+- A check that hits `check_timeout_s` blocks as `check-timeout` and starts no fixer. dotnet
+  build servers no longer outlive the check.
+- A `resume` refused by the session cap or the usage limit is queued and runs at the next free
+  slot, oldest first. An entry is dropped, with a `resume-dropped` notice, when its issue leaves
+  In Progress, loses its label or waits 24 hours.
+- `flocc status` and the digest show a done run's PR as `merged` or `closed`, and reaping a
+  merged run emits a `merged` event.
 - The tester files tests by the behavior they check and reuses that behavior's fixtures. It no
   longer names test files or helper modules after the issue, even where the repo already does.
 
