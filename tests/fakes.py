@@ -59,6 +59,8 @@ class FakeAgent:
     removed: list = field(default_factory=list)
     swept: list = field(default_factory=list)
     stopped_checks: list = field(default_factory=list)
+    merges: list = field(default_factory=list)
+    merge_status: str = "conflict"
     probe_result: dict = field(
         default_factory=lambda: {"read": {}, "write": {}, "tmux": True, "groups": []}
     )
@@ -76,6 +78,10 @@ class FakeAgent:
     def remove(self, key, keep_dirty=False):
         self.removed.append((key, keep_dirty))
         return {"removed": True, "dirty": False}
+
+    def merge_base(self, claim, base_branch):
+        self.merges.append((claim.issue_key, base_branch))
+        return {"status": self.merge_status, "head": "sha-merged"}
 
     def stop_check(self, claim):
         self.stopped_checks.append(claim.issue_key)

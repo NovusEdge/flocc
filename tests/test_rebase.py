@@ -7,7 +7,7 @@ from flocc.context import state_dir
 from flocc.publisher import PublishResult
 from flocc.supervisor import supervise
 from flocc.usage import write_status
-from tests.fakes import ISSUE
+from tests.fakes import ISSUE, FakeAgent
 from tests.test_ledger import make
 from tests.test_supervisor import add, current, done, rt  # noqa: F401 - the fixture
 
@@ -23,6 +23,7 @@ BASE = "0123456789abcdef"
 @pytest.fixture
 def pr(rt, monkeypatch, tmp_path):  # noqa: F811
     """A finished claim whose open PR the fake gh reports as `rt.view`."""
+    rt.agent = FakeAgent(rt.cfg)
     rt.view = dict(CONFLICTING)
     rt.pr_view = lambda claim, url: rt.view
     rt.git_head = lambda claim: CONFLICTING["headRefOid"]
@@ -189,3 +190,73 @@ def test_a_failed_launch_restores_the_finished_claim_and_forgets_the_attempt(pr)
     assert (c.state, c.phase) == ("done", "review")
     assert not ledger.meta_get(pr.con, "rebase_tried:NF-1")
     assert not ledger.meta_get(pr.con, "rebase:NF-1")
+
+
+@pytest.fixture
+def clean(pr):
+    """The base merges into the branch without conflicts, and publishing reports `published`."""
+    pr.agent.merge_status = "merged"
+    pr.published = []
+
+    def publish(claim, title, summary, **kw):
+        pr.published.append(kw)
+        return pr.result
+
+    pr.result = PublishResult("opened", url="https://pr/1", existing=True)
+    pr.publish_fn = publish
+    return pr
+
+
+def test_a_clean_merge_is_pushed_to_the_open_pr_and_starts_no_session(clean):
+    rebase.step(clean)
+    assert clean.agent.merges == [("NF-1", "main")]
+    assert clean.published == [{"reuse_only": True}]
+    assert clean.sessions.started == []
+    c = current(clean)
+    assert (c.state, c.phase) == ("done", "review")
+    (line,) = [d for _, k, d in ledger.pending_digest(clean.con) if k == "NF-1"]
+    assert "merged main cleanly, no session needed" in line and "https://pr/1" in line
+    assert not ledger.meta_get(clean.con, "rebase_tried:NF-1")
+
+
+def test_a_clean_merge_that_failed_its_check_is_not_pushed_and_starts_the_fix_session(clean):
+    clean.result = PublishResult("check_failed", "E1 boom")
+    rebase.step(clean)
+    assert clean.published == [{"reuse_only": True}]
+    assert len(clean.sessions.started) == 1 and current(clean).state == "running"
+    assert ledger.meta_get(clean.con, "rebase_tried:NF-1") == BASE
+    assert not [d for _, k, d in ledger.pending_digest(clean.con) if "no session needed" in d]
+
+
+def test_a_conflicting_merge_publishes_nothing_and_starts_the_fix_session(pr):
+    pr.published = []
+    pr.publish_fn = lambda *a, **kw: pr.published.append(kw)
+    rebase.step(pr)
+    assert pr.agent.merges == [("NF-1", "main")] and pr.published == []
+    assert len(pr.sessions.started) == 1 and current(pr).state == "running"
+
+
+def test_a_check_still_running_waits_for_the_next_tick(clean):
+    clean.result = PublishResult("check_running")
+    clean.git_head = lambda claim: "sha-merged"
+    rebase.step(clean)
+    assert clean.sessions.started == [] and current(clean).state == "done"
+    clean.result = PublishResult("opened", url="https://pr/1", existing=True)
+    rebase.step(clean)
+    assert len(clean.published) == 2 and clean.sessions.started == []
+    assert any("no session needed" in d for _, _, d in ledger.pending_digest(clean.con))
+
+
+def test_a_pushed_merge_that_github_still_reports_conflicting_is_not_pushed_again(clean):
+    rebase.step(clean)
+    rebase.step(clean)
+    assert len(clean.published) == 1 and clean.sessions.started == []
+
+
+def test_a_merge_or_publish_error_starts_no_paid_session(clean):
+    def broken(claim, title, summary, **kw):
+        raise OSError("push refused")
+
+    clean.publish_fn = broken
+    rebase.step(clean)
+    assert clean.sessions.started == [] and current(clean).state == "done"

@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ from flocc.worktree import (
     git,
     head_at_base,
     install_hook,
+    merge_base,
     origin_base,
     prepare_worktree,
     recover_tests,
@@ -567,3 +569,62 @@ def test_setup_at_base_reports_a_timeout(origin, tmp_path):
     push_setup(origin, "sleep 30")
     code, _, _ = setup_at_base(RepoConfig(origin), tmp_path / "wt", 0.5, False)
     assert code is None
+
+
+def _write_commit(repo, path, text, message):
+    full = repo / path
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(text)
+    git("add", ".", cwd=repo)
+    git("commit", "-qm", message, cwd=repo)
+
+
+@pytest.fixture
+def diverged(origin, tmp_path):
+    """A kept worktree on agent/nf-3 and a base that moved past it; edits go through `edit`."""
+    (origin / ".gitattributes").write_text(".docket/ledger.jsonl merge=docket\n")
+    _write_commit(origin, ".docket/ledger.jsonl", "base\n", "ledger")
+    git("push", "-q", "origin", "main", cwd=origin)
+    # Stands in for `docket merge-driver`: an append-only ledger merges as a union of its lines.
+    git("config", "merge.docket.driver", "git merge-file --union %A %O %B", cwd=origin)
+    path, _, _ = prepare_worktree(RepoConfig(origin), tmp_path / "wt", "NF-3")
+
+    def edit(on_branch: tuple[str, str], on_base: tuple[str, str]):
+        _write_commit(path, on_branch[0], on_branch[1], "branch")
+        _write_commit(origin, on_base[0], on_base[1], "base moved")
+        git("push", "-q", "origin", "main", cwd=origin)
+
+    return path, edit
+
+
+def test_merge_base_lets_the_repo_s_merge_driver_settle_a_ledger_conflict(diverged):
+    path, edit = diverged
+    edit((".docket/ledger.jsonl", "base\nbranch\n"), (".docket/ledger.jsonl", "base\nmain\n"))
+    assert merge_base(path, "main") == "merged"
+    assert sorted((path / ".docket/ledger.jsonl").read_text().split()) == ["base", "branch", "main"]
+    assert git("status", "--porcelain", cwd=path) == ""
+    assert git("rev-parse", "origin/main", cwd=path) in git("log", "--format=%P", "-1", cwd=path)
+
+
+def test_merge_base_aborts_a_real_conflict_and_leaves_the_worktree_as_it_was(diverged):
+    path, edit = diverged
+    edit(("a.txt", "branch\n"), ("a.txt", "main\n"))
+    before = git("rev-parse", "HEAD", cwd=path)
+    assert merge_base(path, "main") == "conflict"
+    assert git("rev-parse", "HEAD", cwd=path) == before
+    assert git("status", "--porcelain", cwd=path) == ""
+    assert (path / "a.txt").read_text() == "branch\n"
+    assert not (Path(git("rev-parse", "--git-dir", cwd=path)) / "MERGE_HEAD").exists()
+
+
+def test_merge_base_reports_a_branch_that_already_has_the_base(diverged):
+    path, _ = diverged
+    assert merge_base(path, "main") == "current"
+
+
+def test_merge_base_leaves_uncommitted_work_alone(diverged):
+    path, edit = diverged
+    edit(("b.txt", "b\n"), ("c.txt", "c\n"))
+    (path / "b.txt").write_text("edited\n")
+    assert merge_base(path, "main") == "dirty"
+    assert (path / "b.txt").read_text() == "edited\n"
