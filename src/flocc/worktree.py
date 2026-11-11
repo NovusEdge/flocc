@@ -207,6 +207,33 @@ def origin_base(repo: RepoConfig) -> str | None:
         return None
 
 
+def merge_base(wt: Path, base_branch: str) -> str:
+    """Merges a fresh origin/<base_branch> into the branch checked out in wt.
+
+    "merged" or "current" (the branch already had the base) leave a clean tree; "conflict" has
+    aborted the merge, so the worktree is as it was; "dirty" touched nothing. Runs with the
+    repo's own merge drivers (.gitattributes), which GitHub cannot run."""
+    git("fetch", "-q", "origin", base_branch, cwd=wt)
+    if git("status", "--porcelain", cwd=wt):
+        return "dirty"
+    ref = f"origin/{base_branch}"
+    if contains(wt, ref):
+        return "current"
+    merge = subprocess.run(
+        ["git", "merge", "--no-edit", "-q", ref],
+        cwd=wt,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if merge.returncode == 0:
+        return "merged"
+    # A merge that stopped on conflicts, or one a hook or a missing identity refused: either way
+    # nothing half-done may stay for the next session.
+    subprocess.run(["git", "merge", "--abort"], cwd=wt, capture_output=True, check=False)
+    return "conflict"
+
+
 def head_at_base(repo: RepoConfig, path: Path) -> str | None:
     """The base SHA when the worktree at path is still exactly origin/<base>."""
     try:
