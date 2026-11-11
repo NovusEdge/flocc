@@ -261,3 +261,7 @@ def test_a_merge_or_publish_error_starts_no_paid_session(clean):
     clean.publish_fn = broken
     rebase.step(clean)
     assert clean.sessions.started == [] and current(clean).state == "done"
+    assert any(
+        "base not merged" in d and "push refused" in d
+        for _, _, d in ledger.pending_digest(clean.con)
+    )

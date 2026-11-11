@@ -30,7 +30,13 @@ def _merge_cleanly(rt, claim, base_sha: str) -> bool:
         # The check runs before any push; the PR is open, so only its branch is published.
         result = rt.publish_fn(claim, key, "", reuse_only=True)
     except Exception as exc:  # noqa: BLE001 - one PR's failure must not stop the others
+        # No paid session for an infrastructure error, but the owner must hear of it: a missing
+        # flocc-agent-run merge-base would otherwise leave every conflicting PR waiting silently.
         print(f"{key}: base not merged: {exc}", file=sys.stderr)
+        cause = f"{key}:merge-base"
+        if not ledger.alert_seen(rt.con, cause, ledger.DEDUPE_S, rt.now()):
+            ledger.add_digest(rt.con, key, f"base not merged, no session started ({exc})", rt.now())
+            ledger.record_alert(rt.con, cause, 3, key, rt.now())
         return True
     if result.status == "check_running":
         return True
@@ -39,9 +45,13 @@ def _merge_cleanly(rt, claim, base_sha: str) -> bool:
         ledger.meta_set(rt.con, f"{MERGE_PUSHED}:{key}", base_sha)
         line = f"merged {base} cleanly, no session needed: {result.url}"
         ledger.add_digest(rt.con, key, line, rt.now())
-        rt.linear.comment(
-            rt.linear.issue(key).id, f"Merged {base} into the branch and pushed to {result.url}."
-        )
+        try:
+            rt.linear.comment(
+                rt.linear.issue(key).id,
+                f"Merged {base} into the branch and pushed to {result.url}.",
+            )
+        except Exception as exc:  # noqa: BLE001 - the push landed; the comment is a courtesy
+            print(f"{key}: Linear comment not posted: {exc}", file=sys.stderr)
         return True
     if result.status == "pr_closed":
         return True
