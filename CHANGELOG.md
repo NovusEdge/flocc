@@ -6,6 +6,13 @@ A release is a batch of merged PRs. The PR that cuts one bumps `version` in `pyp
 
 ## Unreleased
 
+- A finished PR that GitHub reports as conflicting first gets a plain `git merge` of the base in
+  its worktree, with the repo's own merge drivers (the docket ledgers' `merge=docket`), which
+  GitHub cannot run. A merge with no conflicts runs the check and pushes to the open PR with no
+  session; a conflict is aborted and the fix session starts as before, as does a failed check.
+  The merge is a new `flocc-agent-run` subcommand, `merge-base`: the root-owned wrapper at
+  `/usr/local/libexec/flocc-agent-run` needs reinstalling for it.
+
 ## 0.16.0 (2026-11-09)
 
 Checks are gated on free memory instead of crowding the host, a slow check blocks for the owner

@@ -185,6 +185,16 @@ class Agent:
             raise CheckLost(f"{claim.issue_key}: the check job vanished twice (host restarted?)")
         return data
 
+    def merge_base(self, claim: Claim, base_branch: str) -> dict:
+        """Merges origin/<base_branch> into the claim's branch in flocc-agent's worktree: status
+        merged, current, conflict (aborted, worktree untouched) or dirty, with the head after."""
+        payload = {
+            "worktree": claim.worktree,
+            "base_branch": base_branch,
+            "token": self.token(),
+        }
+        return self.call("merge-base", payload=payload, timeout=300)
+
     def stop_check(self, claim: Claim) -> None:
         payload = {
             "mode": "stop",

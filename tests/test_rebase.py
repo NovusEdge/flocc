@@ -238,7 +238,8 @@ def test_a_conflicting_merge_publishes_nothing_and_starts_the_fix_session(pr):
 
 def test_a_check_still_running_waits_for_the_next_tick(clean):
     clean.result = PublishResult("check_running")
-    clean.git_head = lambda claim: "sha-merged"
+    heads = iter(["sha-tests", "sha-merged", "sha-merged"])
+    clean.git_head = lambda claim: next(heads)
     rebase.step(clean)
     assert clean.sessions.started == [] and current(clean).state == "done"
     clean.result = PublishResult("opened", url="https://pr/1", existing=True)

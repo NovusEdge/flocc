@@ -27,6 +27,7 @@ from flocc.worktree import (
     has_uncommitted_changes,
     head_at_base,
     install_hook,
+    merge_base,
     prepare_worktree,
     setup_at_base,
 )
@@ -38,6 +39,7 @@ SUBCOMMANDS = (
     "check",
     "claude",
     "kill",
+    "merge-base",
     "prepare",
     "probe",
     "remove",
@@ -275,6 +277,17 @@ def prepare(req: dict) -> dict:
     state = under_home(req["state_root"]) / key
     install_hook(path, state / "hooks", shutil.which("flocc") or "flocc", bool(req["trailer"]))
     return {"path": str(path), "branch": branch, "base": base}
+
+
+def merge_base_into(req: dict) -> dict:
+    wt = under_home(req["worktree"])
+    _key(wt.name)
+    write_token(req["token"])
+    status = merge_base(wt, str(req["base_branch"]))
+    return {
+        "status": status,
+        "head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=wt, text=True).strip(),
+    }
 
 
 def check(req: dict) -> dict:
@@ -900,6 +913,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "send": send,
     "capture": capture,
     "prepare": prepare,
+    "merge-base": merge_base_into,
     "check": check,
     "remove": remove,
     "probe": probe,
